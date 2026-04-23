@@ -32,5 +32,6 @@ fi
 echo "[*] Launching Frida..."
 /system/bin/frida-server &
 
+echo "[*] Waiting, if you need to inspect logs"
 wait
 
