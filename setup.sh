@@ -17,7 +17,7 @@ git clone --depth 1 https://github.com/ayasa520/redroid-script.git /tmp/redroid
 # Dont need Widevine for now & libndk only for And 11/12
 echo "[*] Patching Android 14 image (this may take a few minutes)..."
 cd /tmp/redroid
-uv run --with requests --with tqdm redroid.py -a 14.0.0 -lg -i -m
+uv run --with requests --with tqdm python -W ignore redroid.py -a 14.0.0 -lg -i -m
 cd -
 
 DOCKER_NAME=$(docker image ls "redroid/redroid:*" --format "{{.Repository}}:{{.Tag}}")
