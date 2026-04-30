@@ -14,17 +14,20 @@ services:
     command:
       - androidboot.redroid_width=1080
       - androidboot.redroid_height=1920
-      - androidboot.redroid_gpu_mode=guest
+      - androidboot.redroid_fps=3
+      - androidboot.redroid_gpu_mode=host
+      - androidboot.use_memfd=true
+      - androidboot.use_redroid_overlayfs=true
     restart: unless-stopped
 
   # Visualizer
-  visual-ui:
-    image: empty602/ws-scrcpy
-    container_name: android-research-ui
-    ports:
-      - "8000:8000"
-    depends_on:
-      - android-research
-    environment:
-      - ADB_SERVER_IP=android-research
+  #visual-ui:
+  #  build: https://github.com/n1n3b1t/ws-scrcpy.git
+  #  # image: n1n3b1t/ws-scrcpy
+  #  container_name: android-research-ui
+  #  ports:
+  #    - "8000:8000"
+  #  depends_on:
+  #    - android-research
+
 
