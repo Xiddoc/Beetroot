@@ -20,14 +20,3 @@ services:
       - androidboot.use_redroid_overlayfs=true
     restart: unless-stopped
 
-  # Visualizer
-  #visual-ui:
-  #  build: https://github.com/n1n3b1t/ws-scrcpy.git
-  #  # image: n1n3b1t/ws-scrcpy
-  #  container_name: android-research-ui
-  #  ports:
-  #    - "8000:8000"
-  #  depends_on:
-  #    - android-research
-
-

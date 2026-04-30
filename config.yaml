@@ -1,3 +1,0 @@
-remoteAdbHostList:
-  - "android-research:5555"
-  - "10.100.102.104:5555"
