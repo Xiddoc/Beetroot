@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/system/bin/sh
 
 # Start Redroid init
 /init androidboot.hardware=redroid ro.setupwizard.mode=DISABLED &
