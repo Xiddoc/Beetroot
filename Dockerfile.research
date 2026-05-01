@@ -25,7 +25,10 @@ COPY --chmod=755 --from=builder /sqlite3-static /system/bin/sqlite3
 # Copy the entrypoint with executable permissions
 COPY --chmod=755 entrypoint.sh /entrypoint.sh
 
+# Copy the init trigger into the Android init directory
+# Android automatically parses all .rc files in this folder
+COPY stealth.rc /system/etc/init/stealth.rc
+
 # No USER or RUN commands here. 
 # Android defaults to UID 0 (root) automatically.
-ENTRYPOINT ["/entrypoint.sh"]
-
+# No need for ENTRYPOINT - use default redroid boot

@@ -1,12 +1,10 @@
 #!/system/bin/sh
 
-# Start Redroid init
-/init androidboot.hardware=redroid ro.setupwizard.mode=DISABLED &
-
-echo "[*] Waiting for Android 14 boot..."
-until [ "$(getprop sys.boot_completed)" == "1" ]; do sleep 1; done
+# No need to start /init here; it's already running as PID 1
+echo "[*] Android boot detected. Applying Stealth Configuration..."
 
 DB_PATH="/data/adb/magisk.db"
+# Wait specifically for the database to exist
 while [ ! -f "$DB_PATH" ]; do sleep 1; done
 
 echo "[*] Applying Stealth Configuration..."

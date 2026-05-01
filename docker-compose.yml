@@ -12,8 +12,8 @@ services:
     ports:
       - "5555:5555" # ADB
     command:
-      - androidboot.redroid_width=1080
-      - androidboot.redroid_height=1920
+      - androidboot.redroid_width=540
+      - androidboot.redroid_height=960
       - androidboot.redroid_fps=3
       - androidboot.redroid_gpu_mode=host
       - androidboot.use_memfd=true
