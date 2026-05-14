@@ -1,10 +1,9 @@
-# Beetroot 🐳
+# Beetroot 🫜
 
 **The best Android research setup to beat root.**
 
 [![CI](https://github.com/Xiddoc/Beetroot/actions/workflows/ci.yml/badge.svg)](https://github.com/Xiddoc/Beetroot/actions/workflows/ci.yml)
-
-**[Documentation](https://xiddoc.github.io/Beetroot/)** — full docs site with guides, CLI reference, and architecture deep-dives.
+[![Docs](https://github.com/Xiddoc/Beetroot/actions/workflows/docs.yml/badge.svg)](https://xiddoc.github.io/Beetroot/)
 
 Beetroot is a Docker-packaged rooted Android 14 environment — Magisk, LiteGapps, Houdini ARM translation, and Frida — wrapped with a Python CLI that lets you run **as many persistent research "phones" as your host can afford** side by side. Each phone has its own `/data`, its own ADB and Frida ports, its own resource caps, and a single `beetroot.yaml` config file that describes it. Commit the YAML and you have a reproducible build of the device.
 
