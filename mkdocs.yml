@@ -1,0 +1,122 @@
+site_name: Beetroot
+site_description: The best Android research setup to beat root.
+site_url: https://xiddoc.github.io/Beetroot/
+repo_url: https://github.com/Xiddoc/Beetroot
+repo_name: Xiddoc/Beetroot
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; Xiddoc &mdash; MIT licensed
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search
+  - glightbox
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_root_heading: true
+            show_source: false
+            docstring_style: google
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Xiddoc/Beetroot
+      name: Xiddoc/Beetroot on GitHub
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - getting-started/index.md
+    - Prerequisites: getting-started/prerequisites.md
+    - Installation: getting-started/installation.md
+    - Your First Instance: getting-started/first-instance.md
+  - Guides:
+    - guides/index.md
+    - Multiple Instances: guides/multi-instance.md
+    - Presets: guides/presets.md
+    - Magisk Modules: guides/modules.md
+    - Frida: guides/frida.md
+    - Snapshots: guides/snapshots.md
+    - Migrating: guides/migrating.md
+  - Reference:
+    - reference/index.md
+    - CLI Reference: reference/cli.md
+    - Configuration: reference/config.md
+    - Port Allocation: reference/ports.md
+    - API Reference: reference/api.md
+  - How It Works:
+    - how-it-works/index.md
+    - Architecture: how-it-works/architecture.md
+    - Boot Flow: how-it-works/boot-flow.md
+    - Filesystem Layout: how-it-works/filesystem.md
+  - Troubleshooting: troubleshooting.md
+  - About:
+    - Credits: about/credits.md
+    - License: about/license.md

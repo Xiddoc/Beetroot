@@ -1,0 +1,24 @@
+# Beetroot stealth preset — default + Shamiko for true allowlist-hide.
+# Only fields that differ from defaults are listed here.
+# Fill in sha256 after first download for reproducibility.
+#
+# Optional resource knobs (uncomment to use):
+# resources:
+#   mem: 4g
+#   mem_reservation: 2g   # soft memory floor; Docker scheduler respects this
+#   memswap_limit: 4g     # cap mem+swap combined (prevents swap storms)
+#   pids_limit: 1500      # max PID count (default 4096)
+
+android:
+  version: 14
+
+modules:
+  - url: https://github.com/LSPosed/LSPosed.github.io/releases/download/shamiko-426/Shamiko-v0.7.4-426-release.zip
+    # sha256: <fill-in-after-first-download>
+
+stealth:
+  denylist:
+    - com.google.android.gms
+    - com.google.android.gms.unstable
+    - com.google.android.gms.persistent
+    - com.android.vending

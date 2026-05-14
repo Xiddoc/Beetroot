@@ -1,0 +1,36 @@
+services:
+  phone:
+    container_name: ${INSTANCE_NAME}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-redroid/redroid:14.0.0_litegapps_houdini_magisk}
+    image: beetroot:latest
+    privileged: true
+    restart: unless-stopped
+
+    mem_limit: ${MEM_LIMIT:-3g}
+    mem_reservation: ${MEM_RESERVATION:-${MEM_LIMIT:-3g}}
+    memswap_limit: ${MEMSWAP_LIMIT:-${MEM_LIMIT:-3g}}
+    cpus: ${CPUS:-2.0}
+    shm_size: ${SHM_SIZE:-256m}
+    pids_limit: ${PIDS_LIMIT:-4096}
+
+    volumes:
+      - ./instances/${INSTANCE_NAME}/data:/data
+      - ./instances/${INSTANCE_NAME}/modules:/flash_dir:ro
+      - ./instances/${INSTANCE_NAME}/frida-server:/data/local/tmp/frida-server:ro
+
+    ports:
+      - "${ADB_PORT}:5555"
+      - "${FRIDA_PORT}:27042"
+      - "${FRIDA_PORT2}:27043"
+
+    command:
+      - androidboot.redroid_width=${DISPLAY_WIDTH:-540}
+      - androidboot.redroid_height=${DISPLAY_HEIGHT:-960}
+      - androidboot.redroid_fps=${DISPLAY_FPS:-3}
+      - androidboot.redroid_gpu_mode=${DISPLAY_GPU:-host}
+      - androidboot.use_memfd=true
+      - androidboot.use_redroid_overlayfs=true

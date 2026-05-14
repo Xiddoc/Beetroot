@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-type-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dev dependencies
+        run: uv sync --group dev --frozen
+
+      - name: Ruff check
+        run: uv run ruff check src/beetroot/ tests/
+
+      - name: Ensure arbitrary_types_allowed is never used
+        run: |
+          ! grep -rn 'arbitrary_types_allowed' src/ tests/ pyproject.toml
+
+      - name: Mypy
+        run: uv run mypy src/beetroot/
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dev dependencies
+        run: uv sync --group dev --frozen --python ${{ matrix.python }}
+
+      - name: Pytest
+        run: uv run pytest --cov=beetroot --cov-report=term-missing

@@ -1,0 +1,11 @@
+# Beetroot default preset — baseline research phone.
+# Every field except android.version is optional; schema defaults apply when omitted.
+# Override any section in instances/<name>/beetroot.yaml and run `beetroot apply`.
+
+android:
+  version: 14
+
+stealth:
+  denylist:
+    - com.google.android.gms
+    - com.google.android.gms.unstable

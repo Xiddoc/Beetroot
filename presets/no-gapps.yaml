@@ -1,0 +1,7 @@
+# presets/no-gapps.yaml — Android without Google Mobile Services. Useful when
+# researching APKs that don't talk to GMS, or to minimize the moving parts.
+# Note: ./scripts/setup.sh none must have been run to produce the base image.
+
+android:
+  version: 14
+  gapps: none
