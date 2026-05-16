@@ -2,6 +2,8 @@
 # Every field except android.version is optional; schema defaults apply when omitted.
 # Override any section in instances/<name>/beetroot.yaml and run `beetroot apply`.
 
+api_version: 1
+
 android:
   version: 14
 

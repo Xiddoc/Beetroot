@@ -2,6 +2,9 @@
 
 Beetroot manages the Frida server binary per-instance: it downloads the correct architecture build from GitHub, caches it locally, and bind-mounts it into the container at `/data/local/tmp/frida-server`. At boot, `entrypoint.sh` launches it automatically.
 
+!!! note "Host-side `frida-tools` is optional"
+    The Frida server inside the container is always managed for you. The host-side `frida` CLI used by `beetroot frida` is a separate package and ships behind the `[frida]` extra — install it with `uv tool install 'beetroot[frida]'`. See [Installation › With Frida CLI](../getting-started/installation.md#with-frida-cli) for details.
+
 ## Version pinning
 
 Each instance pins its own Frida version in `beetroot.yaml`:
@@ -43,7 +46,7 @@ beetroot frida alpha -n com.target.app -l /path/to/script.js
 ```
 
 !!! note "frida CLI required"
-    `beetroot frida` shells out to the `frida` binary on your PATH. Install it with `pip install frida-tools` or `uv tool install frida-tools`.
+    `beetroot frida` shells out to the `frida` binary on your PATH. The easiest way to get it is `uv tool install 'beetroot[frida]'`, which bundles `frida-tools` alongside Beetroot. Alternatively, `uv tool install frida-tools` works standalone.
 
 ## Connecting without the wrapper
 
@@ -88,7 +91,7 @@ The `frida-server` bind-mount becomes an empty placeholder, and `entrypoint.sh` 
 ## Troubleshooting
 
 **`beetroot frida` says `frida CLI not found`.**
-Install `frida-tools`: `pip install frida-tools`.
+Install the `[frida]` extra: `uv tool install 'beetroot[frida]'` (or `uv tool install frida-tools` if Beetroot is already installed without the extra).
 
 **Frida connects but can't enumerate processes.**
 The server might still be starting. Wait a few seconds after boot, or check: `beetroot shell alpha` then `ps -A | grep frida`. If it's not running, check `beetroot logs alpha` for download or launch errors.

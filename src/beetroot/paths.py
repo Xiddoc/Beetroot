@@ -3,11 +3,41 @@ from __future__ import annotations
 
 from pathlib import Path
 
+_MARKER = "compose.yaml"
 
-def repo_root() -> Path:
-    """Return the android-emulator/ directory — the repo this CLI manages."""
-    # src/beetroot/paths.py -> src/beetroot -> src -> repo
-    return Path(__file__).resolve().parents[2]
+
+class ProjectRootNotFoundError(FileNotFoundError):
+    """Raised when no compose.yaml marker is found in cwd or its ancestors."""
+
+
+def repo_root(start: Path | None = None) -> Path:
+    """
+    Find the Beetroot project root by walking up from ``start`` (default cwd).
+
+    The project root is the nearest ancestor directory containing a
+    ``compose.yaml`` file. This is the same discovery model used by git
+    (``.git`` marker) and pip/uv (``pyproject.toml`` marker).
+
+    Args:
+        start: Directory to start the search from. Defaults to ``Path.cwd()``.
+
+    Returns:
+        The absolute path to the project root.
+
+    Raises:
+        ProjectRootNotFoundError: If no ``compose.yaml`` is found in the
+            start directory or any of its ancestors. The error message
+            tells the user to ``cd`` into a project directory.
+    """
+    cur = (start if start is not None else Path.cwd()).resolve()
+    for parent in [cur, *cur.parents]:
+        if (parent / _MARKER).is_file():
+            return parent
+    raise ProjectRootNotFoundError(
+        f"Beetroot project root not found: no {_MARKER} in {cur} or any "
+        "ancestor directory. Run `beetroot` from a project directory "
+        "(one containing compose.yaml), or initialize a new project there."
+    )
 
 
 def instances_dir() -> Path:

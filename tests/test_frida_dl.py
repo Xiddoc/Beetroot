@@ -4,8 +4,11 @@ from __future__ import annotations
 import hashlib
 import lzma
 import stat
+import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from beetroot import frida_dl, paths
 from beetroot.settings import settings
@@ -76,6 +79,32 @@ class TestDownload:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
             frida_dl.download(VERSION)
         assert paths.frida_cache_dir().exists()
+
+
+class TestDownloadErrors:
+    def test_http_error_raises_runtime_error(self, isolated_root: Path) -> None:
+        def _raise(url: str, **kwargs: object) -> MagicMock:
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)  # type: ignore[arg-type]
+
+        with patch("urllib.request.urlopen", side_effect=_raise):
+            with pytest.raises(RuntimeError, match="HTTP 404"):
+                frida_dl.download(VERSION)
+
+    def test_timeout_raises_runtime_error(self, isolated_root: Path) -> None:
+        def _raise(url: str, **kwargs: object) -> MagicMock:
+            raise TimeoutError("timed out")
+
+        with patch("urllib.request.urlopen", side_effect=_raise):
+            with pytest.raises(RuntimeError, match="timed out"):
+                frida_dl.download(VERSION)
+
+    def test_url_error_raises_runtime_error(self, isolated_root: Path) -> None:
+        def _raise(url: str, **kwargs: object) -> MagicMock:
+            raise urllib.error.URLError("no route to host")
+
+        with patch("urllib.request.urlopen", side_effect=_raise):
+            with pytest.raises(RuntimeError, match="cannot reach"):
+                frida_dl.download(VERSION)
 
 
 class TestSha256Of:

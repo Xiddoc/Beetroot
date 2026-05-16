@@ -33,6 +33,34 @@ research-clean    0    localhost:5555        localhost:27042       running
 research-stealth  1    localhost:5565        localhost:27052       running
 ```
 
+## Pinning ports
+
+By default ports are allocated from the stride table above. To pin a port for a specific instance (for example, to keep a stable host port across destroy/recreate cycles, or to coordinate with a tool that targets a fixed port), add a `ports:` block to its `beetroot.yaml`:
+
+```yaml
+ports:
+  adb: 9000           # pin ADB to 9000
+  # frida: 9001       # optional — omit to take the stride default
+  # frida_control: 9002
+```
+
+Then re-stage:
+
+```bash
+beetroot apply research-clean
+beetroot down research-clean && beetroot up research-clean
+```
+
+Each field is independently optional. Fields you omit fall back to the stride allocation, so you can pin one port (say, ADB) and leave the Frida ports on stride.
+
+If you pin a port that another instance already uses, `beetroot create` and `beetroot apply` exit with a clear error before staging:
+
+```
+error: port 5555 (adb) collides with instance 'alpha' (which also uses 5555). Pin or remove one.
+```
+
+See [`ports` in the config reference](../reference/config.md#ports) for the full schema.
+
 ## Working with a specific instance
 
 Every Beetroot verb that targets an instance takes its name:

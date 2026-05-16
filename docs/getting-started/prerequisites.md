@@ -97,13 +97,13 @@ ADB is used by `beetroot shell` to attach to a running instance:
 
 ## Optional: Frida CLI
 
-If you want to use `beetroot frida` to attach Frida to processes, you need `frida-tools` on the host:
+If you want `beetroot frida <name>` to work, install the Frida CLI alongside Beetroot via the `[frida]` extra:
 
 ```bash
-pip install frida-tools
-# or, if you use uv's tool install:
-uv tool install frida-tools
+uv tool install 'beetroot[frida]'
 ```
+
+Plain installs (`uv tool install ...` without `[frida]`) omit `frida-tools`; you can always add it later or install separately with `uv tool install frida-tools`.
 
 The Frida *server* binary is managed entirely by Beetroot — you don't need to install it separately.
 

@@ -2,7 +2,9 @@
 
 ## One compose file, many instances
 
-Beetroot never generates custom `compose.yaml` files. There is exactly one `compose.yaml` at the project root, and every instance uses it. Parameterization happens via an env file:
+Beetroot never generates custom `compose.yaml` files. There is exactly one `compose.yaml` at the project root, and every instance uses it. The CLI discovers that project root by walking up from the current working directory looking for the `compose.yaml` marker — the same model used by git (`.git`) and uv/pip (`pyproject.toml`). This works identically whether `beetroot` was installed editable (`uv sync`) or as a tool (`uv tool install .`); running it outside a project tree fails with a friendly `error: Beetroot project root not found...` message.
+
+Parameterization happens via an env file:
 
 ```bash
 docker compose -p alpha -f compose.yaml --env-file instances/alpha/.env up -d
@@ -19,7 +21,7 @@ The Docker image (`docker/Dockerfile`) is a single-stage build from `redroid/red
 - `docker/entrypoint.sh` — copied to `/entrypoint.sh` in the image.
 - `docker/stealth.rc` — copied to `/system/etc/init/stealth.rc` in the image.
 
-That's it. Magisk is already in the base image (courtesy of the `ayasa520/redroid-script` patcher run by `./scripts/setup.sh`). The `magisk --sqlite` command ships with Magisk itself, so there's no separate sqlite binary to bundle.
+That's it. Magisk is already in the base image (courtesy of the `ayasa520/redroid-script` patcher run by `beetroot setup`). The `magisk --sqlite` command ships with Magisk itself, so there's no separate sqlite binary to bundle.
 
 Frida is **not in the image**. It lives at `instances/<name>/frida-server` on the host and is bind-mounted to `/data/local/tmp/frida-server` inside the container. This means you can change the Frida version per instance without rebuilding the image.
 

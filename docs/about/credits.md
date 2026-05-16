@@ -8,7 +8,7 @@ Beetroot is a thin orchestration layer on top of several excellent open-source p
 
 ## ayasa520/redroid-script
 
-[`ayasa520/redroid-script`](https://github.com/ayasa520/redroid-script) — the patcher that Beetroot's `./scripts/setup.sh` uses to bake Magisk, LiteGapps, and Houdini into a redroid base image. Without this patcher, getting root + GApps + ARM translation into the image would require significant manual work.
+[`ayasa520/redroid-script`](https://github.com/ayasa520/redroid-script) — the patcher that Beetroot's `beetroot setup` verb uses to bake Magisk, LiteGapps, and Houdini into a redroid base image. Without this patcher, getting root + GApps + ARM translation into the image would require significant manual work.
 
 ## Magisk
 

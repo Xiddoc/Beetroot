@@ -10,19 +10,29 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-if sys.version_info >= (3, 12):
+if sys.version_info >= (3, 11):  # pragma: no cover - version-conditional import
+    from typing import Self
+else:  # pragma: no cover - version-conditional import
+    from typing_extensions import Self
+
+if sys.version_info >= (3, 12):  # pragma: no cover - version-conditional import
     from typing import override
-else:
+else:  # pragma: no cover - version-conditional import
     from typing_extensions import override
 
 from . import paths
 
+SUPPORTED_API_VERSION: Final = 1
+
 _VALID_ANDROID_VERSIONS = {11, 12, 13, 14}
+
+_MIN_PORT: Final = 1
+_MAX_PORT: Final = 65535
 
 
 class Display(BaseModel):
@@ -49,7 +59,7 @@ class Resources(BaseModel):
     Attributes:
         mem: Hard memory limit (e.g. ``3g``).
         cpus: CPU cap as a float.
-        shm: Shared-memory size.
+        shared_mem: Shared-memory size (Docker ``shm_size``).
         mem_reservation: Optional soft memory floor.
         memswap_limit: Optional total memory + swap cap.
         pids_limit: Maximum number of PIDs the container can spawn.
@@ -57,10 +67,20 @@ class Resources(BaseModel):
 
     mem: str = "3g"
     cpus: float = 2.0
-    shm: str = "256m"
+    shared_mem: str = "256m"
     mem_reservation: str | None = None
     memswap_limit: str | None = None
     pids_limit: int = 4096
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_shm(cls, data: object) -> object:
+        if isinstance(data, dict) and "shm" in data:
+            raise ValueError(
+                "resources.shm is no longer supported — rename to resources.shared_mem. "
+                "See CHANGELOG.md for the migration."
+            )
+        return data
 
 
 class Frida(BaseModel):
@@ -165,6 +185,48 @@ def base_image_tag(android: Android) -> str:
     return f"redroid/redroid:{android.version}.0.0{_GAPPS_SLUG[android.gapps]}_houdini_magisk"
 
 
+class Ports(BaseModel):
+    """
+    Optional per-instance port overrides.
+
+    Fields are independently optional — set only the ones you want to pin;
+    the rest fall back to the stride-of-10 allocator on the instance's
+    index. The ``frida_control`` field overrides the second Frida port
+    (``frida2`` in the resolved port dict, the control channel that sits
+    one above the data port in the default stride).
+
+    Attributes:
+        adb: Host port for ADB. Stride default: ``5555 + index*10``.
+        frida: Host port for Frida data. Stride default: ``27042 + index*10``.
+        frida_control: Host port for Frida control. Stride default:
+            ``27043 + index*10``.
+    """
+
+    adb: int | None = None
+    frida: int | None = None
+    frida_control: int | None = None
+
+    @field_validator("adb", "frida", "frida_control")
+    @classmethod
+    def _check_port_range(cls, v: int | None) -> int | None:
+        if v is None:
+            return v
+        if not (_MIN_PORT <= v <= _MAX_PORT):
+            raise ValueError(
+                f"port {v} out of range (must be {_MIN_PORT}..{_MAX_PORT})"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _check_distinct(self) -> Self:
+        values = [v for v in (self.adb, self.frida, self.frida_control) if v is not None]
+        if len(values) != len(set(values)):
+            raise ValueError(
+                "ports.adb / ports.frida / ports.frida_control must be distinct"
+            )
+        return self
+
+
 class InstanceConfig(BaseModel):
     """
     The schema of ``instances/<name>/beetroot.yaml``.
@@ -172,21 +234,41 @@ class InstanceConfig(BaseModel):
     ``name`` is omitted from the schema because it lives in the directory
     name itself — single source of truth, can't drift.
 
+    Each Beetroot release supports exactly one ``api_version``; mismatched
+    values fail loud with a pointer to the migration story in
+    ``CHANGELOG.md``.
+
     Attributes:
+        api_version: Schema version this YAML targets. Must equal
+            :data:`SUPPORTED_API_VERSION`.
         android: Android version and GApps flavour.
         display: Virtual screen geometry and frame rate.
         resources: Docker resource caps.
         frida: Frida-server version pin; ``None`` disables frida entirely.
         modules: Magisk modules to flash at boot.
         stealth: Denylist / root-hiding settings.
+        ports: Optional per-instance port overrides. Absent fields fall
+            back to the stride-of-10 allocator on the instance's index.
     """
 
+    api_version: int = SUPPORTED_API_VERSION
     android: Android = Field(default_factory=Android)
     display: Display = Field(default_factory=Display)
     resources: Resources = Field(default_factory=Resources)
     frida: Frida | None = Field(default_factory=Frida)
     modules: list[Module] = Field(default_factory=list)
     stealth: Stealth = Field(default_factory=Stealth)
+    ports: Ports = Field(default_factory=Ports)
+
+    @model_validator(mode="after")
+    def _check_api_version(self) -> Self:
+        if self.api_version != SUPPORTED_API_VERSION:
+            raise ValueError(
+                f"beetroot.yaml api_version: {self.api_version} is not supported by this "
+                f"Beetroot release (expects api_version: {SUPPORTED_API_VERSION}). See "
+                f"CHANGELOG.md for the migration."
+            )
+        return self
 
 
 def load_yaml(path: Path) -> InstanceConfig:
@@ -266,7 +348,7 @@ def render_env(name: str, cfg: InstanceConfig, ports: dict[str, int]) -> str:
     Args:
         name: Instance name used as the compose project name.
         cfg: The instance configuration.
-        ports: Port mapping produced by ``ports.ports_for_index``.
+        ports: Resolved port mapping produced by ``ports.resolve_ports``.
 
     Returns:
         The rendered ``.env`` content as a newline-terminated string.
@@ -279,7 +361,7 @@ def render_env(name: str, cfg: InstanceConfig, ports: dict[str, int]) -> str:
         f"FRIDA_PORT2={ports['frida2']}",
         f"MEM_LIMIT={cfg.resources.mem}",
         f"CPUS={cfg.resources.cpus}",
-        f"SHM_SIZE={cfg.resources.shm}",
+        f"SHM_SIZE={cfg.resources.shared_mem}",
         f"PIDS_LIMIT={cfg.resources.pids_limit}",
         f"DISPLAY_WIDTH={cfg.display.width}",
         f"DISPLAY_HEIGHT={cfg.display.height}",

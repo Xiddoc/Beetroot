@@ -31,21 +31,18 @@ bravo         1    localhost:5565        localhost:27052       running
 ## Quick start
 
 ```bash
-# 1. One-time bootstrap — patches and builds the base redroid image
-./scripts/setup.sh
+# 1. Install the CLI (puts `beetroot` on your PATH; no shell alias needed)
+uv tool install git+https://github.com/Xiddoc/Beetroot.git
 
-# 2. Install the CLI
-uv sync
+# 2. One-time bootstrap — patches and builds the base redroid image
+beetroot setup
 
 # 3. Create and start your first research phone
-uv run beetroot create alpha
-uv run beetroot up alpha
+beetroot create alpha
+beetroot up alpha
 
 # 4. Connect
-uv run beetroot shell alpha
+beetroot shell alpha
 ```
 
 See [Your First Instance](getting-started/first-instance.md) for the full walkthrough, or [Prerequisites](getting-started/prerequisites.md) if you haven't set up your host yet.
-
-!!! tip "Shell alias"
-    Add `alias beetroot="uv run beetroot"` to your shell rc to drop the `uv run` prefix everywhere.

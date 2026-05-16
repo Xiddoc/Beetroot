@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 
-from . import compose, config, frida_dl, modules_dl, paths, ports, registry
+from . import compose, config, frida_dl, modules_dl, paths, ports, registry, setup_runner
 
 
 def _ensure_exists(name: str) -> None:
@@ -15,11 +15,24 @@ def _ensure_exists(name: str) -> None:
         sys.exit(f"error: no instance named {name!r}. Try `beetroot ls`.")
 
 
+def _check_port_collisions(name: str, new_ports: dict[str, int]) -> None:
+    """Exit with a clear message if ``new_ports`` collide with any other instance."""
+    others = {n: p for n, p in registry.all_resolved_ports().items() if n != name}
+    collision = registry.find_port_collision(new_ports, others)
+    if collision is None:
+        return
+    port, other_name, kind = collision
+    sys.exit(
+        f"error: port {port} ({kind}) collides with instance {other_name!r} "
+        f"(which also uses {port}). Pin or remove one."
+    )
+
+
 def _stage_instance(name: str, cfg: config.InstanceConfig) -> None:
     """Render .env and stage Frida + modules. Idempotent — safe on ``apply``."""
     meta = registry.get(name)
     assert meta is not None
-    rendered_ports = ports.ports_for_index(meta["index"])
+    rendered_ports = ports.resolve_ports(meta["index"], cfg.ports)
 
     paths.instance_data(name).mkdir(parents=True, exist_ok=True)
     paths.instance_modules(name).mkdir(parents=True, exist_ok=True)
@@ -51,10 +64,13 @@ def cmd_create(args: argparse.Namespace) -> None:
         sys.exit(f"error: instance {name!r} already exists.")
 
     cfg = config.load_preset(args.preset)
+    index = ports.lowest_free_index(registry.used_indices())
+    new_ports = ports.resolve_ports(index, cfg.ports)
+    _check_port_collisions(name, new_ports)
+
     paths.instance_dir(name).mkdir(parents=True, exist_ok=True)
     config.write_yaml(paths.instance_yaml(name), cfg)
 
-    index = ports.lowest_free_index(registry.used_indices())
     registry.add(name, index)
 
     if args.from_data:
@@ -68,7 +84,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         shutil.copytree(src, dst)
 
     _stage_instance(name, cfg)
-    p = ports.ports_for_index(index)
+    p = ports.resolve_ports(index, cfg.ports)
     print(
         f"[beetroot] created {name} (index {index}, ADB localhost:{p['adb']}, "
         f"Frida localhost:{p['frida']})"
@@ -85,6 +101,10 @@ def cmd_apply(args: argparse.Namespace) -> None:
     """
     _ensure_exists(args.name)
     cfg = config.load_instance(args.name)
+    meta = registry.get(args.name)
+    assert meta is not None
+    new_ports = ports.resolve_ports(meta["index"], cfg.ports)
+    _check_port_collisions(args.name, new_ports)
     _stage_instance(args.name, cfg)
     print(f"[beetroot] re-staged {args.name} from beetroot.yaml")
     print(f"[beetroot] restart with: beetroot down {args.name} && beetroot up {args.name}")
@@ -121,7 +141,8 @@ def cmd_up(args: argparse.Namespace) -> None:
         compose.up(name, build=args.build)
         meta = registry.get(name)
         assert meta is not None
-        p = ports.ports_for_index(meta["index"])
+        cfg = config.load_instance(name)
+        p = ports.resolve_ports(meta["index"], cfg.ports)
         print(f"[beetroot] {name} up — ADB localhost:{p['adb']}, Frida localhost:{p['frida']}")
 
 
@@ -188,7 +209,8 @@ def cmd_ls(args: argparse.Namespace) -> None:
     if args.json:
         out = {}
         for name, meta in instances.items():
-            p = ports.ports_for_index(meta["index"])
+            cfg = config.load_instance(name)
+            p = ports.resolve_ports(meta["index"], cfg.ports)
             out[name] = {
                 "index": meta["index"],
                 "adb": f"localhost:{p['adb']}",
@@ -205,7 +227,8 @@ def cmd_ls(args: argparse.Namespace) -> None:
     print(f"{'NAME':<14}{'IDX':<5}{'ADB':<22}{'FRIDA':<22}{'STATUS':<14}")
     for name in sorted(instances):
         meta = instances[name]
-        p = ports.ports_for_index(meta["index"])
+        cfg = config.load_instance(name)
+        p = ports.resolve_ports(meta["index"], cfg.ports)
         print(
             f"{name:<14}{meta['index']:<5}"
             f"{'localhost:' + str(p['adb']):<22}"
@@ -235,7 +258,8 @@ def cmd_shell(args: argparse.Namespace) -> None:
     _ensure_exists(args.name)
     meta = registry.get(args.name)
     assert meta is not None
-    p = ports.ports_for_index(meta["index"])
+    cfg = config.load_instance(args.name)
+    p = ports.resolve_ports(meta["index"], cfg.ports)
     if shutil.which("adb") is None:
         sys.exit("error: adb not found on PATH (install android-tools).")
     target = f"localhost:{p['adb']}"
@@ -253,7 +277,8 @@ def cmd_env(args: argparse.Namespace) -> None:
     _ensure_exists(args.name)
     meta = registry.get(args.name)
     assert meta is not None
-    p = ports.ports_for_index(meta["index"])
+    cfg = config.load_instance(args.name)
+    p = ports.resolve_ports(meta["index"], cfg.ports)
     print(f"export ANDROID_DEVICE=localhost:{p['adb']}")
     print(f"export FRIDA_DEVICE=localhost:{p['frida']}")
 
@@ -268,9 +293,13 @@ def cmd_frida(args: argparse.Namespace) -> None:
     _ensure_exists(args.name)
     meta = registry.get(args.name)
     assert meta is not None
-    p = ports.ports_for_index(meta["index"])
+    cfg = config.load_instance(args.name)
+    p = ports.resolve_ports(meta["index"], cfg.ports)
     if shutil.which("frida") is None:
-        sys.exit("error: frida CLI not found (pip install frida-tools).")
+        sys.exit(
+            "error: frida CLI not found. "
+            "Install via `uv tool install 'beetroot[frida]'` or `uv tool install frida-tools`."
+        )
     cmd = ["frida", "-H", f"localhost:{p['frida']}", *args.frida_args]
     subprocess.run(cmd, check=False)
 
@@ -296,66 +325,15 @@ def cmd_module(args: argparse.Namespace) -> None:
     print(f"[beetroot] restart to flash: beetroot down {args.name} && beetroot up {args.name}")
 
 
-# Mapping for the legacy single-instance layout: data/ was the original
-# instance, data2/ + data3/ were ad-hoc copies. We assign them
-# alpha/bravo/charlie at indices 0/1/2 so the canonical instance keeps
-# its existing 5555 ADB port.
-_LEGACY_MAPPING = [
-    ("data", "alpha"),
-    ("data2", "bravo"),
-    ("data3", "charlie"),
-]
-
-
-def cmd_migrate(args: argparse.Namespace) -> None:
+def cmd_setup(args: argparse.Namespace) -> None:
     """
-    One-shot move from the legacy ``data/``, ``data2/``, ``data3/`` layout.
+    One-time bootstrap: clone the patcher, build the redroid base image, and layer Beetroot on top.
 
     Args:
-        args: Parsed CLI arguments (``yes``).
+        args: Parsed CLI arguments (``gapps``).
     """
-    if registry.list_instances():
-        sys.exit("error: instances.json already has entries — refusing to migrate over them.")
-
-    discovered = [
-        (paths.repo_root() / src, name)
-        for src, name in _LEGACY_MAPPING
-        if (paths.repo_root() / src).is_dir()
-    ]
-    if not discovered:
-        sys.exit(
-            "error: no legacy data/, data2/, or data3/ found in "
-            f"{paths.repo_root()} — nothing to migrate."
-        )
-
-    print("[beetroot] migrate plan:")
-    for src, name in discovered:
-        print(f"  {src.name:>6} → instances/{name}/data")
-    if not args.yes:
-        ans = input("Proceed? This MOVES the directories (no copy). [y/N] ").strip().lower()
-        if ans != "y":
-            print("[beetroot] aborted")
-            return
-
-    cfg = config.load_preset("default")
-    for src, name in discovered:
-        instance_path = paths.instance_dir(name)
-        if instance_path.exists():
-            sys.exit(f"error: {instance_path} already exists — clean it up before migrating.")
-        instance_path.mkdir(parents=True)
-        # Move (rename) — fast, no copy. Falls back to copy+remove across filesystems.
-        src.rename(paths.instance_data(name))
-        config.write_yaml(paths.instance_yaml(name), cfg)
-        index = ports.lowest_free_index(registry.used_indices())
-        registry.add(name, index)
-        _stage_instance(name, cfg)
-        p = ports.ports_for_index(index)
-        print(
-            f"[beetroot] migrated → {name} "
-            f"(ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"
-        )
-
-    print("[beetroot] done. Verify with: beetroot ls && beetroot up alpha bravo charlie")
+    tag = setup_runner.bootstrap_base_image(gapps=args.gapps)
+    print(f"[beetroot] base image built: {tag}")
 
 
 # ---- argparse wiring -------------------------------------------------------
@@ -430,9 +408,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--sha256", metavar="HEX", help="expected sha256 hex digest of the zip")
     s.set_defaults(func=cmd_module)
 
-    s = sub.add_parser("migrate", help="one-shot: move legacy data/, data2/, data3/ → instances/")
-    s.add_argument("-y", "--yes", action="store_true", help="skip confirmation")
-    s.set_defaults(func=cmd_migrate)
+    s = sub.add_parser(
+        "setup",
+        help="one-time: build the redroid base image and Beetroot layer for a gapps variant",
+    )
+    s.add_argument(
+        "gapps",
+        nargs="?",
+        default="lite",
+        choices=["none", "lite", "full", "mindthegapps"],
+        help="GMS variant to bake into the base image (default: lite)",
+    )
+    s.set_defaults(func=cmd_setup)
 
     return p
 
@@ -441,7 +428,12 @@ def main() -> None:
     """Parse CLI arguments and dispatch to the appropriate subcommand handler."""
     parser = build_parser()
     args = parser.parse_args()
-    args.func(args)
+    try:
+        args.func(args)
+    except paths.ProjectRootNotFoundError as e:
+        sys.exit(f"error: {e}")
+    except ports.PortCollisionError as e:
+        sys.exit(f"error: {e}")
 
 
 if __name__ == "__main__":

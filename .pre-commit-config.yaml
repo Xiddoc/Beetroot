@@ -1,0 +1,20 @@
+# Local pre-push hook: runs the full pytest + 100% coverage gate before
+# allowing `git push` to talk to the remote.
+#
+# One-time setup (after `uv sync --group dev`):
+#
+#     uv run pre-commit install --hook-type pre-push
+#
+# After that, every `git push` invokes pytest. A failing test or
+# sub-100% coverage blocks the push.
+repos:
+  - repo: local
+    hooks:
+      - id: pytest-coverage
+        name: pytest with 100% coverage gate
+        entry: uv run pytest
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-push]
+        verbose: true

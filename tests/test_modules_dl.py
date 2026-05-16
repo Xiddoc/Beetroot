@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -86,6 +87,46 @@ class TestUrlModuleCache:
             # Second stage wipes the instance dir but the .cache/ copy remains
             modules_dl.stage_for_instance("alpha", cfg)
         assert mock_open.call_count == 1
+
+
+class TestFetchUrlErrors:
+    def test_http_error_raises_runtime_error(self, isolated_root: Path) -> None:
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip")])
+
+        def _raise(url: str, **kwargs: object) -> MagicMock:
+            raise urllib.error.HTTPError(url, 500, "Server Error", {}, None)  # type: ignore[arg-type]
+
+        with patch("urllib.request.urlopen", side_effect=_raise):
+            with pytest.raises(RuntimeError, match="HTTP 500"):
+                modules_dl.stage_for_instance("alpha", cfg)
+
+    def test_timeout_raises_runtime_error(self, isolated_root: Path) -> None:
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip")])
+
+        def _raise(url: str, **kwargs: object) -> MagicMock:
+            raise TimeoutError("timed out")
+
+        with patch("urllib.request.urlopen", side_effect=_raise):
+            with pytest.raises(RuntimeError, match="timed out"):
+                modules_dl.stage_for_instance("alpha", cfg)
+
+    def test_url_error_raises_runtime_error(self, isolated_root: Path) -> None:
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip")])
+
+        def _raise(url: str, **kwargs: object) -> MagicMock:
+            raise urllib.error.URLError("no route to host")
+
+        with patch("urllib.request.urlopen", side_effect=_raise):
+            with pytest.raises(RuntimeError, match="cannot reach"):
+                modules_dl.stage_for_instance("alpha", cfg)
+
+    def test_filename_from_empty_url_defaults_to_module_zip(self, isolated_root: Path) -> None:
+        # URL path ending in `/` has no basename, so _filename_from_url falls
+        # back to module.zip. We exercise this through the public surface.
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/")])
+        with patch("urllib.request.urlopen", return_value=_make_url_resp()):
+            staged = modules_dl.stage_for_instance("alpha", cfg)
+        assert staged[0].name == "module.zip"
 
 
 class TestStageForInstancePathModule:

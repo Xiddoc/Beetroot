@@ -1,60 +1,81 @@
 # Installation
 
-Beetroot has a one-time image-build step and a fast CLI install step. Do them in order.
+Beetroot has a fast CLI install step and a one-time image-build step. Do them in order.
 
-## Step 1 — Build the base image
+## Step 1 — Install the CLI
 
 ```bash
-./scripts/setup.sh
+uv tool install git+https://github.com/Xiddoc/Beetroot.git
 ```
 
-This script:
+`uv tool install` puts the `beetroot` command into a system-wide, isolated tool venv on your `PATH` — no project-local `.venv`, no `uv run` prefix, no shell alias needed.
+
+## Step 2 — Build the base image
+
+```bash
+beetroot setup
+```
+
+This verb (formerly `./scripts/setup.sh`):
 
 1. Clones [`ayasa520/redroid-script`](https://github.com/ayasa520/redroid-script) into `/tmp/redroid`.
 2. Runs the patcher with `uv` to produce a local Docker image tagged `redroid/redroid:14.0.0_litegapps_houdini_magisk`. The patcher bakes Magisk, LiteGapps (minimal GApps), and Houdini (ARM-on-x86\_64 translation) into the base redroid image.
 3. Runs `docker compose build` to layer `entrypoint.sh` and `stealth.rc` on top, producing the final Beetroot image.
 
+Pass a variant to pick a different GMS flavor: `beetroot setup none | lite | full | mindthegapps` (default `lite`).
+
 !!! warning "This takes a while"
-    The patcher downloads several large artifacts (Magisk, GApps, Houdini). Budget 10–20 minutes depending on your connection. Re-running `./scripts/setup.sh` is safe — it only rebuilds what changed.
-
-## Step 2 — Install the CLI
-
-```bash
-uv sync
-```
-
-This creates a `.venv` under the project root and installs the `beetroot` CLI and its dependencies (`pyyaml`, `pydantic`). The install is editable, so changes to `src/beetroot/*.py` take effect immediately.
+    The patcher downloads several large artifacts (Magisk, GApps, Houdini). Budget 10–20 minutes depending on your connection. Re-running `beetroot setup` is safe — it only rebuilds what changed.
 
 Verify:
 
 ```bash
-uv run beetroot --help
+beetroot --help
 ```
 
 You should see the top-level help listing all verbs.
 
-!!! tip "Shell alias"
-    Typing `uv run beetroot` gets old quickly. Add this to your shell rc:
+### With Frida CLI
 
-    ```bash
-    alias beetroot="uv run beetroot"
-    ```
+The host-side `frida` CLI (from [`frida-tools`](https://pypi.org/project/frida-tools/)) is only needed if you want to use `beetroot frida <name>`. It's exposed as an optional `[frida]` extra so a single command installs both:
 
-    All examples in this docs site use the bare `beetroot` form for readability.
+```bash
+uv tool install 'beetroot[frida]'   # bundles frida-tools so `beetroot frida` works out of the box
+```
+
+If you're working out of a clone with `uv sync` (as in step 2 above) and want the extra in your project venv, run:
+
+```bash
+uv sync --extra frida
+```
+
+Plain `uv tool install beetroot` (or plain `uv sync`) installs the CLI alone — `beetroot frida` will then error out with a hint pointing you back at this section. You can always add the extra later or `uv tool install frida-tools` separately.
+
 
 ## Updating
 
-To update the CLI after a `git pull`:
-
 ```bash
-uv sync   # picks up any new dependencies
+uv tool upgrade beetroot
 ```
 
 To rebuild the Docker image after upstream changes:
 
 ```bash
-./scripts/setup.sh
+beetroot setup
 ```
+
+## Contributor workflow
+
+If you're hacking on the CLI itself, install Beetroot from a local checkout so your edits land immediately:
+
+```bash
+git clone https://github.com/Xiddoc/Beetroot.git
+cd Beetroot
+uv sync   # creates .venv with runtime + lockfile-pinned deps
+uv run beetroot --help
+```
+
+`uv sync` keeps a project-local editable venv that picks up changes to `src/beetroot/*.py` without reinstalling. Use `uv run beetroot <verb>` (or `uv tool install .` from the repo root for a system-wide install of your working tree) when iterating.
 
 ## Docs preview (contributors)
 

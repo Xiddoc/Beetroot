@@ -2,7 +2,7 @@
 
 All Beetroot subcommands. Every verb accepts `--help` for full usage.
 
-Invoke via `uv run beetroot <verb>` or `beetroot <verb>` if you've set up the shell alias.
+After `uv tool install`, invocations are plain `beetroot <verb>` — the tool venv puts `beetroot` directly on your `PATH`. (Contributors hacking on Beetroot from an editable `uv sync` checkout use `uv run beetroot <verb>` instead; see [CLAUDE.md](https://github.com/Xiddoc/Beetroot/blob/main/CLAUDE.md).)
 
 ---
 
@@ -249,7 +249,7 @@ beetroot frida <name> [frida_args ...]
 | `name` | positional | Instance name |
 | `frida_args` | remainder | Arguments passed verbatim to `frida -H localhost:<frida_port>` |
 
-Requires `frida` on your PATH (`pip install frida-tools`).
+Requires `frida` on your PATH. Install via `uv tool install 'beetroot[frida]'` (bundles `frida-tools` alongside Beetroot) or `uv tool install frida-tools` separately.
 
 Examples:
 
@@ -279,27 +279,3 @@ The module is appended to `instances/<name>/beetroot.yaml` and immediately stage
 ```bash
 beetroot down <name> && beetroot up <name>
 ```
-
----
-
-## `migrate`
-
-One-shot migration from the legacy `data/`, `data2/`, `data3/` layout.
-
-```
-beetroot migrate [-y]
-```
-
-| Flag | Description |
-|------|-------------|
-| `-y`, `--yes` | Skip the confirmation prompt |
-
-Maps legacy directories to named instances:
-
-- `data/` → `instances/alpha/` (index 0)
-- `data2/` → `instances/bravo/` (index 1)
-- `data3/` → `instances/charlie/` (index 2)
-
-Only directories that exist are migrated. Refuses to run if `instances.json` already has entries.
-
-See [Migrating](../guides/migrating.md) for the full walkthrough.

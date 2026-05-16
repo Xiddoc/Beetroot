@@ -98,6 +98,26 @@ beetroot logs alpha | grep -i frida
 
 ---
 
+## `beetroot frida` exits with "frida CLI not found"
+
+**Symptom:** Running `beetroot frida <name>` fails immediately with `error: frida CLI not found. Install via uv tool install 'beetroot[frida]' or uv tool install frida-tools.`
+
+**Cause:** The host-side `frida` CLI is optional and isn't included in a plain `uv tool install`. The `beetroot frida` verb shells out to whatever `frida` binary is on your PATH, and finds none.
+
+**Fix:** Reinstall with the `[frida]` extra so `frida-tools` is bundled alongside Beetroot:
+
+```bash
+uv tool install --force 'beetroot[frida]'
+```
+
+Alternatively, install `frida-tools` on its own without disturbing the existing Beetroot install:
+
+```bash
+uv tool install frida-tools
+```
+
+---
+
 ## `beetroot module` added a zip but it didn't flash
 
 **Cause:** `entrypoint.sh` only iterates `/flash_dir` once, at boot time. Adding a module after boot doesn't flash it automatically.
@@ -161,24 +181,6 @@ error: module sha256 mismatch for Module.zip
 
 1. Remove the `sha256:` field from `beetroot.yaml` (accepts any file), or
 2. Re-download manually, verify you trust the new file, compute the new hash, and update `beetroot.yaml`.
-
----
-
-## `beetroot migrate` refuses to run
-
-**Symptom:**
-
-```
-error: instances.json already has entries — refusing to migrate over them.
-```
-
-**Cause:** Migration only runs on a clean registry. You already have instances registered.
-
-**Fix:** If you genuinely want to migrate legacy data on top of existing instances, you'll need to create instances manually:
-
-```bash
-beetroot create alpha --from-data ./data
-```
 
 ---
 

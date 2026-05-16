@@ -1,8 +1,3 @@
-# Legacy single-instance dirs (replaced by instances/<name>/ in the refactor).
-# Kept here so existing data/, data2/, data3/ stay ignored until `beetroot migrate`.
-data*/
-modules/
-
 # Per-instance runtime state. The beetroot.yaml inside each instance
 # directory CAN be committed if you want a reproducible config — but
 # everything else (Android userdata, downloaded Frida binary, generated
@@ -29,3 +24,9 @@ dist/
 
 # mkdocs build output
 site/
+
+# Coverage artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/

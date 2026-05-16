@@ -17,8 +17,6 @@ android-emulator/            # The Beetroot project root
 ├── presets/
 │   ├── default.yaml         # Cheap baseline preset
 │   └── stealth.yaml         # Adds Shamiko for anti-detection research
-├── scripts/
-│   └── setup.sh             # One-time base-image builder
 ├── src/beetroot/            # CLI Python package
 │   ├── cli.py
 │   ├── config.py
@@ -27,7 +25,8 @@ android-emulator/            # The Beetroot project root
 │   ├── modules_dl.py
 │   ├── paths.py
 │   ├── ports.py
-│   └── registry.py
+│   ├── registry.py
+│   └── setup_runner.py      # One-time base-image bootstrap (beetroot setup)
 ├── docs/                    # Docs site source (this site)
 ├── instances/               # Runtime state (gitignored except beetroot.yaml)
 └── instances.json           # Registry (gitignored)

@@ -10,10 +10,12 @@ import yaml
 from pydantic import ValidationError
 
 from beetroot.config import (
+    SUPPORTED_API_VERSION,
     Android,
     Display,
     InstanceConfig,
     Module,
+    Ports,
     Resources,
     base_image_tag,
     load_preset,
@@ -21,6 +23,73 @@ from beetroot.config import (
     render_env,
     write_yaml,
 )
+
+
+class TestApiVersion:
+    def test_default_api_version_is_supported(self) -> None:
+        cfg = InstanceConfig()
+        assert cfg.api_version == SUPPORTED_API_VERSION
+        assert cfg.api_version == 1
+
+    def test_explicit_supported_version_succeeds(self) -> None:
+        cfg = InstanceConfig.model_validate({"api_version": 1})
+        assert cfg.api_version == 1
+
+    def test_string_api_version_is_coerced(self) -> None:
+        cfg = InstanceConfig.model_validate({"api_version": "1"})
+        assert cfg.api_version == 1
+
+    def test_zero_api_version_raises(self) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            InstanceConfig.model_validate({"api_version": 0})
+        msg = str(exc_info.value)
+        assert "not supported" in msg
+        assert "CHANGELOG" in msg
+
+    def test_future_api_version_raises(self) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            InstanceConfig.model_validate({"api_version": 99})
+        msg = str(exc_info.value)
+        assert "not supported" in msg
+        assert "CHANGELOG" in msg
+
+    def test_yaml_roundtrip_preserves_api_version(self, tmp_path: Path) -> None:
+        cfg = InstanceConfig()
+        p = tmp_path / "beetroot.yaml"
+        write_yaml(p, cfg)
+        loaded = load_yaml(p)
+        assert loaded.api_version == SUPPORTED_API_VERSION
+
+    def test_api_version_is_first_field_in_yaml(self, tmp_path: Path) -> None:
+        cfg = InstanceConfig()
+        p = tmp_path / "beetroot.yaml"
+        write_yaml(p, cfg)
+        first_line = p.read_text().splitlines()[0]
+        assert first_line.startswith("api_version:")
+
+    def test_default_preset_loads(self, isolated_root: Path) -> None:
+        presets = isolated_root / "presets"
+        presets.mkdir()
+        repo_presets = Path(__file__).resolve().parents[1] / "presets"
+        (presets / "default.yaml").write_text((repo_presets / "default.yaml").read_text())
+        cfg = load_preset("default")
+        assert cfg.api_version == SUPPORTED_API_VERSION
+
+    def test_stealth_preset_loads(self, isolated_root: Path) -> None:
+        presets = isolated_root / "presets"
+        presets.mkdir()
+        repo_presets = Path(__file__).resolve().parents[1] / "presets"
+        (presets / "stealth.yaml").write_text((repo_presets / "stealth.yaml").read_text())
+        cfg = load_preset("stealth")
+        assert cfg.api_version == SUPPORTED_API_VERSION
+
+    def test_no_gapps_preset_loads(self, isolated_root: Path) -> None:
+        presets = isolated_root / "presets"
+        presets.mkdir()
+        repo_presets = Path(__file__).resolve().parents[1] / "presets"
+        (presets / "no-gapps.yaml").write_text((repo_presets / "no-gapps.yaml").read_text())
+        cfg = load_preset("no-gapps")
+        assert cfg.api_version == SUPPORTED_API_VERSION
 
 
 class TestAndroidGapps:
@@ -43,6 +112,16 @@ class TestAndroidGapps:
     def test_invalid_gapps_raises(self) -> None:
         with pytest.raises(ValidationError):
             Android(gapps="blah")  # type: ignore[arg-type]
+
+
+class TestAndroidVersion:
+    def test_invalid_version_raises(self) -> None:
+        with pytest.raises(ValidationError, match="not supported"):
+            Android(version=99)
+
+    def test_legacy_base_image_field_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="base_image is no longer supported"):
+            Android.model_validate({"base_image": "redroid/redroid:14"})
 
 
 class TestBaseImageTag:
@@ -75,6 +154,26 @@ class TestResources:
         assert r.memswap_limit == "4g"
         assert r.pids_limit == 1500
 
+    def test_shared_mem_default(self) -> None:
+        r = Resources()
+        assert r.shared_mem == "256m"
+
+    def test_shared_mem_can_be_set(self) -> None:
+        r = Resources(shared_mem="512m")
+        assert r.shared_mem == "512m"
+
+    def test_shared_mem_has_no_shm_attr(self) -> None:
+        r = Resources()
+        assert not hasattr(r, "shm")
+
+    def test_legacy_shm_field_rejected(self) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            Resources.model_validate({"shm": "512m"})
+        msg = str(exc_info.value)
+        assert "no longer supported" in msg
+        assert "shared_mem" in msg
+        assert "CHANGELOG" in msg
+
 
 class TestModule:
     def test_url_only_is_valid(self) -> None:
@@ -98,6 +197,99 @@ class TestModule:
     def test_both_url_and_path_raises(self) -> None:
         with pytest.raises(ValidationError, match="sets both"):
             Module(url="https://example.com/mod.zip", path="/tmp/mod.zip")
+
+
+class TestPorts:
+    def test_defaults_are_none(self) -> None:
+        p = Ports()
+        assert p.adb is None
+        assert p.frida is None
+        assert p.frida_control is None
+
+    def test_instance_config_default_ports_is_empty(self) -> None:
+        cfg = InstanceConfig()
+        assert cfg.ports == Ports()
+
+    def test_yaml_roundtrip_with_adb_override(self, tmp_path: Path) -> None:
+        raw = {"ports": {"adb": 9000}}
+        p = tmp_path / "cfg.yaml"
+        p.write_text(yaml.safe_dump(raw))
+        cfg = load_yaml(p)
+        assert cfg.ports.adb == 9000
+        assert cfg.ports.frida is None
+        assert cfg.ports.frida_control is None
+
+    def test_yaml_roundtrip_all_overrides(self, tmp_path: Path) -> None:
+        raw = {"ports": {"adb": 1, "frida": 2, "frida_control": 3}}
+        p = tmp_path / "cfg.yaml"
+        p.write_text(yaml.safe_dump(raw))
+        cfg = load_yaml(p)
+        assert cfg.ports.adb == 1
+        assert cfg.ports.frida == 2
+        assert cfg.ports.frida_control == 3
+
+    def test_write_then_load_preserves_override(self, tmp_path: Path) -> None:
+        cfg = InstanceConfig(ports=Ports(adb=9000))
+        p = tmp_path / "cfg.yaml"
+        write_yaml(p, cfg)
+        loaded = load_yaml(p)
+        assert loaded.ports.adb == 9000
+        assert loaded.ports.frida is None
+
+    def test_missing_block_yields_empty_ports(self, tmp_path: Path) -> None:
+        p = tmp_path / "cfg.yaml"
+        p.write_text(yaml.safe_dump({"display": {"width": 1080}}))
+        cfg = load_yaml(p)
+        assert cfg.ports == Ports()
+
+    def test_port_zero_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="out of range"):
+            Ports(adb=0)
+
+    def test_port_negative_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="out of range"):
+            Ports(frida=-1)
+
+    def test_port_above_max_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="out of range"):
+            Ports(frida_control=65536)
+
+    def test_port_far_above_max_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="out of range"):
+            Ports(adb=70000)
+
+    def test_port_lower_boundary_valid(self) -> None:
+        assert Ports(adb=1).adb == 1
+
+    def test_port_upper_boundary_valid(self) -> None:
+        assert Ports(frida=65535).frida == 65535
+
+    def test_port_none_still_valid(self) -> None:
+        p = Ports(adb=None, frida=None, frida_control=None)
+        assert p.adb is None
+        assert p.frida is None
+        assert p.frida_control is None
+
+    def test_adb_frida_collision_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="must be distinct"):
+            Ports(adb=9000, frida=9000)
+
+    def test_adb_frida_control_collision_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="must be distinct"):
+            Ports(adb=9000, frida_control=9000)
+
+    def test_frida_frida_control_collision_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="must be distinct"):
+            Ports(frida=9000, frida_control=9000)
+
+    def test_three_distinct_ports_valid(self) -> None:
+        p = Ports(adb=9000, frida=9001, frida_control=9002)
+        assert p.adb == 9000
+        assert p.frida == 9001
+        assert p.frida_control == 9002
+
+    def test_none_pair_skipped_in_distinct_check(self) -> None:
+        Ports(adb=9000, frida=None, frida_control=None)
 
 
 class TestPermissiveDefaults:
@@ -206,7 +398,7 @@ class TestRenderEnv:
     def test_contains_shm_size(self) -> None:
         cfg = InstanceConfig()
         result = render_env("alpha", cfg, self._ports())
-        assert f"SHM_SIZE={cfg.resources.shm}" in result
+        assert f"SHM_SIZE={cfg.resources.shared_mem}" in result
 
     def test_contains_display_width(self) -> None:
         cfg = InstanceConfig()
@@ -297,13 +489,14 @@ class TestWriteLoadYamlRoundtrip:
     def test_custom_values_roundtrip(self, tmp_path: Path) -> None:
         raw = {
             "display": {"width": 1080, "height": 1920, "fps": 60, "gpu_mode": "guest"},
-            "resources": {"mem": "6g", "cpus": 4.0, "shm": "512m"},
+            "resources": {"mem": "6g", "cpus": 4.0, "shared_mem": "512m"},
         }
         p = tmp_path / "cfg.yaml"
         p.write_text(yaml.safe_dump(raw))
         cfg = load_yaml(p)
         assert cfg.display.width == 1080
         assert cfg.resources.mem == "6g"
+        assert cfg.resources.shared_mem == "512m"
 
     def test_write_yaml_creates_parent_dirs(self, tmp_path: Path) -> None:
         p = tmp_path / "deep" / "nested" / "beetroot.yaml"

@@ -53,5 +53,5 @@ jobs:
       - name: Install dev dependencies
         run: uv sync --group dev --frozen --python ${{ matrix.python }}
 
-      - name: Pytest
-        run: uv run pytest --cov=beetroot --cov-report=term-missing
+      - name: Pytest (100% coverage gate enforced via [tool.coverage.report])
+        run: uv run pytest

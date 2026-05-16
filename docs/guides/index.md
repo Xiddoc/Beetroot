@@ -9,4 +9,3 @@ Practical how-tos for common research workflows. These assume you've already com
 - **[Magisk Modules](modules.md)** — flash Shamiko, LSPosed, or custom hooks via URL or local path; verify with sha256.
 - **[Frida](frida.md)** — pin Frida versions per instance, use `beetroot frida` as a wrapper, attach scripts.
 - **[Snapshots](snapshots.md)** — checkpoint and restore instance state without a dedicated verb.
-- **[Migrating](migrating.md)** — move from the legacy `data/`, `data2/`, `data3/` layout to the current `instances/` layout.
