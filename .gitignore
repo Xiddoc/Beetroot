@@ -1,3 +1,6 @@
+# AI
+.claude/
+
 # Per-instance runtime state. The beetroot.yaml inside each instance
 # directory CAN be committed if you want a reproducible config — but
 # everything else (Android userdata, downloaded Frida binary, generated
