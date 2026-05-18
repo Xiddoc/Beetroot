@@ -882,6 +882,11 @@ class TestCmdRestore:
         assert (
             Path(beta["absolute_path"]) / "data" / "marker.txt"
         ).read_bytes() == b"survives"
+        # CR #3 finding 10: the stale ``beetroot apply <name> &&``
+        # hint was dropped. ``snapshot.restore`` calls ``_stage()``
+        # internally now, so ``beetroot up`` is the only next step.
+        assert "next: beetroot up beta" in result.stdout
+        assert "apply beta" not in result.stdout
 
     def test_restore_default_name_from_manifest(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])

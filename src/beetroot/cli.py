@@ -551,7 +551,10 @@ def restore(
         f"[beetroot] restored {dest_name} at {restored} "
         f"(index {inst.index}, ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"
     )
-    typer.echo(f"[beetroot] next: beetroot apply {dest_name} && beetroot up {dest_name}")
+    # Agent A's fix made ``snapshot.restore`` call ``_stage()``
+    # itself, so an intermediate ``beetroot apply`` is no longer
+    # required before ``beetroot up``. CR #3 finding 10.
+    typer.echo(f"[beetroot] next: beetroot up {dest_name}")
 
 
 def main() -> None:
