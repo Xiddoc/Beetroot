@@ -16,8 +16,7 @@ the design doc is archived from the nav.
   fingerprint inventory, mitigation playbook, and v0.4 PR roadmap for
   hiding Beetroot's container-specific indicators (Frida path, custom
   init.rc, `/flash_dir`) from GMS / Play Integrity / DroidGuard.
-
-A planned [device backends](#) design doc (T9) will live here once it
-lands, covering the `AdbDeviceBackend` abstraction that lets Beetroot
-drive a real rooted phone via ADB instead of (or alongside) the
-emulator container.
+- **[Device backends](device-backends.md)** — rationale, Protocol
+  surface, and v0.4 PR roadmap for the `DeviceBackend` abstraction
+  that lets Beetroot drive an `adb`-connected real-world Magisk phone
+  (`AdbDeviceBackend`) alongside the v0.3 Redroid container backend.

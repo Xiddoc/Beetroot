@@ -486,3 +486,111 @@ Other changes shipped together with T6:
   `docs/index.md`, `docs/guides/index.md`, and
   `docs/how-it-works/filesystem.md` are reframed away from the
   "there is no snapshot verb" wording.
+
+### v0.3 — Theme T8: high-level OOP Python API
+
+A new `beetroot.api` module exports an object-oriented surface that
+composes the procedural modules without replacing them. Researchers
+who want to drive Beetroot from Python can now write
+`from beetroot import Instance, Manager, DeviceBackend` instead of
+reaching into the cross-module function vocabulary.
+
+```python
+from beetroot import Instance
+
+inst = Instance.create("alpha")            # registers + stages
+inst.up()                                  # docker compose up -d
+inst.frida_cli(["-n", "com.victim"])       # frida -H localhost:27042 -n ...
+inst.snapshot(Path("alpha-clean.tar.zst")) # pack to archive
+inst.destroy(yes=True)                     # tear down + deregister
+```
+
+**Public surface:**
+
+- `Instance` — single research phone (name + on-disk root + parsed
+  config). Three classmethod constructors: `create` (new dir + new
+  registry entry), `load` (look up by name), `from_path` (walk up to
+  the nearest `beetroot.yaml` and match the registry by resolved
+  path). Lifecycle methods (`up`, `down`, `restart`, `apply`,
+  `destroy`) and operations (`shell`, `frida_cli`, `install_frida`,
+  `add_module`, `snapshot`, `logs`). Introspection properties
+  (`status`, `ports`, `adb_address`, `frida_address`,
+  `is_available`) query live state — never cached on the object.
+- `Manager` — stateless aggregate operations over the registry:
+  `list()` (sorted), `get(name)` (`None` on miss), and
+  `allocate_port_index()`.
+- `DeviceBackend` — a `@runtime_checkable` Protocol that v0.3's
+  `Instance` satisfies and that v0.4's `AdbDeviceBackend` will too.
+  Four members: `adb_address`, `frida_address`, `is_available`,
+  `install_frida(version)`. See the
+  [device backends design doc](docs/design/device-backends.md) for
+  the v0.4 roadmap.
+- New exception types: `InstanceNotFoundError` (`LookupError`
+  subclass; raised by `Instance.load` / `Instance.from_path`),
+  `FridaNotInstalledError`, `AdbNotInstalledError`.
+
+**CLI internals (refactored, no behavior change):**
+
+- Every Typer command body in `src/beetroot/cli.py` is now a 1-15 line
+  shell that constructs an `api.Instance` or calls an `api.Manager`
+  method, then handles CLI-specific concerns (`error: ...` lines,
+  `typer.Exit`, stdout formatting). The verbs stay as module-level
+  `@app.command()` functions (Typer captures the function reference
+  at import time, per the T4 CR — wrapping verbs in a class would
+  break dispatch). `cli.py` shrinks from 554 to 487 LOC.
+- The `destroy` verb keeps its own `compose.down` call rather than
+  going through `Instance.destroy` so the registry-only-orphan path
+  (where the on-disk `beetroot.yaml` has gone missing but the
+  registry entry survives) still tears down cleanly.
+
+**Procedural modules unchanged.** `compose`, `config`, `frida_dl`,
+`modules_dl`, `paths`, `ports`, `registry`, `snapshot`, and
+`builder` keep their public surface — `api.py` composes them.
+
+**Tests:** `tests/test_api.py` exercises every `Instance` / `Manager`
+method directly, asserting on observable side-effects (compose argv,
+registry entries, filesystem artifacts) rather than just "didn't
+raise". The required behavior tests landed: `Instance.create` →
+`Instance.load` round-trip, `Instance.from_path` walk-up from a
+subdir, `isinstance(inst, DeviceBackend)`. CLI dispatch assertions
+cover `up`, `down`, `apply`, and `ls` — each mocks the corresponding
+`Instance` / `Manager` method to confirm the Typer command really
+calls into the OOP layer.
+
+**Docs:**
+
+- `docs/reference/api.md` now leads with `beetroot.api` and explains
+  the two-audience split (programmatic users vs. CLI contributors).
+- `README.md` gains a "Python API" row in the docs table.
+- `docs/reference/index.md` calls out the OOP entry point.
+- `CLAUDE.md`'s `src/beetroot/` tree gets `api.py` and `snapshot.py`,
+  plus a paragraph explaining why the verbs stay module-level.
+
+### v0.3 — Theme T9: device-backends design doc
+
+A new design doc at `docs/design/device-backends.md` formalises the
+`DeviceBackend` Protocol that v0.3's `beetroot.api` declares.
+The doc lands:
+
+- The rationale for a backend abstraction (real rooted phones over
+  ADB; remote device farms).
+- The Protocol surface (copy-pasted from `api.py` so the doc is the
+  canonical reference).
+- Two concrete backends — `RedroidBackend` (today's `Instance`,
+  satisfying the Protocol directly) and `AdbDeviceBackend` (v0.4,
+  wrapping an `adb`-connected device).
+- The capability methods that aren't universal
+  (`apply_stealth_config`, `shell`, `add_module`) and a new
+  `BackendCapabilityError` exception type for backends that can't
+  honour them.
+- Emulator-only features (per-build path randomization, container
+  overlay manipulation) cross-referenced against the
+  [stealth-posture doc](docs/design/stealth-posture.md).
+- A 5-PR roadmap for the v0.4 `AdbDeviceBackend` rollout (scaffolding
+  → `install_frida` → `shell` → `add_module` → `beetroot adopt
+  <serial>` CLI integration).
+- Explicit out-of-scope list (rooting the device, MDM bypass,
+  hardware-backed attestation).
+
+1781 words, design-only. `mkdocs build --strict` passes; the page is
+linked from the design-notes index and the mkdocs nav.

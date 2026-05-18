@@ -119,6 +119,7 @@ nav:
   - Design notes:
     - design/index.md
     - Stealth posture: design/stealth-posture.md
+    - Device backends: design/device-backends.md
   - Troubleshooting: troubleshooting.md
   - About:
     - Credits: about/credits.md
