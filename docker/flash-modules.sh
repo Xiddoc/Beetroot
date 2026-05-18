@@ -16,14 +16,18 @@
 
 MODULES_DIR="${BEETROOT_MODULES_DIR:-/flash_dir}"
 
-if [ ! -d "$MODULES_DIR" ]; then
+# This script is sourced by entrypoint.sh (`. /flash-modules.sh`), so
+# any `exit` here would terminate the parent shell and skip every
+# helper that runs after us (currently `launch-frida.sh`, plus the
+# trailing `wait` that keeps the container alive). Fall through with an
+# `if [ -d ]` guard instead.
+if [ -d "$MODULES_DIR" ]; then
+    for zip in "$MODULES_DIR"/*.zip; do
+        if [ -f "$zip" ]; then
+            echo "[*] Flashing module: $zip"
+            magisk --install-module "$zip"
+        fi
+    done
+else
     echo "[!] Modules directory $MODULES_DIR not present — skipping flash step."
-    exit 0
 fi
-
-for zip in "$MODULES_DIR"/*.zip; do
-    if [ -f "$zip" ]; then
-        echo "[*] Flashing module: $zip"
-        magisk --install-module "$zip"
-    fi
-done
