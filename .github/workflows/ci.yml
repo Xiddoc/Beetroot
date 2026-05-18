@@ -55,3 +55,14 @@ jobs:
 
       - name: Pytest (100% coverage gate enforced via [tool.coverage.report])
         run: uv run pytest
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Shellcheck (POSIX sh — boot helpers run under /system/bin/sh)
+        run: shellcheck -s sh docker/*.sh

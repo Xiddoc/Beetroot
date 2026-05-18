@@ -22,6 +22,14 @@ services:
       - ./modules:/flash_dir:ro
       - ./frida-server:/data/local/tmp/frida-server:ro
 
+    # Host overrides for the T7 helper scripts' container paths. Empty by
+    # default (helpers fall back to their bake-in defaults); v0.4's
+    # stealth-posture work (docs/design/stealth-posture.md) sets these.
+    environment:
+      BEETROOT_MAGISK_DB: ${BEETROOT_MAGISK_DB:-}
+      BEETROOT_MODULES_DIR: ${BEETROOT_MODULES_DIR:-}
+      BEETROOT_FRIDA_BIN: ${BEETROOT_FRIDA_BIN:-}
+
     ports:
       - "${ADB_PORT}:5555"
       - "${FRIDA_PORT}:27042"

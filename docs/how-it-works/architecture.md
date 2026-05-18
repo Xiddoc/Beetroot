@@ -20,9 +20,10 @@ The `--env-file` supplies all the per-instance variables that the template reads
 
 ## Image build
 
-The Docker image (`docker/Dockerfile`) is a single-stage build from `redroid/redroid:14.0.0_litegapps_houdini_magisk`. The only things added are two files:
+The Docker image (`docker/Dockerfile`) is a single-stage build from `redroid/redroid:14.0.0_litegapps_houdini_magisk`. The only things added are five files:
 
-- `docker/entrypoint.sh` — copied to `/entrypoint.sh` in the image.
+- `docker/entrypoint.sh` — copied to `/entrypoint.sh` (12-line glue).
+- `docker/magisk-config.sh`, `docker/flash-modules.sh`, `docker/launch-frida.sh` — copied to `/` alongside the entrypoint via a `COPY docker/*.sh /` glob. See [Boot Scripts](boot-scripts.md) for each helper's contract.
 - `docker/stealth.rc` — copied to `/system/etc/init/stealth.rc` in the image.
 
 That's it. Magisk is already in the base image (courtesy of the `ayasa520/redroid-script` patcher run by `beetroot setup`). The `magisk --sqlite` command ships with Magisk itself, so there's no separate sqlite binary to bundle.

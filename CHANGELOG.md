@@ -247,3 +247,39 @@ android:
 The image tag is now derived automatically by the CLI (`config.base_image_tag()`).
 Loading a YAML that still contains `android.base_image` raises a `ValueError` with
 this migration message.  All shipped presets have been updated.
+
+### v0.3 — Theme T7: shell scripts split, shellcheck in CI
+
+`docker/entrypoint.sh` is split into a 12-line glue file plus three
+single-purpose helpers, all in POSIX `/system/bin/sh`:
+
+- `docker/magisk-config.sh` — Magisk daemon wait + Zygisk/denylist
+  SQL + GMS denylist enrolment.
+- `docker/flash-modules.sh` — iterate `*.zip` in the modules dir and
+  install each one via `magisk --install-module`.
+- `docker/launch-frida.sh` — check the executable bit on the frida
+  binary and launch it as a backgrounded child of the entrypoint shell.
+
+Every container-side path the helpers touch is read from a `BEETROOT_*`
+env var with a safe default (`${VAR:-/safe-default}`); no path is
+hard-coded. v0.3 keeps the defaults at the well-known paths
+(`/data/adb/magisk.db`, `/flash_dir`, `/data/local/tmp/frida-server`),
+and the bundled compose template threads `BEETROOT_MAGISK_DB`,
+`BEETROOT_MODULES_DIR`, `BEETROOT_FRIDA_BIN` through its service
+`environment:` block as empty-by-default host overrides. v0.4's
+stealth-posture work (see `docs/design/stealth-posture.md`) sets these
+to randomized per-build paths without editing any helper.
+
+`docker/Dockerfile`'s `COPY` step changes from a single-file copy of
+`entrypoint.sh` to `COPY --chmod=755 docker/*.sh /`, which places all
+four shell files at filesystem root.
+
+New CI job `shellcheck` runs `shellcheck -s sh docker/*.sh` on every
+push and PR; any violation in any boot-helper script fails the build.
+
+New docs page: `docs/how-it-works/boot-scripts.md` documents each
+helper's env-var contract, idempotency model, and exit semantics, plus
+the shared "POSIX sh only, no hardcoded paths" contract. `boot-flow.md`
+gains a `## Helper scripts` anchor pointing at the new page so T10's
+stealth-posture design doc's four existing `boot-flow.md#helper-scripts`
+references resolve unchanged.
