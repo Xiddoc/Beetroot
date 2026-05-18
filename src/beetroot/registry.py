@@ -15,7 +15,9 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import os
 import sys
+import uuid
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,14 +39,36 @@ class RegistryError(RuntimeError):
 
 
 @contextlib.contextmanager
-def _locked(path: Path) -> Iterator[Path]:
-    """Advisory file lock around the registry — guards parallel mutations."""
+def _locked(path: Path, *, exclusive: bool = True) -> Iterator[Path]:
+    """Advisory file lock around the registry — guards parallel mutations.
+
+    Two parallel processes that both find the registry missing must not
+    both initialise it with an empty document and clobber each other's
+    initial writes. ``open("a+")`` opens for read-write, creating if
+    absent, without truncating; the ``flock`` then serialises every
+    initialisation and read-modify-write under the same lock object.
+    Readers (``list_instances``, ``get``) take a shared lock so they
+    can run in parallel with other readers but block on a sibling
+    holding an exclusive lock — preventing them from observing the
+    mid-write truncation window that ``_write``'s atomic-replace
+    closes for the no-lock path too.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        path.write_text(json.dumps({"version": SCHEMA_VERSION, "instances": {}}))
-    with path.open("r+") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+    with path.open("a+") as f:
+        flag = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(f.fileno(), flag)
         try:
+            if exclusive:
+                f.seek(0)
+                if not f.read(1):
+                    # First-time initialisation, now under the lock so
+                    # it races cleanly with any sibling holder.
+                    f.seek(0)
+                    f.truncate(0)
+                    f.write(json.dumps(
+                        {"version": SCHEMA_VERSION, "instances": {}}
+                    ))
+                    f.flush()
             yield path
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
@@ -114,12 +138,37 @@ def _check_v02_registry_at_cwd(xdg_path: Path) -> None:
 
 
 def _write(path: Path, data: dict[str, Any]) -> None:
-    path.write_text(json.dumps(data, indent=2, sort_keys=True))
+    # Atomic replace via a per-call unique tmp file: write the new
+    # content to a sibling whose name includes pid+uuid so parallel
+    # writers don't trample each other's tmp file, then os.replace
+    # it on top of ``path``. Without the atomic-replace, concurrent
+    # readers (list_instances, get) would occasionally observe
+    # ``path`` in its truncated-but-not-yet-written state and raise
+    # JSONDecodeError. Without the unique tmp name, two writers in
+    # parallel processes would both write to the same tmp and the
+    # second one's os.replace would FileNotFoundError after the
+    # first process renamed the tmp out from under it.
+    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
+        tmp.replace(path)
+    finally:
+        # If the replace happened, this is a no-op (tmp no longer
+        # exists); on a failure path, this cleans up the orphan.
+        if tmp.exists():
+            tmp.unlink()
 
 
 def list_instances() -> dict[str, dict[str, Any]]:
     """Return all known instances as name → metadata. Empty if registry is missing."""
-    return _read(paths.user_registry_file()).get("instances", {})  # type: ignore[no-any-return]
+    path = paths.user_registry_file()
+    if not path.exists():
+        # Fast-path: no registry yet → nothing to read, no need to
+        # touch the lock file at all.
+        _check_v02_registry_at_cwd(path)
+        return {}
+    with _locked(path, exclusive=False):
+        return _read(path).get("instances", {})  # type: ignore[no-any-return]
 
 
 def get(name: str) -> dict[str, Any] | None:
@@ -156,6 +205,43 @@ def add(name: str, absolute_path: Path, index: int) -> None:
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         _write(path, data)
+
+
+def add_allocating(name: str, absolute_path: Path) -> int:
+    """
+    Atomically allocate the lowest free port index AND register ``name``.
+
+    Without this critical section, two parallel ``Instance.create`` calls
+    could read ``used_indices()`` simultaneously, both get the same
+    lowest-free index, and then both write to the registry — silently
+    co-allocating the same port to two instances. The user only sees
+    the failure at ``docker compose up`` time, when the second
+    instance's bind fails.
+
+    Args:
+        name: Instance name to register.
+        absolute_path: Absolute path to the instance directory.
+
+    Returns:
+        The port index that was allocated.
+
+    Raises:
+        ValueError: If ``name`` is already in the registry.
+    """
+    path = paths.user_registry_file()
+    with _locked(path):
+        data = _read(path)
+        if name in data["instances"]:
+            raise ValueError(f"instance {name!r} already in registry")
+        used = {meta["index"] for meta in data["instances"].values()}
+        index = ports.lowest_free_index(used)
+        data["instances"][name] = {
+            "absolute_path": str(absolute_path),
+            "index": index,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _write(path, data)
+        return index
 
 
 def remove(name: str) -> None:

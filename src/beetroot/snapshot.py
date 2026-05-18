@@ -332,18 +332,21 @@ def restore(
     # that pins ports.adb: 5555 next to an existing instance using
     # 5555 would register cleanly and only fail at compose-up time.
     cfg = config.load_yaml(paths.instance_yaml(target))
-    index = ports.lowest_free_index(registry.used_indices())
+    # Atomic allocation + registration under one file lock.
+    index = registry.add_allocating(dest_name, target)
     new_ports = ports.resolve_ports(index, cfg.ports)
-    collision = registry.find_port_collision(
-        new_ports, registry.all_resolved_ports()
-    )
+    others = {
+        n: p for n, p in registry.all_resolved_ports().items()
+        if n != dest_name
+    }
+    collision = registry.find_port_collision(new_ports, others)
     if collision is not None:
         port, other_name, kind = collision
+        registry.remove(dest_name)
         raise SnapshotError(
             f"port {port} ({kind}) collides with instance {other_name!r}; "
             "edit the restored beetroot.yaml's ports: block before retrying"
         )
-    registry.add(dest_name, target, index)
     # Stage .env + frida-server + modules now so `beetroot up <name>`
     # works without a follow-up `beetroot apply`. Mirrors what
     # Instance.create / Instance.register do.

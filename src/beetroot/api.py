@@ -181,9 +181,6 @@ class Instance:
             )
 
         effective_cfg = cfg if cfg is not None else config.InstanceConfig()
-        index = ports.lowest_free_index(registry.used_indices())
-        new_ports = ports.resolve_ports(index, effective_cfg.ports)
-        _check_port_collisions(name, new_ports)
 
         target_root.mkdir(parents=True, exist_ok=True)
         # When the caller didn't pin a config, emit the minimal-readable
@@ -195,7 +192,15 @@ class Instance:
             yaml_path.write_text(_MINIMAL_BEETROOT_YAML)
         else:
             config.write_yaml(yaml_path, effective_cfg)
-        registry.add(name, target_root, index)
+        # Atomic allocation + registration under one file lock. Two
+        # parallel create() calls cannot grab the same stride slot.
+        index = registry.add_allocating(name, target_root)
+        new_ports = ports.resolve_ports(index, effective_cfg.ports)
+        try:
+            _check_port_collisions(name, new_ports)
+        except ValueError:
+            registry.remove(name)
+            raise
 
         inst = cls(name=name, root=target_root, cfg=effective_cfg)
         inst._stage()
@@ -226,10 +231,14 @@ class Instance:
         if registry.get(resolved_name) is not None:
             raise ValueError(f"instance {resolved_name!r} already in registry")
         cfg = config.load_yaml(yaml_path)
-        index = ports.lowest_free_index(registry.used_indices())
+        # Atomic allocation + registration under one file lock.
+        index = registry.add_allocating(resolved_name, target_root)
         new_ports = ports.resolve_ports(index, cfg.ports)
-        _check_port_collisions(resolved_name, new_ports)
-        registry.add(resolved_name, target_root, index)
+        try:
+            _check_port_collisions(resolved_name, new_ports)
+        except ValueError:
+            registry.remove(resolved_name)
+            raise
         inst = cls(name=resolved_name, root=target_root, cfg=cfg)
         # Stage .env + frida-server + modules now so a follow-up
         # `beetroot up <name>` works without an intermediate
