@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import sys
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,11 @@ from . import paths, ports
 from .config import load_yaml
 
 SCHEMA_VERSION = 2
+
+# Module-level flag so the "v0.2 registry at PWD" hint fires once per
+# process. The check is cheap, but spamming the hint on every verb
+# call would drown out the actual command output.
+_V02_HINT_PRINTED = False
 
 
 class RegistryError(RuntimeError):
@@ -53,6 +59,7 @@ def _read(path: Path) -> dict[str, Any]:
     ``beetroot register <path>`` (paths can't be auto-migrated because
     v1 had no per-instance absolute path).
     """
+    _check_v02_registry_at_cwd(path)
     if not path.exists():
         return {"version": SCHEMA_VERSION, "instances": {}}
     data: dict[str, Any] = json.loads(path.read_text())
@@ -66,6 +73,44 @@ def _read(path: Path) -> dict[str, Any]:
         )
         return {"version": SCHEMA_VERSION, "instances": {}}
     return data
+
+
+def _check_v02_registry_at_cwd(xdg_path: Path) -> None:
+    """Surface a hint if a v0.2-shaped instances.json sits at $PWD.
+
+    v0.2 wrote ``instances.json`` at the repo root. v0.3 moved it to
+    ``$XDG_CONFIG_HOME/beetroot/instances.json``. Auto-moving silently
+    would break a user who keeps the v0.2 file under version control
+    or in a different repo; the contract is to surface the situation
+    once per process and let the user pick the migration path.
+    """
+    global _V02_HINT_PRINTED  # noqa: PLW0603
+    if _V02_HINT_PRINTED:
+        return
+    candidate = Path.cwd() / "instances.json"
+    if not candidate.is_file():
+        return
+    if xdg_path.is_file() and xdg_path.stat().st_size > 0:
+        return
+    try:
+        data = json.loads(candidate.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    # v0.2's instances.json was a flat ``{name: meta}`` mapping (no
+    # ``version`` / ``instances`` wrapper). That shape is the
+    # discriminator from v0.3's wrapped layout.
+    if not isinstance(data, dict):
+        return
+    is_v1_shape = "version" not in data and "instances" not in data
+    if not is_v1_shape:
+        return
+    print(
+        f"[beetroot] detected v0.2 registry at {candidate} — move it to "
+        f"{xdg_path} (or re-register each instance with "
+        f"'beetroot register <path>').",
+        file=sys.stderr,
+    )
+    _V02_HINT_PRINTED = True
 
 
 def _write(path: Path, data: dict[str, Any]) -> None:
