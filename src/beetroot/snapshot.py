@@ -265,7 +265,8 @@ _MANIFEST_ARCNAMES = frozenset({
 
 
 def _is_manifest_member(member: tarfile.TarInfo) -> bool:
-    """Return True if ``member`` is the canonical archive-root manifest entry.
+    """
+    Return True if ``member`` is the canonical archive-root manifest entry.
 
     A basename-only match would also pick up a stale
     ``data/.beetroot-snapshot.json`` left over from a previous
@@ -364,8 +365,10 @@ def restore(
         )
     # Stage .env + frida-server + modules now so `beetroot up <name>`
     # works without a follow-up `beetroot apply`. Mirrors what
-    # Instance.create / Instance.register do.
-    from . import api  # local import — api imports snapshot, would loop at module load
+    # Instance.create / Instance.register do. The import is local
+    # because api imports snapshot at module load — top-level here
+    # would loop.
+    from . import api  # noqa: PLC0415
     api.Instance.load(dest_name)._stage()
     return target
 

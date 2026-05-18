@@ -30,8 +30,8 @@ from beetroot import api, config, paths, registry, snapshot
 def _parse_env(text: str) -> dict[str, str]:
     """Tiny parser for the .env format render_env produces."""
     out: dict[str, str] = {}
-    for line in text.splitlines():
-        line = line.strip()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
         if not line or "=" not in line:
             continue
         k, _, v = line.partition("=")

@@ -71,7 +71,12 @@ def test_default_runner_env_merges_via_subprocess_call(
         cmd: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         captured.update(kwargs)
-        return real_run(cmd, **kwargs)  # type: ignore[call-overload]
+        # kwargs is loosely typed for the spy; the real_run call
+        # returns CompletedProcess[Any] which mypy widens to Any.
+        result: subprocess.CompletedProcess[str] = real_run(  # type: ignore[call-overload]
+            cmd, **kwargs
+        )
+        return result
 
     monkeypatch.setattr(subprocess, "run", _spy)
     runner.run(["true"], env={"BASE_IMAGE": "demo"})

@@ -40,7 +40,8 @@ class RegistryError(RuntimeError):
 
 @contextlib.contextmanager
 def _locked(path: Path, *, exclusive: bool = True) -> Iterator[Path]:
-    """Advisory file lock around the registry — guards parallel mutations.
+    """
+    Advisory file lock around the registry — guards parallel mutations.
 
     Two parallel processes that both find the registry missing must not
     both initialise it with an empty document and clobber each other's
@@ -100,7 +101,8 @@ def _read(path: Path) -> dict[str, Any]:
 
 
 def _check_v02_registry_at_cwd(xdg_path: Path) -> None:
-    """Surface a hint if a v0.2-shaped instances.json sits at $PWD.
+    """
+    Surface a hint if a v0.2-shaped instances.json sits at $PWD.
 
     v0.2 wrote ``instances.json`` at the repo root. v0.3 moved it to
     ``$XDG_CONFIG_HOME/beetroot/instances.json``. Auto-moving silently

@@ -104,8 +104,8 @@ def test_no_hint_when_v03_registry_is_populated(
     registry._read(xdg)
     # No SystemExit / SystemError — successful read with no warning.
     # Verify stderr was clean by re-invoking _read and capturing.
-    import io
     import contextlib
+    import io
 
     buf = io.StringIO()
     registry._V02_HINT_PRINTED = False  # re-check on a fresh flag

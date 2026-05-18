@@ -53,7 +53,7 @@ def _spawn_worker(
                 out.chmod(0o755)
             return out
 
-        frida_dl.download = _fake_download  # type: ignore[assignment]
+        frida_dl.download = _fake_download
         inst = api.Instance.create(name, path=Path(target_root) / name)
         return name, inst.index, None
     except Exception:

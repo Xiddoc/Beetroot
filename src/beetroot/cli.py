@@ -413,7 +413,14 @@ def setup_deprecated(
         typer.Argument(help="(removed in v0.3)"),
     ] = None,
 ) -> None:
-    """(Deprecated alias for `beetroot build` — see CHANGELOG.md.)"""
+    """
+    Print a migration hint for the v0.2 ``setup`` verb.
+
+    v0.2 had ``beetroot setup [variant]``; v0.3 renamed it to
+    ``beetroot build``. This hidden alias catches the old form and
+    surfaces a one-line migration message instead of bare Typer
+    ``No such command`` output.
+    """
     # `args` is declared so v0.2 invocations like `beetroot setup lite`
     # still match this verb (Typer would otherwise reject the trailing
     # positional). The value itself is ignored.
