@@ -1,4 +1,5 @@
-# Beetroot stealth preset — default + Shamiko for true allowlist-hide.
+# Documentation only — not loaded by the CLI. Copy this over your fresh beetroot.yaml if you want this configuration.
+# Beetroot baseline + Shamiko for true allowlist-hide.
 # Only fields that differ from defaults are listed here.
 # Fill in sha256 after first download for reproducibility.
 #

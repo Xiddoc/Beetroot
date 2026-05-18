@@ -1,4 +1,5 @@
-# Beetroot default preset — baseline research phone.
+# Documentation only — not loaded by the CLI. Copy this over your fresh beetroot.yaml if you want this configuration.
+# Beetroot baseline research phone — GMS denylisted from Magisk root.
 # Every field except android.version is optional; schema defaults apply when omitted.
 # Edit beetroot.yaml in your instance dir and run `beetroot apply` to re-stage.
 
