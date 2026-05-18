@@ -162,10 +162,13 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
     manifest = _build_manifest(name=name, source_index=int(meta["index"]))
 
     cctx = zstandard.ZstdCompressor()
-    with final_dest.open("wb") as raw_out, cctx.stream_writer(raw_out) as zst:
-        with tarfile.open(fileobj=zst, mode="w|") as tar:
-            _add_instance_tree(tar, instance_root)
-            _add_manifest(tar, manifest)
+    with (
+        final_dest.open("wb") as raw_out,
+        cctx.stream_writer(raw_out) as zst,
+        tarfile.open(fileobj=zst, mode="w|") as tar,
+    ):
+        _add_instance_tree(tar, instance_root)
+        _add_manifest(tar, manifest)
     return final_dest
 
 
@@ -227,8 +230,12 @@ def read_manifest(archive: Path) -> Manifest:
 def _extract_manifest_bytes(archive: Path) -> bytes:
     """Stream-read the archive and return the raw manifest bytes."""
     dctx = zstandard.ZstdDecompressor()
-    with archive.open("rb") as raw_in, dctx.stream_reader(raw_in) as zst:
-        with tarfile.open(fileobj=zst, mode="r|") as tar:
+    try:
+        with (
+            archive.open("rb") as raw_in,
+            dctx.stream_reader(raw_in) as zst,
+            tarfile.open(fileobj=zst, mode="r|") as tar,
+        ):
             for member in tar:
                 if _is_manifest_member(member):
                     extracted = tar.extractfile(member)
@@ -237,6 +244,10 @@ def _extract_manifest_bytes(archive: Path) -> bytes:
                             f"manifest member {member.name!r} is not a regular file"
                         )
                     return extracted.read()
+    except zstandard.ZstdError as e:
+        raise SnapshotError(f"archive {archive} is not a valid zstd stream: {e}") from e
+    except tarfile.TarError as e:
+        raise SnapshotError(f"archive {archive} contains a malformed tar stream: {e}") from e
     raise SnapshotError(
         f"archive {archive} is missing its {MANIFEST_FILENAME} manifest"
     )
@@ -293,9 +304,10 @@ def restore(
                 "pass --force to overwrite, or pick another path"
             )
         shutil.rmtree(target)
+    # Validate the manifest first so a malformed archive bails out
+    # before we touch the destination directory or the registry.
     read_manifest(archive)
     target.mkdir(parents=True, exist_ok=True)
-
     _extract_archive_into(archive, target)
 
     index = ports.lowest_free_index(registry.used_indices())
@@ -314,12 +326,20 @@ def _extract_archive_into(archive: Path, target: Path) -> None:
     manifest itself, but it never strips or rewrites ``path_layout``
     either — so a v0.4-produced archive restored by v0.3 keeps its
     layout intact for the next read.
+
+    ``restore`` runs :func:`read_manifest` first as a structural
+    validator (zstd-stream + tar-stream + JSON shape), so this helper
+    can assume the archive is well-formed and skip its own redundant
+    error wrapping.
     """
     dctx = zstandard.ZstdDecompressor()
-    with archive.open("rb") as raw_in, dctx.stream_reader(raw_in) as zst:
-        with tarfile.open(fileobj=zst, mode="r|") as tar:
-            for member in tar:
-                tar.extract(member, path=target, filter="data")
+    with (
+        archive.open("rb") as raw_in,
+        dctx.stream_reader(raw_in) as zst,
+        tarfile.open(fileobj=zst, mode="r|") as tar,
+    ):
+        for member in tar:
+            tar.extract(member, path=target, filter="data")
     if not paths.instance_yaml(target).is_file():
         raise SnapshotError(
             f"archive {archive} did not contain a beetroot.yaml; refusing to register"

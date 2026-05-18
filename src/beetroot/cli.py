@@ -11,17 +11,8 @@ from typing import Annotated
 
 import typer
 
-from . import (
-    compose,
-    config,
-    frida_dl,
-    modules_dl,
-    paths,
-    ports,
-    registry,
-    setup_runner,
-    snapshot as snapshot_mod,
-)
+from . import compose, config, frida_dl, modules_dl, paths, ports, registry, setup_runner
+from . import snapshot as snapshot_mod
 
 _MINIMAL_BEETROOT_YAML = "api_version: 2\nandroid:\n  version: 14\n"
 
