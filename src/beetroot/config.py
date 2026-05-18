@@ -275,7 +275,12 @@ def load_yaml(path: Path) -> InstanceConfig:
     """
     Load and validate an InstanceConfig from a YAML file.
 
-    An empty file is treated as an all-defaults config.
+    An empty file is treated as an all-defaults config. A v0.2 YAML
+    that pinned ``api_version: 1`` is auto-bumped to the current
+    :data:`SUPPORTED_API_VERSION` with a one-line stderr warning,
+    because v0.2 → v2 is strictly additive (no fields renamed). The
+    bump is persisted organically on the next ``beetroot apply``
+    (which calls :func:`write_yaml`).
 
     Args:
         path: Absolute path to the YAML file.
@@ -286,6 +291,13 @@ def load_yaml(path: Path) -> InstanceConfig:
     raw = yaml.safe_load(path.read_text())
     if raw is None:
         raw = {}
+    if isinstance(raw, dict) and raw.get("api_version") == 1:
+        print(
+            f"[beetroot] auto-upgraded api_version 1 → {SUPPORTED_API_VERSION} "
+            f"in {path}; run 'beetroot apply' to rewrite the YAML.",
+            file=sys.stderr,
+        )
+        raw["api_version"] = SUPPORTED_API_VERSION
     return InstanceConfig.model_validate(raw)
 
 
