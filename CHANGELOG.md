@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+### v0.3 — Theme T1: explicit, Docker-inspired instance paths
+
+Instance directories are now self-contained anywhere on disk. The
+repo-rooted `instances/` and `instances.json` conventions are removed.
+An "instance" is any directory containing a `beetroot.yaml`; the CLI
+discovers the current one by walking up from the cwd, like git walks up
+to `.git`. The cross-instance registry is now user-global at
+`~/.config/beetroot/instances.json` (respects `$XDG_CONFIG_HOME`).
+
+**Migration for existing v0.2 users:** Run `beetroot register <path>` for
+each of your instance directories (whichever paths you used under
+`instances/`) to add them to the new XDG-based registry. The CLI also
+auto-migrates the registry: on the first load of a v1-shaped
+`instances.json` it renames it to `instances.json.bak` and prints a
+one-line warning telling you to re-register.
+
+Other changes shipped together with T1:
+
+* New `beetroot register <path>` verb adopts an existing instance dir.
+* `beetroot create` learned `--path <dir>` to put the instance anywhere.
+* `beetroot ls` now shows the `PATH` column / `path` field.
+* The compose template moved into the wheel at
+  `beetroot/templates/compose.yaml`; the repo-root `compose.yaml` is
+  gone. Compose is invoked with `-f <bundled>` and
+  `--project-directory <instance-dir>` so the template's
+  `./data:/data` style mounts resolve correctly against any instance dir.
+* Presets are bundled inside the wheel too
+  (`beetroot.templates.presets`); the repo-root `presets/` is gone.
+* Magisk module download cache moved to `~/.cache/beetroot/modules/`
+  and the Frida binary cache to `~/.cache/beetroot/frida/` (both
+  respect `$XDG_CACHE_HOME`).
+* `Module.path` entries with relative paths now resolve against the
+  instance directory itself (not the repo root).
+* `paths.py` is rewritten: `repo_root` / `instances_dir` /
+  `instance_dir(name)` / `compose_file` / `presets_dir` /
+  `registry_file` are **removed**. Replacements:
+  `instance_root(start=None)`, `instance_data(root)`,
+  `instance_modules(root)`, `instance_frida(root)`,
+  `instance_yaml(root)`, `instance_env(root)`,
+  `bundled_compose_file()`, `user_registry_file()`,
+  `user_cache_dir(subdir)`.
+* `paths.ProjectRootNotFoundError` is renamed to
+  `paths.InstanceRootNotFoundError` (still a `FileNotFoundError`).
+* `registry.add(name, index)` now takes an extra `absolute_path` arg.
+  New helper `registry.instance_path(name)` looks it up; new
+  `registry.RegistryError` is raised for unknown-name lookups. Schema
+  bumped to v2; loading a v1 registry triggers the migration described
+  above.
+* `SUPPORTED_API_VERSION` bumped to **2**. v0.2 YAMLs that hard-pinned
+  `api_version: 1` must be updated (omitting the field still works —
+  the default is now `2`). All bundled presets declare
+  `api_version: 2`.
+
 ### Added
 - `api_version` top-level field in `beetroot.yaml` (default `1`). Each
   Beetroot release supports exactly one `api_version`; loading a YAML with

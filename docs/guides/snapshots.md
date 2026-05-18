@@ -1,6 +1,12 @@
 # Snapshots
 
-There is no `beetroot snapshot` verb — and there doesn't need to be. The entire Android userdata lives at `instances/<name>/data/` on the host. Snapshotting is a plain filesystem copy.
+There is no `beetroot snapshot` verb — and there doesn't need to be. The entire Android userdata lives at `<instance-dir>/data/`. Snapshotting is a plain filesystem copy.
+
+Throughout this page, `$ALPHA` is the instance directory (look it up with `beetroot ls`):
+
+```bash
+ALPHA=$(beetroot ls --json | jq -r '.alpha.path')
+```
 
 ## Basic snapshot and restore
 
@@ -9,14 +15,14 @@ There is no `beetroot snapshot` verb — and there doesn't need to be. The entir
 beetroot down alpha
 
 # Snapshot
-cp -a instances/alpha/data instances/alpha/data.clean
+cp -a "$ALPHA/data" "$ALPHA/data.clean"
 
 # ... do your research ...
 
 # Restore
-beetroot down alpha          # stop if still running
-rm -rf instances/alpha/data
-cp -a instances/alpha/data.clean instances/alpha/data
+beetroot down alpha
+rm -rf "$ALPHA/data"
+cp -a "$ALPHA/data.clean" "$ALPHA/data"
 beetroot up alpha
 ```
 
@@ -31,17 +37,17 @@ For large `data/` directories, use `tar` with `zstd` compression:
 beetroot down alpha
 
 # Create snapshot
-tar --zstd -cf snapshots/alpha-clean.tar.zst -C instances/alpha data
+tar --zstd -cf snapshots/alpha-clean.tar.zst -C "$ALPHA" data
 
 # Restore
 beetroot down alpha
-rm -rf instances/alpha/data
-tar --zstd -xf snapshots/alpha-clean.tar.zst -C instances/alpha
+rm -rf "$ALPHA/data"
+tar --zstd -xf snapshots/alpha-clean.tar.zst -C "$ALPHA"
 beetroot up alpha
 ```
 
-!!! tip "Keep a `snapshots/` directory"
-    Add `snapshots/` to your project-level `.gitignore` (it's already large and binary) and use it as a snapshot store alongside the repo.
+!!! tip "Keep a snapshots dir alongside your instances"
+    Pick a dir anywhere (e.g. `~/beetroot-snapshots/`) and use it as a snapshot store. Beetroot itself doesn't care.
 
 ## Versioned snapshots
 
@@ -49,7 +55,7 @@ If you're running a research campaign across multiple builds or dates, label you
 
 ```bash
 mkdir -p snapshots
-tar --zstd -cf snapshots/alpha-$(date +%Y%m%d).tar.zst -C instances/alpha data
+tar --zstd -cf snapshots/alpha-$(date +%Y%m%d).tar.zst -C "$ALPHA" data
 ```
 
 ## Fresh start without destroy
@@ -58,8 +64,8 @@ If you want to reset to a pristine Android install without recreating the instan
 
 ```bash
 beetroot down alpha
-rm -rf instances/alpha/data    # wipe userdata only
-beetroot up alpha              # Android re-provisions /data on first boot
+rm -rf "$ALPHA/data"   # wipe userdata only
+beetroot up alpha       # Android re-provisions /data on first boot
 ```
 
 Android will go through first-time setup again. Frida and modules are unaffected — they're staged separately.

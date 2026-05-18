@@ -4,9 +4,9 @@ Beetroot supports flashing Magisk modules into instances declaratively — decla
 
 ## How module flashing works
 
-At boot, `entrypoint.sh` (running inside the Android container under the `u:r:magisk:s0` SELinux context) iterates every `.zip` in `/flash_dir` and calls `magisk --install-module <zip>` for each one. The `/flash_dir` directory is a bind-mount of `instances/<name>/modules/` on the host.
+At boot, `entrypoint.sh` (running inside the Android container under the `u:r:magisk:s0` SELinux context) iterates every `.zip` in `/flash_dir` and calls `magisk --install-module <zip>` for each one. The `/flash_dir` directory is a bind-mount of the instance directory's `modules/` subdirectory on the host.
 
-Beetroot's CLI mirrors the `modules:` list from `beetroot.yaml` into `instances/<name>/modules/` when you run `beetroot create` or `beetroot apply`. URL-sourced modules are downloaded and verified; path-sourced modules are copied from the local filesystem.
+Beetroot's CLI mirrors the `modules:` list from `beetroot.yaml` into the instance directory's `modules/` when you run `beetroot create` or `beetroot apply`. URL-sourced modules are downloaded and verified; path-sourced modules are copied from the local filesystem.
 
 ## Declaring modules in YAML
 
@@ -20,7 +20,7 @@ modules:
 ```
 
 - Use `url` for modules hosted remotely (GitHub releases, etc.).
-- Use `path` for local zips. The path is resolved relative to the project root.
+- Use `path` for local zips. Relative paths are resolved against the instance directory itself.
 - `sha256` is optional but strongly recommended for URL modules: if the remote file changes (or the URL is hijacked), `beetroot apply` will refuse to stage a mismatched zip.
 
 !!! warning "URL or path, not both"
@@ -38,7 +38,7 @@ or for a local zip:
 beetroot module alpha ./local-modules/MyHook.zip
 ```
 
-`beetroot module` appends the entry to `instances/alpha/beetroot.yaml` and immediately re-stages `instances/alpha/modules/`. You must restart for it to flash:
+`beetroot module` appends the entry to the instance's `beetroot.yaml` and immediately re-stages the instance's `modules/` directory. You must restart for it to flash:
 
 ```bash
 beetroot down alpha && beetroot up alpha
@@ -58,10 +58,10 @@ beetroot down alpha && beetroot up alpha
 2. Pin the sha256 (recommended):
 
     ```bash
-    sha256sum instances/alpha/modules/Shamiko-v0.7.4-426-release.zip
+    sha256sum "$(beetroot ls --json | jq -r .alpha.path)/modules/Shamiko-v0.7.4-426-release.zip"
     ```
 
-    Edit `instances/alpha/beetroot.yaml` and add the hash to the module entry:
+    Edit the instance's `beetroot.yaml` and add the hash to the module entry:
 
     ```yaml
     modules:

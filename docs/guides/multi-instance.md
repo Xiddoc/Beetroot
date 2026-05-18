@@ -109,7 +109,7 @@ Each instance at default settings uses roughly **1.2 GB RAM / <5% CPU** at idle,
 - 3 instances = ~9 GB committed / 6 vCPUs
 - 5 instances = ~15 GB committed / 10 vCPUs
 
-Override per-instance by editing the `resources:` block in `instances/<name>/beetroot.yaml` and running `beetroot apply <name>`. You generally want to lower the FPS and resolution before raising RAM/CPU — display overhead is non-trivial.
+Override per-instance by editing the `resources:` block in that instance's `beetroot.yaml` and running `beetroot apply <name>`. You generally want to lower the FPS and resolution before raising RAM/CPU — display overhead is non-trivial.
 
 ## Stopping and cleaning up
 
@@ -122,4 +122,4 @@ beetroot destroy research-stealth
 ```
 
 !!! warning "Destroy is permanent"
-    `beetroot destroy` deletes `instances/<name>/` including `/data`. Use `beetroot down` if you want to keep state.
+    `beetroot destroy` deletes the entire instance directory, including `/data`. Use `beetroot down` if you want to keep state.

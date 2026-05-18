@@ -14,7 +14,7 @@ frida:
   version: "16.4.10"
 ```
 
-Changing the version and running `beetroot apply <name>` re-downloads the binary into `instances/<name>/frida-server`. The old binary is overwritten. Restart the instance to pick up the new server.
+Changing the version and running `beetroot apply <name>` re-downloads the binary into the instance directory at `frida-server`. The old binary is overwritten. Restart the instance to pick up the new server.
 
 !!! tip "Keep versions in sync"
     The Frida server version and your host-side `frida-tools` version must match (major + minor). A mismatch causes connection errors. Pin both explicitly in your research environment.
