@@ -22,7 +22,7 @@ from typing import Annotated
 
 import typer
 
-from . import api, builder, compose, paths, ports, registry
+from . import api, builder, compose, modules_dl, paths, ports, registry
 from . import snapshot as snapshot_mod
 
 
@@ -209,8 +209,25 @@ def up(
         bool,
         typer.Option("--all", help="Act on all registered instances."),
     ] = False,
+    build: Annotated[
+        bool,
+        typer.Option(
+            "--build",
+            hidden=True,
+            help="(removed in v0.3 — see CHANGELOG.md)",
+        ),
+    ] = False,
 ) -> None:
     """Start one or more instances."""
+    if build:
+        # T5 removed ``--build`` from ``up`` (build vs. start are two
+        # concerns), but Typer rejected the v0.2-shape invocation with
+        # a Rich "No such option: --build" box. The hidden alias is
+        # purely for the friendlier migration hint.
+        raise _error(
+            "'beetroot up --build' was removed in v0.3 — "
+            "run 'beetroot build' separately first to rebuild the image."
+        )
     for instance_name in _resolve_names(list(names or []), all_):
         _ensure_exists(instance_name)
         inst = _load(instance_name)
@@ -274,14 +291,22 @@ def destroy(
         if ans != "y":
             typer.echo("[beetroot] aborted")
             return
-    try:
-        compose.down(name, root, volumes=True)
-    except compose.ComposeError as e:
-        # Surface the compose failure as a "continuing" advisory so the
-        # user knows the host-side cleanup still ran.
-        typer.echo(f"[beetroot] (compose down failed: {e}; continuing)")
     if root.exists():
+        try:
+            compose.down(name, root, volumes=True)
+        except compose.ComposeError as e:
+            # Surface the compose failure as a "continuing" advisory so
+            # the user knows the host-side cleanup still ran.
+            typer.echo(f"[beetroot] (compose down failed: {e}; continuing)")
         shutil.rmtree(root)
+    else:
+        # Orphan registry entry — the on-disk dir is already gone, so
+        # compose.down would FileNotFoundError on its ``cwd=`` arg.
+        # Skip it and just clean the registry row.
+        typer.echo(
+            f"[beetroot] (instance dir {root} already gone; "
+            f"removing orphan registry entry)"
+        )
     registry.remove(name)
     typer.echo(f"[beetroot] destroyed {name}")
 
@@ -295,6 +320,7 @@ def ls(
 ) -> None:
     """List all registered instances with their ports and live status."""
     instances = api.Manager.list()
+    orphans = api.Manager.list_orphans()
     if json_out:
         out = {}
         for inst in instances:
@@ -310,21 +336,36 @@ def ls(
                 "created_at": meta["created_at"],
             }
         typer.echo(json.dumps(out, indent=2, sort_keys=True))
+        if orphans:
+            _emit_orphan_skip(orphans)
         return
 
-    if not instances:
+    if not instances and not orphans:
         typer.echo("(no instances — try `beetroot create alpha`)")
         return
-    typer.echo(f"{'NAME':<14}{'IDX':<5}{'ADB':<22}{'FRIDA':<22}{'STATUS':<14}{'PATH'}")
-    for inst in instances:
-        p = inst.ports
-        typer.echo(
-            f"{inst.name:<14}{inst.index:<5}"
-            f"{'localhost:' + str(p['adb']):<22}"
-            f"{'localhost:' + str(p['frida']):<22}"
-            f"{inst.status:<14}"
-            f"{inst.root}"
-        )
+    if instances:
+        typer.echo(f"{'NAME':<14}{'IDX':<5}{'ADB':<22}{'FRIDA':<22}{'STATUS':<14}{'PATH'}")
+        for inst in instances:
+            p = inst.ports
+            typer.echo(
+                f"{inst.name:<14}{inst.index:<5}"
+                f"{'localhost:' + str(p['adb']):<22}"
+                f"{'localhost:' + str(p['frida']):<22}"
+                f"{inst.status:<14}"
+                f"{inst.root}"
+            )
+    if orphans:
+        _emit_orphan_skip(orphans)
+
+
+def _emit_orphan_skip(orphans: list[str]) -> None:
+    """Print the trailing 'skipping N orphan entries' advisory line."""
+    names = ", ".join(orphans)
+    typer.echo(
+        f"(skipping {len(orphans)} orphan "
+        f"{'entry' if len(orphans) == 1 else 'entries'}: {names}; "
+        f"clean up with 'beetroot destroy <name> -y')"
+    )
 
 
 @app.command()
@@ -347,9 +388,14 @@ def shell(
     """Open an interactive ADB shell into an instance."""
     _ensure_exists(name)
     try:
-        _load(name).shell()
+        rc = _load(name).shell()
     except api.AdbNotInstalledError as e:
         raise _error(str(e)) from e
+    if rc != 0:
+        # Propagate the subprocess exit code so research scripts that
+        # check ``$?`` after ``beetroot shell <name> -c '<cmd>'`` see
+        # the underlying ``adb shell`` status.
+        raise typer.Exit(code=rc)
 
 
 @app.command()
@@ -381,9 +427,14 @@ def frida(
     """
     _ensure_exists(name)
     try:
-        _load(name).frida_cli(list(ctx.args))
+        rc = _load(name).frida_cli(list(ctx.args))
     except api.FridaNotInstalledError as e:
         raise _error(str(e)) from e
+    if rc != 0:
+        # Propagate the subprocess exit code so research scripts that
+        # check ``$?`` after ``beetroot frida <name> ...`` see the
+        # underlying ``frida`` status.
+        raise typer.Exit(code=rc)
 
 
 @app.command()
@@ -500,7 +551,10 @@ def restore(
         f"[beetroot] restored {dest_name} at {restored} "
         f"(index {inst.index}, ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"
     )
-    typer.echo(f"[beetroot] next: beetroot apply {dest_name} && beetroot up {dest_name}")
+    # Agent A's fix made ``snapshot.restore`` call ``_stage()``
+    # itself, so an intermediate ``beetroot apply`` is no longer
+    # required before ``beetroot up``. CR #3 finding 10.
+    typer.echo(f"[beetroot] next: beetroot up {dest_name}")
 
 
 def main() -> None:
@@ -526,6 +580,18 @@ def main() -> None:
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
     except builder.BootstrapError as e:
+        typer.echo(f"error: {e}", err=True)
+        sys.exit(1)
+    except modules_dl.ModuleFetchError as e:
+        typer.echo(f"error: {e}", err=True)
+        sys.exit(1)
+    except FileNotFoundError as e:
+        # Belt-and-suspenders: an instance whose on-disk dir was
+        # ``rm -rf``'d behind the CLI's back leaves a stale registry
+        # entry; ``Instance.load`` then trips on the missing
+        # ``beetroot.yaml`` deep in the call tree. ``Manager.list``
+        # filters orphans itself, but a verb that targets the orphan
+        # by name still needs this safety net.
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
 

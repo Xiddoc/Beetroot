@@ -1,7 +1,14 @@
 # Documentation only — not loaded by the CLI. Copy this over your fresh beetroot.yaml if you want this configuration.
-# Beetroot baseline + Shamiko for true allowlist-hide.
+# Beetroot baseline + a stealth denylist for true allowlist-hide.
 # Only fields that differ from defaults are listed here.
-# Fill in sha256 after first download for reproducibility.
+#
+# The `modules:` entry below is commented out on purpose: the upstream
+# Shamiko release URL changes whenever LSPosed cuts a new tag, and
+# shipping a hard-coded URL here means stealth.yaml goes stale silently
+# the moment that release is retired. The point of this example is to
+# show how the `stealth.denylist` field is structured — once you pick
+# a Shamiko (or other root-hider) release, uncomment the modules block
+# and fill in the URL + sha256 yourself.
 #
 # Optional resource knobs (uncomment to use):
 # resources:
@@ -15,9 +22,14 @@ api_version: 2
 android:
   version: 14
 
-modules:
-  - url: https://github.com/LSPosed/LSPosed.github.io/releases/download/shamiko-426/Shamiko-v0.7.4-426-release.zip
-    # sha256: <fill-in-after-first-download>
+# To add a root-hider module, look up a current release URL (e.g. for
+# Shamiko: https://github.com/LSPosed/LSPosed.github.io/releases) and
+# fill the block below in. The sha256 is optional but recommended —
+# beetroot will verify it on every stage.
+#
+# modules:
+#   - url: https://github.com/.../<release>/<asset>.zip
+#     sha256: <hex-digest>
 
 stealth:
   denylist:

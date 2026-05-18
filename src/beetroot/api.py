@@ -40,6 +40,15 @@ from typing import Any, Protocol, runtime_checkable
 from . import compose, config, frida_dl, modules_dl, paths, ports, registry
 from . import snapshot as _snapshot_mod
 
+# Module-level alias for the builtin ``list`` so the two ``list*``
+# staticmethods on :class:`Manager` below can use ``_List[...]`` in
+# their return annotations. Without the alias, mypy lexically
+# resolves ``list[...]`` inside the class body to the
+# ``Manager.list`` staticmethod (which doesn't subscript). Using a
+# different identifier keeps the call sites readable while sidestepping
+# the shadowing.
+_List = list
+
 _MINIMAL_BEETROOT_YAML = "api_version: 2\nandroid:\n  version: 14\n"
 
 
@@ -182,6 +191,13 @@ class Instance:
 
         effective_cfg = cfg if cfg is not None else config.InstanceConfig()
 
+        # Track whether ``target_root`` existed before this call. If we
+        # created it and the rest of the constructor blows up, we
+        # ``rmtree`` it on the rollback path so a failed create doesn't
+        # leave debris behind. Pre-existing dirs (e.g. ``--from-data``
+        # paths the CLI populated before calling us) are NOT removed —
+        # blowing those away would silently destroy user data.
+        created_dir = not target_root.exists()
         target_root.mkdir(parents=True, exist_ok=True)
         # When the caller didn't pin a config, emit the minimal-readable
         # YAML the CLI relies on (api_version + android.version only) so
@@ -196,14 +212,13 @@ class Instance:
         # parallel create() calls cannot grab the same stride slot.
         index = registry.add_allocating(name, target_root)
         new_ports = ports.resolve_ports(index, effective_cfg.ports)
+        inst = cls(name=name, root=target_root, cfg=effective_cfg)
         try:
             _check_port_collisions(name, new_ports)
-        except ValueError:
-            registry.remove(name)
+            inst._stage()
+        except BaseException:
+            _rollback_partial_create(name, target_root, created_dir=created_dir)
             raise
-
-        inst = cls(name=name, root=target_root, cfg=effective_cfg)
-        inst._stage()
         return inst
 
     @classmethod
@@ -234,16 +249,22 @@ class Instance:
         # Atomic allocation + registration under one file lock.
         index = registry.add_allocating(resolved_name, target_root)
         new_ports = ports.resolve_ports(index, cfg.ports)
+        inst = cls(name=resolved_name, root=target_root, cfg=cfg)
         try:
             _check_port_collisions(resolved_name, new_ports)
-        except ValueError:
-            registry.remove(resolved_name)
+            # Stage .env + frida-server + modules now so a follow-up
+            # `beetroot up <name>` works without an intermediate
+            # `beetroot apply`. Mirrors what Instance.create does.
+            inst._stage()
+        except BaseException:
+            # ``register`` adopts an existing directory — never delete
+            # it on rollback. The user's beetroot.yaml + data/ + any
+            # other files they put there must survive a partial
+            # registration failure.
+            _rollback_partial_create(
+                resolved_name, target_root, created_dir=False,
+            )
             raise
-        inst = cls(name=resolved_name, root=target_root, cfg=cfg)
-        # Stage .env + frida-server + modules now so a follow-up
-        # `beetroot up <name>` works without an intermediate
-        # `beetroot apply`. Mirrors what Instance.create does.
-        inst._stage()
         return inst
 
     @classmethod
@@ -560,6 +581,30 @@ class Instance:
         modules_dl.stage_for_instance(self._root, self._cfg)
 
 
+def _rollback_partial_create(
+    name: str, target_root: Path, *, created_dir: bool
+) -> None:
+    """
+    Roll back the partial side-effects of a failed instance constructor.
+
+    Removes the registry entry unconditionally (``registry.remove`` is
+    a no-op if the row is already gone). If ``created_dir`` is True and
+    ``target_root`` still exists, also ``rmtree``s it — otherwise leaves
+    the directory alone (the caller adopted it via ``register`` and the
+    user's pre-existing files must survive).
+
+    Args:
+        name: Registry name to remove.
+        target_root: Absolute path to the (possibly-created) instance
+            directory.
+        created_dir: True iff Beetroot created ``target_root`` in this
+            call (and so owns its deletion on the rollback path).
+    """
+    registry.remove(name)
+    if created_dir and target_root.exists():
+        shutil.rmtree(target_root)
+
+
 def _check_port_collisions(name: str, new_ports: dict[str, int]) -> None:
     """
     Raise ``ValueError`` if ``new_ports`` collide with any other instance.
@@ -587,15 +632,58 @@ class Manager:
     mutations from other processes are picked up on the next call.
     """
 
+    # The two list* staticmethods below use a module-level alias for
+    # the builtin ``list`` in their return annotations. Without the
+    # alias, mypy lexically resolves ``list[...]`` to ``Manager.list``
+    # (the staticmethod itself), which doesn't subscript. The alias is
+    # declared at module scope just below the imports.
+
     @staticmethod
-    def list() -> list[Instance]:
+    def list() -> _List[Instance]:
         """
         Return every registered instance, sorted by name.
 
+        Orphan entries (registry rows whose on-disk directory has been
+        ``rm -rf``'d) are silently skipped — without this, a single
+        orphan would crash ``beetroot ls`` with a bare ``FileNotFoundError``
+        and prevent the user from cleaning up. Use
+        :meth:`list_orphans` to surface them for cleanup.
+
         Returns:
-            A list of :class:`Instance` objects, one per registered name.
+            A list of :class:`Instance` objects, one per healthy
+            registered name.
         """
-        return [Instance.load(name) for name in sorted(registry.list_instances())]
+        out: _List[Instance] = []
+        for name in sorted(registry.list_instances()):
+            try:
+                out.append(Instance.load(name))
+            except FileNotFoundError:
+                # Orphan: registry entry exists, on-disk dir is gone.
+                # list_orphans() is the channel for cleanup discovery.
+                continue
+        return out
+
+    @staticmethod
+    def list_orphans() -> _List[str]:
+        """
+        Return names of registered instances whose on-disk dir is missing.
+
+        An orphan is a registry row that points at a path with no
+        ``beetroot.yaml`` (typically because the user manually
+        ``rm -rf``'d the directory without running
+        ``beetroot destroy``). Names are returned sorted; the cleanup
+        verb is ``beetroot destroy <name> -y``.
+
+        Returns:
+            Sorted list of orphan instance names. Empty if every
+            registered entry's directory is present.
+        """
+        orphans: _List[str] = []
+        for name, meta in registry.list_instances().items():
+            yaml_path = paths.instance_yaml(Path(meta["absolute_path"]))
+            if not yaml_path.is_file():
+                orphans.append(name)
+        return sorted(orphans)
 
     @staticmethod
     def get(name: str) -> Instance | None:

@@ -18,6 +18,16 @@ from . import frida_dl, paths
 from .config import InstanceConfig, Module
 from .settings import settings
 
+# Only HTTP(S) module URLs are allowed. Allowing ``file://`` would let a
+# malicious ``beetroot.yaml`` exfiltrate arbitrary host files into the
+# module cache (e.g. ``url: file:///etc/passwd``). Other schemes
+# (``ftp:``, ``gopher:``) are not in scope either.
+_ALLOWED_URL_SCHEMES: tuple[str, ...] = ("http://", "https://")
+
+
+class ModuleFetchError(RuntimeError):
+    """Raised when a module zip cannot be downloaded from its URL."""
+
 
 def _module_cache_dir() -> Path:
     return paths.user_cache_dir("modules")
@@ -29,6 +39,15 @@ def _filename_from_url(url: str) -> str:
 
 
 def _fetch_url(url: str) -> Path:
+    if not url.startswith(_ALLOWED_URL_SCHEMES):
+        # Belt-and-suspenders: the Module pydantic validator already
+        # rejects non-http(s) schemes, but defending here too means a
+        # raw _fetch_url call from a third-party script can't bypass
+        # the allowlist via a hand-built string.
+        raise ModuleFetchError(
+            f"module url {url!r} uses an unsupported scheme; "
+            "only http:// and https:// are allowed"
+        )
     cache = _module_cache_dir() / _filename_from_url(url)
     if cache.exists() and cache.stat().st_size > 0:
         return cache
@@ -38,13 +57,18 @@ def _fetch_url(url: str) -> Path:
         with urllib.request.urlopen(url, timeout=settings.http_timeout) as resp:
             data = resp.read()
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"download failed: HTTP {e.code} fetching {url}") from e
+        raise ModuleFetchError(
+            f"download failed: HTTP {e.code} fetching {url}; "
+            "verify the URL is current (the upstream release may have moved)"
+        ) from e
     except TimeoutError as e:
-        raise RuntimeError(
+        raise ModuleFetchError(
             f"download timed out after {settings.http_timeout}s: {url}"
         ) from e
     except urllib.error.URLError as e:
-        raise RuntimeError(f"download failed: cannot reach {url}: {e.reason}") from e
+        raise ModuleFetchError(
+            f"download failed: cannot reach {url}: {e.reason}"
+        ) from e
     tmp = cache.with_suffix(".tmp")
     tmp.write_bytes(data)
     tmp.replace(cache)
