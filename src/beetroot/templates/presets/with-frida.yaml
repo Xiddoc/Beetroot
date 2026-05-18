@@ -1,0 +1,16 @@
+# Beetroot with-frida preset — default + an explicit, version-pinned frida-server.
+# Pin frida.version to match your host-side frida-tools (major + minor must agree).
+# Drop the `frida:` block to disable frida entirely; see presets/default.yaml.
+
+api_version: 2
+
+android:
+  version: 14
+
+frida:
+  version: "16.4.10"
+
+stealth:
+  denylist:
+    - com.google.android.gms
+    - com.google.android.gms.unstable
