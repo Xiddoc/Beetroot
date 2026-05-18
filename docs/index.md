@@ -5,8 +5,8 @@
 Beetroot is a Docker-packaged rooted Android 14 environment — Magisk, LiteGapps, Houdini ARM translation, and Frida — wrapped with a Python CLI that lets you run **as many persistent research "phones" as your host can afford** side by side. Each phone has its own `/data`, its own ADB and Frida ports, its own resource caps, and a single `beetroot.yaml` that fully describes it. Commit the YAML and you have a reproducible device config you can share with collaborators.
 
 ```
-$ beetroot create alpha --preset stealth
-$ beetroot create bravo --preset default
+$ beetroot create alpha
+$ beetroot create bravo
 $ beetroot up alpha bravo
 [beetroot] alpha up — ADB localhost:5555, Frida localhost:27042
 [beetroot] bravo up — ADB localhost:5565, Frida localhost:27052

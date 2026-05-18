@@ -46,10 +46,10 @@ field explicitly is recommended once you're committing an instance YAML to
 source control, so that a future Beetroot release with a breaking schema
 change fails loud instead of silently reinterpreting your config.
 
-All shipped presets declare `api_version: 1` explicitly as the first
-field. When the schema breaks, the constant `SUPPORTED_API_VERSION` in
-`src/beetroot/config.py` is bumped and a migration entry is added to
-`CHANGELOG.md`.
+All [example YAMLs](../guides/examples.md) declare `api_version` explicitly
+as the first field. When the schema breaks, the constant
+`SUPPORTED_API_VERSION` in `src/beetroot/config.py` is bumped and a
+migration entry is added to `CHANGELOG.md`.
 
 ---
 

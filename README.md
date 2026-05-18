@@ -9,7 +9,7 @@
 Beetroot is a Docker-packaged rooted Android 14 environment — Magisk, LiteGapps, Houdini ARM translation, and Frida — wrapped with a Python CLI that runs as many persistent research "phones" as your host can afford, side by side. Each phone is a self-contained directory anywhere on disk: its own `beetroot.yaml`, its own `/data`, its own ADB and Frida ports, its own resource caps. A cross-instance registry at `~/.config/beetroot/instances.json` tracks them all by name.
 
 ```
-$ beetroot create alpha --preset stealth
+$ beetroot create alpha
 $ beetroot up alpha
 [beetroot] alpha up — ADB localhost:5555, Frida localhost:27042
 $ beetroot ls
@@ -54,7 +54,7 @@ Full documentation lives at <https://xiddoc.github.io/Beetroot/>.
 |------|--------------|
 | [Installation](https://xiddoc.github.io/Beetroot/getting-started/installation/) | Prerequisites, install paths, the `[frida]` extra |
 | [CLI reference](https://xiddoc.github.io/Beetroot/reference/cli/) | Every verb, every flag |
-| [Configuration](https://xiddoc.github.io/Beetroot/reference/config/) | `beetroot.yaml` schema, presets, resource defaults |
+| [Configuration](https://xiddoc.github.io/Beetroot/reference/config/) | `beetroot.yaml` schema, starter examples, resource defaults |
 | [Port allocation](https://xiddoc.github.io/Beetroot/reference/ports/) | Stride-of-10 mapping, overrides |
 | [Architecture](https://xiddoc.github.io/Beetroot/how-it-works/architecture/) | Image build, orchestration, boot flow |
 | [Filesystem layout](https://xiddoc.github.io/Beetroot/how-it-works/filesystem/) | Per-instance state, what's gitignored |

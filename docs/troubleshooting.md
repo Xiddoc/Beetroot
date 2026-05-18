@@ -62,7 +62,9 @@ Once you see that line, `adb shell` will work.
 
 ```bash
 beetroot destroy -y alpha
-beetroot create alpha --preset stealth
+beetroot create alpha
+cp examples/stealth.yaml alpha/beetroot.yaml
+beetroot apply alpha
 beetroot up alpha
 ```
 
@@ -127,20 +129,6 @@ uv tool install frida-tools
 ```bash
 beetroot down alpha && beetroot up alpha
 ```
-
----
-
-## `beetroot create` fails with "preset not bundled"
-
-**Symptom:**
-
-```
-FileNotFoundError: preset 'mything' not bundled with beetroot — available: ['default', 'no-gapps', 'stealth']
-```
-
-**Cause:** Presets ship inside the installed `beetroot` package; there's no user-extensible preset directory. `--preset` only accepts names from the list shown in the error message.
-
-**Fix:** Use one of the bundled presets and edit the resulting `beetroot.yaml`. Or, for a more permanent custom starting point, hand-write a `beetroot.yaml` in a new directory and adopt it with `beetroot register <path>` (see [Presets](guides/presets.md#writing-your-own-preset)).
 
 ---
 

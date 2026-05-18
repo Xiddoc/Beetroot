@@ -1,14 +1,26 @@
-# Presets
+# Examples
 
-Presets are starter `beetroot.yaml` configs that ship **inside the `beetroot` wheel** (under `beetroot.templates.presets`). They let you say `beetroot create <name> --preset stealth` instead of manually editing YAML before your first boot. Because they're bundled with the package, the same preset names resolve identically from `uv tool install` and `uv sync` checkouts.
+Beetroot ships a handful of starter `beetroot.yaml` files under the [`examples/`](https://github.com/Xiddoc/Beetroot/tree/main/examples) directory of the repository. They are **documentation only** — the CLI does not load or reference them. Each file is a hand-readable, copy-pasteable snippet you drop over a fresh `beetroot.yaml` when you want that configuration as your starting point.
 
-## Available presets
+`beetroot create <name>` always writes a minimal `beetroot.yaml`:
 
-### `default`
+```yaml
+api_version: 2
+android:
+  version: 14
+```
 
-The cheap baseline — low FPS, small framebuffer, host GPU passthrough. GMS is denylisted so it can't see Magisk root, but no additional stealth modules are installed.
+That's the full file. Every other field falls back to schema defaults (see the [config reference](../reference/config.md)). To start from a richer baseline, copy one of the examples below over the generated YAML and re-run `beetroot apply <name>`.
 
-```yaml title="default.yaml"
+## Available examples
+
+### `default.yaml`
+
+The lightweight baseline — GMS is denylisted from Magisk root, but no additional stealth modules are installed.
+
+```yaml title="examples/default.yaml"
+api_version: 2
+
 android:
   version: 14
 
@@ -18,15 +30,15 @@ stealth:
     - com.google.android.gms.unstable
 ```
 
-That's the entire preset. Every other field (display, resources, frida, modules) defaults to a sensible value — see the [config reference](../reference/config.md). This preset is intentionally minimal so the file shows *only* what the researcher cares about: which Android version, and which packages to hide root from.
+Use this when you're testing something that doesn't perform anti-root checks, or when you want the lightest-weight setup with sensible defaults.
 
-Use this when you're testing something that doesn't use anti-root checks, or when you want the lightest-weight setup.
-
-### `stealth`
+### `stealth.yaml`
 
 Adds [Shamiko](https://github.com/LSPosed/LSPosed.github.io) on top of `default`. Shamiko turns Magisk's denylist mode into a true allowlist-based hide — processes on the denylist can't detect Magisk at all. The denylist is also wider to cover all GMS variants and the Play Store.
 
-```yaml title="stealth.yaml"
+```yaml title="examples/stealth.yaml"
+api_version: 2
+
 android:
   version: 14
 
@@ -45,18 +57,28 @@ stealth:
 !!! tip "Pin the sha256"
     After Beetroot downloads Shamiko for the first time, run `sha256sum` on the staged zip (look up the instance path with `beetroot ls --json | jq -r .<name>.path`), paste the hash into the instance's `beetroot.yaml` under the module's `sha256:` field, and run `beetroot apply <name>`. Future downloads are verified against this hash — if the remote zip is tampered with or the URL redirects somewhere unexpected, the apply fails loudly.
 
-### `no-gapps`
+### `no-gapps.yaml`
 
-Same as `default` but with `android.gapps: none`. Use this if you want a stripped-down Android without Google Mobile Services — fewer running processes, smaller `/data`, no GMS-specific anti-emulator checks.
+Same as `default.yaml` but with `android.gapps: none`. Use this if you want a stripped-down Android without Google Mobile Services — fewer running processes, smaller `/data`, no GMS-specific anti-emulator checks.
 
-## Using presets
+```yaml title="examples/no-gapps.yaml"
+api_version: 2
 
-```bash
-beetroot create research-clean            # default preset
-beetroot create research-hidden --preset stealth
+android:
+  version: 14
+  gapps: none
 ```
 
-The preset is only used at creation time. The resulting `<instance>/beetroot.yaml` is a standalone file — it doesn't reference or import the preset. You can freely edit it afterward.
+## Using an example
+
+```bash
+beetroot create research-clean
+cp examples/stealth.yaml research-clean/beetroot.yaml
+beetroot apply research-clean
+beetroot up research-clean
+```
+
+The `examples/` directory is a sibling of `docs/` in the [Beetroot repo](https://github.com/Xiddoc/Beetroot/tree/main/examples). If you installed via `uv tool install` and don't have a checkout handy, copy the YAML from this page directly into your instance's `beetroot.yaml`.
 
 ## Modifying your config
 
@@ -73,9 +95,9 @@ beetroot down alpha && beetroot up alpha
 
 `beetroot apply` is idempotent. Run it after any YAML edit; it only re-downloads things that changed.
 
-## Writing your own preset
+## Writing your own starter config
 
-The set of bundled presets is fixed per Beetroot release (they ship inside the wheel). To use a one-off custom starting point, write a `beetroot.yaml` directly into a new instance directory and adopt it:
+There is no plugin or extension hook for adding new examples — they're just documentation. For a custom starting point, hand-write a `beetroot.yaml` in a new directory and adopt it:
 
 ```bash
 mkdir my-custom-instance

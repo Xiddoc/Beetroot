@@ -13,25 +13,23 @@ Beetroot's path model is Docker-inspired: an instance is any directory on disk c
 Initialize a new instance.
 
 ```
-beetroot create <name> [--preset PRESET] [--path DIR] [--from-data PATH]
+beetroot create <name> [--path DIR] [--from-data PATH]
 ```
 
 | Argument / Flag | Type | Description |
 |----------------|------|-------------|
 | `name` | positional | Instance name (used as the Docker project name and the default directory name) |
-| `--preset` | string | Bundled preset name. Default: `default` |
 | `--path` | path | Where to create the instance directory. Default: `./<name>`. Resolved against `cwd`. |
 | `--from-data` | path | Copy an existing data directory as the new instance's `/data`. |
 
 **What it does:**
 
 1. Validates the name isn't already registered.
-2. Loads the bundled preset.
-3. Creates the instance directory and writes `beetroot.yaml` into it.
-4. Allocates the lowest free port index.
-5. Registers `name → absolute_path` in `~/.config/beetroot/instances.json`.
-6. If `--from-data` is given, copies the directory into `<instance>/data/`.
-7. Renders `.env`, downloads the Frida binary, downloads + stages modules.
+2. Creates the instance directory and writes a minimal `beetroot.yaml` into it (`api_version` + `android.version`; every other field falls back to schema defaults). To start from a richer baseline, copy one of the [example YAMLs](../guides/examples.md) over the generated file and run `beetroot apply <name>`.
+3. Allocates the lowest free port index.
+4. Registers `name → absolute_path` in `~/.config/beetroot/instances.json`.
+5. If `--from-data` is given, copies the directory into `<instance>/data/`.
+6. Renders `.env`, downloads the Frida binary, downloads + stages modules.
 
 **Output:**
 

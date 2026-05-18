@@ -59,7 +59,7 @@ Magisk's denylist, plus Zygisk's own
 [Shamiko](https://github.com/LSPosed/LSPosed.github.io/releases/tag/shamiko)
 module hiding Magisk-related paths from denylisted processes. They are
 **documented here** because the mitigation is fragile — Shamiko is an
-external module the user must opt into via `presets/stealth.yaml`, and
+external module the user must opt into via `examples/stealth.yaml`, and
 GMS occasionally ships new checks that aren't yet covered.
 
 - **`/system/bin/su`, `/system/xbin/su`, `which su` returning non-empty.**
@@ -114,7 +114,7 @@ report them.
 
 The following indicators are present in the v0.3 container image
 (`docker build` of `docker/Dockerfile` against the redroid base + any
-preset). Mitigation owner refers to which v0.4 PR
+starter `beetroot.yaml`). Mitigation owner refers to which v0.4 PR
 (see [§7](#7-v04-implementation-roadmap)) takes responsibility.
 
 | Indicator                          | Container path / signal                                                                | Risk     | Mitigation owner                   |

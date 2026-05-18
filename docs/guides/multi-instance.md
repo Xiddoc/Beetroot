@@ -5,8 +5,10 @@ One of Beetroot's core features is running several independent Android research 
 ## Create multiple instances
 
 ```bash
-beetroot create research-clean --preset default
-beetroot create research-stealth --preset stealth
+beetroot create research-clean
+beetroot create research-stealth
+cp examples/stealth.yaml research-stealth/beetroot.yaml
+beetroot apply research-stealth
 beetroot up research-clean research-stealth
 ```
 
