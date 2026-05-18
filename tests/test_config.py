@@ -14,6 +14,7 @@ from beetroot.config import (
     SUPPORTED_API_VERSION,
     Android,
     Display,
+    Frida,
     InstanceConfig,
     Module,
     Ports,
@@ -89,6 +90,84 @@ class TestBundledPresets:
     def test_no_gapps_preset_loads(self) -> None:
         cfg = load_preset("no-gapps")
         assert cfg.api_version == SUPPORTED_API_VERSION
+
+    def test_default_preset_has_no_frida(self) -> None:
+        cfg = load_preset("default")
+        assert cfg.frida is None
+
+    def test_no_gapps_preset_has_no_frida(self) -> None:
+        cfg = load_preset("no-gapps")
+        assert cfg.frida is None
+
+    def test_stealth_preset_has_no_frida(self) -> None:
+        cfg = load_preset("stealth")
+        assert cfg.frida is None
+
+    def test_with_frida_preset_pins_version(self) -> None:
+        cfg = load_preset("with-frida")
+        assert cfg.api_version == SUPPORTED_API_VERSION
+        assert cfg.frida is not None
+        assert cfg.frida.version == "16.4.10"
+
+
+class TestFridaOptional:
+    """v0.3 (T2): the frida: block in beetroot.yaml is opt-in."""
+
+    def test_default_instance_config_has_no_frida(self) -> None:
+        cfg = InstanceConfig()
+        assert cfg.frida is None
+
+    def test_empty_yaml_yields_none_frida(self, tmp_path: Path) -> None:
+        p = tmp_path / "empty.yaml"
+        p.write_text("")
+        cfg = load_yaml(p)
+        assert cfg.frida is None
+
+    def test_yaml_without_frida_block_yields_none(self, tmp_path: Path) -> None:
+        p = tmp_path / "cfg.yaml"
+        p.write_text(yaml.safe_dump({"android": {"version": 14}}))
+        cfg = load_yaml(p)
+        assert cfg.frida is None
+
+    def test_explicit_null_yaml_yields_none(self, tmp_path: Path) -> None:
+        p = tmp_path / "cfg.yaml"
+        p.write_text("frida: ~\n")
+        cfg = load_yaml(p)
+        assert cfg.frida is None
+
+    def test_empty_frida_block_uses_model_default(self, tmp_path: Path) -> None:
+        # The model's own default still applies when the block IS present
+        # but empty — `frida: {}` instantiates Frida(version="16.4.10").
+        p = tmp_path / "cfg.yaml"
+        p.write_text(yaml.safe_dump({"frida": {}}))
+        cfg = load_yaml(p)
+        assert cfg.frida is not None
+        assert cfg.frida.version == Frida().version
+
+    def test_explicit_frida_version_preserved(self, tmp_path: Path) -> None:
+        p = tmp_path / "cfg.yaml"
+        p.write_text(yaml.safe_dump({"frida": {"version": "16.5.0"}}))
+        cfg = load_yaml(p)
+        assert cfg.frida is not None
+        assert cfg.frida.version == "16.5.0"
+
+    def test_render_env_omits_frida_specific_keys(self) -> None:
+        # Behavior test: a user-supplied empty YAML flows through load_yaml
+        # → render_env without producing any FRIDA-specific knob beyond the
+        # unconditional bind-mount ports (FRIDA_PORT / FRIDA_PORT2 remain so
+        # compose's `${FRIDA_PORT}` substitution still works).
+        cfg = InstanceConfig()
+        rendered_ports = {"adb": 5555, "frida": 27042, "frida2": 27043}
+        result = render_env("alpha", cfg, rendered_ports)
+        # FRIDA_VERSION never appears — the version is consumed by frida_dl,
+        # not rendered into .env.
+        assert "FRIDA_VERSION" not in result
+        # The bind-mount port substitutions DO remain — disabled-frida
+        # instances still need a non-empty value for compose to resolve
+        # the port mapping line even though the binary is the zero-byte
+        # placeholder.
+        assert "FRIDA_PORT=" in result
+        assert "FRIDA_PORT2=" in result
 
 
 class TestAndroidGapps:
@@ -334,6 +413,7 @@ class TestLoadPreset:
         msg = str(exc_info.value)
         assert "default" in msg
         assert "stealth" in msg
+        assert "with-frida" in msg
 
 
 class TestRenderEnv:
@@ -456,9 +536,9 @@ class TestWriteLoadYamlRoundtrip:
         assert loaded.display.width == cfg.display.width
         assert loaded.display.fps == cfg.display.fps
         assert loaded.resources.mem == cfg.resources.mem
-        assert loaded.frida is not None
-        assert cfg.frida is not None
-        assert loaded.frida.version == cfg.frida.version
+        # v0.3 (T2): frida is opt-in — both sides default to None.
+        assert loaded.frida is None
+        assert cfg.frida is None
 
     def test_custom_values_roundtrip(self, tmp_path: Path) -> None:
         raw = {
