@@ -272,8 +272,8 @@ so the path stays stable across the instance's lifetime.
 
 The compose template gets new env vars:
 
-- `BEETROOT_FRIDA_PATH` — full path to frida-server inside container.
-- `BEETROOT_MODULE_STAGE_PATH` — container-side bind-mount target for
+- `BEETROOT_FRIDA_BIN` — full path to frida-server inside container.
+- `BEETROOT_MODULES_DIR` — container-side bind-mount target for
   `instances/<name>/modules/`.
 - `BEETROOT_STEALTH_MODULE_ID` — randomized Magisk module ID that
   houses our service.d script and (optionally) the Gadget `.so`.
@@ -323,9 +323,9 @@ The full env-var contract:
 
 | Env var                        | Default                              | Consumer            |
 |--------------------------------|--------------------------------------|---------------------|
-| `BEETROOT_FRIDA_PATH`          | `/data/local/tmp/frida-server`       | `launch-frida.sh`   |
+| `BEETROOT_FRIDA_BIN`          | `/data/local/tmp/frida-server`       | `launch-frida.sh`   |
 | `BEETROOT_FRIDA_SOCKET_PATH`   | unset (TCP mode)                     | `launch-frida.sh`   |
-| `BEETROOT_MODULE_STAGE_PATH`   | `/flash_dir`                         | `flash-modules.sh`  |
+| `BEETROOT_MODULES_DIR`   | `/flash_dir`                         | `flash-modules.sh`  |
 | `BEETROOT_MAGISK_DB`           | `/data/adb/magisk.db`                | `magisk-config.sh`  |
 | `BEETROOT_DENYLIST_PACKAGES`   | `com.google.android.gms,com.google.android.gms.unstable` | `magisk-config.sh` |
 | `BEETROOT_STEALTH_MODULE_ID`   | unset (legacy init.rc mode)          | (build-time only)   |
@@ -406,7 +406,7 @@ executes against. Complexity tags: **S** (≤1 day), **M** (2–3 days),
 - **Scope:** Implement §3.1. Generate randomized
   `/data/adb/modules/<random>/bin/<random>` at `beetroot create`,
   persist in registry, wire into compose template via
-  `BEETROOT_FRIDA_PATH`. T7's `launch-frida.sh` already reads it.
+  `BEETROOT_FRIDA_BIN`. T7's `launch-frida.sh` already reads it.
 - **Complexity:** S.
 - **Unblocks:** The single highest-risk indicator from §2. Makes
   `/data/local/tmp/frida-server` scans miss us.
