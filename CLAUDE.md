@@ -61,7 +61,8 @@ The build output goes to `site/` (gitignored). The GitHub Actions workflow at `.
 
 ```
 src/beetroot/
-├── cli.py         # argparse dispatch, all verb implementations
+├── api.py         # OOP layer (Instance, Manager, DeviceBackend Protocol) — public surface
+├── cli.py         # Typer verbs; bodies delegate to api.Instance/Manager
 ├── config.py      # beetroot.yaml schema (pydantic) + .env render
 ├── settings.py    # env-driven overrides (BEETROOT_* vars) via pydantic-settings
 ├── ports.py       # stride-10 allocator
@@ -69,9 +70,12 @@ src/beetroot/
 ├── compose.py     # subprocess wrappers around `docker compose`
 ├── frida_dl.py    # download frida-server.xz, decompress (lzma), cache
 ├── modules_dl.py  # fetch + sha256-verify Magisk module zips
+├── snapshot.py    # pack/unpack instances as .tar.zst with manifest
 ├── builder.py     # one-time base-image build (`beetroot build`)
 └── paths.py       # single source of truth for filesystem layout
 ```
+
+`api.py` composes the procedural modules — it doesn't replace them. The CLI verbs in `cli.py` stay as module-level `@app.command()` functions (Typer captures the function reference at import time, so wrapping verbs in a class would break dispatch), but each verb body is a 1-15 line shell that constructs an `api.Instance` or calls an `api.Manager` staticmethod. Programmatic users should `from beetroot import Instance, Manager, DeviceBackend`; contributors editing the CLI need the procedural modules too. The forward-looking design of the `DeviceBackend` Protocol (and how v0.4's `AdbDeviceBackend` will satisfy it) lives at `docs/design/device-backends.md`.
 
 `paths.instance_root()` resolves to the directory containing `beetroot.yaml` via upward search from the current working directory (the `beetroot.yaml` is the marker — same model as git's `.git` and uv/pip's `pyproject.toml`). Running the CLI from a directory with no `beetroot.yaml` in any ancestor raises `paths.InstanceRootNotFoundError`, which `cli.main()` converts to a friendly `error: ...` and `exit 1`. The bundled compose template is resolved via `paths.bundled_compose_file()` (which uses `importlib.resources`), so the CLI works identically whether installed editable (`uv sync`) or as a tool (`uv tool install .`). The cross-instance registry lives at `paths.user_registry_file()`.
 

@@ -58,6 +58,7 @@ Full documentation lives at <https://xiddoc.github.io/Beetroot/>.
 | [Port allocation](https://xiddoc.github.io/Beetroot/reference/ports/) | Stride-of-10 mapping, overrides |
 | [Architecture](https://xiddoc.github.io/Beetroot/how-it-works/architecture/) | Image build, orchestration, boot flow |
 | [Filesystem layout](https://xiddoc.github.io/Beetroot/how-it-works/filesystem/) | Per-instance state, what's gitignored |
+| [Python API](https://xiddoc.github.io/Beetroot/reference/api/) | `from beetroot import Instance, Manager` — drive Beetroot programmatically |
 | [Troubleshooting](https://xiddoc.github.io/Beetroot/troubleshooting/) | Common breakages and how to unstick them |
 
 Contributors should read [CLAUDE.md](CLAUDE.md) for the development workflow (uv, ruff, mypy, pytest, 100% coverage gate).
