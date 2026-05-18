@@ -16,7 +16,7 @@ uv tool install git+https://github.com/Xiddoc/Beetroot.git
 beetroot build
 ```
 
-This verb (formerly `./scripts/setup.sh`, then `beetroot setup` in v0.2):
+This verb:
 
 1. Clones [`ayasa520/redroid-script`](https://github.com/ayasa520/redroid-script) into `/tmp/redroid`.
 2. Runs the patcher with `uv` to produce a local Docker image tagged `redroid/redroid:14.0.0_litegapps_houdini_magisk`. The patcher bakes Magisk, LiteGapps (minimal GApps), and Houdini (ARM-on-x86\_64 translation) into the base redroid image.

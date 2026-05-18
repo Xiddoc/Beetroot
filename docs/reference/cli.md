@@ -335,7 +335,7 @@ beetroot build [<gapps>]
 |----------|------|-------------|
 | `gapps` | positional, optional | GMS variant to bake into the base image. One of `none`, `lite` (default), `full`, `mindthegapps`. |
 
-The verb (formerly `beetroot setup` in v0.2 and `./scripts/setup.sh` before that):
+The verb:
 
 1. Clones [`ayasa520/redroid-script`](https://github.com/ayasa520/redroid-script) into `/tmp/redroid`.
 2. Runs the patcher to produce a local Docker image (e.g. `redroid/redroid:14.0.0_litegapps_houdini_magisk`).
