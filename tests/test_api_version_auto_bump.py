@@ -82,3 +82,52 @@ def test_v02_yaml_with_frida_block_round_trips(tmp_path: Path) -> None:
     assert cfg.api_version == 2
     assert cfg.frida is not None
     assert cfg.frida.version == "16.4.10"
+
+
+def test_auto_bump_warning_deduplicates_per_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    # CR #2 finding A2: the warning used to fire on every load.
+    # `beetroot ls` over 5 v0.2 instances → 5+ warning lines; a
+    # single `register bravo` triple-prints because of cascading
+    # `all_resolved_ports` calls. The fix is a module-level set
+    # of paths we've already warned about in this process. The
+    # conftest's autouse fixture clears it between tests so this
+    # test starts from a known-empty state.
+    yaml_path = tmp_path / "beetroot.yaml"
+    yaml_path.write_text("api_version: 1\nandroid:\n  version: 14\n")
+
+    config.load_yaml(yaml_path)
+    err_first = capsys.readouterr().err
+    assert err_first.count("auto-upgraded") == 1
+
+    config.load_yaml(yaml_path)
+    err_second = capsys.readouterr().err
+    assert err_second.count("auto-upgraded") == 0
+
+    # Third load via a sibling Path() pointing at the same file
+    # must also be deduped (the dedup key is the resolved path).
+    config.load_yaml(yaml_path.resolve())
+    err_third = capsys.readouterr().err
+    assert err_third.count("auto-upgraded") == 0
+
+
+def test_auto_bump_warning_fires_per_distinct_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Dedup is keyed by path — two different YAML files each get
+    # their own one-shot warning.
+    alpha_yaml = tmp_path / "alpha" / "beetroot.yaml"
+    alpha_yaml.parent.mkdir()
+    alpha_yaml.write_text("api_version: 1\nandroid:\n  version: 14\n")
+    bravo_yaml = tmp_path / "bravo" / "beetroot.yaml"
+    bravo_yaml.parent.mkdir()
+    bravo_yaml.write_text("api_version: 1\nandroid:\n  version: 14\n")
+
+    config.load_yaml(alpha_yaml)
+    config.load_yaml(bravo_yaml)
+    err = capsys.readouterr().err
+    # One warning per distinct path.
+    assert err.count("auto-upgraded") == 2
+    assert str(alpha_yaml) in err
+    assert str(bravo_yaml) in err

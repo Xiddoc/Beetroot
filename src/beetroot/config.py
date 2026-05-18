@@ -22,6 +22,13 @@ _VALID_ANDROID_VERSIONS = {11, 12, 13, 14}
 _MIN_PORT: Final = 1
 _MAX_PORT: Final = 65535
 
+# Module-level set of YAML paths we've already printed the "auto-bumped
+# api_version 1 → 2" warning for in this process. Without the dedup,
+# ``beetroot ls`` over 5 v0.2 instances prints 5+ warning lines; a
+# single ``register bravo`` triple-prints because ``all_resolved_ports``
+# cascades into the same load twice. CR #2 finding A2.
+_API_VERSION_BUMP_WARNED: set[Path] = set()
+
 
 class Display(BaseModel):
     """
@@ -293,11 +300,18 @@ def load_yaml(path: Path) -> InstanceConfig:
     if raw is None:
         raw = {}
     if isinstance(raw, dict) and raw.get("api_version") == 1:
-        print(
-            f"[beetroot] auto-upgraded api_version 1 → {SUPPORTED_API_VERSION} "
-            f"in {path}; run 'beetroot apply' to rewrite the YAML.",
-            file=sys.stderr,
-        )
+        # Dedup the warning by absolute path. ``beetroot ls`` over N
+        # v0.2 instances would otherwise print N copies of the line,
+        # and a single ``register bravo`` triple-prints because
+        # ``all_resolved_ports`` cascades into the same load twice.
+        resolved = path.resolve()
+        if resolved not in _API_VERSION_BUMP_WARNED:
+            print(
+                f"[beetroot] auto-upgraded api_version 1 → {SUPPORTED_API_VERSION} "
+                f"in {path}; run 'beetroot apply' to rewrite the YAML.",
+                file=sys.stderr,
+            )
+            _API_VERSION_BUMP_WARNED.add(resolved)
         raw["api_version"] = SUPPORTED_API_VERSION
     return InstanceConfig.model_validate(raw)
 

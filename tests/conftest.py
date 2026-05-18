@@ -1,9 +1,28 @@
 """Shared fixtures for the beetroot test suite."""
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _reset_api_version_warning_dedup() -> Iterator[None]:
+    """Reset the api_version-auto-bump dedup set between tests.
+
+    The dedup keeps the per-process warning from spamming on every
+    ``beetroot ls``, but it persists across tests in the same process.
+    Without this fixture, the second test that loads a v0.2 YAML at
+    the same absolute path would silently skip the warning and break
+    its assertions on stderr content.
+    """
+    # Local import keeps the conftest free of beetroot at collection.
+    from beetroot import config
+
+    config._API_VERSION_BUMP_WARNED.clear()
+    yield
+    config._API_VERSION_BUMP_WARNED.clear()
 
 
 @pytest.fixture
