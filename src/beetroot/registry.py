@@ -43,33 +43,35 @@ def _locked(path: Path, *, exclusive: bool = True) -> Iterator[Path]:
     """
     Advisory file lock around the registry — guards parallel mutations.
 
-    Two parallel processes that both find the registry missing must not
-    both initialise it with an empty document and clobber each other's
-    initial writes. ``open("a+")`` opens for read-write, creating if
-    absent, without truncating; the ``flock`` then serialises every
-    initialisation and read-modify-write under the same lock object.
+    The flock is held against a SEPARATE lock file (``<path>.lock``),
+    never the registry file itself. ``_write`` replaces the registry
+    file via an atomic rename, which would change ``path``'s inode
+    out from under any flock held on the registry-file fd — defeating
+    mutual exclusion. The dedicated lock file is never renamed, so
+    every holder's flock is on the same inode.
+
     Readers (``list_instances``, ``get``) take a shared lock so they
     can run in parallel with other readers but block on a sibling
     holding an exclusive lock — preventing them from observing the
-    mid-write truncation window that ``_write``'s atomic-replace
-    closes for the no-lock path too.
+    truncation window between ``_write``'s tmp-write and atomic
+    replace.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+") as f:
+    lock_file = path.with_suffix(path.suffix + ".lock")
+    with lock_file.open("a+") as f:
         flag = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
         fcntl.flock(f.fileno(), flag)
         try:
-            if exclusive:
-                f.seek(0)
-                if not f.read(1):
-                    # First-time initialisation, now under the lock so
-                    # it races cleanly with any sibling holder.
-                    f.seek(0)
-                    f.truncate(0)
-                    f.write(json.dumps(
-                        {"version": SCHEMA_VERSION, "instances": {}}
-                    ))
-                    f.flush()
+            if exclusive and not path.exists():
+                # First-time initialisation under the lock, so two
+                # parallel creators don't both write the empty doc.
+                # We're allowed to use the non-atomic write here
+                # because no concurrent reader can have observed
+                # ``path`` yet (it didn't exist a moment ago, and
+                # we hold the exclusive lock).
+                path.write_text(json.dumps(
+                    {"version": SCHEMA_VERSION, "instances": {}}
+                ))
             yield path
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
