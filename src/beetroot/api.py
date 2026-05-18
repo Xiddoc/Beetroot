@@ -592,10 +592,47 @@ class Manager:
         """
         Return every registered instance, sorted by name.
 
+        Orphan entries (registry rows whose on-disk directory has been
+        ``rm -rf``'d) are silently skipped — without this, a single
+        orphan would crash ``beetroot ls`` with a bare ``FileNotFoundError``
+        and prevent the user from cleaning up. Use
+        :meth:`list_orphans` to surface them for cleanup.
+
         Returns:
-            A list of :class:`Instance` objects, one per registered name.
+            A list of :class:`Instance` objects, one per healthy
+            registered name.
         """
-        return [Instance.load(name) for name in sorted(registry.list_instances())]
+        out: list[Instance] = []
+        for name in sorted(registry.list_instances()):
+            try:
+                out.append(Instance.load(name))
+            except FileNotFoundError:
+                # Orphan: registry entry exists, on-disk dir is gone.
+                # list_orphans() is the channel for cleanup discovery.
+                continue
+        return out
+
+    @staticmethod
+    def list_orphans() -> list[str]:
+        """
+        Return names of registered instances whose on-disk dir is missing.
+
+        An orphan is a registry row that points at a path with no
+        ``beetroot.yaml`` (typically because the user manually
+        ``rm -rf``'d the directory without running
+        ``beetroot destroy``). Names are returned sorted; the cleanup
+        verb is ``beetroot destroy <name> -y``.
+
+        Returns:
+            Sorted list of orphan instance names. Empty if every
+            registered entry's directory is present.
+        """
+        orphans: list[str] = []
+        for name, meta in registry.list_instances().items():
+            yaml_path = paths.instance_yaml(Path(meta["absolute_path"]))
+            if not yaml_path.is_file():
+                orphans.append(name)
+        return sorted(orphans)
 
     @staticmethod
     def get(name: str) -> Instance | None:

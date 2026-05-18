@@ -22,7 +22,7 @@ from typing import Annotated
 
 import typer
 
-from . import api, builder, compose, paths, ports, registry
+from . import api, builder, compose, modules_dl, paths, ports, registry
 from . import snapshot as snapshot_mod
 
 
@@ -274,14 +274,22 @@ def destroy(
         if ans != "y":
             typer.echo("[beetroot] aborted")
             return
-    try:
-        compose.down(name, root, volumes=True)
-    except compose.ComposeError as e:
-        # Surface the compose failure as a "continuing" advisory so the
-        # user knows the host-side cleanup still ran.
-        typer.echo(f"[beetroot] (compose down failed: {e}; continuing)")
     if root.exists():
+        try:
+            compose.down(name, root, volumes=True)
+        except compose.ComposeError as e:
+            # Surface the compose failure as a "continuing" advisory so
+            # the user knows the host-side cleanup still ran.
+            typer.echo(f"[beetroot] (compose down failed: {e}; continuing)")
         shutil.rmtree(root)
+    else:
+        # Orphan registry entry — the on-disk dir is already gone, so
+        # compose.down would FileNotFoundError on its ``cwd=`` arg.
+        # Skip it and just clean the registry row.
+        typer.echo(
+            f"[beetroot] (instance dir {root} already gone; "
+            f"removing orphan registry entry)"
+        )
     registry.remove(name)
     typer.echo(f"[beetroot] destroyed {name}")
 
@@ -295,6 +303,7 @@ def ls(
 ) -> None:
     """List all registered instances with their ports and live status."""
     instances = api.Manager.list()
+    orphans = api.Manager.list_orphans()
     if json_out:
         out = {}
         for inst in instances:
@@ -310,21 +319,36 @@ def ls(
                 "created_at": meta["created_at"],
             }
         typer.echo(json.dumps(out, indent=2, sort_keys=True))
+        if orphans:
+            _emit_orphan_skip(orphans)
         return
 
-    if not instances:
+    if not instances and not orphans:
         typer.echo("(no instances — try `beetroot create alpha`)")
         return
-    typer.echo(f"{'NAME':<14}{'IDX':<5}{'ADB':<22}{'FRIDA':<22}{'STATUS':<14}{'PATH'}")
-    for inst in instances:
-        p = inst.ports
-        typer.echo(
-            f"{inst.name:<14}{inst.index:<5}"
-            f"{'localhost:' + str(p['adb']):<22}"
-            f"{'localhost:' + str(p['frida']):<22}"
-            f"{inst.status:<14}"
-            f"{inst.root}"
-        )
+    if instances:
+        typer.echo(f"{'NAME':<14}{'IDX':<5}{'ADB':<22}{'FRIDA':<22}{'STATUS':<14}{'PATH'}")
+        for inst in instances:
+            p = inst.ports
+            typer.echo(
+                f"{inst.name:<14}{inst.index:<5}"
+                f"{'localhost:' + str(p['adb']):<22}"
+                f"{'localhost:' + str(p['frida']):<22}"
+                f"{inst.status:<14}"
+                f"{inst.root}"
+            )
+    if orphans:
+        _emit_orphan_skip(orphans)
+
+
+def _emit_orphan_skip(orphans: list[str]) -> None:
+    """Print the trailing 'skipping N orphan entries' advisory line."""
+    names = ", ".join(orphans)
+    typer.echo(
+        f"(skipping {len(orphans)} orphan "
+        f"{'entry' if len(orphans) == 1 else 'entries'}: {names}; "
+        f"clean up with 'beetroot destroy <name> -y')"
+    )
 
 
 @app.command()
@@ -526,6 +550,18 @@ def main() -> None:
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
     except builder.BootstrapError as e:
+        typer.echo(f"error: {e}", err=True)
+        sys.exit(1)
+    except modules_dl.ModuleFetchError as e:
+        typer.echo(f"error: {e}", err=True)
+        sys.exit(1)
+    except FileNotFoundError as e:
+        # Belt-and-suspenders: an instance whose on-disk dir was
+        # ``rm -rf``'d behind the CLI's back leaves a stale registry
+        # entry; ``Instance.load`` then trips on the missing
+        # ``beetroot.yaml`` deep in the call tree. ``Manager.list``
+        # filters orphans itself, but a verb that targets the orphan
+        # by name still needs this safety net.
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
 
