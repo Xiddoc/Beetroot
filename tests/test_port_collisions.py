@@ -114,10 +114,14 @@ class TestCmdApplyCollision:
         assert "5555" in result.stderr
 
     def test_apply_collision_exits_before_stage_instance(self, cli_root: Path) -> None:
+        from beetroot import api
+
         runner.invoke(cli.app, ["create", "alpha"])
         runner.invoke(cli.app, ["create", "bravo"])
         _write_pinned_yaml(registry.instance_path("bravo"), Ports(adb=5555))
-        with patch.object(cli, "_stage_instance") as fake_stage:
+        # T8 moved staging onto Instance._stage; the collision precheck
+        # in Instance.apply must still bail out before it runs.
+        with patch.object(api.Instance, "_stage") as fake_stage:
             result = runner.invoke(cli.app, ["apply", "bravo"])
             assert result.exit_code == 1
             assert "5555" in result.stderr

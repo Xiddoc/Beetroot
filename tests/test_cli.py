@@ -309,6 +309,24 @@ class TestCmdRegister:
         assert result.exit_code == 1
         assert "already registered" in result.stderr
 
+    def test_register_port_collision_exits(self, cli_root: Path) -> None:
+        # First instance pins ADB to the stride slot of the next-free
+        # index, so the next register would collide on it.
+        target_a = cli_root / "alpha"
+        target_a.mkdir()
+        config.write_yaml(
+            target_a / "beetroot.yaml",
+            config.InstanceConfig(ports=config.Ports(adb=5565)),
+        )
+        result = runner.invoke(cli.app, ["register", str(target_a)])
+        assert result.exit_code == 0, result.stderr
+        target_b = cli_root / "bravo"
+        target_b.mkdir()
+        config.write_yaml(target_b / "beetroot.yaml", config.InstanceConfig())
+        result = runner.invoke(cli.app, ["register", str(target_b)])
+        assert result.exit_code == 1
+        assert "5565" in result.stderr
+
 
 # ---------------------------------------------------------------------------
 # cmd_apply
