@@ -1,4 +1,4 @@
-"""Tests for config.py — schema validation, preset loading, env rendering."""
+"""Tests for config.py — schema validation, YAML round-trip, env rendering."""
 from __future__ import annotations
 
 import shutil
@@ -19,7 +19,6 @@ from beetroot.config import (
     Ports,
     Resources,
     base_image_tag,
-    load_preset,
     load_yaml,
     render_env,
     write_yaml,
@@ -75,20 +74,6 @@ class TestApiVersion:
         write_yaml(p, cfg)
         first_line = p.read_text().splitlines()[0]
         assert first_line.startswith("api_version:")
-
-
-class TestBundledPresets:
-    def test_default_preset_loads(self) -> None:
-        cfg = load_preset("default")
-        assert cfg.api_version == SUPPORTED_API_VERSION
-
-    def test_stealth_preset_loads(self) -> None:
-        cfg = load_preset("stealth")
-        assert cfg.api_version == SUPPORTED_API_VERSION
-
-    def test_no_gapps_preset_loads(self) -> None:
-        cfg = load_preset("no-gapps")
-        assert cfg.api_version == SUPPORTED_API_VERSION
 
 
 class TestAndroidGapps:
@@ -321,19 +306,6 @@ class TestPermissiveDefaults:
     def test_resources_unknown_field_ignored(self) -> None:
         r = Resources.model_validate({"mem": "3g", "typo": "yes"})
         assert r.mem == "3g"
-
-
-class TestLoadPreset:
-    def test_missing_preset_raises_file_not_found(self) -> None:
-        with pytest.raises(FileNotFoundError, match="not bundled"):
-            load_preset("nonexistent")
-
-    def test_missing_preset_error_lists_available(self) -> None:
-        with pytest.raises(FileNotFoundError) as exc_info:
-            load_preset("nonexistent")
-        msg = str(exc_info.value)
-        assert "default" in msg
-        assert "stealth" in msg
 
 
 class TestRenderEnv:

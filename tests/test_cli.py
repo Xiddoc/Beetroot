@@ -87,7 +87,6 @@ def _create_ns(name: str, **overrides: Any) -> argparse.Namespace:
     """Build a ``cmd_create``-shaped namespace with sensible defaults."""
     defaults: dict[str, Any] = {
         "name": name,
-        "preset": "default",
         "from_data": None,
         "path": None,
     }
@@ -210,6 +209,20 @@ class TestCmdCreate:
     def test_create_with_invalid_from_data_exits(self, cli_root: Path) -> None:
         with pytest.raises(SystemExit, match="not a directory"):
             cli.cmd_create(_create_ns("alpha", from_data=str(cli_root / "missing")))
+
+    def test_create_writes_exact_minimal_yaml_bytes(self, cli_root: Path) -> None:
+        """Behavior test — drive cmd_create end-to-end and pin the YAML bytes.
+
+        The whole point of T3 is that a fresh ``beetroot create`` produces
+        a minimal, hand-readable beetroot.yaml — not the schema's full
+        defaulted dump. Any change to that artifact (extra fields, key
+        reordering, comment leakage) breaks this assertion deliberately.
+        """
+        cli.cmd_create(_create_ns("alpha"))
+        root = registry.instance_path("alpha")
+        assert paths.instance_yaml(root).read_bytes() == (
+            b"api_version: 2\nandroid:\n  version: 14\n"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -585,11 +598,20 @@ class TestBuildParser:
             ns = p.parse_args([verb, name])
             assert callable(ns.func)
 
-    def test_parse_create_default_preset(self) -> None:
+    def test_parse_create_has_no_preset_flag(self) -> None:
         p = cli.build_parser()
         ns = p.parse_args(["create", "alpha"])
-        assert ns.preset == "default"
+        assert not hasattr(ns, "preset")
         assert ns.func is cli.cmd_create
+
+    def test_parse_create_rejects_preset_flag(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        p = cli.build_parser()
+        with pytest.raises(SystemExit) as exc:
+            p.parse_args(["create", "alpha", "--preset", "default"])
+        assert exc.value.code == 2
+        assert "--preset" in capsys.readouterr().err
 
     def test_parse_register_path_positional(self) -> None:
         p = cli.build_parser()
