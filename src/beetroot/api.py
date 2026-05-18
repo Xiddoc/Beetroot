@@ -40,6 +40,15 @@ from typing import Any, Protocol, runtime_checkable
 from . import compose, config, frida_dl, modules_dl, paths, ports, registry
 from . import snapshot as _snapshot_mod
 
+# Module-level alias for the builtin ``list`` so the two ``list*``
+# staticmethods on :class:`Manager` below can use ``_List[...]`` in
+# their return annotations. Without the alias, mypy lexically
+# resolves ``list[...]`` inside the class body to the
+# ``Manager.list`` staticmethod (which doesn't subscript). Using a
+# different identifier keeps the call sites readable while sidestepping
+# the shadowing.
+_List = list
+
 _MINIMAL_BEETROOT_YAML = "api_version: 2\nandroid:\n  version: 14\n"
 
 
@@ -623,8 +632,14 @@ class Manager:
     mutations from other processes are picked up on the next call.
     """
 
+    # The two list* staticmethods below use a module-level alias for
+    # the builtin ``list`` in their return annotations. Without the
+    # alias, mypy lexically resolves ``list[...]`` to ``Manager.list``
+    # (the staticmethod itself), which doesn't subscript. The alias is
+    # declared at module scope just below the imports.
+
     @staticmethod
-    def list() -> list[Instance]:
+    def list() -> _List[Instance]:
         """
         Return every registered instance, sorted by name.
 
@@ -638,7 +653,7 @@ class Manager:
             A list of :class:`Instance` objects, one per healthy
             registered name.
         """
-        out: list[Instance] = []
+        out: _List[Instance] = []
         for name in sorted(registry.list_instances()):
             try:
                 out.append(Instance.load(name))
@@ -649,7 +664,7 @@ class Manager:
         return out
 
     @staticmethod
-    def list_orphans() -> list[str]:
+    def list_orphans() -> _List[str]:
         """
         Return names of registered instances whose on-disk dir is missing.
 
@@ -663,7 +678,7 @@ class Manager:
             Sorted list of orphan instance names. Empty if every
             registered entry's directory is present.
         """
-        orphans: list[str] = []
+        orphans: _List[str] = []
         for name, meta in registry.list_instances().items():
             yaml_path = paths.instance_yaml(Path(meta["absolute_path"]))
             if not yaml_path.is_file():

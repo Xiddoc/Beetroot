@@ -23,10 +23,10 @@ def test_beetroot_entry_point_registered() -> None:
 
 def test_python_version_classifiers_match_requires_python() -> None:
     # CR #2 finding H1: ``classifiers`` listed 3.10/3.11/3.12/3.13 but
-    # ``requires-python = ">=3.13"`` — the 3.10–3.12 classifiers were
-    # misleading for PyPI search and let a Python 3.10 user think the
-    # wheel would install. Keep the classifiers in lockstep with the
-    # actual minimum.
+    # ``requires-python = ">=3.13"`` — the 3.10/3.11/3.12 classifiers
+    # were misleading for PyPI search and let a Python 3.10 user
+    # think the wheel would install. Keep the classifiers in lockstep
+    # with the actual minimum.
     classifiers = metadata("beetroot").get_all("Classifier") or []
     py_classifiers = [
         c for c in classifiers
