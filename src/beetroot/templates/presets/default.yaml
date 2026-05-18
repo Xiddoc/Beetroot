@@ -1,8 +1,8 @@
 # Beetroot default preset — baseline research phone.
 # Every field except android.version is optional; schema defaults apply when omitted.
-# Override any section in instances/<name>/beetroot.yaml and run `beetroot apply`.
+# Edit beetroot.yaml in your instance dir and run `beetroot apply` to re-stage.
 
-api_version: 1
+api_version: 2
 
 android:
   version: 14
