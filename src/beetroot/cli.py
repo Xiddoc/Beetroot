@@ -209,8 +209,25 @@ def up(
         bool,
         typer.Option("--all", help="Act on all registered instances."),
     ] = False,
+    build: Annotated[
+        bool,
+        typer.Option(
+            "--build",
+            hidden=True,
+            help="(removed in v0.3 — see CHANGELOG.md)",
+        ),
+    ] = False,
 ) -> None:
     """Start one or more instances."""
+    if build:
+        # T5 removed ``--build`` from ``up`` (build vs. start are two
+        # concerns), but Typer rejected the v0.2-shape invocation with
+        # a Rich "No such option: --build" box. The hidden alias is
+        # purely for the friendlier migration hint.
+        raise _error(
+            "'beetroot up --build' was removed in v0.3 — "
+            "run 'beetroot build' separately first to rebuild the image."
+        )
     for instance_name in _resolve_names(list(names or []), all_):
         _ensure_exists(instance_name)
         inst = _load(instance_name)

@@ -382,10 +382,14 @@ class TestCmdUp:
         assert "--build" not in cmd
 
     def test_up_rejects_build_flag(self, cli_root: Path) -> None:
-        """The `--build` option is removed; Typer must reject it."""
+        """The `--build` option is removed; v0.2 users get a friendly hint."""
         runner.invoke(cli.app, ["create", "alpha"])
         result = runner.invoke(cli.app, ["up", "alpha", "--build"])
         assert result.exit_code != 0
+        # Friendly migration hint, not a bare Typer "No such option"
+        # box. Pins CR #2 finding A3.
+        assert "removed in v0.3" in result.stderr
+        assert "beetroot build" in result.stderr
 
     def test_up_all(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
