@@ -95,9 +95,9 @@ convention = "google"
 [tool.ruff.lint.per-file-ignores]
 # Tests read better with patch + raises as nested withs and tolerate longer
 # lines on monkeypatch.setattr calls. Tests don't need full docstring coverage.
-# ARG00x — fixtures are often declared for their side-effects (isolated_root)
-#           and lambda stubs can't rename arguments, so unused-arg warnings
-#           are endemic and unhelpful in test files.
+# ARG00x — fixtures are often declared for their side-effects (isolated_registry,
+#           isolated_instance, cli_root) and lambda stubs can't rename
+#           arguments, so unused-arg warnings are endemic in test files.
 # PLR2004 — magic numbers in assertions are fine; extracting them to constants
 #            makes tests harder to read.
 # PLC0415 — some tests do deliberate mid-function imports for monkeypatching.

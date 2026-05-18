@@ -6,23 +6,25 @@
 [![Docs](https://github.com/Xiddoc/Beetroot/actions/workflows/docs.yml/badge.svg)](https://xiddoc.github.io/Beetroot/)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/Xiddoc/Beetroot/actions/workflows/ci.yml)
 
-Beetroot is a Docker-packaged rooted Android 14 environment — Magisk, LiteGapps, Houdini ARM translation, and Frida — wrapped with a Python CLI that runs as many persistent research "phones" as your host can afford, side by side. Each phone has its own `/data`, its own ADB and Frida ports, its own resource caps, and a single `beetroot.yaml` config you can commit for a reproducible build.
+Beetroot is a Docker-packaged rooted Android 14 environment — Magisk, LiteGapps, Houdini ARM translation, and Frida — wrapped with a Python CLI that runs as many persistent research "phones" as your host can afford, side by side. Each phone is a self-contained directory anywhere on disk: its own `beetroot.yaml`, its own `/data`, its own ADB and Frida ports, its own resource caps. A cross-instance registry at `~/.config/beetroot/instances.json` tracks them all by name.
 
 ```
 $ beetroot create alpha --preset stealth
 $ beetroot up alpha
 [beetroot] alpha up — ADB localhost:5555, Frida localhost:27042
 $ beetroot ls
-NAME   IDX  ADB             FRIDA            STATUS
-alpha  0    localhost:5555  localhost:27042  running
+NAME   IDX  ADB             FRIDA            PATH         STATUS
+alpha  0    localhost:5555  localhost:27042  ./alpha      running
 ```
 
 ## Quick start
 
 ```bash
 uv tool install git+https://github.com/Xiddoc/Beetroot.git
-beetroot setup            # one-time: build the redroid base image
-beetroot create alpha
+beetroot setup                              # one-time: build the redroid base image
+beetroot create alpha                       # creates ./alpha/ with beetroot.yaml
+beetroot create beta --path ~/work/beta     # or wherever you want it
+beetroot register ~/already-built-instance  # adopt an existing dir
 beetroot up alpha
 beetroot shell alpha
 ```
@@ -42,7 +44,7 @@ The host-side `frida` CLI is exposed via a `[frida]` extra. Install with `uv too
 - **LiteGapps** + **Houdini** ARM-on-x86_64 translation
 - **Frida server, version-pinned per instance** — bind-mounted, not baked in
 - **Drop-in Magisk module flashing** via `beetroot.yaml`
-- **`beetroot` CLI** — lifecycle (`create` / `up` / `down` / `destroy`), shell + module management, and a `setup` bootstrap. See the [CLI reference](https://xiddoc.github.io/Beetroot/reference/cli/) for every verb.
+- **`beetroot` CLI** — lifecycle (`create` / `register` / `up` / `down` / `destroy`), shell + module management, and a `setup` bootstrap. See the [CLI reference](https://xiddoc.github.io/Beetroot/reference/cli/) for every verb.
 
 ## Read the docs
 

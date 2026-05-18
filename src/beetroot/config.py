@@ -102,7 +102,8 @@ class Module(BaseModel):
 
     Attributes:
         url: HTTPS URL to download the module zip from.
-        path: Repo-relative path to a local zip file.
+        path: Path to a local zip file, resolved relative to the instance
+            directory (the directory containing this beetroot.yaml).
         sha256: Expected hex digest for integrity verification.
     """
 
