@@ -59,6 +59,47 @@ Other changes shipped together with T1:
 
 - T10: stealth-posture design doc landed (`docs/design/stealth-posture.md`); v0.4 will implement the playbook.
 
+### v0.3 — Theme T3: presets are documentation only
+
+`beetroot create --preset` is removed. Presets are no longer a
+framework concept — they are documentation-only starter `beetroot.yaml`
+files under the new top-level `examples/` directory (`default.yaml`,
+`stealth.yaml`, `no-gapps.yaml`). The CLI does not load them.
+
+`beetroot create <name>` now writes a minimal `beetroot.yaml` that
+contains exactly:
+
+```yaml
+api_version: 2
+android:
+  version: 14
+```
+
+Every other field falls back to schema defaults. To recreate a v0.2
+preset behaviour, copy the matching file from `examples/` over the
+freshly generated `beetroot.yaml` and run `beetroot apply <name>`:
+
+```bash
+beetroot create alpha
+cp examples/stealth.yaml alpha/beetroot.yaml
+beetroot apply alpha
+```
+
+**Removed:**
+
+* `beetroot create --preset` flag.
+* `config.load_preset(preset_name)` function.
+* The `beetroot.templates.presets` sub-package (the wheel-bundled
+  starter YAMLs introduced in T1).
+
+**Moved:**
+
+* `src/beetroot/templates/presets/*.yaml` →
+  top-level `examples/` directory, with a `# Documentation only —
+  not loaded by the CLI` header comment at the top of every file.
+* `docs/guides/presets.md` → `docs/guides/examples.md` (mkdocs nav
+  entry renamed Presets → Examples).
+
 ### Added
 - `api_version` top-level field in `beetroot.yaml` (default `1`). Each
   Beetroot release supports exactly one `api_version`; loading a YAML with
