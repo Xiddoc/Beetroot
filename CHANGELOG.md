@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- T10: stealth-posture design doc landed (docs/design/stealth-posture.md); v0.4 will implement the playbook.
+
 ### Added
 - `api_version` top-level field in `beetroot.yaml` (default `1`). Each
   Beetroot release supports exactly one `api_version`; loading a YAML with
