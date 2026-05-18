@@ -45,15 +45,17 @@ sequenceDiagram
 
 ## `entrypoint.sh` step by step
 
-1. **Wait for the Magisk DB.** Polls `/data/adb/magisk.db` in a loop. The file is created by Magisk during its own initialization, which happens during the Zygote start. Without this wait, the SQL writes below would fail.
+In v0.3, each numbered step below lives in a dedicated helper (see [Boot Scripts](boot-scripts.md) for per-helper contracts). The entrypoint itself is 12 lines of glue that sources the three helpers in order.
 
-2. **Configure Magisk via SQL.** Calls `magisk --sqlite` to enable Zygisk and the denylist, then inserts each package from `stealth.denylist` as a denylist entry. These writes take effect the next time Zygisk reads the DB — which happens before any app process starts, because Zygisk hooks into Zygote before forking app processes.
+1. **Wait for the Magisk daemon.** (`magisk-config.sh`.) Polls `magisk --sqlite "SELECT 1"` in a loop. The DB at `/data/adb/magisk.db` is created by Magisk during its own initialization, which happens during the Zygote start. Without this wait, the SQL writes below would silently no-op.
 
-3. **Flash modules.** Iterates every `*.zip` in `/flash_dir` (the bind-mounted `<instance-dir>/modules/` directory) and calls `magisk --install-module <zip>`. Modules that are already installed are reinstalled safely (Magisk handles idempotency).
+2. **Configure Magisk via SQL.** (`magisk-config.sh`.) Calls `magisk --sqlite` to enable Zygisk and the denylist, then inserts each package from `stealth.denylist` as a denylist entry. These writes take effect the next time Zygisk reads the DB — which happens before any app process starts, because Zygisk hooks into Zygote before forking app processes.
 
-4. **Launch Frida.** If `/data/local/tmp/frida-server` is executable, starts it in the background with `&`.
+3. **Flash modules.** (`flash-modules.sh`.) Iterates every `*.zip` in `/flash_dir` (the bind-mounted `<instance-dir>/modules/` directory) and calls `magisk --install-module <zip>`. Modules that are already installed are reinstalled safely (Magisk handles idempotency).
 
-5. **`wait`.** The script blocks on `wait` so the shell process stays alive as the parent of the Frida server. This keeps the Frida process attached to the Docker container's process tree and means `docker compose logs` streams Frida's stderr alongside the entrypoint output.
+4. **Launch Frida.** (`launch-frida.sh`.) If `/data/local/tmp/frida-server` is executable, starts it in the background with `&`.
+
+5. **`wait`.** (Back in `entrypoint.sh`.) The script blocks on `wait` so the shell process stays alive as the parent of the Frida server. This keeps the Frida process attached to the Docker container's process tree and means `docker compose logs` streams Frida's stderr alongside the entrypoint output.
 
 ## Shell environment
 
