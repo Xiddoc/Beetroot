@@ -598,20 +598,14 @@ class TestBuildParser:
             ns = p.parse_args([verb, name])
             assert callable(ns.func)
 
-    def test_parse_create_has_no_preset_flag(self) -> None:
+    def test_parse_create_namespace_has_only_expected_attrs(self) -> None:
         p = cli.build_parser()
         ns = p.parse_args(["create", "alpha"])
-        assert not hasattr(ns, "preset")
         assert ns.func is cli.cmd_create
-
-    def test_parse_create_rejects_preset_flag(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        p = cli.build_parser()
-        with pytest.raises(SystemExit) as exc:
-            p.parse_args(["create", "alpha", "--preset", "default"])
-        assert exc.value.code == 2
-        assert "--preset" in capsys.readouterr().err
+        # The full attribute set: positional + every flag wired in
+        # build_parser(). Any drift (e.g. re-adding a removed flag)
+        # surfaces here.
+        assert set(vars(ns)) == {"cmd", "name", "path", "from_data", "func"}
 
     def test_parse_register_path_positional(self) -> None:
         p = cli.build_parser()
