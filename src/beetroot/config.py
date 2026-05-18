@@ -342,6 +342,15 @@ def render_env(name: str, cfg: InstanceConfig, ports: dict[str, int]) -> str:
         f"DISPLAY_HEIGHT={cfg.display.height}",
         f"DISPLAY_FPS={cfg.display.fps}",
         f"DISPLAY_GPU={cfg.display.gpu_mode}",
+        # v0.4 stealth-posture overrides — emitted empty by default
+        # so the bundled compose template's ${VAR:-} fallback is
+        # the source of truth. v0.4 sets these from the manifest
+        # path_layout. Keeping them in render_env keeps the
+        # compose-template / render_env contract symmetric (see
+        # tests/test_compose_template_envs.py).
+        "BEETROOT_MAGISK_DB=",
+        "BEETROOT_MODULES_DIR=",
+        "BEETROOT_FRIDA_BIN=",
     ]
     if cfg.resources.mem_reservation is not None:
         lines.append(f"MEM_RESERVATION={cfg.resources.mem_reservation}")

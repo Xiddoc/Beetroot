@@ -314,6 +314,21 @@ def restore(
         )
     target = dest_path.resolve()
     if target.exists() and any(target.iterdir()):
+        # Refuse to wipe another registered instance's directory
+        # even under --force. The user almost certainly didn't mean
+        # to clobber a sibling's data; the safe path is to pick a
+        # new --path or destroy the conflict first. dest_name is
+        # already known not to be in the registry by the earlier
+        # ``already registered`` check, so any registry match here
+        # is a foreign instance.
+        for other_name, meta in registry.list_instances().items():
+            if Path(meta["absolute_path"]).resolve() == target:
+                raise SnapshotError(
+                    f"{target} is the registered directory of instance "
+                    f"{other_name!r}; refusing to overwrite (even with "
+                    f"--force). 'beetroot destroy {other_name}' first, "
+                    "or pick a different --path."
+                )
         if not force:
             raise SnapshotError(
                 f"{target} already exists and is non-empty; "

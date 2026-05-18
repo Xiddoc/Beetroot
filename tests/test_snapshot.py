@@ -234,6 +234,37 @@ class TestRestoreForce:
         assert not (target / "stale.txt").exists()
         assert (target / "data" / "marker.txt").read_bytes() == b"new"
 
+    def test_force_refuses_to_overwrite_another_instances_dir(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # Cross-instance attack: a malicious or careless --force
+        # restore aimed at another registered instance's directory
+        # would otherwise wipe a sibling's data. The fix refuses
+        # the operation even with --force; the user must destroy
+        # the sibling first or pick another path.
+        src = _make_instance(tmp_path / "alpha")
+        registry.add("alpha", src, 0)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+
+        # Register a peer instance at the dir we're about to point
+        # --force at. The peer is a DIFFERENT name; the cross-instance
+        # protection must fire.
+        peer_dir = tmp_path / "peer"
+        _make_instance(peer_dir, data_bytes=b"peer's precious data")
+        registry.add("peer", peer_dir, 1)
+
+        with pytest.raises(snapshot.SnapshotError, match="peer"):
+            snapshot.restore(
+                archive, dest_name="beta",
+                dest_path=peer_dir, force=True,
+            )
+        # Peer's data is intact.
+        assert (peer_dir / "data" / "marker.txt").read_bytes() == (
+            b"peer's precious data"
+        )
+        # Beta did not get registered.
+        assert registry.get("beta") is None
+
     def test_empty_existing_dir_is_allowed_without_force(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
