@@ -10,20 +10,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, Self, override
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
-
-if sys.version_info >= (3, 11):  # pragma: no cover - version-conditional import
-    from typing import Self
-else:  # pragma: no cover - version-conditional import
-    from typing_extensions import Self
-
-if sys.version_info >= (3, 12):  # pragma: no cover - version-conditional import
-    from typing import override
-else:  # pragma: no cover - version-conditional import
-    from typing_extensions import override
 
 SUPPORTED_API_VERSION: Final = 2
 

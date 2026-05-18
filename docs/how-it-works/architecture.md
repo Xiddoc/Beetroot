@@ -20,15 +20,17 @@ The `--env-file` supplies all the per-instance variables that the template reads
 
 ## Image build
 
-The Docker image (`docker/Dockerfile`) is a single-stage build from `redroid/redroid:14.0.0_litegapps_houdini_magisk`. The only things added are five files:
+The Docker image (`docker/Dockerfile`) is a single-stage build from the redroid base. The base-image tag is **derived at runtime** from the instance's `beetroot.yaml` by `config.base_image_tag()` — e.g. `android: {version: 14, gapps: lite}` produces `redroid/redroid:14.0.0_litegapps_houdini_magisk`. The tag is injected into the build via the `BASE_IMAGE` ARG in `docker/Dockerfile` and `${BASE_IMAGE}` substitution in the bundled compose template.
 
-- `docker/entrypoint.sh` — copied to `/entrypoint.sh` (12-line glue).
-- `docker/magisk-config.sh`, `docker/flash-modules.sh`, `docker/launch-frida.sh` — copied to `/` alongside the entrypoint via a `COPY docker/*.sh /` glob. See [Boot Scripts](boot-scripts.md) for each helper's contract.
+The only things added on top of the base are:
+
+- `docker/entrypoint.sh` — copied to `/entrypoint.sh` (12-line glue that sources the helpers in order).
+- `docker/magisk-config.sh`, `docker/flash-modules.sh`, `docker/launch-frida.sh` — copied to `/` alongside the entrypoint via a single `COPY --chmod=755 docker/*.sh /` glob. See [Boot Scripts](boot-scripts.md) for each helper's env-var contract.
 - `docker/stealth.rc` — copied to `/system/etc/init/stealth.rc` in the image.
 
 That's it. Magisk is already in the base image (courtesy of the `ayasa520/redroid-script` patcher run by `beetroot build`). The `magisk --sqlite` command ships with Magisk itself, so there's no separate sqlite binary to bundle.
 
-Frida is **not in the image**, and starting in v0.3 it's also **opt-in per instance**. When an instance's `beetroot.yaml` declares a `frida:` block, the CLI downloads `frida-server` and writes it to `<instance-dir>/frida-server`; that path is bind-mounted to `/data/local/tmp/frida-server` inside the container. When the block is omitted (the default preset's choice), the same path is a 0-byte non-executable placeholder and `entrypoint.sh`'s `[ -x ]` check skips the launch. Either way, you can change the Frida version per instance without rebuilding the image — see [Frida](../guides/frida.md).
+Frida is **not in the image**, and starting in v0.3 it's also **opt-in per instance**. When an instance's `beetroot.yaml` declares a `frida:` block, the CLI downloads `frida-server` and writes it to `<instance-dir>/frida-server`; that path is bind-mounted to `/data/local/tmp/frida-server` inside the container. When the block is omitted (the default for a bare `beetroot create`), the same path is a 0-byte non-executable placeholder and `launch-frida.sh`'s `[ -x ]` check skips the launch. Either way, you can change the Frida version per instance without rebuilding the image — see [Frida](../guides/frida.md).
 
 ## Magisk stealth via DB writes
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import shutil
 import sys
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -26,7 +26,7 @@ from . import api, builder, compose, paths, ports, registry
 from . import snapshot as snapshot_mod
 
 
-class _GappsVariant(str, Enum):
+class _GappsVariant(StrEnum):
     """GMS variants accepted by ``beetroot build``."""
 
     none = "none"

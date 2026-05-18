@@ -159,7 +159,7 @@ modules:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `url` | string | Exclusive with `path` | HTTPS URL to a `.zip`. Downloaded and cached by the CLI. |
-| `path` | string | Exclusive with `url` | Path to a local `.zip`. Relative to the project root. |
+| `path` | string | Exclusive with `url` | Path to a local `.zip`. Relative paths resolve against the instance directory. |
 | `sha256` | string | No | Expected SHA-256 hex digest. If provided, the CLI verifies the downloaded/local file before staging. |
 
 !!! warning "Exactly one of `url` or `path`"

@@ -26,7 +26,7 @@ import json
 import shutil
 import tarfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -112,7 +112,7 @@ def _build_manifest(name: str, source_index: int) -> Manifest:
         schema_version=SCHEMA_VERSION,
         name=name,
         source_index=source_index,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
         beetroot_version=importlib.metadata.version("beetroot"),
         path_layout={},
     )
@@ -202,7 +202,7 @@ def _add_manifest(tar: tarfile.TarFile, manifest: Manifest) -> None:
     payload = _manifest_to_json(manifest)
     info = tarfile.TarInfo(name=f"./{MANIFEST_FILENAME}")
     info.size = len(payload)
-    info.mtime = int(datetime.now(timezone.utc).timestamp())
+    info.mtime = int(datetime.now(UTC).timestamp())
     info.mode = 0o644
     tar.addfile(info, io.BytesIO(payload))
 

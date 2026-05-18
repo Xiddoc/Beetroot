@@ -10,6 +10,11 @@ instances/
 instances.json
 .cache/
 
+# Local-only sprint scaffolding (per-theme git worktrees + ad-hoc test files)
+worktrees/
+modules/
+test.yaml
+
 # Python build artifacts
 __pycache__/
 *.pyc

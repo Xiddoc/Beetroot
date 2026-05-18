@@ -1,7 +1,7 @@
 # Documentation only — not loaded by the CLI. Copy this over your fresh beetroot.yaml if you want this configuration.
 # Android without Google Mobile Services. Useful when researching APKs that
 # don't talk to GMS, or to minimize the moving parts.
-# Note: beetroot setup none must have been run to produce the base image.
+# Note: beetroot build none must have been run to produce the base image.
 
 api_version: 2
 

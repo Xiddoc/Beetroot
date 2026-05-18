@@ -45,10 +45,10 @@ beetroot logs alpha -f
 Wait for:
 
 ```
-[*] Android boot detected. Applying Stealth Configuration...
+[*] Android boot detected. Applying Beetroot configuration...
 ```
 
-Once you see that line, `adb shell` will work.
+Once you see that line (and the following Magisk + Zygisk steps), `adb shell` will work.
 
 ---
 
@@ -72,7 +72,7 @@ beetroot up alpha
 
 ## Frida can't see processes
 
-**Step 0:** Confirm Frida is enabled for this instance. Frida is opt-in starting in v0.3 — if `beetroot.yaml` has no `frida:` block, the staged binary is a 0-byte placeholder and `entrypoint.sh` skips the launch. Add a `frida: {version: "16.4.10"}` block (or recreate from the `with-frida` preset) and re-`apply`.
+**Step 0:** Confirm Frida is enabled for this instance. Frida is opt-in starting in v0.3 — if `beetroot.yaml` has no `frida:` block, the staged binary is a 0-byte placeholder and `entrypoint.sh` skips the launch. Add a `frida: {version: "16.4.10"}` block (or copy `examples/with-frida.yaml` over the file) and re-`apply`.
 
 **Step 1:** Confirm the binary is staged (use `beetroot ls --json` to get the path):
 

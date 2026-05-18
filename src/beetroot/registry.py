@@ -19,7 +19,7 @@ import os
 import sys
 import uuid
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -206,7 +206,7 @@ def add(name: str, absolute_path: Path, index: int) -> None:
         data["instances"][name] = {
             "absolute_path": str(absolute_path),
             "index": index,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         }
         _write(path, data)
 
@@ -242,7 +242,7 @@ def add_allocating(name: str, absolute_path: Path) -> int:
         data["instances"][name] = {
             "absolute_path": str(absolute_path),
             "index": index,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         }
         _write(path, data)
         return index
