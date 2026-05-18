@@ -377,3 +377,41 @@ is reserved for a later theme.
 - `cli.main()` still catches `paths.InstanceRootNotFoundError` and
   `ports.PortCollisionError` from deep in the call tree and surfaces
   them as `error: <msg>` on stderr + `exit 1`, matching v0.2.
+
+### v0.3 — Theme T5: setup renamed to build
+
+The one-time base-image bootstrap verb is renamed from `setup` to
+`build`. `beetroot up` no longer accepts a `--build` flag — building
+the image and starting an instance are two separate concerns, and
+`up` should be fast and predictable.
+
+**Migration for existing v0.2 users:** Run `beetroot build` instead
+of `beetroot setup`. To get a fresh image before `beetroot up`, run
+`beetroot build` explicitly first — `up` no longer accepts `--build`.
+
+**Renamed:**
+
+* CLI verb: `beetroot setup [variant]` → `beetroot build [variant]`.
+* Module: `src/beetroot/setup_runner.py` → `src/beetroot/builder.py`.
+* Function: `setup_runner.bootstrap_base_image()` →
+  `builder.build_image()`. Signature and semantics are otherwise
+  unchanged.
+
+**Removed:**
+
+* `beetroot up --build` flag. Typer now rejects it.
+* `compose.up()`'s `build: bool` kwarg. The `compose.build()` helper
+  is unchanged — call it separately if you need to rebuild from
+  Python.
+
+**Tests:**
+
+* `tests/test_setup_runner.py` → `tests/test_builder.py`. Class names
+  `TestGappsFlags`, `TestBootstrapErrorType`, etc. are unchanged;
+  imports switch to `beetroot.builder`.
+* New behavior test
+  `tests/test_cli.py::TestCmdUp::test_up_does_not_pass_build_flag`
+  asserts that `beetroot up alpha` runs and the compose argv it
+  produces contains no `--build` token.
+* Companion test `TestCmdUp::test_up_rejects_build_flag` asserts
+  that passing `--build` now fails Typer's option parsing.
