@@ -41,8 +41,27 @@ FORBIDDEN_LITERAL: tuple[tuple[str, str], ...] = (
 )
 
 # Regex-based forbidden patterns where a substring match is too coarse.
+# Invented flags are anchored so we catch them on every page including the
+# migration guide — they are CR #1 finding 1 regressions in disguise, and
+# the guide is allowed to discuss removed verbs but not to cite invented
+# new ones. ``ALLOWLISTED_PATHS`` therefore doesn't help here; the regex
+# tests below skip the migration guide for the same reason the literal
+# tests do, but the migration guide IS hand-checked for these strings via
+# the dedicated assertion at the bottom of the file.
 FORBIDDEN_REGEX: tuple[tuple[str, str], ...] = (
     (r"\B--preset\b", "T3 removed the --preset flag"),
+    # CR #1 finding 1: the migration guide invented these v0.2-shape
+    # flags that ``beetroot destroy`` never accepted. Pin them on
+    # every page including the migration guide via the dedicated
+    # assertion below; the test_no_forbidden_regex_in_user_docs
+    # still excludes the guide for fairness with past-tense
+    # discussion of removed verbs.
+    (r"\bdestroy --no-rm\b", "CR #1: --no-rm is not a real `destroy` flag"),
+    (r"\bdestroy --no-data\b", "CR #1: --no-data is not a real `destroy` flag"),
+    (
+        r"\bdestroy --no-deregister\b",
+        "CR #1: --no-deregister is not a real `destroy` flag",
+    ),
 )
 
 
@@ -80,3 +99,28 @@ def test_no_forbidden_regex_in_user_docs() -> None:
                         f"forbidden pattern /{rx.pattern}/ ({why}): {line.strip()!r}"
                     )
     assert not failures, "Doc-grep regressions:\n  " + "\n  ".join(failures)
+
+
+# CR #1 finding 1: the migration guide invented `beetroot destroy --no-rm`,
+# `--no-data`, `--no-deregister` — flags that never existed. The
+# allowlisted-path exemption keeps the other regex/literal tests
+# permissive for the migration guide's past-tense discussion of removed
+# verbs, but invented future-flags must NEVER appear there either.
+_INVENTED_DESTROY_FLAGS: tuple[str, ...] = (
+    "destroy --no-rm",
+    "destroy --no-data",
+    "destroy --no-deregister",
+)
+
+
+def test_migration_guide_does_not_invent_destroy_flags() -> None:
+    guide = REPO_ROOT / "docs" / "guides" / "migration-v0.2-to-v0.3.md"
+    text = guide.read_text()
+    failures = [
+        flag for flag in _INVENTED_DESTROY_FLAGS if flag in text
+    ]
+    assert not failures, (
+        f"Migration guide cites flags that don't exist on `beetroot "
+        f"destroy`: {failures}. The real cleanup verb for an orphan is "
+        f"`beetroot destroy <name> -y`."
+    )
