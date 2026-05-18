@@ -1,9 +1,20 @@
-"""beetroot — multi-instance Magisk-Android research lab CLI."""
+"""
+beetroot — multi-instance Magisk-Android research lab CLI.
+
+The Typer commands here are thin shells over the OOP surface in
+:mod:`beetroot.api`. Each verb constructs an :class:`api.Instance` or
+calls an :class:`api.Manager` staticmethod; CLI-specific concerns
+(stdout formatting, ``error: ...`` lines, ``typer.Exit(1)``) live in
+this module, while the lifecycle logic lives behind the OOP layer.
+
+The verbs stay as module-level Typer commands (not bound methods)
+because ``@app.command()`` captures the function reference at import
+time — wrapping them in a class would break Typer's dispatch.
+"""
 from __future__ import annotations
 
 import json
 import shutil
-import subprocess
 import sys
 from enum import Enum
 from pathlib import Path
@@ -11,10 +22,8 @@ from typing import Annotated
 
 import typer
 
-from . import builder, compose, config, frida_dl, modules_dl, paths, ports, registry
+from . import api, builder, compose, paths, ports, registry
 from . import snapshot as snapshot_mod
-
-_MINIMAL_BEETROOT_YAML = "api_version: 2\nandroid:\n  version: 14\n"
 
 
 class _GappsVariant(str, Enum):
@@ -50,43 +59,9 @@ def _ensure_exists(name: str) -> None:
         raise _error(f"no instance named {name!r}. Try `beetroot ls`.")
 
 
-def _instance_root(name: str) -> Path:
-    """Return the absolute instance directory for a registered ``name``."""
-    return registry.instance_path(name)
-
-
-def _check_port_collisions(name: str, new_ports: dict[str, int]) -> None:
-    """Exit with a clear message if ``new_ports`` collide with any other instance."""
-    others = {n: p for n, p in registry.all_resolved_ports().items() if n != name}
-    collision = registry.find_port_collision(new_ports, others)
-    if collision is None:
-        return
-    port, other_name, kind = collision
-    raise _error(
-        f"port {port} ({kind}) collides with instance {other_name!r} "
-        f"(which also uses {port}). Pin or remove one."
-    )
-
-
-def _stage_instance(name: str, root: Path, cfg: config.InstanceConfig) -> None:
-    """Render .env and stage Frida + modules. Idempotent — safe on ``apply``."""
-    meta = registry.get(name)
-    assert meta is not None
-    rendered_ports = ports.resolve_ports(meta["index"], cfg.ports)
-
-    paths.instance_data(root).mkdir(parents=True, exist_ok=True)
-    paths.instance_modules(root).mkdir(parents=True, exist_ok=True)
-
-    paths.instance_env(root).write_text(
-        config.render_env(name, cfg, rendered_ports)
-    )
-
-    if cfg.frida is not None:
-        frida_dl.stage_for_instance(root, cfg.frida.version)
-    else:
-        frida_dl.stage_empty(root)
-
-    modules_dl.stage_for_instance(root, cfg)
+def _load(name: str) -> api.Instance:
+    """Load an instance for a verb that has already passed ``_ensure_exists``."""
+    return api.Instance.load(name)
 
 
 def _resolve_names(names: list[str], all_flag: bool) -> list[str]:
@@ -143,33 +118,27 @@ def create(
             f"use `beetroot register {target_root}` to adopt it."
         )
 
-    cfg = config.InstanceConfig()
-    index = ports.lowest_free_index(registry.used_indices())
-    new_ports = ports.resolve_ports(index, cfg.ports)
-    _check_port_collisions(name, new_ports)
-
-    target_root.mkdir(parents=True, exist_ok=True)
-    paths.instance_yaml(target_root).write_text(_MINIMAL_BEETROOT_YAML)
-
-    registry.add(name, target_root, index)
-
     if from_data is not None:
         src = Path(from_data).resolve()
         if not src.is_dir():
             raise _error(f"--from-data path {src} is not a directory.")
+        target_root.mkdir(parents=True, exist_ok=True)
         dst = paths.instance_data(target_root)
         if dst.exists():
             shutil.rmtree(dst)
         typer.echo(f"[beetroot] copying {src} → {dst}")
         shutil.copytree(src, dst)
 
-    _stage_instance(name, target_root, cfg)
-    p = ports.resolve_ports(index, cfg.ports)
+    try:
+        inst = api.Instance.create(name, path=target_root)
+    except ValueError as e:
+        raise _error(str(e)) from e
+    p = inst.ports
     typer.echo(
-        f"[beetroot] created {name} at {target_root} "
-        f"(index {index}, ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"
+        f"[beetroot] created {inst.name} at {inst.root} "
+        f"(index {inst.index}, ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"
     )
-    typer.echo(f"[beetroot] next: beetroot up {name}")
+    typer.echo(f"[beetroot] next: beetroot up {inst.name}")
 
 
 @app.command()
@@ -181,25 +150,24 @@ def register(
     ] = None,
 ) -> None:
     """Adopt an existing instance directory under the global registry."""
-    target_root = Path(path).resolve()
-    yaml_path = paths.instance_yaml(target_root)
-    if not yaml_path.is_file():
-        raise _error(f"no beetroot.yaml at {yaml_path}.")
-    resolved_name = name or target_root.name
+    target_root = path.resolve()
+    resolved_name = name if name is not None else target_root.name
     if registry.get(resolved_name) is not None:
         raise _error(
             f"instance {resolved_name!r} already registered. Use a different "
             f"--name, or `beetroot destroy {resolved_name}` first."
         )
-    cfg = config.load_yaml(yaml_path)
-    index = ports.lowest_free_index(registry.used_indices())
-    new_ports = ports.resolve_ports(index, cfg.ports)
-    _check_port_collisions(resolved_name, new_ports)
-    registry.add(resolved_name, target_root, index)
+    try:
+        inst = api.Instance.register(path, name=name)
+    except FileNotFoundError as e:
+        raise _error(str(e)) from e
+    except ValueError as e:
+        raise _error(str(e)) from e
+    p = inst.ports
     typer.echo(
-        f"[beetroot] registered {resolved_name} at {target_root} "
-        f"(index {index}, ADB localhost:{new_ports['adb']}, "
-        f"Frida localhost:{new_ports['frida']})"
+        f"[beetroot] registered {inst.name} at {inst.root} "
+        f"(index {inst.index}, ADB localhost:{p['adb']}, "
+        f"Frida localhost:{p['frida']})"
     )
 
 
@@ -209,13 +177,11 @@ def apply(
 ) -> None:
     """Re-render ``.env`` and re-stage files from the instance's beetroot.yaml."""
     _ensure_exists(name)
-    root = _instance_root(name)
-    cfg = config.load_yaml(paths.instance_yaml(root))
-    meta = registry.get(name)
-    assert meta is not None
-    new_ports = ports.resolve_ports(meta["index"], cfg.ports)
-    _check_port_collisions(name, new_ports)
-    _stage_instance(name, root, cfg)
+    inst = _load(name)
+    try:
+        inst.apply()
+    except ValueError as e:
+        raise _error(str(e)) from e
     typer.echo(f"[beetroot] re-staged {name} from beetroot.yaml")
     typer.echo(f"[beetroot] restart with: beetroot down {name} && beetroot up {name}")
 
@@ -234,14 +200,11 @@ def up(
     """Start one or more instances."""
     for instance_name in _resolve_names(list(names or []), all_):
         _ensure_exists(instance_name)
-        root = _instance_root(instance_name)
-        compose.up(instance_name, root)
-        meta = registry.get(instance_name)
-        assert meta is not None
-        cfg = config.load_yaml(paths.instance_yaml(root))
-        p = ports.resolve_ports(meta["index"], cfg.ports)
+        inst = _load(instance_name)
+        inst.up()
+        p = inst.ports
         typer.echo(
-            f"[beetroot] {instance_name} up — "
+            f"[beetroot] {inst.name} up — "
             f"ADB localhost:{p['adb']}, Frida localhost:{p['frida']}"
         )
 
@@ -260,7 +223,7 @@ def down(
     """Stop one or more instances, preserving data."""
     for instance_name in _resolve_names(list(names or []), all_):
         _ensure_exists(instance_name)
-        compose.down(instance_name, _instance_root(instance_name))
+        _load(instance_name).down()
         typer.echo(f"[beetroot] {instance_name} down (data preserved)")
 
 
@@ -278,9 +241,7 @@ def restart(
     """Stop then start one or more instances."""
     for instance_name in _resolve_names(list(names or []), all_):
         _ensure_exists(instance_name)
-        root = _instance_root(instance_name)
-        compose.down(instance_name, root)
-        compose.up(instance_name, root)
+        _load(instance_name).restart()
         typer.echo(f"[beetroot] {instance_name} restarted")
 
 
@@ -294,7 +255,7 @@ def destroy(
 ) -> None:
     """Stop and permanently delete an instance including its data directory."""
     _ensure_exists(name)
-    root = _instance_root(name)
+    root = registry.instance_path(name)
     if not yes:
         ans = input(f"Destroy {name} and delete {root}? [y/N] ").strip().lower()
         if ans != "y":
@@ -303,6 +264,8 @@ def destroy(
     try:
         compose.down(name, root, volumes=True)
     except compose.ComposeError as e:
+        # Surface the compose failure as a "continuing" advisory so the
+        # user knows the host-side cleanup still ran.
         typer.echo(f"[beetroot] (compose down failed: {e}; continuing)")
     if root.exists():
         shutil.rmtree(root)
@@ -318,19 +281,19 @@ def ls(
     ] = False,
 ) -> None:
     """List all registered instances with their ports and live status."""
-    instances = registry.list_instances()
+    instances = api.Manager.list()
     if json_out:
         out = {}
-        for instance_name, meta in instances.items():
-            root = Path(meta["absolute_path"])
-            cfg = config.load_yaml(paths.instance_yaml(root))
-            p = ports.resolve_ports(meta["index"], cfg.ports)
-            out[instance_name] = {
-                "path": str(root),
-                "index": meta["index"],
+        for inst in instances:
+            p = inst.ports
+            meta = registry.get(inst.name)
+            assert meta is not None
+            out[inst.name] = {
+                "path": str(inst.root),
+                "index": inst.index,
                 "adb": f"localhost:{p['adb']}",
                 "frida": f"localhost:{p['frida']}",
-                "status": compose.ps_status(instance_name, root),
+                "status": inst.status,
                 "created_at": meta["created_at"],
             }
         typer.echo(json.dumps(out, indent=2, sort_keys=True))
@@ -340,17 +303,14 @@ def ls(
         typer.echo("(no instances — try `beetroot create alpha`)")
         return
     typer.echo(f"{'NAME':<14}{'IDX':<5}{'ADB':<22}{'FRIDA':<22}{'STATUS':<14}{'PATH'}")
-    for instance_name in sorted(instances):
-        meta = instances[instance_name]
-        root = Path(meta["absolute_path"])
-        cfg = config.load_yaml(paths.instance_yaml(root))
-        p = ports.resolve_ports(meta["index"], cfg.ports)
+    for inst in instances:
+        p = inst.ports
         typer.echo(
-            f"{instance_name:<14}{meta['index']:<5}"
+            f"{inst.name:<14}{inst.index:<5}"
             f"{'localhost:' + str(p['adb']):<22}"
             f"{'localhost:' + str(p['frida']):<22}"
-            f"{compose.ps_status(instance_name, root):<14}"
-            f"{root}"
+            f"{inst.status:<14}"
+            f"{inst.root}"
         )
 
 
@@ -364,7 +324,7 @@ def logs(
 ) -> None:
     """Tail container logs for an instance."""
     _ensure_exists(name)
-    compose.logs(name, _instance_root(name), follow=follow)
+    _load(name).logs(follow=follow)
 
 
 @app.command()
@@ -373,16 +333,10 @@ def shell(
 ) -> None:
     """Open an interactive ADB shell into an instance."""
     _ensure_exists(name)
-    meta = registry.get(name)
-    assert meta is not None
-    root = _instance_root(name)
-    cfg = config.load_yaml(paths.instance_yaml(root))
-    p = ports.resolve_ports(meta["index"], cfg.ports)
-    if shutil.which("adb") is None:
-        raise _error("adb not found on PATH (install android-tools).")
-    target = f"localhost:{p['adb']}"
-    subprocess.run(["adb", "connect", target], check=False)
-    subprocess.run(["adb", "-s", target, "shell"], check=False)
+    try:
+        _load(name).shell()
+    except api.AdbNotInstalledError as e:
+        raise _error(str(e)) from e
 
 
 @app.command()
@@ -391,13 +345,9 @@ def env(
 ) -> None:
     """Print eval-able ``ANDROID_DEVICE`` / ``FRIDA_DEVICE`` shell exports."""
     _ensure_exists(name)
-    meta = registry.get(name)
-    assert meta is not None
-    root = _instance_root(name)
-    cfg = config.load_yaml(paths.instance_yaml(root))
-    p = ports.resolve_ports(meta["index"], cfg.ports)
-    typer.echo(f"export ANDROID_DEVICE=localhost:{p['adb']}")
-    typer.echo(f"export FRIDA_DEVICE=localhost:{p['frida']}")
+    inst = _load(name)
+    typer.echo(f"export ANDROID_DEVICE={inst.adb_address}")
+    typer.echo(f"export FRIDA_DEVICE={inst.frida_address}")
 
 
 @app.command(
@@ -417,18 +367,10 @@ def frida(
     Typer's own option-parsing if needed.
     """
     _ensure_exists(name)
-    meta = registry.get(name)
-    assert meta is not None
-    root = _instance_root(name)
-    cfg = config.load_yaml(paths.instance_yaml(root))
-    p = ports.resolve_ports(meta["index"], cfg.ports)
-    if shutil.which("frida") is None:
-        raise _error(
-            "frida CLI not found. "
-            "Install via `uv tool install 'beetroot[frida]'` or `uv tool install frida-tools`."
-        )
-    cmd = ["frida", "-H", f"localhost:{p['frida']}", *ctx.args]
-    subprocess.run(cmd, check=False)
+    try:
+        _load(name).frida_cli(list(ctx.args))
+    except api.FridaNotInstalledError as e:
+        raise _error(str(e)) from e
 
 
 @app.command()
@@ -445,16 +387,9 @@ def module(
 ) -> None:
     """Append a module to beetroot.yaml and re-stage. Caller restarts."""
     _ensure_exists(name)
-    root = _instance_root(name)
-    cfg = config.load_yaml(paths.instance_yaml(root))
-    digest: str | None = sha256 or None
-    if source.startswith(("http://", "https://")):
-        cfg.modules.append(config.Module(url=source, sha256=digest))
-    else:
-        cfg.modules.append(config.Module(path=source, sha256=digest))
-    config.write_yaml(paths.instance_yaml(root), cfg)
-    modules_dl.stage_for_instance(root, cfg)
-    typer.echo(f"[beetroot] added module → {paths.instance_yaml(root)}")
+    inst = _load(name)
+    inst.add_module(source, sha256=sha256)
+    typer.echo(f"[beetroot] added module → {paths.instance_yaml(inst.root)}")
     typer.echo(f"[beetroot] restart to flash: beetroot down {name} && beetroot up {name}")
 
 
@@ -480,10 +415,10 @@ def snapshot(
 ) -> None:
     """Pack an instance's host-side state into a ``.tar.zst`` archive."""
     _ensure_exists(name)
-    root = _instance_root(name)
+    inst = _load(name)
     dest = output if output is not None else Path(f"{name}.tar.zst")
     try:
-        final = snapshot_mod.snapshot(root, dest)
+        final = inst.snapshot(dest)
     except snapshot_mod.SnapshotError as e:
         raise _error(str(e)) from e
     typer.echo(f"[beetroot] snapshot of {name} → {final}")
@@ -521,13 +456,11 @@ def restore(
         )
     except snapshot_mod.SnapshotError as e:
         raise _error(str(e)) from e
-    meta = registry.get(dest_name)
-    assert meta is not None
-    cfg = config.load_yaml(paths.instance_yaml(restored))
-    p = ports.resolve_ports(meta["index"], cfg.ports)
+    inst = _load(dest_name)
+    p = inst.ports
     typer.echo(
         f"[beetroot] restored {dest_name} at {restored} "
-        f"(index {meta['index']}, ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"
+        f"(index {inst.index}, ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"
     )
     typer.echo(f"[beetroot] next: beetroot apply {dest_name} && beetroot up {dest_name}")
 
