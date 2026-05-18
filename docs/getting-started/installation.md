@@ -33,7 +33,32 @@ Verify:
 beetroot --help
 ```
 
-You should see the top-level help listing all verbs.
+You should see the top-level help listing all verbs. The help screen is
+rendered with Typer's Rich-powered formatter (boxed sections, color when
+the terminal supports it).
+
+### Shell completion
+
+Beetroot's CLI is built on [Typer](https://typer.tiangolo.com/), which
+ships shell-completion hooks for `bash`, `zsh`, `fish`, and PowerShell.
+Run once per shell:
+
+```bash
+beetroot --install-completion
+```
+
+The command auto-detects your current shell (via
+[`shellingham`](https://github.com/sarugaku/shellingham)) and writes the
+hook into the right rc file. Open a new terminal and `beetroot <TAB>`
+completes verbs; `beetroot create --<TAB>` completes flags.
+
+To inspect the script before installing — useful for sandboxed or
+ephemeral environments where you'd rather paste the hook into a managed
+rc file by hand — use:
+
+```bash
+beetroot --show-completion
+```
 
 ### With Frida CLI
 
