@@ -38,6 +38,20 @@ class TestDeviceBackend:
         assert isinstance(inst.frida_address, str)
         assert isinstance(inst.is_available, bool)
 
+    def test_partial_object_is_not_devicebackend(self) -> None:
+        # A class that satisfies most of the Protocol but is missing
+        # one method must NOT pass isinstance(obj, DeviceBackend).
+        # @runtime_checkable Protocols on Python 3.12+ check method
+        # presence too, not just attribute presence.
+        class _Stub:
+            adb_address = "host:1"
+            frida_address = "host:2"
+            is_available = True
+            # install_frida missing on purpose.
+
+        stub = _Stub()
+        assert isinstance(stub, api.DeviceBackend) is False
+
 
 # ---------------------------------------------------------------------------
 # Instance.create

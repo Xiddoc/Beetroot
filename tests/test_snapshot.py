@@ -234,6 +234,37 @@ class TestRestoreForce:
         assert not (target / "stale.txt").exists()
         assert (target / "data" / "marker.txt").read_bytes() == b"new"
 
+    def test_force_refuses_to_overwrite_another_instances_dir(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # Cross-instance attack: a malicious or careless --force
+        # restore aimed at another registered instance's directory
+        # would otherwise wipe a sibling's data. The fix refuses
+        # the operation even with --force; the user must destroy
+        # the sibling first or pick another path.
+        src = _make_instance(tmp_path / "alpha")
+        registry.add("alpha", src, 0)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+
+        # Register a peer instance at the dir we're about to point
+        # --force at. The peer is a DIFFERENT name; the cross-instance
+        # protection must fire.
+        peer_dir = tmp_path / "peer"
+        _make_instance(peer_dir, data_bytes=b"peer's precious data")
+        registry.add("peer", peer_dir, 1)
+
+        with pytest.raises(snapshot.SnapshotError, match="peer"):
+            snapshot.restore(
+                archive, dest_name="beta",
+                dest_path=peer_dir, force=True,
+            )
+        # Peer's data is intact.
+        assert (peer_dir / "data" / "marker.txt").read_bytes() == (
+            b"peer's precious data"
+        )
+        # Beta did not get registered.
+        assert registry.get("beta") is None
+
     def test_empty_existing_dir_is_allowed_without_force(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
@@ -266,6 +297,37 @@ class TestRestoreErrors:
             snapshot.restore(
                 archive, dest_name="beta", dest_path=tmp_path / "new-beta"
             )
+
+    def test_restore_refuses_port_collision_with_peer(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # Snapshot a source that pins ADB to 5565 (so the source's
+        # ports won't auto-conflict with anything stride-allocated at
+        # index 0). Then register a *peer* instance at index 1 that
+        # naturally uses the stride default 5565 for ADB. Restoring
+        # the snapshot now must refuse: the restored instance's
+        # resolved port 5565 collides with the peer's resolved 5565.
+        src = _make_instance(tmp_path / "alpha")
+        (src / "beetroot.yaml").write_text(
+            "api_version: 2\n"
+            "android:\n  version: 14\n"
+            "ports:\n  adb: 5565\n"
+        )
+        registry.add("alpha", src, 0)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+
+        registry.remove("alpha")
+
+        # Pre-stage a peer at index 1 (stride default ADB = 5565).
+        peer = _make_instance(tmp_path / "peer")
+        registry.add("peer", peer, 1)
+
+        with pytest.raises(snapshot.SnapshotError, match="5565"):
+            snapshot.restore(
+                archive, dest_name="beta", dest_path=tmp_path / "beta"
+            )
+        # On collision, no registry mutation occurs.
+        assert registry.get("beta") is None
 
 
 class TestSnapshotErrors:
@@ -435,6 +497,67 @@ class TestReadManifestErrors:
 
         with pytest.raises(snapshot.SnapshotError, match="path_layout"):
             snapshot.read_manifest(broken)
+
+
+class TestManifestShadowRegression:
+    def test_resnapshot_of_restored_instance_returns_new_manifest(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # F5 guardrail. Restore preserves the manifest on disk at
+        # <root>/.beetroot-snapshot.json. A naive snapshot of the
+        # restored instance would pack BOTH the on-disk stale
+        # manifest AND the freshly generated root manifest, and a
+        # basename-only read_manifest would pick the first one (the
+        # stale embedded copy). Pin: the second-generation manifest's
+        # `name` must reflect the second-generation instance, not the
+        # original.
+        src = _make_instance(tmp_path / "alpha")
+        registry.add("alpha", src, 0)
+        first = snapshot.snapshot(src, tmp_path / "first")
+
+        # Restore the snapshot as a brand-new instance "beta".
+        registry.remove("alpha")
+        target = tmp_path / "beta"
+        snapshot.restore(first, dest_name="beta", dest_path=target)
+        # The on-disk manifest left over from extraction says "alpha"
+        # — this is the stale copy that used to shadow the fresh one.
+        on_disk = json.loads(
+            (target / snapshot.MANIFEST_FILENAME).read_text()
+        )
+        assert on_disk["name"] == "alpha"
+
+        # Now re-snapshot the restored instance and read back its
+        # manifest. The returned manifest MUST be the fresh one
+        # (name=beta), not the embedded stale alpha one.
+        second = snapshot.snapshot(target, tmp_path / "second")
+        manifest = snapshot.read_manifest(second)
+        assert manifest.name == "beta", (
+            f"manifest-shadow regression: expected 'beta', got {manifest.name!r}"
+        )
+
+    def test_resnapshot_archive_has_exactly_one_manifest_entry(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # The exclusion of the on-disk manifest in _add_instance_tree
+        # is a structural guarantee: the archive must contain exactly
+        # one manifest member at its root, regardless of whether the
+        # source dir has a stale manifest already.
+        src = _make_instance(tmp_path / "alpha")
+        registry.add("alpha", src, 0)
+        archive = snapshot.snapshot(src, tmp_path / "first")
+        registry.remove("alpha")
+        target = tmp_path / "beta"
+        snapshot.restore(archive, dest_name="beta", dest_path=target)
+        # Re-snapshot.
+        second = snapshot.snapshot(target, tmp_path / "second")
+        members = _list_archive_members(second)
+        manifest_entries = [
+            m for m in members
+            if Path(m).name == snapshot.MANIFEST_FILENAME
+        ]
+        assert len(manifest_entries) == 1, (
+            f"expected exactly one manifest entry, got: {manifest_entries}"
+        )
 
 
 class TestRestoreInvalidArchive:

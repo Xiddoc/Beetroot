@@ -172,6 +172,9 @@ class TestCmdCreateEndToEndEnvBytes:
             b"DISPLAY_HEIGHT=960\n"
             b"DISPLAY_FPS=3\n"
             b"DISPLAY_GPU=host\n"
+            b"BEETROOT_MAGISK_DB=\n"
+            b"BEETROOT_MODULES_DIR=\n"
+            b"BEETROOT_FRIDA_BIN=\n"
         )
         expected_bravo = (
             b"INSTANCE_NAME=bravo\n"
@@ -187,6 +190,9 @@ class TestCmdCreateEndToEndEnvBytes:
             b"DISPLAY_HEIGHT=960\n"
             b"DISPLAY_FPS=3\n"
             b"DISPLAY_GPU=host\n"
+            b"BEETROOT_MAGISK_DB=\n"
+            b"BEETROOT_MODULES_DIR=\n"
+            b"BEETROOT_FRIDA_BIN=\n"
         )
         assert alpha_env_bytes == expected_alpha
         assert bravo_env_bytes == expected_bravo

@@ -32,12 +32,17 @@ from typing import Any
 
 import zstandard
 
-from . import paths, ports, registry
+from . import config, paths, ports, registry
 
 MANIFEST_FILENAME = ".beetroot-snapshot.json"
 SCHEMA_VERSION = 1
 _ARCHIVE_SUFFIX = ".tar.zst"
-_EXCLUDED_TOP_LEVEL = frozenset({".env"})
+# .env is regenerated from beetroot.yaml on the next apply. The
+# manifest itself is excluded because the archive's *root*-level
+# manifest is the authoritative one; if a previous restore left a
+# stale copy on disk we'd otherwise re-pack it and confuse
+# basename-based readers.
+_EXCLUDED_TOP_LEVEL = frozenset({".env", MANIFEST_FILENAME})
 
 
 class SnapshotError(RuntimeError):
@@ -253,9 +258,21 @@ def _extract_manifest_bytes(archive: Path) -> bytes:
     )
 
 
+_MANIFEST_ARCNAMES = frozenset({
+    f"./{MANIFEST_FILENAME}",
+    MANIFEST_FILENAME,
+})
+
+
 def _is_manifest_member(member: tarfile.TarInfo) -> bool:
-    """Return True if ``member`` is the snapshot manifest entry."""
-    return Path(member.name).name == MANIFEST_FILENAME
+    """
+    Return True if ``member`` is the canonical archive-root manifest entry.
+
+    A basename-only match would also pick up a stale
+    ``data/.beetroot-snapshot.json`` left over from a previous
+    restore. Require an exact-path match against the archive root.
+    """
+    return member.name in _MANIFEST_ARCNAMES
 
 
 def restore(
@@ -298,6 +315,21 @@ def restore(
         )
     target = dest_path.resolve()
     if target.exists() and any(target.iterdir()):
+        # Refuse to wipe another registered instance's directory
+        # even under --force. The user almost certainly didn't mean
+        # to clobber a sibling's data; the safe path is to pick a
+        # new --path or destroy the conflict first. dest_name is
+        # already known not to be in the registry by the earlier
+        # ``already registered`` check, so any registry match here
+        # is a foreign instance.
+        for other_name, meta in registry.list_instances().items():
+            if Path(meta["absolute_path"]).resolve() == target:
+                raise SnapshotError(
+                    f"{target} is the registered directory of instance "
+                    f"{other_name!r}; refusing to overwrite (even with "
+                    f"--force). 'beetroot destroy {other_name}' first, "
+                    "or pick a different --path."
+                )
         if not force:
             raise SnapshotError(
                 f"{target} already exists and is non-empty; "
@@ -310,8 +342,34 @@ def restore(
     target.mkdir(parents=True, exist_ok=True)
     _extract_archive_into(archive, target)
 
-    index = ports.lowest_free_index(registry.used_indices())
-    registry.add(dest_name, target, index)
+    # Resolve the restored instance's ports against the freshly-picked
+    # index and refuse if they collide with an already-registered
+    # peer's resolved ports. Without this check, restoring a snapshot
+    # that pins ports.adb: 5555 next to an existing instance using
+    # 5555 would register cleanly and only fail at compose-up time.
+    cfg = config.load_yaml(paths.instance_yaml(target))
+    # Atomic allocation + registration under one file lock.
+    index = registry.add_allocating(dest_name, target)
+    new_ports = ports.resolve_ports(index, cfg.ports)
+    others = {
+        n: p for n, p in registry.all_resolved_ports().items()
+        if n != dest_name
+    }
+    collision = registry.find_port_collision(new_ports, others)
+    if collision is not None:
+        port, other_name, kind = collision
+        registry.remove(dest_name)
+        raise SnapshotError(
+            f"port {port} ({kind}) collides with instance {other_name!r}; "
+            "edit the restored beetroot.yaml's ports: block before retrying"
+        )
+    # Stage .env + frida-server + modules now so `beetroot up <name>`
+    # works without a follow-up `beetroot apply`. Mirrors what
+    # Instance.create / Instance.register do. The import is local
+    # because api imports snapshot at module load — top-level here
+    # would loop.
+    from . import api  # noqa: PLC0415
+    api.Instance.load(dest_name)._stage()
     return target
 
 

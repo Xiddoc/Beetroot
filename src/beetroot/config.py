@@ -275,7 +275,12 @@ def load_yaml(path: Path) -> InstanceConfig:
     """
     Load and validate an InstanceConfig from a YAML file.
 
-    An empty file is treated as an all-defaults config.
+    An empty file is treated as an all-defaults config. A v0.2 YAML
+    that pinned ``api_version: 1`` is auto-bumped to the current
+    :data:`SUPPORTED_API_VERSION` with a one-line stderr warning,
+    because v0.2 → v2 is strictly additive (no fields renamed). The
+    bump is persisted organically on the next ``beetroot apply``
+    (which calls :func:`write_yaml`).
 
     Args:
         path: Absolute path to the YAML file.
@@ -286,6 +291,13 @@ def load_yaml(path: Path) -> InstanceConfig:
     raw = yaml.safe_load(path.read_text())
     if raw is None:
         raw = {}
+    if isinstance(raw, dict) and raw.get("api_version") == 1:
+        print(
+            f"[beetroot] auto-upgraded api_version 1 → {SUPPORTED_API_VERSION} "
+            f"in {path}; run 'beetroot apply' to rewrite the YAML.",
+            file=sys.stderr,
+        )
+        raw["api_version"] = SUPPORTED_API_VERSION
     return InstanceConfig.model_validate(raw)
 
 
@@ -330,6 +342,15 @@ def render_env(name: str, cfg: InstanceConfig, ports: dict[str, int]) -> str:
         f"DISPLAY_HEIGHT={cfg.display.height}",
         f"DISPLAY_FPS={cfg.display.fps}",
         f"DISPLAY_GPU={cfg.display.gpu_mode}",
+        # v0.4 stealth-posture overrides — emitted empty by default
+        # so the bundled compose template's ${VAR:-} fallback is
+        # the source of truth. v0.4 sets these from the manifest
+        # path_layout. Keeping them in render_env keeps the
+        # compose-template / render_env contract symmetric (see
+        # tests/test_compose_template_envs.py).
+        "BEETROOT_MAGISK_DB=",
+        "BEETROOT_MODULES_DIR=",
+        "BEETROOT_FRIDA_BIN=",
     ]
     if cfg.resources.mem_reservation is not None:
         lines.append(f"MEM_RESERVATION={cfg.resources.mem_reservation}")

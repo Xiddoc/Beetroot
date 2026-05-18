@@ -241,9 +241,12 @@ class TestDefaultRunner:
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
             runner.run(["echo", "hi"], cwd=Path("/tmp"), env={"X": "1"})
-        mock_run.assert_called_once_with(
-            ["echo", "hi"], cwd=Path("/tmp"), check=True, env={"X": "1"}
-        )
+        # env is merged on top of os.environ so the child still sees PATH etc.
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["cwd"] == Path("/tmp")
+        assert kwargs["check"] is True
+        assert kwargs["env"]["X"] == "1"
+        assert "PATH" in kwargs["env"]
 
     def test_run_translates_calledprocesserror_to_bootstrap_error(self) -> None:
         runner = DefaultRunner()
@@ -268,6 +271,16 @@ class TestDefaultRunner:
             mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
             runner.run(["true"], check=False)
         assert mock_run.call_args.kwargs["check"] is False
+
+    def test_run_env_none_does_not_inject_environ(self) -> None:
+        # When env is None we must pass through None — never an empty dict
+        # and never a copy of os.environ — so subprocess inherits the
+        # parent's env unmodified.
+        runner = DefaultRunner()
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+            runner.run(["true"])
+        assert mock_run.call_args.kwargs["env"] is None
 
 
 class TestDefaultRunnerInjection:

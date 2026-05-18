@@ -99,6 +99,14 @@ def create(
         Path | None,
         typer.Option("--from-data", help="Copy an existing data dir as the instance's /data."),
     ] = None,
+    preset: Annotated[
+        str | None,
+        typer.Option(
+            "--preset",
+            hidden=True,
+            help="(removed in v0.3 — see CHANGELOG.md)",
+        ),
+    ] = None,
 ) -> None:
     """
     Create a new instance directory and stage its files.
@@ -108,6 +116,11 @@ def create(
     defaults. To start from a richer baseline, copy a file from the
     repo's ``examples/`` directory over the generated ``beetroot.yaml``.
     """
+    if preset is not None:
+        raise _error(
+            f"--preset was removed in v0.3 — copy examples/{preset}.yaml over "
+            f"your fresh beetroot.yaml and run 'beetroot apply {name}'."
+        )
     if registry.get(name) is not None:
         raise _error(f"instance {name!r} already exists.")
 
@@ -393,6 +406,31 @@ def module(
     typer.echo(f"[beetroot] restart to flash: beetroot down {name} && beetroot up {name}")
 
 
+@app.command(name="setup", hidden=True)
+def setup_deprecated(
+    args: Annotated[
+        list[str] | None,
+        typer.Argument(help="(removed in v0.3)"),
+    ] = None,
+) -> None:
+    """
+    Print a migration hint for the v0.2 ``setup`` verb.
+
+    v0.2 had ``beetroot setup [variant]``; v0.3 renamed it to
+    ``beetroot build``. This hidden alias catches the old form and
+    surfaces a one-line migration message instead of bare Typer
+    ``No such command`` output.
+    """
+    # `args` is declared so v0.2 invocations like `beetroot setup lite`
+    # still match this verb (Typer would otherwise reject the trailing
+    # positional). The value itself is ignored.
+    del args
+    raise _error(
+        "the 'setup' verb was renamed to 'build' in v0.3 — "
+        "run 'beetroot build [variant]' (see CHANGELOG.md)."
+    )
+
+
 @app.command()
 def build(
     gapps: Annotated[
@@ -469,9 +507,12 @@ def main() -> None:
     """
     Parse CLI arguments and dispatch to the appropriate command handler.
 
-    Wraps ``app()`` to convert two domain exceptions raised from deep in
-    the procedural call tree into the same friendly ``error: ...`` line
-    + ``exit 1`` shape the rest of the CLI uses.
+    Wraps ``app()`` to convert domain exceptions raised from deep in the
+    procedural call tree into the same friendly ``error: ...`` line +
+    ``exit 1`` shape the rest of the CLI uses. ``compose.ComposeError``
+    and ``builder.BootstrapError`` are caught here because the
+    up/down/restart/logs/apply/build verbs let them propagate as plain
+    tracebacks otherwise — v0.2 was uniformly ``error: ...``.
     """
     try:
         app()
@@ -479,6 +520,12 @@ def main() -> None:
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
     except ports.PortCollisionError as e:
+        typer.echo(f"error: {e}", err=True)
+        sys.exit(1)
+    except compose.ComposeError as e:
+        typer.echo(f"error: {e}", err=True)
+        sys.exit(1)
+    except builder.BootstrapError as e:
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
 
