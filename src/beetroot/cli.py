@@ -12,6 +12,7 @@ from typing import Annotated
 import typer
 
 from . import builder, compose, config, frida_dl, modules_dl, paths, ports, registry
+from . import snapshot as snapshot_mod
 
 _MINIMAL_BEETROOT_YAML = "api_version: 2\nandroid:\n  version: 14\n"
 
@@ -467,6 +468,68 @@ def build(
     """Build the redroid base image and Beetroot layer for a gapps variant."""
     tag = builder.build_image(gapps=gapps.value)
     typer.echo(f"[beetroot] base image built: {tag}")
+
+
+@app.command(name="snapshot")
+def snapshot(
+    name: Annotated[str, typer.Argument(help="Instance name to snapshot.")],
+    output: Annotated[
+        Path | None,
+        typer.Option("-o", "--output", help="Archive path (default: ./<name>.tar.zst)."),
+    ] = None,
+) -> None:
+    """Pack an instance's host-side state into a ``.tar.zst`` archive."""
+    _ensure_exists(name)
+    root = _instance_root(name)
+    dest = output if output is not None else Path(f"{name}.tar.zst")
+    try:
+        final = snapshot_mod.snapshot(root, dest)
+    except snapshot_mod.SnapshotError as e:
+        raise _error(str(e)) from e
+    typer.echo(f"[beetroot] snapshot of {name} → {final}")
+
+
+@app.command(name="restore")
+def restore(
+    archive: Annotated[
+        Path,
+        typer.Argument(help="Path to a .tar.zst snapshot archive."),
+    ],
+    as_: Annotated[
+        str | None,
+        typer.Option("--as", help="Registry name for the restored instance."),
+    ] = None,
+    path: Annotated[
+        Path | None,
+        typer.Option("--path", help="Directory to restore into (default: ./<name>)."),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Overwrite the destination directory if non-empty."),
+    ] = False,
+) -> None:
+    """Unpack a snapshot archive into a new instance and register it."""
+    try:
+        manifest = snapshot_mod.read_manifest(archive)
+    except snapshot_mod.SnapshotError as e:
+        raise _error(str(e)) from e
+    dest_name = as_ if as_ is not None else manifest.name
+    dest_path = (path if path is not None else Path(dest_name)).resolve()
+    try:
+        restored = snapshot_mod.restore(
+            archive, dest_name=dest_name, dest_path=dest_path, force=force,
+        )
+    except snapshot_mod.SnapshotError as e:
+        raise _error(str(e)) from e
+    meta = registry.get(dest_name)
+    assert meta is not None
+    cfg = config.load_yaml(paths.instance_yaml(restored))
+    p = ports.resolve_ports(meta["index"], cfg.ports)
+    typer.echo(
+        f"[beetroot] restored {dest_name} at {restored} "
+        f"(index {meta['index']}, ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"
+    )
+    typer.echo(f"[beetroot] next: beetroot apply {dest_name} && beetroot up {dest_name}")
 
 
 def main() -> None:

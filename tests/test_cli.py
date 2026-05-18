@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from beetroot import cli, config, paths, ports, registry
+from beetroot import cli, config, paths, ports, registry, snapshot
 
 runner = CliRunner()
 
@@ -767,3 +767,122 @@ class TestMain:
         assert exc.value.code == 1
         err = capsys.readouterr().err
         assert "error: frida and frida2 both resolved to 27043" in err
+
+
+class TestCmdSnapshot:
+    def test_snapshot_default_output_in_cwd(self, cli_root: Path) -> None:
+        result = runner.invoke(cli.app, ["create", "alpha"])
+        assert result.exit_code == 0, result.stderr
+
+        result = runner.invoke(cli.app, ["snapshot", "alpha"])
+        assert result.exit_code == 0, result.stderr
+        assert (cli_root / "alpha.tar.zst").is_file()
+
+    def test_snapshot_explicit_output(self, cli_root: Path) -> None:
+        runner.invoke(cli.app, ["create", "alpha"])
+        out = cli_root / "snapshots" / "alpha-clean"
+        result = runner.invoke(cli.app, ["snapshot", "alpha", "-o", str(out)])
+        assert result.exit_code == 0, result.stderr
+        assert (cli_root / "snapshots" / "alpha-clean.tar.zst").is_file()
+
+    def test_snapshot_unknown_instance_exits(self, cli_root: Path) -> None:
+        result = runner.invoke(cli.app, ["snapshot", "ghost"])
+        assert result.exit_code == 1
+        assert "no instance named" in result.stderr
+
+    def test_snapshot_surfaces_module_error(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner.invoke(cli.app, ["create", "alpha"])
+
+        def _boom(root: Path, dest: Path) -> Path:
+            raise snapshot.SnapshotError("disk on fire")
+
+        monkeypatch.setattr(snapshot, "snapshot", _boom)
+        result = runner.invoke(cli.app, ["snapshot", "alpha"])
+        assert result.exit_code == 1
+        assert "disk on fire" in result.stderr
+
+
+class TestCmdRestore:
+    def test_restore_round_trips_through_cli(self, cli_root: Path) -> None:
+        runner.invoke(cli.app, ["create", "alpha"])
+        src = registry.instance_path("alpha")
+        (paths.instance_data(src) / "marker.txt").write_bytes(b"survives")
+
+        snap = runner.invoke(cli.app, ["snapshot", "alpha"])
+        assert snap.exit_code == 0, snap.stderr
+
+        runner.invoke(cli.app, ["destroy", "-y", "alpha"])
+        assert registry.get("alpha") is None
+
+        result = runner.invoke(
+            cli.app,
+            ["restore", str(cli_root / "alpha.tar.zst"), "--as", "beta",
+             "--path", str(cli_root / "beta-dir")],
+        )
+        assert result.exit_code == 0, result.stderr
+        beta = registry.get("beta")
+        assert beta is not None
+        assert Path(beta["absolute_path"]) == (cli_root / "beta-dir").resolve()
+        assert (
+            Path(beta["absolute_path"]) / "data" / "marker.txt"
+        ).read_bytes() == b"survives"
+
+    def test_restore_default_name_from_manifest(self, cli_root: Path) -> None:
+        runner.invoke(cli.app, ["create", "alpha"])
+        snap = runner.invoke(cli.app, ["snapshot", "alpha"])
+        assert snap.exit_code == 0, snap.stderr
+        runner.invoke(cli.app, ["destroy", "-y", "alpha"])
+
+        result = runner.invoke(
+            cli.app, ["restore", str(cli_root / "alpha.tar.zst")]
+        )
+        assert result.exit_code == 0, result.stderr
+        assert registry.get("alpha") is not None
+
+    def test_restore_invalid_archive_exits(self, cli_root: Path) -> None:
+        bogus = cli_root / "garbage.tar.zst"
+        bogus.write_bytes(b"this is not a zstd stream")
+        result = runner.invoke(
+            cli.app, ["restore", str(bogus), "--as", "beta"]
+        )
+        assert result.exit_code == 1
+        assert "error:" in result.stderr
+
+    def test_restore_surfaces_restore_error(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner.invoke(cli.app, ["create", "alpha"])
+        snap = runner.invoke(cli.app, ["snapshot", "alpha"])
+        assert snap.exit_code == 0, snap.stderr
+
+        def _boom(archive: Path, *, dest_name: str, dest_path: Path,
+                  force: bool = False) -> Path:
+            raise snapshot.SnapshotError("registry locked")
+
+        monkeypatch.setattr(snapshot, "restore", _boom)
+        result = runner.invoke(
+            cli.app,
+            ["restore", str(cli_root / "alpha.tar.zst"), "--as", "beta"],
+        )
+        assert result.exit_code == 1
+        assert "registry locked" in result.stderr
+
+    def test_restore_force_flag_overwrites(self, cli_root: Path) -> None:
+        runner.invoke(cli.app, ["create", "alpha"])
+        snap = runner.invoke(cli.app, ["snapshot", "alpha"])
+        assert snap.exit_code == 0, snap.stderr
+        runner.invoke(cli.app, ["destroy", "-y", "alpha"])
+
+        target = cli_root / "fresh"
+        target.mkdir()
+        (target / "stale.txt").write_bytes(b"go away")
+
+        result = runner.invoke(
+            cli.app,
+            ["restore", str(cli_root / "alpha.tar.zst"), "--as", "alpha",
+             "--path", str(target), "--force"],
+        )
+        assert result.exit_code == 0, result.stderr
+        assert not (target / "stale.txt").exists()

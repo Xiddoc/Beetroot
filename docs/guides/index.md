@@ -8,4 +8,4 @@ Practical how-tos for common research workflows. These assume you've already com
 - **[Examples](examples.md)** — copy `default.yaml` / `stealth.yaml` / `no-gapps.yaml` over a fresh instance, modify YAML, apply changes without rebuilding.
 - **[Magisk Modules](modules.md)** — flash Shamiko, LSPosed, or custom hooks via URL or local path; verify with sha256.
 - **[Frida](frida.md)** — pin Frida versions per instance, use `beetroot frida` as a wrapper, attach scripts.
-- **[Snapshots](snapshots.md)** — checkpoint and restore instance state without a dedicated verb.
+- **[Snapshots](snapshots.md)** — pack instance state into a `.tar.zst` archive with `beetroot snapshot`, restore with `beetroot restore`, fork an instance into siblings that run concurrently.

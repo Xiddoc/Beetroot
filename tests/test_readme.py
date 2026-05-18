@@ -12,7 +12,7 @@ README = Path(__file__).resolve().parents[1] / "README.md"
 # existed as CLI commands. Keep this list in sync with the README; the test
 # both asserts that none of these are real verbs *and* that the README does
 # not introduce them as plain English words that look like verb names.
-GHOST_VERBS = ("snapshot", "attach", "list")
+GHOST_VERBS = ("attach", "list")
 
 
 def _registered_verbs() -> set[str]:
