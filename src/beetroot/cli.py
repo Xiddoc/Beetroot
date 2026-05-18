@@ -99,6 +99,14 @@ def create(
         Path | None,
         typer.Option("--from-data", help="Copy an existing data dir as the instance's /data."),
     ] = None,
+    preset: Annotated[
+        str | None,
+        typer.Option(
+            "--preset",
+            hidden=True,
+            help="(removed in v0.3 — see CHANGELOG.md)",
+        ),
+    ] = None,
 ) -> None:
     """
     Create a new instance directory and stage its files.
@@ -108,6 +116,11 @@ def create(
     defaults. To start from a richer baseline, copy a file from the
     repo's ``examples/`` directory over the generated ``beetroot.yaml``.
     """
+    if preset is not None:
+        raise _error(
+            f"--preset was removed in v0.3 — copy examples/{preset}.yaml over "
+            f"your fresh beetroot.yaml and run 'beetroot apply {name}'."
+        )
     if registry.get(name) is not None:
         raise _error(f"instance {name!r} already exists.")
 
@@ -391,6 +404,24 @@ def module(
     inst.add_module(source, sha256=sha256)
     typer.echo(f"[beetroot] added module → {paths.instance_yaml(inst.root)}")
     typer.echo(f"[beetroot] restart to flash: beetroot down {name} && beetroot up {name}")
+
+
+@app.command(name="setup", hidden=True)
+def setup_deprecated(
+    args: Annotated[
+        list[str] | None,
+        typer.Argument(help="(removed in v0.3)"),
+    ] = None,
+) -> None:
+    """(Deprecated alias for `beetroot build` — see CHANGELOG.md.)"""
+    # `args` is declared so v0.2 invocations like `beetroot setup lite`
+    # still match this verb (Typer would otherwise reject the trailing
+    # positional). The value itself is ignored.
+    del args
+    raise _error(
+        "the 'setup' verb was renamed to 'build' in v0.3 — "
+        "run 'beetroot build [variant]' (see CHANGELOG.md)."
+    )
 
 
 @app.command()
