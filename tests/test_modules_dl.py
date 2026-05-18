@@ -106,35 +106,39 @@ class TestUrlModuleCache:
 
 
 class TestFetchUrlErrors:
-    def test_http_error_raises_runtime_error(self, instance_root: Path) -> None:
+    def test_http_error_raises_module_fetch_error(self, instance_root: Path) -> None:
         cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip")])
 
         def _raise(url: str, **kwargs: object) -> MagicMock:
             raise urllib.error.HTTPError(url, 500, "Server Error", {}, None)  # type: ignore[arg-type]
 
         with patch("urllib.request.urlopen", side_effect=_raise):
-            with pytest.raises(RuntimeError, match="HTTP 500"):
+            with pytest.raises(modules_dl.ModuleFetchError, match="HTTP 500"):
                 modules_dl.stage_for_instance(instance_root, cfg)
 
-    def test_timeout_raises_runtime_error(self, instance_root: Path) -> None:
+    def test_timeout_raises_module_fetch_error(self, instance_root: Path) -> None:
         cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip")])
 
         def _raise(url: str, **kwargs: object) -> MagicMock:
             raise TimeoutError("timed out")
 
         with patch("urllib.request.urlopen", side_effect=_raise):
-            with pytest.raises(RuntimeError, match="timed out"):
+            with pytest.raises(modules_dl.ModuleFetchError, match="timed out"):
                 modules_dl.stage_for_instance(instance_root, cfg)
 
-    def test_url_error_raises_runtime_error(self, instance_root: Path) -> None:
+    def test_url_error_raises_module_fetch_error(self, instance_root: Path) -> None:
         cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip")])
 
         def _raise(url: str, **kwargs: object) -> MagicMock:
             raise urllib.error.URLError("no route to host")
 
         with patch("urllib.request.urlopen", side_effect=_raise):
-            with pytest.raises(RuntimeError, match="cannot reach"):
+            with pytest.raises(modules_dl.ModuleFetchError, match="cannot reach"):
                 modules_dl.stage_for_instance(instance_root, cfg)
+
+    def test_module_fetch_error_is_runtime_error_subclass(self) -> None:
+        # Existing callers that catch `RuntimeError` continue to work.
+        assert issubclass(modules_dl.ModuleFetchError, RuntimeError)
 
     def test_filename_from_empty_url_defaults_to_module_zip(self, instance_root: Path) -> None:
         cfg = InstanceConfig(modules=[Module(url="https://example.com/")])

@@ -106,6 +106,17 @@ class Module(BaseModel):
             raise ValueError("module entry must set either `url` or `path`")
         if self.url and self.path:
             raise ValueError("module entry sets both `url` and `path` — pick one")
+        # Defence-in-depth: refuse non-http(s) module URLs at validation
+        # time. Without this, a malicious beetroot.yaml with
+        # ``url: file:///etc/passwd`` would silently exfiltrate that
+        # file into the module cache and stage it as a module zip.
+        # ``modules_dl._fetch_url`` re-checks the same prefix at the
+        # call site so a third-party script can't bypass it either.
+        if self.url and not self.url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"module url {self.url!r} uses an unsupported scheme; "
+                "only http:// and https:// are allowed"
+            )
 
 
 class Stealth(BaseModel):
