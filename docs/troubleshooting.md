@@ -70,11 +70,14 @@ beetroot up alpha
 
 ## Frida can't see processes
 
+**Step 0:** Confirm Frida is enabled for this instance. Frida is opt-in starting in v0.3 — if `beetroot.yaml` has no `frida:` block, the staged binary is a 0-byte placeholder and `entrypoint.sh` skips the launch. Add a `frida: {version: "16.4.10"}` block (or recreate from the `with-frida` preset) and re-`apply`.
+
 **Step 1:** Confirm the binary is staged (use `beetroot ls --json` to get the path):
 
 ```bash
 ls -lh "$(beetroot ls --json | jq -r .alpha.path)/frida-server"
-# Should be ~10 MB and executable (mode 755 or similar)
+# Should be ~10 MB and executable (mode 755 or similar) when Frida is enabled;
+# 0 bytes / not-executable when the `frida:` block is omitted.
 ```
 
 **Step 2:** Confirm it's running inside the container:

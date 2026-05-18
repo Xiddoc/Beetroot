@@ -24,7 +24,7 @@ bravo         1    localhost:5565        localhost:27052       running
 | **Magisk root** | Zygisk + denylist enabled out of the box; GMS auto-denylisted |
 | **LiteGapps** | Minimal Google services (just enough for GMS-dependent apps) |
 | **Houdini** | ARM-on-x86\_64 translation — run ARM-only APKs on a standard server |
-| **Frida** | Version-pinned per instance; downloaded on the host, bind-mounted in |
+| **Frida** | Opt-in per instance — declare a `frida:` block (or start from the `with-frida` preset) and the host CLI downloads + bind-mounts a version-pinned `frida-server` |
 | **`beetroot` CLI** | Create, start, stop, snapshot, attach, list instances |
 | **Module flashing** | Declare modules in YAML (URL or local path, optional sha256); flashed at next boot |
 

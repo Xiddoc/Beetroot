@@ -51,9 +51,9 @@ sequenceDiagram
 
 3. **Flash modules.** Iterates every `*.zip` in `/flash_dir` (the bind-mounted `<instance-dir>/modules/` directory) and calls `magisk --install-module <zip>`. Modules that are already installed are reinstalled safely (Magisk handles idempotency).
 
-4. **Launch Frida.** If `/data/local/tmp/frida-server` is executable, starts it in the background with `&`.
+4. **Launch Frida (if opted in).** If `/data/local/tmp/frida-server` is executable, starts it in the background with `&`. When the instance's `beetroot.yaml` omits the `frida:` block (v0.3+ default), this path is a 0-byte non-executable placeholder and the launch is skipped — no Frida process inside the container.
 
-5. **`wait`.** The script blocks on `wait` so the shell process stays alive as the parent of the Frida server. This keeps the Frida process attached to the Docker container's process tree and means `docker compose logs` streams Frida's stderr alongside the entrypoint output.
+5. **`wait`.** The script blocks on `wait` so the shell process stays alive. If Frida was launched, this also keeps it attached to the Docker container's process tree and means `docker compose logs` streams Frida's stderr alongside the entrypoint output.
 
 ## Shell environment
 

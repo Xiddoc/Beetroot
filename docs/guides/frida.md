@@ -1,13 +1,32 @@
 # Frida
 
-Beetroot manages the Frida server binary per-instance: it downloads the correct architecture build from GitHub, caches it locally, and bind-mounts it into the container at `/data/local/tmp/frida-server`. At boot, `entrypoint.sh` launches it automatically.
+Frida is **opt-in** starting in Beetroot v0.3. When you declare a `frida:` block in `beetroot.yaml`, the CLI downloads the correct architecture build from GitHub, caches it locally, and bind-mounts it into the container at `/data/local/tmp/frida-server`. At boot, `entrypoint.sh` launches it automatically.
 
-!!! note "Host-side `frida-tools` is optional"
-    The Frida server inside the container is always managed for you. The host-side `frida` CLI used by `beetroot frida` is a separate package and ships behind the `[frida]` extra — install it with `uv tool install 'beetroot[frida]'`. See [Installation › With Frida CLI](../getting-started/installation.md#with-frida-cli) for details.
+If you omit the `frida:` block (the new default), the bind-mount is a 0-byte non-executable placeholder and `entrypoint.sh` skips the launch entirely — no `frida-server` process inside the container.
+
+!!! note "Host-side `frida-tools` is also optional"
+    The Frida server inside the container is managed for you when you opt in. The host-side `frida` CLI used by `beetroot frida` is a separate package and ships behind the `[frida]` extra — install it with `uv tool install 'beetroot[frida]'`. See [Installation › With Frida CLI](../getting-started/installation.md#with-frida-cli) for details.
+
+## Enabling Frida
+
+The fastest way is to start from the bundled `with-frida` preset:
+
+```bash
+beetroot create alpha --preset with-frida
+```
+
+That preset declares the version pin idiom for you. To enable Frida on an already-created instance, edit its `beetroot.yaml` and add the block:
+
+```yaml
+frida:
+  version: "16.4.10"
+```
+
+Then run `beetroot apply <name>` to download and stage the binary, and restart the instance.
 
 ## Version pinning
 
-Each instance pins its own Frida version in `beetroot.yaml`:
+Each instance pins its own Frida version in `beetroot.yaml` (once you've opted in):
 
 ```yaml
 frida:
@@ -75,7 +94,7 @@ script.load()
 
 ## Disabling Frida
 
-Set `frida: null` in `beetroot.yaml` and apply:
+Frida is off by default — instances created from the `default` preset don't ship a `frida:` block at all. If you turned it on and want to turn it back off, either delete the `frida:` block entirely or set it explicitly to null:
 
 ```yaml
 frida: ~   # null in YAML
@@ -86,7 +105,7 @@ beetroot apply alpha
 beetroot down alpha && beetroot up alpha
 ```
 
-The `frida-server` bind-mount becomes an empty placeholder, and `entrypoint.sh` skips the launch step (it checks `if it's executable` before starting).
+The `frida-server` bind-mount becomes a 0-byte non-executable placeholder, and `entrypoint.sh` skips the launch step (it checks `if it's executable` before starting).
 
 ## Troubleshooting
 

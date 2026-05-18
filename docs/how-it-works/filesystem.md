@@ -40,7 +40,7 @@ Magisk module staging, bind-mounted read-only at `/flash_dir`. The CLI mirrors `
 
 ### `frida-server`
 
-The Frida server binary for this instance, bind-mounted at `/data/local/tmp/frida-server`. Downloaded from GitHub releases and cached host-wide so multiple instances share a single download.
+The Frida server binary for this instance, bind-mounted at `/data/local/tmp/frida-server`. When `beetroot.yaml` declares a `frida:` block, this file is downloaded from GitHub releases and cached host-wide so multiple instances share a single download. When the block is omitted (the v0.3+ default), this file is a 0-byte non-executable placeholder and `entrypoint.sh` skips the Frida launch. See [Frida](../guides/frida.md).
 
 ## What's at the user level
 
@@ -75,7 +75,8 @@ src/beetroot/
     └── presets/
         ├── default.yaml
         ├── stealth.yaml
-        └── no-gapps.yaml
+        ├── no-gapps.yaml
+        └── with-frida.yaml
 ```
 
 There is no `compose.yaml` at any project root anymore — the CLI resolves the bundled copy via `importlib.resources` and passes it to compose with `-f <bundled-path>` plus `--project-directory <instance-dir>` so the per-instance bind mounts resolve correctly.
