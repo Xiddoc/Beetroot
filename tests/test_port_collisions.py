@@ -1,30 +1,23 @@
 """Integration tests for port-collision pre-validation in the CLI.
 
-These also exercise the full cmd_create → port allocator → registry write
-→ .env render path; they are the load-bearing user-input → final-artifact
-behavior tests for the path refactor (the ``fix/ports-resolver-self-collision``
-pattern, generalised to also assert on the resulting ``.env`` content).
+These also exercise the full ``beetroot create`` → port allocator →
+registry write → ``.env`` render path; they are the load-bearing
+user-input → final-artifact behavior tests for the path refactor
+(the ``fix/ports-resolver-self-collision`` pattern, generalised to also
+assert on the resulting ``.env`` content).
 """
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from typer.testing import CliRunner
 
 from beetroot import cli, paths, registry
 from beetroot.config import InstanceConfig, Ports, write_yaml
 
-
-def _create_ns(name: str, **overrides: object) -> argparse.Namespace:
-    defaults: dict[str, object] = {
-        "name": name,
-        "from_data": None,
-        "path": None,
-    }
-    defaults.update(overrides)
-    return argparse.Namespace(**defaults)
+runner = CliRunner()
 
 
 def _write_pinned_yaml(root: Path, ports: Ports) -> None:
@@ -40,8 +33,8 @@ def _write_pinned_yaml(root: Path, ports: Ports) -> None:
 
 class TestCmdCreateCollision:
     def test_create_succeeds_with_no_collision(self, cli_root: Path) -> None:
-        cli.cmd_create(_create_ns("alpha"))
-        cli.cmd_create(_create_ns("bravo"))
+        assert runner.invoke(cli.app, ["create", "alpha"]).exit_code == 0
+        assert runner.invoke(cli.app, ["create", "bravo"]).exit_code == 0
         alpha_meta = registry.get("alpha")
         bravo_meta = registry.get("bravo")
         assert alpha_meta is not None
@@ -52,80 +45,82 @@ class TestCmdCreateCollision:
     def test_create_collides_with_neighbour_pinned_to_next_stride_slot(
         self, cli_root: Path
     ) -> None:
-        """When a pre-existing instance pins a port that lands on the next free index's stride slot, ``cmd_create`` must refuse before mutating the registry.
+        """When a pre-existing instance pins a port that lands on the next free index's stride slot, ``create`` must refuse before mutating the registry.
 
         Stride is 10 starting at 5555, so the second free index (1) lands
-        on ADB 5565. Pinning ``alpha`` at ``adb=5565`` forces ``cmd_create
-        bravo`` to collide on the very port the stride allocator would
-        otherwise hand bravo.
+        on ADB 5565. Pinning ``alpha`` at ``adb=5565`` forces
+        ``beetroot create bravo`` to collide on the very port the stride
+        allocator would otherwise hand bravo.
         """
-        cli.cmd_create(_create_ns("alpha"))
+        assert runner.invoke(cli.app, ["create", "alpha"]).exit_code == 0
         _write_pinned_yaml(registry.instance_path("alpha"), Ports(adb=5565))
-        cli.cmd_apply(argparse.Namespace(name="alpha"))
+        assert runner.invoke(cli.app, ["apply", "alpha"]).exit_code == 0
 
         with patch.object(registry, "add") as fake_add:
-            with pytest.raises(SystemExit, match="5565"):
-                cli.cmd_create(_create_ns("bravo"))
+            result = runner.invoke(cli.app, ["create", "bravo"])
+            assert result.exit_code == 1
+            assert "5565" in result.stderr
             fake_add.assert_not_called()
 
 
 class TestCmdApplyCollision:
     def test_apply_excludes_self_from_collision_check(self, cli_root: Path) -> None:
-        cli.cmd_create(_create_ns("alpha"))
-        cli.cmd_apply(argparse.Namespace(name="alpha"))
+        assert runner.invoke(cli.app, ["create", "alpha"]).exit_code == 0
+        assert runner.invoke(cli.app, ["apply", "alpha"]).exit_code == 0
         meta = registry.get("alpha")
         assert meta is not None
         assert meta["index"] == 0
 
     def test_apply_with_pinned_adb_collides(self, cli_root: Path) -> None:
-        cli.cmd_create(_create_ns("alpha"))
-        cli.cmd_create(_create_ns("bravo"))
+        runner.invoke(cli.app, ["create", "alpha"])
+        runner.invoke(cli.app, ["create", "bravo"])
         bravo_root = registry.instance_path("bravo")
         _write_pinned_yaml(bravo_root, Ports(adb=5555))
-        with pytest.raises(SystemExit) as exc_info:
-            cli.cmd_apply(argparse.Namespace(name="bravo"))
-        msg = str(exc_info.value)
-        assert "5555" in msg
-        assert "alpha" in msg
-        assert "adb" in msg
+        result = runner.invoke(cli.app, ["apply", "bravo"])
+        assert result.exit_code == 1
+        assert "5555" in result.stderr
+        assert "alpha" in result.stderr
+        assert "adb" in result.stderr
 
     def test_apply_collision_message_format(self, cli_root: Path) -> None:
-        cli.cmd_create(_create_ns("alpha"))
-        cli.cmd_create(_create_ns("bravo"))
+        runner.invoke(cli.app, ["create", "alpha"])
+        runner.invoke(cli.app, ["create", "bravo"])
         bravo_root = registry.instance_path("bravo")
         _write_pinned_yaml(bravo_root, Ports(adb=5555))
-        with pytest.raises(SystemExit) as exc_info:
-            cli.cmd_apply(argparse.Namespace(name="bravo"))
-        msg = str(exc_info.value)
-        assert msg == (
+        result = runner.invoke(cli.app, ["apply", "bravo"])
+        assert result.exit_code == 1
+        assert result.stderr.rstrip("\n") == (
             "error: port 5555 (adb) collides with instance 'alpha' "
             "(which also uses 5555). Pin or remove one."
         )
 
     def test_apply_frida_collision_detected(self, cli_root: Path) -> None:
-        cli.cmd_create(_create_ns("alpha"))
-        cli.cmd_create(_create_ns("bravo"))
+        runner.invoke(cli.app, ["create", "alpha"])
+        runner.invoke(cli.app, ["create", "bravo"])
         bravo_root = registry.instance_path("bravo")
         _write_pinned_yaml(bravo_root, Ports(frida=27042))
-        with pytest.raises(SystemExit, match="27042"):
-            cli.cmd_apply(argparse.Namespace(name="bravo"))
+        result = runner.invoke(cli.app, ["apply", "bravo"])
+        assert result.exit_code == 1
+        assert "27042" in result.stderr
 
     def test_apply_detects_new_collision_against_other_instance(
         self, cli_root: Path
     ) -> None:
-        cli.cmd_create(_create_ns("alpha"))
-        cli.cmd_create(_create_ns("bravo"))
+        runner.invoke(cli.app, ["create", "alpha"])
+        runner.invoke(cli.app, ["create", "bravo"])
         _write_pinned_yaml(registry.instance_path("bravo"), Ports(adb=5555))
-        with pytest.raises(SystemExit, match="5555"):
-            cli.cmd_apply(argparse.Namespace(name="bravo"))
+        result = runner.invoke(cli.app, ["apply", "bravo"])
+        assert result.exit_code == 1
+        assert "5555" in result.stderr
 
     def test_apply_collision_exits_before_stage_instance(self, cli_root: Path) -> None:
-        cli.cmd_create(_create_ns("alpha"))
-        cli.cmd_create(_create_ns("bravo"))
+        runner.invoke(cli.app, ["create", "alpha"])
+        runner.invoke(cli.app, ["create", "bravo"])
         _write_pinned_yaml(registry.instance_path("bravo"), Ports(adb=5555))
         with patch.object(cli, "_stage_instance") as fake_stage:
-            with pytest.raises(SystemExit, match="5555"):
-                cli.cmd_apply(argparse.Namespace(name="bravo"))
+            result = runner.invoke(cli.app, ["apply", "bravo"])
+            assert result.exit_code == 1
+            assert "5555" in result.stderr
             fake_stage.assert_not_called()
 
 
@@ -146,13 +141,15 @@ class TestCmdCreateEndToEndEnvBytes:
         alpha_root = cli_root / "alpha-elsewhere"
         bravo_root = cli_root / "deep" / "nested" / "bravo-elsewhere"
 
-        cli.cmd_create(_create_ns("alpha", path=str(alpha_root)))
+        result = runner.invoke(cli.app, ["create", "alpha", "--path", str(alpha_root)])
+        assert result.exit_code == 0, result.stderr
         # chdir into a subdir of alpha to confirm cwd doesn't leak into bravo.
         sub = alpha_root / "data"
         sub.mkdir(exist_ok=True)
         monkeypatch.chdir(sub)
 
-        cli.cmd_create(_create_ns("bravo", path=str(bravo_root)))
+        result = runner.invoke(cli.app, ["create", "bravo", "--path", str(bravo_root)])
+        assert result.exit_code == 0, result.stderr
 
         alpha_env_bytes = paths.instance_env(alpha_root).read_bytes()
         bravo_env_bytes = paths.instance_env(bravo_root).read_bytes()
@@ -197,12 +194,14 @@ class TestCmdCreateEndToEndEnvBytes:
         # invariant that the registry's recorded ``absolute_path`` survives
         # a chdir into an arbitrary subdir of the instance.
         alpha_root = cli_root / "alpha-foo"
-        cli.cmd_create(_create_ns("alpha", path=str(alpha_root)))
+        result = runner.invoke(cli.app, ["create", "alpha", "--path", str(alpha_root)])
+        assert result.exit_code == 0, result.stderr
 
         subdir = alpha_root / "data" / "deep"
         subdir.mkdir(parents=True, exist_ok=True)
         monkeypatch.chdir(subdir)
 
         paths.instance_env(alpha_root).unlink()
-        cli.cmd_apply(argparse.Namespace(name="alpha"))
+        result = runner.invoke(cli.app, ["apply", "alpha"])
+        assert result.exit_code == 0, result.stderr
         assert paths.instance_env(alpha_root).exists()
