@@ -26,7 +26,7 @@ The Docker image (`docker/Dockerfile`) is a single-stage build from `redroid/red
 - `docker/magisk-config.sh`, `docker/flash-modules.sh`, `docker/launch-frida.sh` — copied to `/` alongside the entrypoint via a `COPY docker/*.sh /` glob. See [Boot Scripts](boot-scripts.md) for each helper's contract.
 - `docker/stealth.rc` — copied to `/system/etc/init/stealth.rc` in the image.
 
-That's it. Magisk is already in the base image (courtesy of the `ayasa520/redroid-script` patcher run by `beetroot setup`). The `magisk --sqlite` command ships with Magisk itself, so there's no separate sqlite binary to bundle.
+That's it. Magisk is already in the base image (courtesy of the `ayasa520/redroid-script` patcher run by `beetroot build`). The `magisk --sqlite` command ships with Magisk itself, so there's no separate sqlite binary to bundle.
 
 Frida is **not in the image**, and starting in v0.3 it's also **opt-in per instance**. When an instance's `beetroot.yaml` declares a `frida:` block, the CLI downloads `frida-server` and writes it to `<instance-dir>/frida-server`; that path is bind-mounted to `/data/local/tmp/frida-server` inside the container. When the block is omitted (the default preset's choice), the same path is a 0-byte non-executable placeholder and `entrypoint.sh`'s `[ -x ]` check skips the launch. Either way, you can change the Frida version per instance without rebuilding the image — see [Frida](../guides/frida.md).
 

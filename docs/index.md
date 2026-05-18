@@ -35,7 +35,7 @@ bravo         1    localhost:5565        localhost:27052       running
 uv tool install git+https://github.com/Xiddoc/Beetroot.git
 
 # 2. One-time bootstrap — patches and builds the base redroid image
-beetroot setup
+beetroot build
 
 # 3. Create and start your first research phone
 beetroot create alpha
