@@ -371,9 +371,14 @@ def shell(
     """Open an interactive ADB shell into an instance."""
     _ensure_exists(name)
     try:
-        _load(name).shell()
+        rc = _load(name).shell()
     except api.AdbNotInstalledError as e:
         raise _error(str(e)) from e
+    if rc != 0:
+        # Propagate the subprocess exit code so research scripts that
+        # check ``$?`` after ``beetroot shell <name> -c '<cmd>'`` see
+        # the underlying ``adb shell`` status.
+        raise typer.Exit(code=rc)
 
 
 @app.command()
@@ -405,9 +410,14 @@ def frida(
     """
     _ensure_exists(name)
     try:
-        _load(name).frida_cli(list(ctx.args))
+        rc = _load(name).frida_cli(list(ctx.args))
     except api.FridaNotInstalledError as e:
         raise _error(str(e)) from e
+    if rc != 0:
+        # Propagate the subprocess exit code so research scripts that
+        # check ``$?`` after ``beetroot frida <name> ...`` see the
+        # underlying ``frida`` status.
+        raise typer.Exit(code=rc)
 
 
 @app.command()

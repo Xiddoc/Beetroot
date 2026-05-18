@@ -561,6 +561,24 @@ class TestCmdShell:
         assert result.exit_code == 1
         assert "adb not found" in result.stderr
 
+    def test_shell_propagates_non_zero_exit_code(self, cli_root: Path) -> None:
+        # `adb shell` exited 7 → `beetroot shell` must also exit 7.
+        # Research scripts pipe through `$?` after `beetroot shell -c
+        # '<cmd>'` and need the real subprocess status, not 0.
+        runner.invoke(cli.app, ["create", "alpha"])
+
+        def _proc(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            # adb connect returns 0, adb -s ... shell returns 7.
+            cmd = args[0]
+            if isinstance(cmd, list) and "shell" in cmd:
+                return subprocess.CompletedProcess(args=[], returncode=7,
+                                                   stdout="", stderr="")
+            return _ok_proc()
+
+        with patch("subprocess.run", side_effect=_proc):
+            result = runner.invoke(cli.app, ["shell", "alpha"])
+        assert result.exit_code == 7
+
 
 # ---------------------------------------------------------------------------
 # cmd_env
@@ -608,6 +626,20 @@ class TestCmdFrida:
         assert result.exit_code == 1
         assert "frida CLI not found" in result.stderr
         assert "beetroot[frida]" in result.stderr
+
+    def test_frida_propagates_non_zero_exit_code(self, cli_root: Path) -> None:
+        # `frida -H ... -n com.app` exited 7 → `beetroot frida` must
+        # also exit 7. Research scripts checking `$?` need the real
+        # subprocess status, not 0.
+        runner.invoke(cli.app, ["create", "alpha"])
+        with patch(
+            "subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=7, stdout="", stderr=""
+            ),
+        ):
+            result = runner.invoke(cli.app, ["frida", "alpha", "-n", "com.app"])
+        assert result.exit_code == 7
 
     def test_frida_forwards_remainder_args_verbatim(self, cli_root: Path) -> None:
         """T4 behavior test — `beetroot frida alpha -- -l script.js` round-trips verbatim.
