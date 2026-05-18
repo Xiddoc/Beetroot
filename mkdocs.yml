@@ -104,6 +104,7 @@ nav:
     - Magisk Modules: guides/modules.md
     - Frida: guides/frida.md
     - Snapshots: guides/snapshots.md
+    - Migrating from v0.2 to v0.3: guides/migration-v0.2-to-v0.3.md
   - Reference:
     - reference/index.md
     - CLI Reference: reference/cli.md
