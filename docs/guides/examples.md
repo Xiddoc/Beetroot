@@ -34,7 +34,7 @@ Use this when you're testing something that doesn't perform anti-root checks, or
 
 ### `stealth.yaml`
 
-Adds [Shamiko](https://github.com/LSPosed/LSPosed.github.io) on top of `default`. Shamiko turns Magisk's denylist mode into a true allowlist-based hide — processes on the denylist can't detect Magisk at all. The denylist is also wider to cover all GMS variants and the Play Store.
+A wider Magisk denylist suitable for use with a root-hider like [Shamiko](https://github.com/LSPosed/LSPosed.github.io). Shamiko turns Magisk's denylist mode into a true allowlist-based hide — processes on the denylist can't detect Magisk at all. The denylist below covers all GMS variants and the Play Store.
 
 ```yaml title="examples/stealth.yaml"
 api_version: 2
@@ -42,9 +42,14 @@ api_version: 2
 android:
   version: 14
 
-modules:
-  - url: https://github.com/LSPosed/LSPosed.github.io/releases/download/shamiko-426/Shamiko-v0.7.4-426-release.zip
-    # sha256: <fill-in-after-first-download>
+# To add a root-hider module, look up a current release URL (e.g. for
+# Shamiko: https://github.com/LSPosed/LSPosed.github.io/releases) and
+# fill the block below in. The sha256 is optional but recommended —
+# beetroot will verify it on every stage.
+#
+# modules:
+#   - url: https://github.com/.../<release>/<asset>.zip
+#     sha256: <hex-digest>
 
 stealth:
   denylist:
@@ -55,7 +60,7 @@ stealth:
 ```
 
 !!! tip "Pin the sha256"
-    After Beetroot downloads Shamiko for the first time, run `sha256sum` on the staged zip (look up the instance path with `beetroot ls --json | jq -r .<name>.path`), paste the hash into the instance's `beetroot.yaml` under the module's `sha256:` field, and run `beetroot apply <name>`. Future downloads are verified against this hash — if the remote zip is tampered with or the URL redirects somewhere unexpected, the apply fails loudly.
+    The `modules:` block is commented out by default because the upstream Shamiko release URL changes whenever LSPosed cuts a new tag — shipping a hard-coded URL here means this example goes stale silently the moment that release is retired. Pick a current release, paste its URL into `url:`, and (recommended) pre-compute the sha256 with `curl -sL <url> | sha256sum` so Beetroot can verify on every stage.
 
 ### `no-gapps.yaml`
 
