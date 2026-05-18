@@ -55,6 +55,51 @@ Other changes shipped together with T1:
   the default is now `2`). All bundled presets declare
   `api_version: 2`.
 
+### v0.3 — Theme T2: Frida is opt-in
+
+`InstanceConfig.frida` now defaults to `None` instead of an implicit
+`Frida(version="16.4.10")` block. New instances created from the
+`default` preset no longer download a `frida-server` binary, and
+`entrypoint.sh` skips the launch (the bind-mount is a 0-byte
+non-executable placeholder). To get the old behavior, declare an
+explicit block in `beetroot.yaml`:
+
+```yaml
+frida:
+  version: "16.4.10"
+```
+
+…or copy/start from the new `with-frida` bundled preset:
+
+```bash
+beetroot create alpha --preset with-frida
+```
+
+**Migration for existing v0.2 users:** This is a behavior break, not a
+schema break, so it rides T1's `api_version` bump (already at 2). v0.2
+YAMLs that relied on the implicit Frida default now need to declare
+`frida: {version: "16.4.10"}` explicitly (or copy the `with-frida`
+preset). An empty block (`frida: {}`) still hydrates the model's own
+default version, so the upgrade is a one-line addition.
+
+Other changes shipped together with T2:
+
+* New `with-frida` preset (`beetroot.templates.presets.with-frida`)
+  declares the version-pin idiom for users who want Frida on.
+* Default preset (`beetroot.templates.presets.default`) gains a header
+  comment documenting that Frida is opt-in.
+* README's "What you get" bullet, the docs index "Frida" row,
+  `docs/guides/frida.md`, `docs/guides/presets.md`,
+  `docs/getting-started/first-instance.md`,
+  `docs/how-it-works/architecture.md`,
+  `docs/how-it-works/filesystem.md`,
+  `docs/how-it-works/boot-flow.md`,
+  `docs/reference/config.md`, and `docs/troubleshooting.md` all
+  reframed to describe Frida as opt-in.
+* Drive-by: stale `api_version: 1` examples in
+  `docs/reference/config.md` bumped to `2` (T1 bumped the constant; the
+  example snippets were missed in T1's docs sweep).
+
 ### v0.3 — Theme T10: stealth-posture design doc
 
 - T10: stealth-posture design doc landed (`docs/design/stealth-posture.md`); v0.4 will implement the playbook.
