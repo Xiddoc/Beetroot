@@ -32,12 +32,17 @@ from typing import Any
 
 import zstandard
 
-from . import paths, ports, registry
+from . import config, paths, ports, registry
 
 MANIFEST_FILENAME = ".beetroot-snapshot.json"
 SCHEMA_VERSION = 1
 _ARCHIVE_SUFFIX = ".tar.zst"
-_EXCLUDED_TOP_LEVEL = frozenset({".env"})
+# .env is regenerated from beetroot.yaml on the next apply. The
+# manifest itself is excluded because the archive's *root*-level
+# manifest is the authoritative one; if a previous restore left a
+# stale copy on disk we'd otherwise re-pack it and confuse
+# basename-based readers.
+_EXCLUDED_TOP_LEVEL = frozenset({".env", MANIFEST_FILENAME})
 
 
 class SnapshotError(RuntimeError):
@@ -253,9 +258,20 @@ def _extract_manifest_bytes(archive: Path) -> bytes:
     )
 
 
+_MANIFEST_ARCNAMES = frozenset({
+    f"./{MANIFEST_FILENAME}",
+    MANIFEST_FILENAME,
+})
+
+
 def _is_manifest_member(member: tarfile.TarInfo) -> bool:
-    """Return True if ``member`` is the snapshot manifest entry."""
-    return Path(member.name).name == MANIFEST_FILENAME
+    """Return True if ``member`` is the canonical archive-root manifest entry.
+
+    A basename-only match would also pick up a stale
+    ``data/.beetroot-snapshot.json`` left over from a previous
+    restore. Require an exact-path match against the archive root.
+    """
+    return member.name in _MANIFEST_ARCNAMES
 
 
 def restore(
@@ -310,8 +326,29 @@ def restore(
     target.mkdir(parents=True, exist_ok=True)
     _extract_archive_into(archive, target)
 
+    # Resolve the restored instance's ports against the freshly-picked
+    # index and refuse if they collide with an already-registered
+    # peer's resolved ports. Without this check, restoring a snapshot
+    # that pins ports.adb: 5555 next to an existing instance using
+    # 5555 would register cleanly and only fail at compose-up time.
+    cfg = config.load_yaml(paths.instance_yaml(target))
     index = ports.lowest_free_index(registry.used_indices())
+    new_ports = ports.resolve_ports(index, cfg.ports)
+    collision = registry.find_port_collision(
+        new_ports, registry.all_resolved_ports()
+    )
+    if collision is not None:
+        port, other_name, kind = collision
+        raise SnapshotError(
+            f"port {port} ({kind}) collides with instance {other_name!r}; "
+            "edit the restored beetroot.yaml's ports: block before retrying"
+        )
     registry.add(dest_name, target, index)
+    # Stage .env + frida-server + modules now so `beetroot up <name>`
+    # works without a follow-up `beetroot apply`. Mirrors what
+    # Instance.create / Instance.register do.
+    from . import api  # local import — api imports snapshot, would loop at module load
+    api.Instance.load(dest_name)._stage()
     return target
 
 

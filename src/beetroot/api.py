@@ -230,7 +230,12 @@ class Instance:
         new_ports = ports.resolve_ports(index, cfg.ports)
         _check_port_collisions(resolved_name, new_ports)
         registry.add(resolved_name, target_root, index)
-        return cls(name=resolved_name, root=target_root, cfg=cfg)
+        inst = cls(name=resolved_name, root=target_root, cfg=cfg)
+        # Stage .env + frida-server + modules now so a follow-up
+        # `beetroot up <name>` works without an intermediate
+        # `beetroot apply`. Mirrors what Instance.create does.
+        inst._stage()
+        return inst
 
     @classmethod
     def load(cls, name: str) -> Instance:
