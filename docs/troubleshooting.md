@@ -70,10 +70,10 @@ beetroot up alpha
 
 ## Frida can't see processes
 
-**Step 1:** Confirm the binary is staged:
+**Step 1:** Confirm the binary is staged (use `beetroot ls --json` to get the path):
 
 ```bash
-ls -lh instances/alpha/frida-server
+ls -lh "$(beetroot ls --json | jq -r .alpha.path)/frida-server"
 # Should be ~10 MB and executable (mode 755 or similar)
 ```
 
@@ -130,24 +130,17 @@ beetroot down alpha && beetroot up alpha
 
 ---
 
-## `beetroot create` fails with "preset not found"
+## `beetroot create` fails with "preset not bundled"
 
 **Symptom:**
 
 ```
-FileNotFoundError: preset 'stealth' not found at /some/path/presets/stealth.yaml
+FileNotFoundError: preset 'mything' not bundled with beetroot — available: ['default', 'no-gapps', 'stealth']
 ```
 
-**Cause:** The CLI resolves `presets/` relative to the directory containing `compose.yaml` (the project root). If you're running from a different directory, it can't find the preset.
+**Cause:** Presets ship inside the installed `beetroot` package; there's no user-extensible preset directory. `--preset` only accepts names from the list shown in the error message.
 
-**Fix:** Run from the project root:
-
-```bash
-cd /path/to/android-emulator
-beetroot create alpha --preset stealth
-```
-
-Or install the package editably (`uv sync`) so the path resolution via `paths.py` points to the right location.
+**Fix:** Use one of the bundled presets and edit the resulting `beetroot.yaml`. Or, for a more permanent custom starting point, hand-write a `beetroot.yaml` in a new directory and adopt it with `beetroot register <path>` (see [Presets](guides/presets.md#writing-your-own-preset)).
 
 ---
 
@@ -161,7 +154,7 @@ Or install the package editably (`uv sync`) so the path resolution via `paths.py
 beetroot up alpha
 ```
 
-Your data is intact in `instances/alpha/data/`.
+Your data is intact in the instance directory's `data/`.
 
 ---
 
@@ -186,10 +179,10 @@ error: module sha256 mismatch for Module.zip
 
 ## Docker out of disk space
 
-Android `/data` grows over time. Check:
+Android `/data` grows over time. Check (replace `<path>` with the value from `beetroot ls`):
 
 ```bash
-du -sh instances/*/data/
+beetroot ls --json | jq -r '.[].path' | xargs -I{} du -sh {}/data
 ```
 
 To reclaim space from a destroyed instance (Docker might still hold volume space):

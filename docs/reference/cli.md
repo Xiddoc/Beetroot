@@ -4,6 +4,8 @@ All Beetroot subcommands. Every verb accepts `--help` for full usage.
 
 After `uv tool install`, invocations are plain `beetroot <verb>` — the tool venv puts `beetroot` directly on your `PATH`. (Contributors hacking on Beetroot from an editable `uv sync` checkout use `uv run beetroot <verb>` instead; see [CLAUDE.md](https://github.com/Xiddoc/Beetroot/blob/main/CLAUDE.md).)
 
+Beetroot's path model is Docker-inspired: an instance is any directory on disk containing a `beetroot.yaml`. The CLI discovers the current instance by walking up from `cwd` like `git` walks up to find `.git`. The cross-instance registry — name → absolute path — lives at `~/.config/beetroot/instances.json` (respects `XDG_CONFIG_HOME`).
+
 ---
 
 ## `create`
@@ -11,31 +13,49 @@ After `uv tool install`, invocations are plain `beetroot <verb>` — the tool ve
 Initialize a new instance.
 
 ```
-beetroot create <name> [--preset PRESET] [--from-data PATH]
+beetroot create <name> [--preset PRESET] [--path DIR] [--from-data PATH]
 ```
 
 | Argument / Flag | Type | Description |
 |----------------|------|-------------|
-| `name` | positional | Instance name (used as the Docker project name and directory name under `instances/`) |
-| `--preset` | string | Preset name to load from `presets/`. Default: `default` |
-| `--from-data` | path | Copy an existing data directory as the new instance's `/data`. Useful for cloning an existing Android environment. Path is relative to the project root. |
+| `name` | positional | Instance name (used as the Docker project name and the default directory name) |
+| `--preset` | string | Bundled preset name. Default: `default` |
+| `--path` | path | Where to create the instance directory. Default: `./<name>`. Resolved against `cwd`. |
+| `--from-data` | path | Copy an existing data directory as the new instance's `/data`. |
 
 **What it does:**
 
 1. Validates the name isn't already registered.
-2. Loads the named preset from `presets/<preset>.yaml`.
-3. Creates `instances/<name>/` and writes `beetroot.yaml`.
+2. Loads the bundled preset.
+3. Creates the instance directory and writes `beetroot.yaml` into it.
 4. Allocates the lowest free port index.
-5. Registers the instance in `instances.json`.
-6. If `--from-data` is given, copies the directory into `instances/<name>/data/`.
-7. Calls `_stage_instance`: renders `.env`, downloads Frida binary, downloads and stages modules.
+5. Registers `name → absolute_path` in `~/.config/beetroot/instances.json`.
+6. If `--from-data` is given, copies the directory into `<instance>/data/`.
+7. Renders `.env`, downloads the Frida binary, downloads + stages modules.
 
 **Output:**
 
 ```
-[beetroot] created alpha (index 0, ADB localhost:5555, Frida localhost:27042)
+[beetroot] created alpha at /home/you/alpha (index 0, ADB localhost:5555, Frida localhost:27042)
 [beetroot] next: beetroot up alpha
 ```
+
+---
+
+## `register`
+
+Adopt an existing instance directory under the global registry.
+
+```
+beetroot register <path> [--name NAME]
+```
+
+| Argument / Flag | Type | Description |
+|----------------|------|-------------|
+| `path` | positional | Path to a directory containing `beetroot.yaml` |
+| `--name` | string | Registry name (default: basename of the path) |
+
+Useful for picking up an instance dir cloned from a teammate, or after recovering from a corrupted registry. Allocates a port index just like `create`.
 
 ---
 
@@ -51,7 +71,7 @@ beetroot apply <name>
 |----------|------|-------------|
 | `name` | positional | Instance name |
 
-Run this after editing `instances/<name>/beetroot.yaml`. It re-downloads any modules whose URLs or sha256s changed, re-downloads Frida if the version changed, and re-renders `.env`. Idempotent — safe to run multiple times.
+Run this after editing the instance's `beetroot.yaml`. It re-downloads any modules whose URLs or sha256s changed, re-downloads Frida if the version changed, and re-renders `.env`. Idempotent — safe to run multiple times.
 
 After `apply`, restart to pick up the changes:
 
@@ -74,7 +94,7 @@ beetroot up <name> [<name> ...] [--build]
 | `names` | positional (one or more) | Instance names to start |
 | `--build` | flag | Rebuild the Docker image before starting. Use after changing `docker/Dockerfile`. |
 
-Runs `docker compose -p <name> -f compose.yaml --env-file instances/<name>/.env up -d` for each instance.
+Runs `docker compose -p <name> -f <bundled-template> --project-directory <instance-dir> --env-file <instance-dir>/.env up -d` for each instance. The bundled template lives inside the `beetroot` wheel, not at any project root.
 
 **Output:**
 
@@ -96,7 +116,7 @@ beetroot down <name> [<name> ...]
 |----------|------|-------------|
 | `names` | positional (one or more) | Instance names to stop |
 
-Runs `docker compose -p <name> down`. The `instances/<name>/data/` directory is untouched.
+Runs `docker compose down`. The instance's `data/` directory is untouched.
 
 **Output:**
 
@@ -120,14 +140,14 @@ beetroot destroy <name> [-y]
 | `-y`, `--yes` | flag | Skip the confirmation prompt |
 
 !!! warning "Destructive"
-    This deletes `instances/<name>/` including `/data`. There is no undo. Use `beetroot down` to stop without deleting.
+    This deletes the entire instance directory including `/data`. There is no undo. Use `beetroot down` to stop without deleting.
 
 Steps:
 
 1. (Optional) Prompts for confirmation unless `-y`.
 2. Runs `docker compose down -v` to remove the container and any named volumes.
-3. Deletes `instances/<name>/` with `shutil.rmtree`.
-4. Removes the entry from `instances.json`, freeing the port index.
+3. Deletes the instance directory with `shutil.rmtree`.
+4. Removes the entry from the registry, freeing the port index.
 
 ---
 
@@ -148,9 +168,9 @@ Container status is queried live from `docker compose ps` — it's never cached.
 **Table output:**
 
 ```
-NAME          IDX  ADB                   FRIDA                 STATUS
-alpha         0    localhost:5555        localhost:27042       running
-bravo         1    localhost:5565        localhost:27052       exited
+NAME          IDX  ADB                   FRIDA                 STATUS        PATH
+alpha         0    localhost:5555        localhost:27042       running       /home/you/alpha
+bravo         1    localhost:5565        localhost:27052       exited        /tmp/scratch/bravo
 ```
 
 **JSON output (abbreviated):**
@@ -158,6 +178,7 @@ bravo         1    localhost:5565        localhost:27052       exited
 ```json
 {
   "alpha": {
+    "path": "/home/you/alpha",
     "index": 0,
     "adb": "localhost:5555",
     "frida": "localhost:27042",
@@ -272,9 +293,9 @@ beetroot module <name> <source>
 | Argument | Type | Description |
 |----------|------|-------------|
 | `name` | positional | Instance name |
-| `source` | positional | `https://` or `http://` URL, or a local filesystem path to a `.zip` |
+| `source` | positional | `https://` or `http://` URL, or a path to a `.zip` (relative paths resolve against the instance directory). |
 
-The module is appended to `instances/<name>/beetroot.yaml` and immediately staged into `instances/<name>/modules/`. Restart to flash:
+The module is appended to the instance's `beetroot.yaml` and immediately staged into its `modules/` directory. Restart to flash:
 
 ```bash
 beetroot down <name> && beetroot up <name>

@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 from . import compose, config, frida_dl, modules_dl, paths, ports, registry, setup_runner
 
@@ -13,6 +14,11 @@ from . import compose, config, frida_dl, modules_dl, paths, ports, registry, set
 def _ensure_exists(name: str) -> None:
     if registry.get(name) is None:
         sys.exit(f"error: no instance named {name!r}. Try `beetroot ls`.")
+
+
+def _instance_root(name: str) -> Path:
+    """Return the absolute instance directory for a registered ``name``."""
+    return registry.instance_path(name)
 
 
 def _check_port_collisions(name: str, new_ports: dict[str, int]) -> None:
@@ -28,25 +34,25 @@ def _check_port_collisions(name: str, new_ports: dict[str, int]) -> None:
     )
 
 
-def _stage_instance(name: str, cfg: config.InstanceConfig) -> None:
+def _stage_instance(name: str, root: Path, cfg: config.InstanceConfig) -> None:
     """Render .env and stage Frida + modules. Idempotent — safe on ``apply``."""
     meta = registry.get(name)
     assert meta is not None
     rendered_ports = ports.resolve_ports(meta["index"], cfg.ports)
 
-    paths.instance_data(name).mkdir(parents=True, exist_ok=True)
-    paths.instance_modules(name).mkdir(parents=True, exist_ok=True)
+    paths.instance_data(root).mkdir(parents=True, exist_ok=True)
+    paths.instance_modules(root).mkdir(parents=True, exist_ok=True)
 
-    paths.instance_env(name).write_text(
+    paths.instance_env(root).write_text(
         config.render_env(name, cfg, rendered_ports)
     )
 
     if cfg.frida is not None:
-        frida_dl.stage_for_instance(name, cfg.frida.version)
+        frida_dl.stage_for_instance(root, cfg.frida.version)
     else:
-        frida_dl.stage_empty(name)
+        frida_dl.stage_empty(root)
 
-    modules_dl.stage_for_instance(name, cfg)
+    modules_dl.stage_for_instance(root, cfg)
 
 
 # ---- verbs -----------------------------------------------------------------
@@ -54,42 +60,79 @@ def _stage_instance(name: str, cfg: config.InstanceConfig) -> None:
 
 def cmd_create(args: argparse.Namespace) -> None:
     """
-    Create a new instance from a preset and stage its files.
+    Create a new instance directory at ``--path`` and stage its files.
 
     Args:
-        args: Parsed CLI arguments (``name``, ``preset``, ``from_data``).
+        args: Parsed CLI arguments (``name``, ``preset``, ``from_data``,
+            ``path``).
     """
     name = args.name
     if registry.get(name) is not None:
         sys.exit(f"error: instance {name!r} already exists.")
+
+    target_root = Path(args.path or name).resolve()
+    if (target_root / "beetroot.yaml").exists():
+        sys.exit(
+            f"error: {target_root}/beetroot.yaml already exists — "
+            f"use `beetroot register {target_root}` to adopt it."
+        )
 
     cfg = config.load_preset(args.preset)
     index = ports.lowest_free_index(registry.used_indices())
     new_ports = ports.resolve_ports(index, cfg.ports)
     _check_port_collisions(name, new_ports)
 
-    paths.instance_dir(name).mkdir(parents=True, exist_ok=True)
-    config.write_yaml(paths.instance_yaml(name), cfg)
+    target_root.mkdir(parents=True, exist_ok=True)
+    config.write_yaml(paths.instance_yaml(target_root), cfg)
 
-    registry.add(name, index)
+    registry.add(name, target_root, index)
 
     if args.from_data:
-        src = (paths.repo_root() / args.from_data).resolve()
+        src = Path(args.from_data).resolve()
         if not src.is_dir():
             sys.exit(f"error: --from-data path {src} is not a directory.")
-        dst = paths.instance_data(name)
+        dst = paths.instance_data(target_root)
         if dst.exists():
             shutil.rmtree(dst)
         print(f"[beetroot] copying {src} → {dst}")
         shutil.copytree(src, dst)
 
-    _stage_instance(name, cfg)
+    _stage_instance(name, target_root, cfg)
     p = ports.resolve_ports(index, cfg.ports)
     print(
-        f"[beetroot] created {name} (index {index}, ADB localhost:{p['adb']}, "
-        f"Frida localhost:{p['frida']})"
+        f"[beetroot] created {name} at {target_root} "
+        f"(index {index}, ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"
     )
     print(f"[beetroot] next: beetroot up {name}")
+
+
+def cmd_register(args: argparse.Namespace) -> None:
+    """
+    Adopt an existing instance directory under the global registry.
+
+    Args:
+        args: Parsed CLI arguments (``path``, ``name``).
+    """
+    target_root = Path(args.path).resolve()
+    yaml_path = paths.instance_yaml(target_root)
+    if not yaml_path.is_file():
+        sys.exit(f"error: no beetroot.yaml at {yaml_path}.")
+    name = args.name or target_root.name
+    if registry.get(name) is not None:
+        sys.exit(
+            f"error: instance {name!r} already registered. Use a different "
+            f"--name, or `beetroot destroy {name}` first."
+        )
+    cfg = config.load_yaml(yaml_path)
+    index = ports.lowest_free_index(registry.used_indices())
+    new_ports = ports.resolve_ports(index, cfg.ports)
+    _check_port_collisions(name, new_ports)
+    registry.add(name, target_root, index)
+    print(
+        f"[beetroot] registered {name} at {target_root} "
+        f"(index {index}, ADB localhost:{new_ports['adb']}, "
+        f"Frida localhost:{new_ports['frida']})"
+    )
 
 
 def cmd_apply(args: argparse.Namespace) -> None:
@@ -100,12 +143,13 @@ def cmd_apply(args: argparse.Namespace) -> None:
         args: Parsed CLI arguments (``name``).
     """
     _ensure_exists(args.name)
-    cfg = config.load_instance(args.name)
+    root = _instance_root(args.name)
+    cfg = config.load_yaml(paths.instance_yaml(root))
     meta = registry.get(args.name)
     assert meta is not None
     new_ports = ports.resolve_ports(meta["index"], cfg.ports)
     _check_port_collisions(args.name, new_ports)
-    _stage_instance(args.name, cfg)
+    _stage_instance(args.name, root, cfg)
     print(f"[beetroot] re-staged {args.name} from beetroot.yaml")
     print(f"[beetroot] restart with: beetroot down {args.name} && beetroot up {args.name}")
 
@@ -138,10 +182,11 @@ def cmd_up(args: argparse.Namespace) -> None:
     """
     for name in _resolve_names(args):
         _ensure_exists(name)
-        compose.up(name, build=args.build)
+        root = _instance_root(name)
+        compose.up(name, root, build=args.build)
         meta = registry.get(name)
         assert meta is not None
-        cfg = config.load_instance(name)
+        cfg = config.load_yaml(paths.instance_yaml(root))
         p = ports.resolve_ports(meta["index"], cfg.ports)
         print(f"[beetroot] {name} up — ADB localhost:{p['adb']}, Frida localhost:{p['frida']}")
 
@@ -155,7 +200,7 @@ def cmd_down(args: argparse.Namespace) -> None:
     """
     for name in _resolve_names(args):
         _ensure_exists(name)
-        compose.down(name)
+        compose.down(name, _instance_root(name))
         print(f"[beetroot] {name} down (data preserved)")
 
 
@@ -168,8 +213,9 @@ def cmd_restart(args: argparse.Namespace) -> None:
     """
     for name in _resolve_names(args):
         _ensure_exists(name)
-        compose.down(name)
-        compose.up(name)
+        root = _instance_root(name)
+        compose.down(name, root)
+        compose.up(name, root)
         print(f"[beetroot] {name} restarted")
 
 
@@ -182,18 +228,18 @@ def cmd_destroy(args: argparse.Namespace) -> None:
     """
     name = args.name
     _ensure_exists(name)
+    root = _instance_root(name)
     if not args.yes:
-        ans = input(f"Destroy {name} and delete instances/{name}/? [y/N] ").strip().lower()
+        ans = input(f"Destroy {name} and delete {root}? [y/N] ").strip().lower()
         if ans != "y":
             print("[beetroot] aborted")
             return
     try:
-        compose.down(name, volumes=True)
+        compose.down(name, root, volumes=True)
     except compose.ComposeError as e:
         print(f"[beetroot] (compose down failed: {e}; continuing)")
-    instance_path = paths.instance_dir(name)
-    if instance_path.exists():
-        shutil.rmtree(instance_path)
+    if root.exists():
+        shutil.rmtree(root)
     registry.remove(name)
     print(f"[beetroot] destroyed {name}")
 
@@ -209,13 +255,15 @@ def cmd_ls(args: argparse.Namespace) -> None:
     if args.json:
         out = {}
         for name, meta in instances.items():
-            cfg = config.load_instance(name)
+            root = Path(meta["absolute_path"])
+            cfg = config.load_yaml(paths.instance_yaml(root))
             p = ports.resolve_ports(meta["index"], cfg.ports)
             out[name] = {
+                "path": str(root),
                 "index": meta["index"],
                 "adb": f"localhost:{p['adb']}",
                 "frida": f"localhost:{p['frida']}",
-                "status": compose.ps_status(name),
+                "status": compose.ps_status(name, root),
                 "created_at": meta["created_at"],
             }
         print(json.dumps(out, indent=2, sort_keys=True))
@@ -224,16 +272,18 @@ def cmd_ls(args: argparse.Namespace) -> None:
     if not instances:
         print("(no instances — try `beetroot create alpha`)")
         return
-    print(f"{'NAME':<14}{'IDX':<5}{'ADB':<22}{'FRIDA':<22}{'STATUS':<14}")
+    print(f"{'NAME':<14}{'IDX':<5}{'ADB':<22}{'FRIDA':<22}{'STATUS':<14}{'PATH'}")
     for name in sorted(instances):
         meta = instances[name]
-        cfg = config.load_instance(name)
+        root = Path(meta["absolute_path"])
+        cfg = config.load_yaml(paths.instance_yaml(root))
         p = ports.resolve_ports(meta["index"], cfg.ports)
         print(
             f"{name:<14}{meta['index']:<5}"
             f"{'localhost:' + str(p['adb']):<22}"
             f"{'localhost:' + str(p['frida']):<22}"
-            f"{compose.ps_status(name):<14}"
+            f"{compose.ps_status(name, root):<14}"
+            f"{root}"
         )
 
 
@@ -245,7 +295,7 @@ def cmd_logs(args: argparse.Namespace) -> None:
         args: Parsed CLI arguments (``name``, ``follow``).
     """
     _ensure_exists(args.name)
-    compose.logs(args.name, follow=args.follow)
+    compose.logs(args.name, _instance_root(args.name), follow=args.follow)
 
 
 def cmd_shell(args: argparse.Namespace) -> None:
@@ -258,7 +308,8 @@ def cmd_shell(args: argparse.Namespace) -> None:
     _ensure_exists(args.name)
     meta = registry.get(args.name)
     assert meta is not None
-    cfg = config.load_instance(args.name)
+    root = _instance_root(args.name)
+    cfg = config.load_yaml(paths.instance_yaml(root))
     p = ports.resolve_ports(meta["index"], cfg.ports)
     if shutil.which("adb") is None:
         sys.exit("error: adb not found on PATH (install android-tools).")
@@ -277,7 +328,8 @@ def cmd_env(args: argparse.Namespace) -> None:
     _ensure_exists(args.name)
     meta = registry.get(args.name)
     assert meta is not None
-    cfg = config.load_instance(args.name)
+    root = _instance_root(args.name)
+    cfg = config.load_yaml(paths.instance_yaml(root))
     p = ports.resolve_ports(meta["index"], cfg.ports)
     print(f"export ANDROID_DEVICE=localhost:{p['adb']}")
     print(f"export FRIDA_DEVICE=localhost:{p['frida']}")
@@ -293,7 +345,8 @@ def cmd_frida(args: argparse.Namespace) -> None:
     _ensure_exists(args.name)
     meta = registry.get(args.name)
     assert meta is not None
-    cfg = config.load_instance(args.name)
+    root = _instance_root(args.name)
+    cfg = config.load_yaml(paths.instance_yaml(root))
     p = ports.resolve_ports(meta["index"], cfg.ports)
     if shutil.which("frida") is None:
         sys.exit(
@@ -312,16 +365,17 @@ def cmd_module(args: argparse.Namespace) -> None:
         args: Parsed CLI arguments (``name``, ``source``, ``sha256``).
     """
     _ensure_exists(args.name)
-    cfg = config.load_instance(args.name)
+    root = _instance_root(args.name)
+    cfg = config.load_yaml(paths.instance_yaml(root))
     src = args.source
     sha256: str | None = args.sha256 or None
     if src.startswith(("http://", "https://")):
         cfg.modules.append(config.Module(url=src, sha256=sha256))
     else:
         cfg.modules.append(config.Module(path=src, sha256=sha256))
-    config.write_yaml(paths.instance_yaml(args.name), cfg)
-    modules_dl.stage_for_instance(args.name, cfg)
-    print(f"[beetroot] added module → instances/{args.name}/beetroot.yaml")
+    config.write_yaml(paths.instance_yaml(root), cfg)
+    modules_dl.stage_for_instance(root, cfg)
+    print(f"[beetroot] added module → {paths.instance_yaml(root)}")
     print(f"[beetroot] restart to flash: beetroot down {args.name} && beetroot up {args.name}")
 
 
@@ -349,11 +403,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="beetroot", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("create", help="create a new instance")
+    s = sub.add_parser("create", help="create a new instance dir")
     s.add_argument("name")
     s.add_argument("--preset", default="default")
     s.add_argument("--from-data", help="copy an existing data dir as the instance's /data")
+    s.add_argument("--path", help="instance directory location (default: ./<name>)")
     s.set_defaults(func=cmd_create)
+
+    s = sub.add_parser("register", help="adopt an existing instance dir under the registry")
+    s.add_argument("path", help="path to a directory containing beetroot.yaml")
+    s.add_argument("--name", help="registry name (default: basename of path)")
+    s.set_defaults(func=cmd_register)
 
     s = sub.add_parser("apply", help="re-render .env and re-stage from beetroot.yaml")
     s.add_argument("name")
@@ -404,7 +464,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("module", help="add a Magisk module zip (URL or local path)")
     s.add_argument("name")
-    s.add_argument("source", help="https URL or repo-relative path to a .zip")
+    s.add_argument("source", help="https URL or instance-relative path to a .zip")
     s.add_argument("--sha256", metavar="HEX", help="expected sha256 hex digest of the zip")
     s.set_defaults(func=cmd_module)
 
@@ -430,7 +490,7 @@ def main() -> None:
     args = parser.parse_args()
     try:
         args.func(args)
-    except paths.ProjectRootNotFoundError as e:
+    except paths.InstanceRootNotFoundError as e:
         sys.exit(f"error: {e}")
     except ports.PortCollisionError as e:
         sys.exit(f"error: {e}")

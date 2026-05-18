@@ -1,6 +1,6 @@
 # Configuration Reference
 
-Every instance has an `instances/<name>/beetroot.yaml` that fully describes it. This file is the source of truth. Edit it, run `beetroot apply <name>`, restart — the change takes effect.
+Every instance directory has a `beetroot.yaml` that fully describes it. This file is the source of truth. Edit it, run `beetroot apply <name>`, restart — the change takes effect.
 
 The schema is validated by Pydantic on every load. Fields you omit use the defaults shown below.
 
@@ -136,7 +136,7 @@ frida:
 # frida: ~
 ```
 
-The binary is downloaded from `github.com/frida/frida/releases`, decompressed (`.xz`), and staged at `instances/<name>/frida-server`. It's bind-mounted into the container at `/data/local/tmp/frida-server`.
+The binary is downloaded from `github.com/frida/frida/releases`, decompressed (`.xz`), and cached at `~/.cache/beetroot/frida/` (respects `$XDG_CACHE_HOME`). The CLI then copies it into the instance directory at `frida-server`, which is bind-mounted into the container at `/data/local/tmp/frida-server`.
 
 ---
 

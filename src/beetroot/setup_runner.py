@@ -30,7 +30,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Final, Literal, Protocol
 
-from . import config
+from . import config, paths
 from .settings import settings
 
 GappsVariant = Literal["none", "lite", "full", "mindthegapps"]
@@ -193,11 +193,23 @@ def bootstrap_base_image(
     ]
     run.run(patcher_cmd, cwd=work)
 
-    # Step 3: build the Beetroot layer on top, passing the freshly produced
-    # base tag via the BASE_IMAGE env var (consumed by docker/Dockerfile).
+    # Step 3: build the Beetroot layer on top via the bundled compose template,
+    # passing the freshly produced base tag via the BASE_IMAGE env var (consumed
+    # by docker/Dockerfile) and the cwd via BEETROOT_BUILD_CONTEXT (so the
+    # template's ${BEETROOT_BUILD_CONTEXT} substitution finds the local
+    # docker/ dir).
+    cwd = Path.cwd()
     run.run(
-        [settings.docker_bin, "compose", "build"],
-        env={"BASE_IMAGE": tag},
+        [
+            settings.docker_bin,
+            "compose",
+            "-f",
+            str(paths.bundled_compose_file()),
+            "--project-directory",
+            str(cwd),
+            "build",
+        ],
+        env={"BASE_IMAGE": tag, "BEETROOT_BUILD_CONTEXT": str(cwd)},
     )
 
     return tag

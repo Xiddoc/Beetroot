@@ -8,17 +8,27 @@ This page walks you through the full lifecycle of a Beetroot instance: create �
 beetroot create alpha
 ```
 
-This allocates port index 0 (ADB `5555`, Frida `27042`), writes `instances/alpha/beetroot.yaml` from the default preset, downloads the correct Frida server binary, and renders `instances/alpha/.env` for Docker Compose.
+This:
+
+1. Picks the lowest free port index (`0` → ADB `5555`, Frida `27042` on a fresh host).
+2. Creates the instance directory at `./alpha/` (override with `--path /some/where`).
+3. Writes `./alpha/beetroot.yaml` from the default preset.
+4. Downloads and stages the Frida server binary at `./alpha/frida-server`.
+5. Renders `./alpha/.env` for Docker Compose.
+6. Registers the instance under `~/.config/beetroot/instances.json` (the cross-instance registry).
 
 The output looks like:
 
 ```
-[beetroot] created alpha (index 0, ADB localhost:5555, Frida localhost:27042)
+[beetroot] created alpha at /home/you/alpha (index 0, ADB localhost:5555, Frida localhost:27042)
 [beetroot] next: beetroot up alpha
 ```
 
 !!! tip "Use a preset"
     Pass `--preset stealth` to start with Shamiko and a wider Magisk denylist — useful when the target app checks for root. See [Presets](../guides/presets.md) for details.
+
+!!! tip "Adopt an existing instance dir"
+    If you already have an instance dir (e.g. cloned from a teammate), use `beetroot register <path>` to add it to the registry without touching its files.
 
 ## Boot
 
@@ -26,7 +36,7 @@ The output looks like:
 beetroot up alpha
 ```
 
-This runs `docker compose -p alpha -f compose.yaml --env-file instances/alpha/.env up -d` under the hood. The first boot takes 30–60 seconds while Android initializes and `entrypoint.sh` configures Magisk.
+Under the hood: `docker compose -p alpha -f <bundled-template> --project-directory /path/to/alpha --env-file /path/to/alpha/.env up -d`. The first boot takes 30–60 seconds while Android initialises and `entrypoint.sh` configures Magisk.
 
 Watch the logs to know when the device is ready:
 
@@ -79,8 +89,8 @@ beetroot ls
 ```
 
 ```
-NAME          IDX  ADB                   FRIDA                 STATUS
-alpha         0    localhost:5555        localhost:27042       running
+NAME    IDX  ADB             FRIDA            STATUS    PATH
+alpha   0    localhost:5555  localhost:27042  running   /home/you/alpha
 ```
 
 ## Stop (data preserved)
@@ -89,11 +99,9 @@ alpha         0    localhost:5555        localhost:27042       running
 beetroot down alpha
 ```
 
-Android is shut down cleanly; `instances/alpha/data/` stays intact. `beetroot up alpha` restarts from exactly where you left off.
+Android is shut down cleanly; the instance's `data/` stays intact. `beetroot up alpha` restarts from exactly where you left off.
 
 ## Wipe and start fresh
-
-If you want a clean slate:
 
 ```bash
 beetroot destroy -y alpha
@@ -101,7 +109,7 @@ beetroot create alpha
 beetroot up alpha
 ```
 
-`destroy` deletes `instances/alpha/` entirely, including `/data`. The `-y` flag skips the confirmation prompt.
+`destroy` deletes the instance directory entirely, including `/data`, and removes the registry entry. The `-y` flag skips the confirmation prompt.
 
 ## What's next
 

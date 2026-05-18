@@ -1,10 +1,11 @@
 """
-Stage Magisk module zips into ``instances/<name>/modules/``.
+Stage Magisk module zips into an instance's ``modules/`` directory.
 
 Each module entry in ``beetroot.yaml`` is either a URL (downloaded and
-cached) or a host-relative path (copied directly). An optional
-``sha256`` field is verified when present to guard against corruption or
-supply-chain substitution.
+cached) or a host path. Relative ``path:`` entries are resolved relative
+to the instance directory itself (the one containing ``beetroot.yaml``).
+An optional ``sha256`` field is verified when present to guard against
+corruption or supply-chain substitution.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from .settings import settings
 
 
 def _module_cache_dir() -> Path:
-    return paths.repo_root() / ".cache" / "modules"
+    return paths.user_cache_dir("modules")
 
 
 def _filename_from_url(url: str) -> str:
@@ -50,12 +51,12 @@ def _fetch_url(url: str) -> Path:
     return cache
 
 
-def _resolve(module: Module) -> Path:
+def _resolve(module: Module, instance_root: Path) -> Path:
     if module.url:
         local = _fetch_url(module.url)
     else:
         assert module.path is not None  # validated in Module model
-        local = (paths.repo_root() / module.path).resolve()
+        local = (instance_root / module.path).resolve()
         if not local.exists():
             raise FileNotFoundError(f"module path not found: {local}")
     if module.sha256:
@@ -68,29 +69,29 @@ def _resolve(module: Module) -> Path:
     return local
 
 
-def stage_for_instance(name: str, cfg: InstanceConfig) -> list[Path]:
+def stage_for_instance(instance_root: Path, cfg: InstanceConfig) -> list[Path]:
     """
-    Materialise all module zips into ``instances/<name>/modules/``. Idempotent.
+    Materialise all module zips into ``<instance_root>/modules/``. Idempotent.
 
     Wipes stale zips before staging so that removing a module from
     ``beetroot.yaml`` actually un-stages it on the next ``apply``.
 
     Args:
-        name: Instance name.
+        instance_root: The instance directory (the one containing
+            ``beetroot.yaml``). Relative ``path:`` entries in the config
+            are resolved relative to this directory.
         cfg: The instance configuration containing the modules list.
 
     Returns:
         List of paths to the staged zip files inside the instance directory.
     """
-    target = paths.instance_modules(name)
+    target = paths.instance_modules(instance_root)
     target.mkdir(parents=True, exist_ok=True)
-    # Wipe any stale zips first so removing a module from beetroot.yaml
-    # actually un-stages it on next apply.
     for stale in target.glob("*.zip"):
         stale.unlink()
     staged: list[Path] = []
     for module in cfg.modules:
-        src = _resolve(module)
+        src = _resolve(module, instance_root)
         dst = target / src.name
         shutil.copyfile(src, dst)
         staged.append(dst)

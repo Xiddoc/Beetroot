@@ -4,7 +4,9 @@ Download and stage frida-server binaries on the host.
 Frida releases are fetched from
 ``github.com/frida/frida/releases/download/<version>/
 frida-server-<version>-android-x86_64.xz``. The decompressed binary is
-cached under ``.cache/frida/<version>`` and copied per-instance on apply.
+cached under ``$XDG_CACHE_HOME/beetroot/frida/`` (default
+``~/.cache/beetroot/frida/``) and copied per-instance on apply, shared
+across all instances on the host.
 """
 from __future__ import annotations
 
@@ -35,6 +37,11 @@ def release_url(version: str) -> str:
     )
 
 
+def frida_cache_dir() -> Path:
+    """Return the user-global Frida binary cache directory."""
+    return paths.user_cache_dir("frida")
+
+
 def cached_binary(version: str) -> Path:
     """
     Return the cache path for a decompressed frida-server binary.
@@ -43,9 +50,9 @@ def cached_binary(version: str) -> Path:
         version: The frida release tag.
 
     Returns:
-        Path under ``.cache/frida/`` where the binary will be stored.
+        Path under the user-global Frida cache where the binary lives.
     """
-    return paths.frida_cache_dir() / f"frida-server-{version}-{settings.frida_arch}"
+    return frida_cache_dir() / f"frida-server-{version}-{settings.frida_arch}"
 
 
 def download(version: str) -> Path:
@@ -90,26 +97,28 @@ def download(version: str) -> Path:
     return out
 
 
-def stage_for_instance(name: str, version: str) -> Path:
+def stage_for_instance(instance_root: Path, version: str) -> Path:
     """
-    Copy the cached frida-server binary into ``instances/<name>/frida-server``.
+    Copy the cached frida-server binary into the instance's directory.
 
     Args:
-        name: Instance name.
+        instance_root: The instance directory (the one containing
+            ``beetroot.yaml``). The binary is written to
+            ``<instance_root>/frida-server``.
         version: Frida release tag.
 
     Returns:
         Path to the staged binary inside the instance directory.
     """
     src = download(version)
-    dst = paths.instance_frida(name)
+    dst = paths.instance_frida(instance_root)
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src, dst)
     dst.chmod(0o755)
     return dst
 
 
-def stage_empty(name: str) -> Path:
+def stage_empty(instance_root: Path) -> Path:
     """
     Place a zero-byte non-executable placeholder for instances with no Frida.
 
@@ -118,12 +127,12 @@ def stage_empty(name: str) -> Path:
     when it's not set.
 
     Args:
-        name: Instance name.
+        instance_root: The instance directory.
 
     Returns:
         Path to the placeholder file inside the instance directory.
     """
-    dst = paths.instance_frida(name)
+    dst = paths.instance_frida(instance_root)
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_bytes(b"")
     dst.chmod(0o644)

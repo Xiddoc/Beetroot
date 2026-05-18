@@ -8,6 +8,7 @@ top-level sections: ``display``, ``resources``, ``frida``, ``modules``,
 """
 from __future__ import annotations
 
+import importlib.resources
 import sys
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -25,9 +26,7 @@ if sys.version_info >= (3, 12):  # pragma: no cover - version-conditional import
 else:  # pragma: no cover - version-conditional import
     from typing_extensions import override
 
-from . import paths
-
-SUPPORTED_API_VERSION: Final = 1
+SUPPORTED_API_VERSION: Final = 2
 
 _VALID_ANDROID_VERSIONS = {11, 12, 13, 14}
 
@@ -103,7 +102,8 @@ class Module(BaseModel):
 
     Attributes:
         url: HTTPS URL to download the module zip from.
-        path: Repo-relative path to a local zip file.
+        path: Path to a local zip file, resolved relative to the instance
+            directory (the directory containing this beetroot.yaml).
         sha256: Expected hex digest for integrity verification.
     """
 
@@ -229,10 +229,10 @@ class Ports(BaseModel):
 
 class InstanceConfig(BaseModel):
     """
-    The schema of ``instances/<name>/beetroot.yaml``.
+    The schema of an instance directory's ``beetroot.yaml``.
 
-    ``name`` is omitted from the schema because it lives in the directory
-    name itself — single source of truth, can't drift.
+    Instance ``name`` is not part of the schema — it's the registry key
+    that maps a name to this directory's absolute path.
 
     Each Beetroot release supports exactly one ``api_version``; mismatched
     values fail loud with a pointer to the migration story in
@@ -289,22 +289,9 @@ def load_yaml(path: Path) -> InstanceConfig:
     return InstanceConfig.model_validate(raw)
 
 
-def load_instance(name: str) -> InstanceConfig:
-    """
-    Load the config for a named instance from its beetroot.yaml.
-
-    Args:
-        name: Instance name (directory under ``instances/``).
-
-    Returns:
-        The validated InstanceConfig for that instance.
-    """
-    return load_yaml(paths.instance_yaml(name))
-
-
 def load_preset(preset_name: str) -> InstanceConfig:
     """
-    Load a named preset from the ``presets/`` directory.
+    Load a preset bundled inside the ``beetroot.templates.presets`` package.
 
     Args:
         preset_name: Basename of the preset file without the ``.yaml``
@@ -314,16 +301,22 @@ def load_preset(preset_name: str) -> InstanceConfig:
         The validated InstanceConfig for the preset.
 
     Raises:
-        FileNotFoundError: If no matching ``.yaml`` file exists in
-            ``presets/``.
+        FileNotFoundError: If no matching ``.yaml`` file ships with the
+            installed package.
     """
-    p = paths.presets_dir() / f"{preset_name}.yaml"
-    if not p.exists():
-        raise FileNotFoundError(
-            f"preset {preset_name!r} not found at {p} — "
-            f"available: {sorted(p.stem for p in paths.presets_dir().glob('*.yaml'))}"
+    presets = importlib.resources.files("beetroot.templates.presets")
+    target = presets.joinpath(f"{preset_name}.yaml")
+    if not target.is_file():
+        available = sorted(
+            entry.name.removesuffix(".yaml")
+            for entry in presets.iterdir()
+            if entry.name.endswith(".yaml")
         )
-    return load_yaml(p)
+        raise FileNotFoundError(
+            f"preset {preset_name!r} not bundled with beetroot — "
+            f"available: {available}"
+        )
+    return InstanceConfig.model_validate(yaml.safe_load(target.read_text()))
 
 
 def write_yaml(path: Path, cfg: InstanceConfig) -> None:

@@ -26,7 +26,15 @@ def _fake_urlopen(url: str, **kwargs: object) -> MagicMock:
     return resp
 
 
-class TestRelaseUrl:
+@pytest.fixture
+def instance_root(isolated_registry: Path, tmp_path: Path) -> Path:
+    """An empty instance directory under the isolated XDG tree."""
+    root = tmp_path / "alpha"
+    root.mkdir()
+    return root
+
+
+class TestReleaseUrl:
     def test_contains_version(self) -> None:
         url = frida_dl.release_url(VERSION)
         assert VERSION in url
@@ -41,48 +49,51 @@ class TestRelaseUrl:
 
 
 class TestCachedBinary:
-    def test_path_under_frida_cache(self, isolated_root: Path) -> None:
+    def test_path_under_frida_cache(self, isolated_registry: Path) -> None:
         p = frida_dl.cached_binary(VERSION)
-        assert p.is_relative_to(paths.frida_cache_dir())
+        assert p.is_relative_to(frida_dl.frida_cache_dir())
 
-    def test_path_contains_version(self, isolated_root: Path) -> None:
+    def test_path_contains_version(self, isolated_registry: Path) -> None:
         p = frida_dl.cached_binary(VERSION)
         assert VERSION in p.name
 
+    def test_cache_dir_under_user_cache(self, isolated_registry: Path) -> None:
+        assert frida_dl.frida_cache_dir() == paths.user_cache_dir("frida")
+
 
 class TestDownload:
-    def test_downloads_and_decompresses(self, isolated_root: Path) -> None:
+    def test_downloads_and_decompresses(self, isolated_registry: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
             result = frida_dl.download(VERSION)
         assert result.exists()
         assert result.read_bytes() == FAKE_BINARY
 
-    def test_cached_file_is_executable(self, isolated_root: Path) -> None:
+    def test_cached_file_is_executable(self, isolated_registry: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
             result = frida_dl.download(VERSION)
         mode = result.stat().st_mode
         assert mode & stat.S_IXUSR
 
-    def test_idempotent_second_call_skips_fetch(self, isolated_root: Path) -> None:
+    def test_idempotent_second_call_skips_fetch(self, isolated_registry: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen) as mock_open:
             frida_dl.download(VERSION)
             frida_dl.download(VERSION)
         assert mock_open.call_count == 1
 
-    def test_returns_path_to_cached_binary(self, isolated_root: Path) -> None:
+    def test_returns_path_to_cached_binary(self, isolated_registry: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
             result = frida_dl.download(VERSION)
         assert result == frida_dl.cached_binary(VERSION)
 
-    def test_cache_dir_created_automatically(self, isolated_root: Path) -> None:
-        assert not paths.frida_cache_dir().exists()
+    def test_cache_dir_created_automatically(self, isolated_registry: Path) -> None:
+        assert not frida_dl.frida_cache_dir().exists()
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
             frida_dl.download(VERSION)
-        assert paths.frida_cache_dir().exists()
+        assert frida_dl.frida_cache_dir().exists()
 
 
 class TestDownloadErrors:
-    def test_http_error_raises_runtime_error(self, isolated_root: Path) -> None:
+    def test_http_error_raises_runtime_error(self, isolated_registry: Path) -> None:
         def _raise(url: str, **kwargs: object) -> MagicMock:
             raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)  # type: ignore[arg-type]
 
@@ -90,7 +101,7 @@ class TestDownloadErrors:
             with pytest.raises(RuntimeError, match="HTTP 404"):
                 frida_dl.download(VERSION)
 
-    def test_timeout_raises_runtime_error(self, isolated_root: Path) -> None:
+    def test_timeout_raises_runtime_error(self, isolated_registry: Path) -> None:
         def _raise(url: str, **kwargs: object) -> MagicMock:
             raise TimeoutError("timed out")
 
@@ -98,7 +109,7 @@ class TestDownloadErrors:
             with pytest.raises(RuntimeError, match="timed out"):
                 frida_dl.download(VERSION)
 
-    def test_url_error_raises_runtime_error(self, isolated_root: Path) -> None:
+    def test_url_error_raises_runtime_error(self, isolated_registry: Path) -> None:
         def _raise(url: str, **kwargs: object) -> MagicMock:
             raise urllib.error.URLError("no route to host")
 
@@ -122,47 +133,54 @@ class TestSha256Of:
 
 
 class TestStageEmpty:
-    def test_creates_zero_byte_file(self, isolated_root: Path) -> None:
-        result = frida_dl.stage_empty("alpha")
+    def test_creates_zero_byte_file(self, instance_root: Path) -> None:
+        result = frida_dl.stage_empty(instance_root)
         assert result.exists()
         assert result.stat().st_size == 0
 
-    def test_not_executable(self, isolated_root: Path) -> None:
-        result = frida_dl.stage_empty("alpha")
+    def test_not_executable(self, instance_root: Path) -> None:
+        result = frida_dl.stage_empty(instance_root)
         mode = result.stat().st_mode
         assert not (mode & stat.S_IXUSR)
 
-    def test_path_matches_instance_frida(self, isolated_root: Path) -> None:
-        result = frida_dl.stage_empty("alpha")
-        assert result == paths.instance_frida("alpha")
+    def test_path_matches_instance_frida(self, instance_root: Path) -> None:
+        result = frida_dl.stage_empty(instance_root)
+        assert result == paths.instance_frida(instance_root)
 
-    def test_creates_parent_dirs(self, isolated_root: Path) -> None:
-        assert not paths.instance_dir("alpha").exists()
-        frida_dl.stage_empty("alpha")
-        assert paths.instance_dir("alpha").exists()
+    def test_creates_parent_dirs(self, isolated_registry: Path, tmp_path: Path) -> None:
+        root = tmp_path / "deep" / "path" / "alpha"
+        assert not root.exists()
+        frida_dl.stage_empty(root)
+        assert root.exists()
 
 
 class TestStageForInstance:
-    def test_copies_binary_to_instance(self, isolated_root: Path) -> None:
+    def test_copies_binary_to_instance(self, instance_root: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            result = frida_dl.stage_for_instance("alpha", VERSION)
+            result = frida_dl.stage_for_instance(instance_root, VERSION)
         assert result.read_bytes() == FAKE_BINARY
 
-    def test_staged_file_is_executable(self, isolated_root: Path) -> None:
+    def test_staged_file_is_executable(self, instance_root: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            result = frida_dl.stage_for_instance("alpha", VERSION)
+            result = frida_dl.stage_for_instance(instance_root, VERSION)
         mode = result.stat().st_mode
         assert mode & stat.S_IXUSR
 
-    def test_staged_path_matches_instance_frida(self, isolated_root: Path) -> None:
+    def test_staged_path_matches_instance_frida(self, instance_root: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            result = frida_dl.stage_for_instance("alpha", VERSION)
-        assert result == paths.instance_frida("alpha")
+            result = frida_dl.stage_for_instance(instance_root, VERSION)
+        assert result == paths.instance_frida(instance_root)
 
-    def test_different_instances_get_own_copy(self, isolated_root: Path) -> None:
+    def test_different_instances_get_own_copy(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        alpha = tmp_path / "alpha"
+        bravo = tmp_path / "bravo"
+        alpha.mkdir()
+        bravo.mkdir()
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            frida_dl.stage_for_instance("alpha", VERSION)
-            frida_dl.stage_for_instance("bravo", VERSION)
-        assert paths.instance_frida("alpha") != paths.instance_frida("bravo")
-        assert paths.instance_frida("alpha").exists()
-        assert paths.instance_frida("bravo").exists()
+            frida_dl.stage_for_instance(alpha, VERSION)
+            frida_dl.stage_for_instance(bravo, VERSION)
+        assert paths.instance_frida(alpha) != paths.instance_frida(bravo)
+        assert paths.instance_frida(alpha).exists()
+        assert paths.instance_frida(bravo).exists()

@@ -2,7 +2,7 @@ services:
   phone:
     container_name: ${INSTANCE_NAME}
     build:
-      context: .
+      context: ${BEETROOT_BUILD_CONTEXT:-.}
       dockerfile: docker/Dockerfile
       args:
         BASE_IMAGE: ${BASE_IMAGE:-redroid/redroid:14.0.0_litegapps_houdini_magisk}
@@ -18,9 +18,9 @@ services:
     pids_limit: ${PIDS_LIMIT:-4096}
 
     volumes:
-      - ./instances/${INSTANCE_NAME}/data:/data
-      - ./instances/${INSTANCE_NAME}/modules:/flash_dir:ro
-      - ./instances/${INSTANCE_NAME}/frida-server:/data/local/tmp/frida-server:ro
+      - ./data:/data
+      - ./modules:/flash_dir:ro
+      - ./frida-server:/data/local/tmp/frida-server:ro
 
     ports:
       - "${ADB_PORT}:5555"

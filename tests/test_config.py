@@ -9,6 +9,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from beetroot import paths
 from beetroot.config import (
     SUPPORTED_API_VERSION,
     Android,
@@ -29,19 +30,27 @@ class TestApiVersion:
     def test_default_api_version_is_supported(self) -> None:
         cfg = InstanceConfig()
         assert cfg.api_version == SUPPORTED_API_VERSION
-        assert cfg.api_version == 1
+        assert cfg.api_version == 2
 
     def test_explicit_supported_version_succeeds(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": 1})
-        assert cfg.api_version == 1
+        cfg = InstanceConfig.model_validate({"api_version": 2})
+        assert cfg.api_version == 2
 
     def test_string_api_version_is_coerced(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": "1"})
-        assert cfg.api_version == 1
+        cfg = InstanceConfig.model_validate({"api_version": "2"})
+        assert cfg.api_version == 2
 
     def test_zero_api_version_raises(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
             InstanceConfig.model_validate({"api_version": 0})
+        msg = str(exc_info.value)
+        assert "not supported" in msg
+        assert "CHANGELOG" in msg
+
+    def test_v1_api_version_raises(self) -> None:
+        # v0.2 used api_version: 1; T1 bumps the schema to 2.
+        with pytest.raises(ValidationError) as exc_info:
+            InstanceConfig.model_validate({"api_version": 1})
         msg = str(exc_info.value)
         assert "not supported" in msg
         assert "CHANGELOG" in msg
@@ -67,27 +76,17 @@ class TestApiVersion:
         first_line = p.read_text().splitlines()[0]
         assert first_line.startswith("api_version:")
 
-    def test_default_preset_loads(self, isolated_root: Path) -> None:
-        presets = isolated_root / "presets"
-        presets.mkdir()
-        repo_presets = Path(__file__).resolve().parents[1] / "presets"
-        (presets / "default.yaml").write_text((repo_presets / "default.yaml").read_text())
+
+class TestBundledPresets:
+    def test_default_preset_loads(self) -> None:
         cfg = load_preset("default")
         assert cfg.api_version == SUPPORTED_API_VERSION
 
-    def test_stealth_preset_loads(self, isolated_root: Path) -> None:
-        presets = isolated_root / "presets"
-        presets.mkdir()
-        repo_presets = Path(__file__).resolve().parents[1] / "presets"
-        (presets / "stealth.yaml").write_text((repo_presets / "stealth.yaml").read_text())
+    def test_stealth_preset_loads(self) -> None:
         cfg = load_preset("stealth")
         assert cfg.api_version == SUPPORTED_API_VERSION
 
-    def test_no_gapps_preset_loads(self, isolated_root: Path) -> None:
-        presets = isolated_root / "presets"
-        presets.mkdir()
-        repo_presets = Path(__file__).resolve().parents[1] / "presets"
-        (presets / "no-gapps.yaml").write_text((repo_presets / "no-gapps.yaml").read_text())
+    def test_no_gapps_preset_loads(self) -> None:
         cfg = load_preset("no-gapps")
         assert cfg.api_version == SUPPORTED_API_VERSION
 
@@ -296,7 +295,6 @@ class TestPermissiveDefaults:
     """Pydantic models use default (permissive) settings — coercion and extra keys work."""
 
     def test_android_version_string_coerced(self) -> None:
-        # String-to-int coercion is fine (pydantic default, not strict mode).
         a = Android.model_validate({"version": "14"})
         assert a.version == 14
 
@@ -309,7 +307,6 @@ class TestPermissiveDefaults:
         assert r.cpus == 2.0
 
     def test_android_unknown_field_ignored(self) -> None:
-        # Unknown keys are silently ignored (pydantic default extra="ignore").
         a = Android.model_validate({"version": 14, "unknown_field": "x"})
         assert a.version == 14
 
@@ -327,28 +324,16 @@ class TestPermissiveDefaults:
 
 
 class TestLoadPreset:
-    def test_happy_path_default_preset(self, isolated_root: Path) -> None:
-        presets = isolated_root / "presets"
-        presets.mkdir()
-        (presets / "default.yaml").write_text(
-            "display:\n  width: 1080\n  height: 1920\n  fps: 30\n"
-        )
-        cfg = load_preset("default")
-        assert cfg.display.width == 1080
-        assert cfg.display.height == 1920
-
-    def test_missing_preset_raises_file_not_found(self, isolated_root: Path) -> None:
-        presets = isolated_root / "presets"
-        presets.mkdir()
-        with pytest.raises(FileNotFoundError, match="not found"):
+    def test_missing_preset_raises_file_not_found(self) -> None:
+        with pytest.raises(FileNotFoundError, match="not bundled"):
             load_preset("nonexistent")
 
-    def test_missing_preset_error_lists_available(self, isolated_root: Path) -> None:
-        presets = isolated_root / "presets"
-        presets.mkdir()
-        (presets / "stealth.yaml").write_text("{}")
-        with pytest.raises(FileNotFoundError, match="stealth"):
+    def test_missing_preset_error_lists_available(self) -> None:
+        with pytest.raises(FileNotFoundError) as exc_info:
             load_preset("nonexistent")
+        msg = str(exc_info.value)
+        assert "default" in msg
+        assert "stealth" in msg
 
 
 class TestRenderEnv:
@@ -462,17 +447,6 @@ class TestRenderEnv:
         assert "MEMSWAP_LIMIT=4g" in result
 
 
-class TestLoadInstance:
-    def test_load_instance_reads_yaml(self, isolated_root: Path) -> None:
-        from beetroot.config import load_instance, write_yaml
-        instance_dir = isolated_root / "instances" / "alpha"
-        instance_dir.mkdir(parents=True)
-        yaml_path = instance_dir / "beetroot.yaml"
-        write_yaml(yaml_path, InstanceConfig())
-        cfg = load_instance("alpha")
-        assert cfg.display.width == 540
-
-
 class TestWriteLoadYamlRoundtrip:
     def test_default_config_roundtrip(self, tmp_path: Path) -> None:
         cfg = InstanceConfig()
@@ -511,11 +485,8 @@ class TestWriteLoadYamlRoundtrip:
 
 
 # ---------------------------------------------------------------------------
-# Docker compose config integration test
+# Docker compose config integration test — uses the bundled compose template.
 # ---------------------------------------------------------------------------
-
-# Real compose.yaml lives at the repo root (one level above tests/).
-_COMPOSE_YAML = Path(__file__).resolve().parents[1] / "compose.yaml"
 
 _DOCKER_AVAILABLE = shutil.which("docker") is not None
 
@@ -524,12 +495,12 @@ _DOCKER_AVAILABLE = shutil.which("docker") is not None
 class TestDockerComposeConfig:
     """Regression tests that `docker compose config` validates successfully.
 
-    These tests write a minimal .env (produced by render_env) to a tmp file
-    and shell out to `docker compose config` to catch substitution errors.
-    No container is started — `config` only renders and validates the YAML.
+    These tests render the .env via render_env, drop it in a fresh instance
+    directory, and shell out to `docker compose config` against the bundled
+    template. No container is started — `config` only renders the YAML.
     """
 
-    def _run_compose_config(self, env_file: Path) -> subprocess.CompletedProcess[str]:
+    def _run_compose_config(self, instance_root: Path) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
                 "docker",
@@ -537,9 +508,11 @@ class TestDockerComposeConfig:
                 "-p",
                 "test-beetroot-ci",
                 "-f",
-                str(_COMPOSE_YAML),
+                str(paths.bundled_compose_file()),
+                "--project-directory",
+                str(instance_root),
                 "--env-file",
-                str(env_file),
+                str(paths.instance_env(instance_root)),
                 "config",
             ],
             capture_output=True,
@@ -547,38 +520,44 @@ class TestDockerComposeConfig:
             check=False,
         )
 
-    def _write_env(self, tmp_path: Path, extra: dict[str, str] | None = None) -> Path:
-        """Write a minimal .env from a default Resources() config."""
+    def _populate(
+        self, instance_root: Path, extra: dict[str, str] | None = None
+    ) -> None:
         cfg = InstanceConfig()
         ports = {"adb": 5555, "frida": 27042, "frida2": 27043}
         env_text = render_env("ci-test", cfg, ports)
         if extra:
             env_text += "".join(f"{k}={v}\n" for k, v in extra.items())
-        env_file = tmp_path / ".env"
-        env_file.write_text(env_text)
-        return env_file
+        (instance_root / ".env").write_text(env_text)
+        # Compose checks the bind-mount source paths exist when resolving
+        # config — create placeholders so the YAML validates.
+        (instance_root / "data").mkdir()
+        (instance_root / "modules").mkdir()
+        (instance_root / "frida-server").write_bytes(b"")
 
     def test_default_config_is_valid(self, tmp_path: Path) -> None:
-        """Default Resources() (no mem_reservation/memswap_limit) must exit 0."""
-        env_file = self._write_env(tmp_path)
-        result = self._run_compose_config(env_file)
+        instance = tmp_path / "alpha"
+        instance.mkdir()
+        self._populate(instance)
+        result = self._run_compose_config(instance)
         assert result.returncode == 0, (
             f"docker compose config failed for default env.\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
     def test_default_config_uses_mem_limit_as_reservation(self, tmp_path: Path) -> None:
-        """mem_reservation should resolve to MEM_LIMIT (3g) when not overridden."""
-        env_file = self._write_env(tmp_path)
-        result = self._run_compose_config(env_file)
+        instance = tmp_path / "alpha"
+        instance.mkdir()
+        self._populate(instance)
+        result = self._run_compose_config(instance)
         assert result.returncode == 0
-        # Docker normalises size strings (e.g. "3g" → "3221225472") in the output.
         assert "mem_reservation" in result.stdout
 
     def test_explicit_mem_reservation_is_respected(self, tmp_path: Path) -> None:
-        """When MEM_RESERVATION is set, docker compose config must accept it."""
-        env_file = self._write_env(tmp_path, {"MEM_RESERVATION": "2g", "MEMSWAP_LIMIT": "4g"})
-        result = self._run_compose_config(env_file)
+        instance = tmp_path / "alpha"
+        instance.mkdir()
+        self._populate(instance, {"MEM_RESERVATION": "2g", "MEMSWAP_LIMIT": "4g"})
+        result = self._run_compose_config(instance)
         assert result.returncode == 0, (
             f"docker compose config failed with explicit reservation.\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"

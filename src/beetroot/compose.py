@@ -1,7 +1,10 @@
 """
 Subprocess wrappers around ``docker compose``.
 
-We always invoke compose with ``-p <project>`` set to the instance name and
+The compose template ships inside the wheel (see
+:func:`paths.bundled_compose_file`); the per-instance state lives under
+the instance directory (``--project-directory <instance_dir>``). We always
+invoke compose with ``-p <project>`` set to the instance name and
 ``--env-file`` pointing at the instance's generated .env. Compose is
 authoritative for container state — the registry only knows about
 allocation, not runtime status.
@@ -12,6 +15,7 @@ import json
 import shutil
 import subprocess
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from . import paths
@@ -27,7 +31,7 @@ def _ensure_docker() -> None:
         raise ComposeError("docker not found on PATH")
 
 
-def _base_cmd(name: str) -> list[str]:
+def _base_cmd(name: str, instance_root: Path) -> list[str]:
     _ensure_docker()
     return [
         settings.docker_bin,
@@ -35,34 +39,44 @@ def _base_cmd(name: str) -> list[str]:
         "-p",
         name,
         "-f",
-        str(paths.compose_file()),
+        str(paths.bundled_compose_file()),
+        "--project-directory",
+        str(instance_root),
         "--env-file",
-        str(paths.instance_env(name)),
+        str(paths.instance_env(instance_root)),
     ]
 
 
-def run(name: str, args: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+def run(
+    name: str,
+    instance_root: Path,
+    args: Sequence[str],
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[Any]:
     """
     Run ``docker compose -p <name> ...``, inheriting stdio by default.
 
     Args:
         name: Instance name used as the compose project name.
+        instance_root: The instance directory (cwd for the subprocess and
+            the value of ``--project-directory``).
         args: Subcommand and flags to append after the base compose args.
         **kwargs: Forwarded verbatim to ``subprocess.run``.
 
     Returns:
         The completed process result.
     """
-    cmd = _base_cmd(name) + list(args)
-    return subprocess.run(cmd, cwd=paths.repo_root(), check=False, **kwargs)
+    cmd = _base_cmd(name, instance_root) + list(args)
+    return subprocess.run(cmd, cwd=instance_root, check=False, **kwargs)
 
 
-def up(name: str, *, build: bool = False) -> None:
+def up(name: str, instance_root: Path, *, build: bool = False) -> None:
     """
     Start an instance with ``compose up -d``.
 
     Args:
         name: Instance name.
+        instance_root: The instance directory.
         build: If ``True``, rebuild the image before starting.
 
     Raises:
@@ -71,17 +85,18 @@ def up(name: str, *, build: bool = False) -> None:
     args = ["up", "-d"]
     if build:
         args.append("--build")
-    res = run(name, args)
+    res = run(name, instance_root, args)
     if res.returncode != 0:
         raise ComposeError(f"`compose up` failed for {name} (exit {res.returncode})")
 
 
-def down(name: str, *, volumes: bool = False) -> None:
+def down(name: str, instance_root: Path, *, volumes: bool = False) -> None:
     """
     Stop an instance with ``compose down``.
 
     Args:
         name: Instance name.
+        instance_root: The instance directory.
         volumes: If ``True``, also remove named volumes.
 
     Raises:
@@ -90,26 +105,27 @@ def down(name: str, *, volumes: bool = False) -> None:
     args = ["down"]
     if volumes:
         args.append("--volumes")
-    res = run(name, args)
+    res = run(name, instance_root, args)
     if res.returncode != 0:
         raise ComposeError(f"`compose down` failed for {name} (exit {res.returncode})")
 
 
-def logs(name: str, follow: bool = False) -> None:
+def logs(name: str, instance_root: Path, follow: bool = False) -> None:
     """
     Tail container logs for an instance.
 
     Args:
         name: Instance name.
+        instance_root: The instance directory.
         follow: If ``True``, stream logs continuously (``-f``).
     """
     args = ["logs"]
     if follow:
         args.append("-f")
-    run(name, args)
+    run(name, instance_root, args)
 
 
-def ps_status(name: str) -> str:
+def ps_status(name: str, instance_root: Path) -> str:
     """
     Return a one-word container status for an instance.
 
@@ -117,19 +133,20 @@ def ps_status(name: str) -> str:
 
     Args:
         name: Instance name.
+        instance_root: The instance directory.
 
     Returns:
         One of ``running``, ``exited``, or ``not-created``.
     """
     res = run(
         name,
+        instance_root,
         ["ps", "--format", "json"],
         capture_output=True,
         text=True,
     )
     if res.returncode != 0 or not res.stdout.strip():
         return "not-created"
-    # `docker compose ps --format json` emits one JSON object per line.
     for line in res.stdout.strip().splitlines():
         try:
             entry = json.loads(line)
@@ -141,16 +158,17 @@ def ps_status(name: str) -> str:
     return "not-created"
 
 
-def build(name: str) -> None:
+def build(name: str, instance_root: Path) -> None:
     """
     Build the Docker image for an instance.
 
     Args:
         name: Instance name.
+        instance_root: The instance directory.
 
     Raises:
         ComposeError: If compose exits with a non-zero status.
     """
-    res = run(name, ["build"])
+    res = run(name, instance_root, ["build"])
     if res.returncode != 0:
         raise ComposeError(f"`compose build` failed for {name} (exit {res.returncode})")

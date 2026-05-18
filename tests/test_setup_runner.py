@@ -87,7 +87,7 @@ class TestCommandSequence:
         assert runner.calls[2].cmd[0] == "uv"
         assert "redroid.py" in runner.calls[2].cmd
         assert runner.calls[3].cmd[1] == "compose"
-        assert runner.calls[3].cmd[2] == "build"
+        assert "build" in runner.calls[3].cmd
 
     def test_clone_uses_depth_one(self) -> None:
         runner = FakeRunner()
@@ -151,12 +151,22 @@ class TestCommandSequence:
             bootstrap_base_image(runner=runner)
         build = runner.calls[3].cmd
         assert build[0] == "/opt/docker"
-        assert build[1:] == ["compose", "build"]
+        assert build[1] == "compose"
+        assert "build" in build
 
     def test_docker_compose_build_passes_base_image_env(self) -> None:
         runner = FakeRunner()
         tag = bootstrap_base_image(gapps="lite", android_version=14, runner=runner)
-        assert runner.calls[3].env == {"BASE_IMAGE": tag}
+        assert runner.calls[3].env is not None
+        assert runner.calls[3].env["BASE_IMAGE"] == tag
+
+    def test_docker_compose_build_points_at_bundled_template(self) -> None:
+        from beetroot import paths
+        runner = FakeRunner()
+        bootstrap_base_image(runner=runner)
+        build = runner.calls[3].cmd
+        f_idx = build.index("-f")
+        assert build[f_idx + 1] == str(paths.bundled_compose_file())
 
 
 class TestGappsFlagInjection:

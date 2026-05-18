@@ -49,7 +49,7 @@ sequenceDiagram
 
 2. **Configure Magisk via SQL.** Calls `magisk --sqlite` to enable Zygisk and the denylist, then inserts each package from `stealth.denylist` as a denylist entry. These writes take effect the next time Zygisk reads the DB — which happens before any app process starts, because Zygisk hooks into Zygote before forking app processes.
 
-3. **Flash modules.** Iterates every `*.zip` in `/flash_dir` (the bind-mounted `instances/<name>/modules/` directory) and calls `magisk --install-module <zip>`. Modules that are already installed are reinstalled safely (Magisk handles idempotency).
+3. **Flash modules.** Iterates every `*.zip` in `/flash_dir` (the bind-mounted `<instance-dir>/modules/` directory) and calls `magisk --install-module <zip>`. Modules that are already installed are reinstalled safely (Magisk handles idempotency).
 
 4. **Launch Frida.** If `/data/local/tmp/frida-server` is executable, starts it in the background with `&`.
 
