@@ -324,3 +324,56 @@ the shared "POSIX sh only, no hardcoded paths" contract. `boot-flow.md`
 gains a `## Helper scripts` anchor pointing at the new page so T10's
 stealth-posture design doc's four existing `boot-flow.md#helper-scripts`
 references resolve unchanged.
+
+### v0.3 — Theme T4: Typer at the CLI surface
+
+`src/beetroot/cli.py` was rewritten from `argparse` to
+[Typer](https://typer.tiangolo.com/). User-facing semantics are
+preserved bit-for-bit: every verb name, flag name, default value, and
+exit code matches the v0.2 argparse shape. The internal procedural
+modules (`compose`, `config`, `frida_dl`, `modules_dl`, `paths`,
+`ports`, `registry`, `setup_runner`) are untouched — the OOP refactor
+is reserved for a later theme.
+
+**What changes for users:**
+
+- `beetroot --help` (and `beetroot <verb> --help`) now renders through
+  Typer's Rich-powered formatter: boxed sections, color when the
+  terminal supports it, an auto-included `--help` row, and an
+  auto-included `--install-completion` / `--show-completion` row.
+- Shell completion is available out of the box. Run
+  `beetroot --install-completion` once per shell — Typer auto-detects
+  bash, zsh, fish, or PowerShell via
+  [shellingham](https://github.com/sarugaku/shellingham) and writes
+  the hook into the right rc file. `beetroot --show-completion`
+  prints the script without installing it.
+- `beetroot frida alpha -- -l script.js` now uses the `--` separator
+  to disambiguate forwarded flags from Beetroot's own option-parser.
+  Plain `beetroot frida alpha -n com.app` keeps working unchanged
+  (`-n com.app` is not a Typer/Click option, so it falls through);
+  `--` is only needed if a forwarded flag would otherwise collide
+  with one of Beetroot's options.
+
+**What changes for contributors:**
+
+- New runtime dependency: `typer>=0.12`. Pulls in `click`, `rich`,
+  and `shellingham`. No optional extras — every Beetroot install
+  gets the Rich help and shell completion.
+- `cli.build_parser()` is removed. Tests that introspect the verb set
+  iterate `cli.app.registered_commands` instead.
+- `cli.cmd_*` functions are renamed to their verb names (`cli.create`,
+  `cli.apply`, `cli.up`, …) and decorated with `@app.command()`. The
+  function bodies are unchanged.
+- `tests/test_cli.py` and `tests/test_port_collisions.py` drive every
+  verb through `typer.testing.CliRunner().invoke(cli.app, [...])`
+  and assert on `result.exit_code` + `result.stdout` / `result.stderr`.
+  The legacy `_ns(...)` / `_create_ns(...)` argparse-Namespace
+  helpers are gone.
+- A new behavior test
+  (`tests/test_cli.py::TestCmdFrida::test_frida_forwards_remainder_args_verbatim`)
+  pins the `beetroot frida <name> -- <args>` round-trip contract:
+  any tokens after `--` reach the underlying `frida` subprocess
+  verbatim, in order, after Beetroot's `-H localhost:<port>` prefix.
+- `cli.main()` still catches `paths.InstanceRootNotFoundError` and
+  `ports.PortCollisionError` from deep in the call tree and surfaces
+  them as `error: <msg>` on stderr + `exit 1`, matching v0.2.

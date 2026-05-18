@@ -1,10 +1,23 @@
 # CLI Reference
 
-All Beetroot subcommands. Every verb accepts `--help` for full usage.
+All Beetroot subcommands. Every verb accepts `--help` for full usage. The
+CLI is built on [Typer](https://typer.tiangolo.com/), so `--help` renders
+as boxed sections with color (via Rich); flag and argument tables in this
+reference mirror the same shape.
 
 After `uv tool install`, invocations are plain `beetroot <verb>` — the tool venv puts `beetroot` directly on your `PATH`. (Contributors hacking on Beetroot from an editable `uv sync` checkout use `uv run beetroot <verb>` instead; see [CLAUDE.md](https://github.com/Xiddoc/Beetroot/blob/main/CLAUDE.md).)
 
 Beetroot's path model is Docker-inspired: an instance is any directory on disk containing a `beetroot.yaml`. The CLI discovers the current instance by walking up from `cwd` like `git` walks up to find `.git`. The cross-instance registry — name → absolute path — lives at `~/.config/beetroot/instances.json` (respects `XDG_CONFIG_HOME`).
+
+## Top-level flags
+
+| Flag | Description |
+|------|-------------|
+| `--install-completion` | Install shell completion for the current shell (auto-detected). Run once per shell. |
+| `--show-completion` | Print the completion script without installing it. |
+| `--help` | Render the top-level help. |
+
+See [Installation → Shell completion](../getting-started/installation.md#shell-completion) for the recommended setup.
 
 ---
 
@@ -276,6 +289,12 @@ Examples:
 beetroot frida alpha -n com.target.app
 beetroot frida alpha -f com.target.app --no-pause -l script.js
 beetroot frida alpha -ps    # list processes
+```
+
+If a forwarded flag conflicts with one of Beetroot's own options (rare, but possible if `frida-tools` ever ships a flag that overlaps with Beetroot's), use `--` as a separator. Everything after `--` is passed verbatim to the underlying `frida` CLI:
+
+```bash
+beetroot frida alpha -- -l script.js
 ```
 
 ---
