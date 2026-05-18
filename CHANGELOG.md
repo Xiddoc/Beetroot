@@ -594,3 +594,77 @@ The doc lands:
 
 1781 words, design-only. `mkdocs build --strict` passes; the page is
 linked from the design-notes index and the mkdocs nav.
+
+### v0.3 — Post-CR fix-up
+
+Round of fixes surfaced by the five v0.3 CRs. Each item is paired
+with at least one behavior test that asserts on the artifact (not
+"function was called"); see ``tests/`` for the named files.
+
+* **pyproject version bumped 0.1.0 → 0.3.0.** The snapshot manifest
+  writer reads ``importlib.metadata.version("beetroot")`` and stamps
+  every archive — every v0.3 snapshot was previously claiming
+  ``"0.1.0"``. *Integrator note: bump the git tag to ``v0.3.0`` at
+  release time to match.*
+* **builder.DefaultRunner merges ``os.environ`` into its env arg.**
+  The old code passed a 2-key dict straight to ``subprocess.run``,
+  which REPLACES the parent env — ``docker compose build`` launched
+  with no ``PATH`` and failed with ``FileNotFoundError: 'docker'`` on
+  every fresh install. Pinned by ``tests/test_subprocess_env_merge.py``.
+* **``docker/flash-modules.sh`` no longer calls ``exit 0``.** The
+  helper is sourced by ``entrypoint.sh`` with ``.``, so ``exit``
+  terminates the parent shell, skipping ``launch-frida.sh`` and the
+  trailing ``wait``. Restructured into an ``if/else``. Pinned by
+  ``tests/test_boot_scripts_sourced.py``.
+* **``Instance.register`` and ``snapshot.restore`` now stage files.**
+  Both registered the instance but skipped writing ``.env`` /
+  ``frida-server`` / ``modules/``. A follow-up ``beetroot up`` failed
+  on the missing ``.env``. ``restore`` also now port-collision-checks
+  against existing instances before extracting. Pinned by
+  ``tests/test_instance_invariants.py``.
+* **``snapshot._is_manifest_member`` requires an exact-path match.**
+  Basename-only matching also picked up a stale ``data/.beetroot-snapshot.json``
+  left over from a previous restore. ``_add_instance_tree`` now skips
+  the on-disk manifest, and the basename-only matcher is replaced
+  with an exact-path matcher against the archive root. Pinned by the
+  new ``TestManifestShadowRegression`` cases in ``tests/test_snapshot.py``.
+* **``cli.main()`` catches ``ComposeError`` and ``BootstrapError``.**
+  ``up`` / ``down`` / ``restart`` / ``logs`` / ``apply`` / ``build``
+  used to let domain exceptions propagate as bare tracebacks; v0.2
+  was uniformly ``error: ...`` + exit 1. Pinned by
+  ``tests/test_cli_error_contract.py``.
+* **``beetroot setup`` and ``--preset`` print migration hints.** v0.2
+  users running ``beetroot setup`` or ``beetroot create --preset``
+  used to get bare Typer ``No such command`` / ``No such option``.
+  Hidden alias + hidden option now print an ``error: ...`` line
+  with the migration path. Pinned by ``tests/test_deprecated_verbs.py``.
+* **``api_version: 1`` auto-bumps to ``2`` with a stderr warning.**
+  v0.2 YAMLs used to hard-fail on load; v0.2 → v2 is strictly
+  additive, so we auto-bump and tell the user to run
+  ``beetroot apply`` to persist. Pinned by
+  ``tests/test_api_version_auto_bump.py``.
+* **v0.2 registry at ``$PWD/instances.json`` surfaces a one-line
+  hint.** v0.2 wrote the registry at the repo root; v0.3 expects it
+  under ``$XDG_CONFIG_HOME``. The hint fires once per process and
+  doesn't auto-move the file (the user may have it under VCS).
+  Pinned by ``tests/test_v02_registry_detection.py``.
+* **Atomic port allocation + registration via ``registry.add_allocating``.**
+  The old sequence ``lowest_free_index → resolve → check → add``
+  only held the lock on ``add``; two parallel ``Instance.create``
+  calls could co-allocate the same stride slot. The new helper
+  collapses allocation + add into one critical section, with shared
+  reader locks on ``list_instances`` and atomic-replace via per-pid
+  tmp file in ``_write``. Pinned by ``tests/test_registry_race.py``
+  (multiprocessing fork pool, 5 parallel creates).
+* **``render_env`` emits ``BEETROOT_MAGISK_DB`` / ``BEETROOT_MODULES_DIR`` /
+  ``BEETROOT_FRIDA_BIN`` with empty defaults.** The bundled compose
+  template already references them via ``${VAR:-}`` for v0.4
+  stealth-posture work; the test ``tests/test_compose_template_envs.py``
+  asserts the template ↔ render_env contract stays symmetric.
+* **``snapshot.restore --force`` refuses to wipe a peer instance's
+  directory.** Without the check, a careless ``restore --force
+  --path=<peer-dir>`` would ``shutil.rmtree`` a sibling instance's
+  ``/data``. Pinned by the new ``test_force_refuses_to_overwrite_another_instances_dir``
+  case in ``tests/test_snapshot.py``.
+
+Total test-count delta: 469 → 522 (+53).
