@@ -42,6 +42,9 @@ jobs:
       - name: Mypy (src + tests — both must type-check per CLAUDE.md)
         run: uv run mypy src/beetroot/ tests/
 
+      - name: Changelog-lint (beetroot invocations under Unreleased)
+        run: uv run python scripts/lint_changelog.py
+
   test:
     runs-on: ubuntu-latest
     steps:
