@@ -12,8 +12,8 @@ This:
 
 1. Picks the lowest free port index (`0` → ADB `5555`, Frida `27042` on a fresh host).
 2. Creates the instance directory at `./alpha/` (override with `--path /some/where`).
-3. Writes `./alpha/beetroot.yaml` from the default preset.
-4. Stages a 0-byte placeholder at `./alpha/frida-server`. Frida is opt-in starting in v0.3 — if you want a real `frida-server` launched inside the container, create the instance with `--preset with-frida` (or add a `frida:` block to `beetroot.yaml` and re-`apply`). See [Frida](../guides/frida.md).
+3. Writes a minimal `./alpha/beetroot.yaml` — just `api_version` plus `android.version`; every other field falls back to schema defaults.
+4. Stages a 0-byte placeholder at `./alpha/frida-server`. Frida is opt-in starting in v0.3 — copy [`examples/with-frida.yaml`](../guides/examples.md) over `./alpha/beetroot.yaml` (or add a `frida:` block yourself) and run `beetroot apply alpha` to actually download and stage `frida-server`. See [Frida](../guides/frida.md).
 5. Renders `./alpha/.env` for Docker Compose.
 6. Registers the instance under `~/.config/beetroot/instances.json` (the cross-instance registry).
 
@@ -24,8 +24,8 @@ The output looks like:
 [beetroot] next: beetroot up alpha
 ```
 
-!!! tip "Use a preset"
-    Pass `--preset stealth` to start with Shamiko and a wider Magisk denylist — useful when the target app checks for root. See [Presets](../guides/presets.md) for details.
+!!! tip "Start from a richer baseline"
+    Copy one of the [`examples/`](../guides/examples.md) YAMLs over `./alpha/beetroot.yaml` after creating the instance — e.g. `cp examples/stealth.yaml alpha/beetroot.yaml && beetroot apply alpha` to start with Shamiko and a wider Magisk denylist when the target app checks for root.
 
 !!! tip "Adopt an existing instance dir"
     If you already have an instance dir (e.g. cloned from a teammate), use `beetroot register <path>` to add it to the registry without touching its files.
@@ -113,6 +113,6 @@ beetroot up alpha
 ## What's next
 
 - [Multiple Instances](../guides/multi-instance.md) — run several phones in parallel.
-- [Presets](../guides/presets.md) — start from `stealth` for anti-detection research.
+- [Examples](../guides/examples.md) — start from `stealth.yaml` for anti-detection research.
 - [Magisk Modules](../guides/modules.md) — flash Shamiko, LSPosed, or your own hooks.
 - [Frida](../guides/frida.md) — attach scripts and use the `beetroot frida` wrapper.

@@ -87,7 +87,6 @@ def _create_ns(name: str, **overrides: Any) -> argparse.Namespace:
     """Build a ``cmd_create``-shaped namespace with sensible defaults."""
     defaults: dict[str, Any] = {
         "name": name,
-        "preset": "default",
         "from_data": None,
         "path": None,
     }
@@ -211,9 +210,23 @@ class TestCmdCreate:
         with pytest.raises(SystemExit, match="not a directory"):
             cli.cmd_create(_create_ns("alpha", from_data=str(cli_root / "missing")))
 
+    def test_create_writes_exact_minimal_yaml_bytes(self, cli_root: Path) -> None:
+        """Behavior test — drive cmd_create end-to-end and pin the YAML bytes.
+
+        The whole point of T3 is that a fresh ``beetroot create`` produces
+        a minimal, hand-readable beetroot.yaml — not the schema's full
+        defaulted dump. Any change to that artifact (extra fields, key
+        reordering, comment leakage) breaks this assertion deliberately.
+        """
+        cli.cmd_create(_create_ns("alpha"))
+        root = registry.instance_path("alpha")
+        assert paths.instance_yaml(root).read_bytes() == (
+            b"api_version: 2\nandroid:\n  version: 14\n"
+        )
+
     def test_create_default_no_frida(self, cli_root: Path) -> None:
-        # v0.3 (T2): the default preset omits the `frida:` block, so the
-        # staged frida-server is a 0-byte non-executable placeholder.
+        # v0.3 (T2): the default minimal YAML omits the `frida:` block, so
+        # the staged frida-server is a 0-byte non-executable placeholder.
         # entrypoint.sh's `[ -x ]` check skips the launch in that case.
         cli.cmd_create(_create_ns("alpha"))
         root = registry.instance_path("alpha")
@@ -222,12 +235,20 @@ class TestCmdCreate:
         assert staged.stat().st_size == 0
         assert staged.stat().st_mode & 0o111 == 0
 
-    def test_create_with_frida_preset_stages_binary(self, cli_root: Path) -> None:
-        # Companion behavior test: the new with-frida preset actually
-        # downloads + stages an executable binary (via the cli_root
-        # fixture's fake_download that writes b"fake-frida").
-        cli.cmd_create(_create_ns("alpha", preset="with-frida"))
+    def test_apply_with_frida_yaml_stages_executable(self, cli_root: Path) -> None:
+        # End-to-end opt-in path that survived T3 removing --preset:
+        # create with the minimal YAML, then overwrite with the with-frida
+        # example body (mirroring `cp examples/with-frida.yaml ./beetroot.yaml`),
+        # then apply. The staged frida-server should now be executable.
+        cli.cmd_create(_create_ns("alpha"))
         root = registry.instance_path("alpha")
+        paths.instance_yaml(root).write_text(
+            "api_version: 2\n"
+            "android:\n"
+            "  version: 14\n"
+            'frida:\n  version: "16.4.10"\n'
+        )
+        cli.cmd_apply(_ns(name="alpha"))
         staged = paths.instance_frida(root)
         assert staged.exists()
         assert staged.stat().st_size > 0
@@ -607,11 +628,14 @@ class TestBuildParser:
             ns = p.parse_args([verb, name])
             assert callable(ns.func)
 
-    def test_parse_create_default_preset(self) -> None:
+    def test_parse_create_namespace_has_only_expected_attrs(self) -> None:
         p = cli.build_parser()
         ns = p.parse_args(["create", "alpha"])
-        assert ns.preset == "default"
         assert ns.func is cli.cmd_create
+        # The full attribute set: positional + every flag wired in
+        # build_parser(). Any drift (e.g. re-adding a removed flag)
+        # surfaces here.
+        assert set(vars(ns)) == {"cmd", "name", "path", "from_data", "func"}
 
     def test_parse_register_path_positional(self) -> None:
         p = cli.build_parser()

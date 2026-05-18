@@ -62,7 +62,7 @@ Both paths respect the XDG basedir spec:
 
 ## What's inside the wheel
 
-The compose template, the Dockerfile contract, and the bundled presets ship inside the `beetroot` package itself:
+The compose template and the Dockerfile contract ship inside the `beetroot` package itself:
 
 ```
 src/beetroot/
@@ -71,15 +71,12 @@ src/beetroot/
 ├── config.py
 ├── ...
 └── templates/
-    ├── compose.yaml         # The compose template — same path under uv tool install
-    └── presets/
-        ├── default.yaml
-        ├── stealth.yaml
-        ├── no-gapps.yaml
-        └── with-frida.yaml
+    └── compose.yaml         # The compose template — same path under uv tool install
 ```
 
 There is no `compose.yaml` at any project root anymore — the CLI resolves the bundled copy via `importlib.resources` and passes it to compose with `-f <bundled-path>` plus `--project-directory <instance-dir>` so the per-instance bind mounts resolve correctly.
+
+Starter `beetroot.yaml` files (`default.yaml`, `stealth.yaml`, `no-gapps.yaml`, `with-frida.yaml`) live in the repo's top-level `examples/` directory and are **not** bundled inside the wheel. They are documentation-only — `beetroot create` doesn't load them. See [the examples guide](../guides/examples.md) for how to use them.
 
 ## What to commit
 

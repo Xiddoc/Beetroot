@@ -25,7 +25,7 @@ Beetroot is a thin orchestration layer on top of several excellent open-source p
 
 ## Shamiko / LSPosed
 
-[LSPosed/Shamiko](https://github.com/LSPosed/LSPosed.github.io) — a Magisk module that upgrades the denylist from "deny root access" to "hide Magisk's existence entirely" for denylisted processes. The `stealth` preset includes Shamiko by default.
+[LSPosed/Shamiko](https://github.com/LSPosed/LSPosed.github.io) — a Magisk module that upgrades the denylist from "deny root access" to "hide Magisk's existence entirely" for denylisted processes. The [`examples/stealth.yaml`](../guides/examples.md) starter config includes Shamiko by default.
 
 ## LiteGapps
 

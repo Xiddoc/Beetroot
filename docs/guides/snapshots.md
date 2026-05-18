@@ -76,6 +76,6 @@ If you want to start completely from scratch (new config, new ports possible):
 
 ```bash
 beetroot destroy -y alpha
-beetroot create alpha --preset default
+beetroot create alpha
 beetroot up alpha
 ```

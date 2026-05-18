@@ -100,7 +100,7 @@ nav:
   - Guides:
     - guides/index.md
     - Multiple Instances: guides/multi-instance.md
-    - Presets: guides/presets.md
+    - Examples: guides/examples.md
     - Magisk Modules: guides/modules.md
     - Frida: guides/frida.md
     - Snapshots: guides/snapshots.md

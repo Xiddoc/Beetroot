@@ -10,6 +10,8 @@ from pathlib import Path
 
 from . import compose, config, frida_dl, modules_dl, paths, ports, registry, setup_runner
 
+_MINIMAL_BEETROOT_YAML = "api_version: 2\nandroid:\n  version: 14\n"
+
 
 def _ensure_exists(name: str) -> None:
     if registry.get(name) is None:
@@ -62,9 +64,13 @@ def cmd_create(args: argparse.Namespace) -> None:
     """
     Create a new instance directory at ``--path`` and stage its files.
 
+    The new ``beetroot.yaml`` is the minimal valid config (``api_version``
+    plus ``android.version``); every other field falls back to schema
+    defaults. To start from a richer baseline, copy a file from the
+    repo's ``examples/`` directory over the generated ``beetroot.yaml``.
+
     Args:
-        args: Parsed CLI arguments (``name``, ``preset``, ``from_data``,
-            ``path``).
+        args: Parsed CLI arguments (``name``, ``from_data``, ``path``).
     """
     name = args.name
     if registry.get(name) is not None:
@@ -77,13 +83,13 @@ def cmd_create(args: argparse.Namespace) -> None:
             f"use `beetroot register {target_root}` to adopt it."
         )
 
-    cfg = config.load_preset(args.preset)
+    cfg = config.InstanceConfig()
     index = ports.lowest_free_index(registry.used_indices())
     new_ports = ports.resolve_ports(index, cfg.ports)
     _check_port_collisions(name, new_ports)
 
     target_root.mkdir(parents=True, exist_ok=True)
-    config.write_yaml(paths.instance_yaml(target_root), cfg)
+    paths.instance_yaml(target_root).write_text(_MINIMAL_BEETROOT_YAML)
 
     registry.add(name, target_root, index)
 
@@ -405,7 +411,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("create", help="create a new instance dir")
     s.add_argument("name")
-    s.add_argument("--preset", default="default")
     s.add_argument("--from-data", help="copy an existing data dir as the instance's /data")
     s.add_argument("--path", help="instance directory location (default: ./<name>)")
     s.set_defaults(func=cmd_create)
