@@ -469,9 +469,12 @@ def main() -> None:
     """
     Parse CLI arguments and dispatch to the appropriate command handler.
 
-    Wraps ``app()`` to convert two domain exceptions raised from deep in
-    the procedural call tree into the same friendly ``error: ...`` line
-    + ``exit 1`` shape the rest of the CLI uses.
+    Wraps ``app()`` to convert domain exceptions raised from deep in the
+    procedural call tree into the same friendly ``error: ...`` line +
+    ``exit 1`` shape the rest of the CLI uses. ``compose.ComposeError``
+    and ``builder.BootstrapError`` are caught here because the
+    up/down/restart/logs/apply/build verbs let them propagate as plain
+    tracebacks otherwise — v0.2 was uniformly ``error: ...``.
     """
     try:
         app()
@@ -479,6 +482,12 @@ def main() -> None:
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
     except ports.PortCollisionError as e:
+        typer.echo(f"error: {e}", err=True)
+        sys.exit(1)
+    except compose.ComposeError as e:
+        typer.echo(f"error: {e}", err=True)
+        sys.exit(1)
+    except builder.BootstrapError as e:
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
 
