@@ -97,15 +97,18 @@ beetroot down <name> && beetroot up <name>
 Start one or more instances.
 
 ```
-beetroot up <name> [<name> ...] [--build]
+beetroot up <name> [<name> ...]
 ```
 
 | Argument / Flag | Type | Description |
 |----------------|------|-------------|
 | `names` | positional (one or more) | Instance names to start |
-| `--build` | flag | Rebuild the Docker image before starting. Use after changing `docker/Dockerfile`. |
+| `--all` | flag | Act on every registered instance. |
 
 Runs `docker compose -p <name> -f <bundled-template> --project-directory <instance-dir> --env-file <instance-dir>/.env up -d` for each instance. The bundled template lives inside the `beetroot` wheel, not at any project root.
+
+!!! note "No auto-rebuild"
+    `beetroot up` does not rebuild the Docker image. To rebuild before starting, run [`beetroot build`](#build) explicitly first — the verbs are decoupled so `up` stays fast and predictable.
 
 **Output:**
 
@@ -317,3 +320,25 @@ The module is appended to the instance's `beetroot.yaml` and immediately staged 
 ```bash
 beetroot down <name> && beetroot up <name>
 ```
+
+---
+
+## `build`
+
+Build the redroid base image and Beetroot layer for a chosen GMS variant. One-time bootstrap; re-run when you want a fresh image.
+
+```
+beetroot build [<gapps>]
+```
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `gapps` | positional, optional | GMS variant to bake into the base image. One of `none`, `lite` (default), `full`, `mindthegapps`. |
+
+The verb:
+
+1. Clones [`ayasa520/redroid-script`](https://github.com/ayasa520/redroid-script) into `/tmp/redroid`.
+2. Runs the patcher to produce a local Docker image (e.g. `redroid/redroid:14.0.0_litegapps_houdini_magisk`).
+3. Runs `docker compose build` to layer `entrypoint.sh` and `stealth.rc` on top.
+
+`beetroot up` no longer accepts a `--build` flag — to rebuild before starting, run `beetroot build` explicitly first.

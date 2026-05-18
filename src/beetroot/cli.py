@@ -11,13 +11,13 @@ from typing import Annotated
 
 import typer
 
-from . import compose, config, frida_dl, modules_dl, paths, ports, registry, setup_runner
+from . import builder, compose, config, frida_dl, modules_dl, paths, ports, registry
 
 _MINIMAL_BEETROOT_YAML = "api_version: 2\nandroid:\n  version: 14\n"
 
 
 class _GappsVariant(str, Enum):
-    """GMS variants accepted by ``beetroot setup``."""
+    """GMS variants accepted by ``beetroot build``."""
 
     none = "none"
     lite = "lite"
@@ -225,10 +225,6 @@ def up(
         list[str] | None,
         typer.Argument(help="Instance names to start."),
     ] = None,
-    build: Annotated[
-        bool,
-        typer.Option("--build", help="Rebuild the image first."),
-    ] = False,
     all_: Annotated[
         bool,
         typer.Option("--all", help="Act on all registered instances."),
@@ -238,7 +234,7 @@ def up(
     for instance_name in _resolve_names(list(names or []), all_):
         _ensure_exists(instance_name)
         root = _instance_root(instance_name)
-        compose.up(instance_name, root, build=build)
+        compose.up(instance_name, root)
         meta = registry.get(instance_name)
         assert meta is not None
         cfg = config.load_yaml(paths.instance_yaml(root))
@@ -462,14 +458,14 @@ def module(
 
 
 @app.command()
-def setup(
+def build(
     gapps: Annotated[
         _GappsVariant,
         typer.Argument(help="GMS variant to bake into the base image."),
     ] = _GappsVariant.lite,
 ) -> None:
     """Build the redroid base image and Beetroot layer for a gapps variant."""
-    tag = setup_runner.bootstrap_base_image(gapps=gapps.value)
+    tag = builder.build_image(gapps=gapps.value)
     typer.echo(f"[beetroot] base image built: {tag}")
 
 

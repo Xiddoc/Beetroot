@@ -25,28 +25,28 @@ def _patched_subprocess() -> Any:
 
 
 # ---------------------------------------------------------------------------
-# beetroot setup
+# beetroot build
 # ---------------------------------------------------------------------------
 
 
-class TestSetupParser:
+class TestBuildParser:
     def test_default_gapps_is_lite(self) -> None:
-        with patch("beetroot.cli.setup_runner.bootstrap_base_image") as mock_bs:
+        with patch("beetroot.cli.builder.build_image") as mock_bs:
             mock_bs.return_value = "redroid/redroid:14.0.0_litegapps_houdini_magisk"
-            result = runner.invoke(cli.app, ["setup"])
+            result = runner.invoke(cli.app, ["build"])
         assert result.exit_code == 0
         mock_bs.assert_called_once_with(gapps="lite")
 
     @pytest.mark.parametrize("variant", ["none", "lite", "full", "mindthegapps"])
     def test_each_variant_parses(self, variant: str) -> None:
-        with patch("beetroot.cli.setup_runner.bootstrap_base_image") as mock_bs:
+        with patch("beetroot.cli.builder.build_image") as mock_bs:
             mock_bs.return_value = f"redroid/redroid:14.0.0_{variant}_houdini_magisk"
-            result = runner.invoke(cli.app, ["setup", variant])
+            result = runner.invoke(cli.app, ["build", variant])
         assert result.exit_code == 0
         mock_bs.assert_called_once_with(gapps=variant)
 
     def test_invalid_variant_exits(self) -> None:
-        result = runner.invoke(cli.app, ["setup", "blah"])
+        result = runner.invoke(cli.app, ["build", "blah"])
         assert result.exit_code != 0
         err = result.stderr
         assert "blah" in err
@@ -54,33 +54,33 @@ class TestSetupParser:
             assert variant in err
 
     def test_help_lists_variants(self) -> None:
-        result = runner.invoke(cli.app, ["setup", "--help"])
+        result = runner.invoke(cli.app, ["build", "--help"])
         assert result.exit_code == 0
         out = result.stdout
         for variant in ("none", "lite", "full", "mindthegapps"):
             assert variant in out
 
 
-class TestSetupDispatch:
-    def test_cmd_setup_invokes_bootstrap_with_lite_default(self) -> None:
-        with patch("beetroot.cli.setup_runner.bootstrap_base_image") as mock_bs:
+class TestBuildDispatch:
+    def test_cmd_build_invokes_bootstrap_with_lite_default(self) -> None:
+        with patch("beetroot.cli.builder.build_image") as mock_bs:
             mock_bs.return_value = "redroid/redroid:14.0.0_litegapps_houdini_magisk"
-            result = runner.invoke(cli.app, ["setup"])
+            result = runner.invoke(cli.app, ["build"])
         mock_bs.assert_called_once_with(gapps="lite")
         assert result.exit_code == 0
         assert "redroid/redroid:14.0.0_litegapps_houdini_magisk" in result.stdout
 
     @pytest.mark.parametrize("variant", ["none", "lite", "full", "mindthegapps"])
-    def test_cmd_setup_forwards_each_variant(self, variant: str) -> None:
-        with patch("beetroot.cli.setup_runner.bootstrap_base_image") as mock_bs:
+    def test_cmd_build_forwards_each_variant(self, variant: str) -> None:
+        with patch("beetroot.cli.builder.build_image") as mock_bs:
             mock_bs.return_value = f"redroid/redroid:14.0.0_{variant}_houdini_magisk"
-            result = runner.invoke(cli.app, ["setup", variant])
+            result = runner.invoke(cli.app, ["build", variant])
         assert result.exit_code == 0
         mock_bs.assert_called_once_with(gapps=variant)
 
-    def test_main_dispatches_setup(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("sys.argv", ["beetroot", "setup", "full"])
-        with patch("beetroot.cli.setup_runner.bootstrap_base_image") as mock_bs:
+    def test_main_dispatches_build(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("sys.argv", ["beetroot", "build", "full"])
+        with patch("beetroot.cli.builder.build_image") as mock_bs:
             mock_bs.return_value = "redroid/redroid:14.0.0_gapps_houdini_magisk"
             # Typer's standalone-mode invocation exits via SystemExit even
             # on the happy path (Click semantics).
@@ -354,13 +354,20 @@ class TestCmdUp:
         assert result.exit_code == 0, result.stderr
         assert mock_run.called
 
-    def test_up_with_build_flag(self, cli_root: Path) -> None:
+    def test_up_does_not_pass_build_flag(self, cli_root: Path) -> None:
+        """`beetroot up` never adds `--build` to the compose argv (T5)."""
         runner.invoke(cli.app, ["create", "alpha"])
         with _patched_subprocess() as mock_run:
-            result = runner.invoke(cli.app, ["up", "alpha", "--build"])
+            result = runner.invoke(cli.app, ["up", "alpha"])
         assert result.exit_code == 0, result.stderr
         cmd = mock_run.call_args[0][0]
-        assert "--build" in cmd
+        assert "--build" not in cmd
+
+    def test_up_rejects_build_flag(self, cli_root: Path) -> None:
+        """The `--build` option is removed; Typer must reject it."""
+        runner.invoke(cli.app, ["create", "alpha"])
+        result = runner.invoke(cli.app, ["up", "alpha", "--build"])
+        assert result.exit_code != 0
 
     def test_up_all(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
@@ -684,7 +691,7 @@ class TestTopLevelApp:
             "env",
             "frida",
             "module",
-            "setup",
+            "build",
         ):
             assert verb in result.stdout
 
@@ -703,7 +710,7 @@ class TestTopLevelApp:
         result = runner.invoke(cli.app, ["up", "--help"])
         assert result.exit_code == 0
         assert "--all" in result.stdout
-        assert "--build" in result.stdout
+        assert "--build" not in result.stdout
 
     def test_frida_help_describes_passthrough(self) -> None:
         result = runner.invoke(cli.app, ["frida", "--help"])

@@ -21,7 +21,7 @@ alpha  0    localhost:5555  localhost:27042  ./alpha      running
 
 ```bash
 uv tool install git+https://github.com/Xiddoc/Beetroot.git
-beetroot setup                              # one-time: build the redroid base image
+beetroot build                              # one-time: build the redroid base image
 beetroot create alpha                       # creates ./alpha/ with beetroot.yaml
 beetroot create beta --path ~/work/beta     # or wherever you want it
 beetroot register ~/already-built-instance  # adopt an existing dir
@@ -29,7 +29,7 @@ beetroot up alpha
 beetroot shell alpha
 ```
 
-Variants for `beetroot setup`: `none`, `lite` (default), `full`, `mindthegapps`.
+Variants for `beetroot build`: `none`, `lite` (default), `full`, `mindthegapps`.
 
 Hacking on Beetroot itself? `uv tool install .` from a checkout, or `uv sync` + `uv run beetroot <verb>`.
 
@@ -44,7 +44,7 @@ The host-side `frida` CLI is exposed via a `[frida]` extra. Install with `uv too
 - **LiteGapps** + **Houdini** ARM-on-x86_64 translation
 - **Frida server (opt-in, version-pinned per instance)** — declare a `frida:` block in `beetroot.yaml` (or start from the `with-frida` preset) and the CLI downloads, caches, and bind-mounts the matching `frida-server` into the container
 - **Drop-in Magisk module flashing** via `beetroot.yaml`
-- **`beetroot` CLI** — lifecycle (`create` / `register` / `up` / `down` / `destroy`), shell + module management, and a `setup` bootstrap. See the [CLI reference](https://xiddoc.github.io/Beetroot/reference/cli/) for every verb.
+- **`beetroot` CLI** — lifecycle (`create` / `register` / `up` / `down` / `destroy`), shell + module management, and a `build` bootstrap. See the [CLI reference](https://xiddoc.github.io/Beetroot/reference/cli/) for every verb.
 
 ## Read the docs
 

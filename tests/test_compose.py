@@ -84,15 +84,10 @@ class TestUp:
         assert "up" in cmd
         assert "-d" in cmd
 
-    def test_up_with_build_adds_build_flag(self, tmp_path: Path) -> None:
+    def test_up_does_not_add_build_flag(self, tmp_path: Path) -> None:
+        """compose.up never emits `--build` after T5 (call `compose.build` separately)."""
         with patch("subprocess.run", return_value=_ok_result()) as mock_run:
-            compose.up("alpha", tmp_path, build=True)
-        cmd = mock_run.call_args[0][0]
-        assert "--build" in cmd
-
-    def test_up_without_build_no_build_flag(self, tmp_path: Path) -> None:
-        with patch("subprocess.run", return_value=_ok_result()) as mock_run:
-            compose.up("alpha", tmp_path, build=False)
+            compose.up("alpha", tmp_path)
         cmd = mock_run.call_args[0][0]
         assert "--build" not in cmd
 
