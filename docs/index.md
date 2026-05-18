@@ -11,9 +11,9 @@ $ beetroot up alpha bravo
 [beetroot] alpha up — ADB localhost:5555, Frida localhost:27042
 [beetroot] bravo up — ADB localhost:5565, Frida localhost:27052
 $ beetroot ls
-NAME          IDX  ADB                   FRIDA                 STATUS
-alpha         0    localhost:5555        localhost:27042       running
-bravo         1    localhost:5565        localhost:27052       running
+NAME          IDX  ADB                   FRIDA                 STATUS        PATH
+alpha         0    localhost:5555        localhost:27042       running       /home/you/alpha
+bravo         1    localhost:5565        localhost:27052       running       /home/you/bravo
 ```
 
 ## What's included
@@ -24,7 +24,7 @@ bravo         1    localhost:5565        localhost:27052       running
 | **Magisk root** | Zygisk + denylist enabled out of the box; GMS auto-denylisted |
 | **LiteGapps** | Minimal Google services (just enough for GMS-dependent apps) |
 | **Houdini** | ARM-on-x86\_64 translation — run ARM-only APKs on a standard server |
-| **Frida** | Opt-in per instance — declare a `frida:` block (or start from the `with-frida` preset) and the host CLI downloads + bind-mounts a version-pinned `frida-server` |
+| **Frida** | Opt-in per instance — declare a `frida:` block (or copy `examples/with-frida.yaml` over the generated config) and the host CLI downloads + bind-mounts a version-pinned `frida-server` |
 | **`beetroot` CLI** | Create, start, stop, snapshot, restore, and list instances |
 | **Module flashing** | Declare modules in YAML (URL or local path, optional sha256); flashed at next boot |
 

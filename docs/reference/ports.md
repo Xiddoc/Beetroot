@@ -35,9 +35,9 @@ beetroot ls
 ```
 
 ```
-NAME          IDX  ADB                   FRIDA                 STATUS
-alpha         0    localhost:5555        localhost:27042       running
-bravo         1    localhost:5565        localhost:27052       running
+NAME          IDX  ADB                   FRIDA                 STATUS        PATH
+alpha         0    localhost:5555        localhost:27042       running       /home/you/alpha
+bravo         1    localhost:5565        localhost:27052       running       /home/you/bravo
 ```
 
 ## Getting ports programmatically

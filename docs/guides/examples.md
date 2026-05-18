@@ -59,7 +59,7 @@ stealth:
 
 ### `no-gapps.yaml`
 
-Same as `default.yaml` but with `android.gapps: none`. Use this if you want a stripped-down Android without Google Mobile Services — fewer running processes, smaller `/data`, no GMS-specific anti-emulator checks.
+Same as `default.yaml` but with `android.gapps: none`. Use this if you want a stripped-down Android without Google Mobile Services — fewer running processes, smaller `/data`, no GMS-specific anti-emulator checks. Requires `beetroot build none` to have produced a matching base image.
 
 ```yaml title="examples/no-gapps.yaml"
 api_version: 2
@@ -68,6 +68,27 @@ android:
   version: 14
   gapps: none
 ```
+
+### `with-frida.yaml`
+
+The baseline plus an explicit, version-pinned `frida-server`. Copy this over a freshly-generated `beetroot.yaml` whenever you want Frida on for that instance — the version pin must match your host-side `frida-tools` on major + minor.
+
+```yaml title="examples/with-frida.yaml"
+api_version: 2
+
+android:
+  version: 14
+
+frida:
+  version: "16.4.10"
+
+stealth:
+  denylist:
+    - com.google.android.gms
+    - com.google.android.gms.unstable
+```
+
+Drop the `frida:` block (or copy `examples/default.yaml`) to turn Frida back off.
 
 ## Using an example
 

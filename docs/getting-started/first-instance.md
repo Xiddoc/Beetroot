@@ -47,11 +47,11 @@ beetroot logs alpha -f
 Look for:
 
 ```
-[*] Android boot detected. Applying Stealth Configuration...
-[*] Enabling Zygisk and Denylist...
+[*] Android boot detected. Applying Beetroot configuration...
+[*] Enabling Zygisk + denylist
 ```
 
-Once you see Zygisk + denylist applied, the device is ready to use. If you created the instance with `--preset with-frida` (or added a `frida:` block to `beetroot.yaml`), you'll also see `[*] Launching Frida server...` — the default preset skips the Frida launch.
+Once you see Zygisk + denylist applied, the device is ready to use. If you opted into Frida — by adding a `frida:` block to `beetroot.yaml`, or by copying `examples/with-frida.yaml` over the generated file before running `beetroot apply` — you'll also see `[*] Launching Frida from /data/local/tmp/frida-server`. A bare `beetroot create` skips the Frida launch.
 
 ## Connect
 

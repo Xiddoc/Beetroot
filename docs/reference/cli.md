@@ -140,6 +140,29 @@ Runs `docker compose down`. The instance's `data/` directory is untouched.
 
 ---
 
+## `restart`
+
+Stop then start one or more instances. Useful for picking up Magisk-module changes or a fresh `apply`.
+
+```
+beetroot restart <name> [<name> ...]
+```
+
+| Argument / Flag | Type | Description |
+|----------------|------|-------------|
+| `names` | positional (one or more) | Instance names to restart |
+| `--all` | flag | Act on every registered instance. |
+
+Equivalent to running `beetroot down <name>` followed by `beetroot up <name>` for each named instance, but issued as a single verb.
+
+**Output:**
+
+```
+[beetroot] alpha restarted
+```
+
+---
+
 ## `destroy`
 
 Stop and permanently delete an instance and all its data.
@@ -221,7 +244,7 @@ Passes through directly to `docker compose logs`. Useful for watching `entrypoin
 
 ```bash
 beetroot logs alpha -f
-# Watch for: [*] Android boot detected. Applying Stealth Configuration...
+# Watch for: [*] Android boot detected. Applying Beetroot configuration...
 ```
 
 ---

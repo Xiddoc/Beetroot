@@ -9,13 +9,15 @@ If you omit the `frida:` block (the new default), the bind-mount is a 0-byte non
 
 ## Enabling Frida
 
-The fastest way is to start from the bundled `with-frida` preset:
+The fastest way is to copy [`examples/with-frida.yaml`](examples.md) over a freshly-created instance's `beetroot.yaml`:
 
 ```bash
-beetroot create alpha --preset with-frida
+beetroot create alpha
+cp examples/with-frida.yaml alpha/beetroot.yaml
+beetroot apply alpha
 ```
 
-That preset declares the version pin idiom for you. To enable Frida on an already-created instance, edit its `beetroot.yaml` and add the block:
+`examples/with-frida.yaml` declares the version-pin idiom for you. To enable Frida on an already-existing instance, edit its `beetroot.yaml` directly and add the block:
 
 ```yaml
 frida:
@@ -94,7 +96,7 @@ script.load()
 
 ## Disabling Frida
 
-Frida is off by default — instances created from the `default` preset don't ship a `frida:` block at all. If you turned it on and want to turn it back off, either delete the `frida:` block entirely or set it explicitly to null:
+Frida is off by default — `beetroot create` writes a minimal `beetroot.yaml` that doesn't ship a `frida:` block at all. If you turned it on and want to turn it back off, either delete the `frida:` block entirely or set it explicitly to null:
 
 ```yaml
 frida: ~   # null in YAML
