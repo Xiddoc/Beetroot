@@ -115,6 +115,9 @@ nav:
     - Architecture: how-it-works/architecture.md
     - Boot Flow: how-it-works/boot-flow.md
     - Filesystem Layout: how-it-works/filesystem.md
+  - Design notes:
+    - design/index.md
+    - Stealth posture: design/stealth-posture.md
   - Troubleshooting: troubleshooting.md
   - About:
     - Credits: about/credits.md
