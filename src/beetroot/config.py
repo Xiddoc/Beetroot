@@ -1,14 +1,13 @@
 """
 beetroot.yaml schema, loading, and .env rendering.
 
-Only ``android.version`` is required; every other field has a sensible default
-and can be omitted entirely from an instance YAML or preset.  Optional
+Only ``android.version`` is required; every other field has a sensible
+default and can be omitted entirely from an instance YAML. Optional
 top-level sections: ``display``, ``resources``, ``frida``, ``modules``,
 ``stealth``.
 """
 from __future__ import annotations
 
-import importlib.resources
 import sys
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -287,36 +286,6 @@ def load_yaml(path: Path) -> InstanceConfig:
     if raw is None:
         raw = {}
     return InstanceConfig.model_validate(raw)
-
-
-def load_preset(preset_name: str) -> InstanceConfig:
-    """
-    Load a preset bundled inside the ``beetroot.templates.presets`` package.
-
-    Args:
-        preset_name: Basename of the preset file without the ``.yaml``
-            extension (e.g. ``default``).
-
-    Returns:
-        The validated InstanceConfig for the preset.
-
-    Raises:
-        FileNotFoundError: If no matching ``.yaml`` file ships with the
-            installed package.
-    """
-    presets = importlib.resources.files("beetroot.templates.presets")
-    target = presets.joinpath(f"{preset_name}.yaml")
-    if not target.is_file():
-        available = sorted(
-            entry.name.removesuffix(".yaml")
-            for entry in presets.iterdir()
-            if entry.name.endswith(".yaml")
-        )
-        raise FileNotFoundError(
-            f"preset {preset_name!r} not bundled with beetroot — "
-            f"available: {available}"
-        )
-    return InstanceConfig.model_validate(yaml.safe_load(target.read_text()))
 
 
 def write_yaml(path: Path, cfg: InstanceConfig) -> None:
