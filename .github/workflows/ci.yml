@@ -21,6 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       - uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
@@ -35,23 +39,27 @@ jobs:
         run: |
           ! grep -rn 'arbitrary_types_allowed' src/ tests/ pyproject.toml
 
-      - name: Mypy
-        run: uv run mypy src/beetroot/
+      - name: Mypy (src + tests — both must type-check per CLAUDE.md)
+        run: uv run mypy src/beetroot/ tests/
+
+      - name: Changelog-lint (beetroot invocations under Unreleased)
+        run: uv run python scripts/lint_changelog.py
 
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
 
       - uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
 
       - name: Install dev dependencies
-        run: uv sync --group dev --frozen --python ${{ matrix.python }}
+        run: uv sync --group dev --frozen
 
       - name: Pytest (100% coverage gate enforced via [tool.coverage.report])
         run: uv run pytest
@@ -66,3 +74,26 @@ jobs:
 
       - name: Shellcheck (POSIX sh — boot helpers run under /system/bin/sh)
         run: shellcheck -s sh docker/*.sh
+
+  docs-strict:
+    # CR #4: docs.yml's --strict build only ran on push-to-master, so PRs
+    # could land doc drift (broken xrefs, stray nav entries) without failing
+    # any check. This job validates the same build on every PR, but does
+    # not deploy — the gh-pages deploy still lives in docs.yml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install docs dependencies
+        run: uv sync --group docs --frozen
+
+      - name: Build docs (strict mode — any warning fails the PR check)
+        run: uv run mkdocs build --strict

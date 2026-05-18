@@ -1,12 +1,18 @@
-# Local pre-push hook: runs the full pytest + 100% coverage gate before
-# allowing `git push` to talk to the remote.
+# Local hooks. Two are wired in:
 #
-# One-time setup (after `uv sync --group dev`):
+# 1. ``pytest-coverage`` runs the full pytest + 100% coverage gate on every
+#    ``git push``. One-time setup (after ``uv sync --group dev``):
 #
-#     uv run pre-commit install --hook-type pre-push
+#        uv run pre-commit install --hook-type pre-push
 #
-# After that, every `git push` invokes pytest. A failing test or
-# sub-100% coverage blocks the push.
+# 2. ``changelog-lint`` validates beetroot invocations cited in fenced
+#    shell blocks under ``## Unreleased`` of ``CHANGELOG.md``. It runs on
+#    pre-commit when CHANGELOG.md is touched (cheap — one ``--help`` per
+#    cited verb) and is also runnable as ``pre-commit run --hook-stage
+#    manual changelog-lint`` for the CI mirror. Why: CR aggregation
+#    surfaced a CHANGELOG entry citing a flag that had been removed in
+#    the same Unreleased block — invisible to per-theme review because
+#    the failure mode requires parsing the fence + probing the CLI.
 repos:
   - repo: local
     hooks:
@@ -17,4 +23,13 @@ repos:
         types: [python]
         pass_filenames: false
         stages: [pre-push]
+        verbose: true
+
+      - id: changelog-lint
+        name: lint beetroot invocations under Unreleased
+        entry: uv run python scripts/lint_changelog.py
+        language: system
+        files: ^CHANGELOG\.md$
+        pass_filenames: false
+        stages: [pre-commit, manual]
         verbose: true

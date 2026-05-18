@@ -544,3 +544,35 @@ with at least one behavior test that asserts on the artifact (not
   case in ``tests/test_snapshot.py``.
 
 Total test-count delta: 469 → 522 (+53).
+
+### v0.3 — Post-CR CI hardening
+
+Guardrails added to ``.github/workflows/ci.yml`` and
+``.pre-commit-config.yaml`` so the categories of regression the v0.3
+CR pass surfaced never reach ``dev/v0.3`` again. Each guardrail
+matches a specific CR finding:
+
+* **Single Python 3.13 lane.** ``pyproject.toml`` pins
+  ``requires-python = ">=3.13"``, but the test job still ran a
+  3.10/3.11/3.12 matrix — dead cells that wasted runner minutes and
+  could not surface real regressions. Collapsed to a single
+  ``actions/setup-python@v5`` step on 3.13.
+* **``mkdocs build --strict`` runs on every PR.** Today's
+  ``docs.yml`` only built strict on push-to-master, so PR review
+  never saw doc drift (T3-style ghost references, dead nav
+  entries). New ``docs-strict`` job in ``ci.yml`` runs the same
+  strict build; the gh-pages deploy job in ``docs.yml`` stays put.
+* **``mypy tests/`` runs in CI.** CR #4 flagged that CI only ran
+  mypy against ``src/beetroot/``, while CLAUDE.md requires both
+  trees to type-check. The lint-and-type-check job now passes
+  both paths.
+* **``scripts/lint_changelog.py`` pre-commit + CI hook.** Closes
+  the failure mode where T2's CHANGELOG entry cited
+  ``beetroot create alpha --preset with-frida`` — but T3 had
+  already removed ``--preset`` earlier in the same Unreleased
+  block. The linter parses shell fences under ``## Unreleased``,
+  pulls every ``beetroot <verb>`` invocation, and validates verb +
+  long-flag names against ``beetroot --help`` / ``beetroot <verb>
+  --help``. It does NOT execute the cited commands. Wired as a
+  ``CHANGELOG.md``-scoped pre-commit hook (``stages: [pre-commit,
+  manual]``) and as a step in the CI lint job.
