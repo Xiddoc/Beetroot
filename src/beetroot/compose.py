@@ -70,22 +70,18 @@ def run(
     return subprocess.run(cmd, cwd=instance_root, check=False, **kwargs)
 
 
-def up(name: str, instance_root: Path, *, build: bool = False) -> None:
+def up(name: str, instance_root: Path) -> None:
     """
     Start an instance with ``compose up -d``.
 
     Args:
         name: Instance name.
         instance_root: The instance directory.
-        build: If ``True``, rebuild the image before starting.
 
     Raises:
         ComposeError: If compose exits with a non-zero status.
     """
-    args = ["up", "-d"]
-    if build:
-        args.append("--build")
-    res = run(name, instance_root, args)
+    res = run(name, instance_root, ["up", "-d"])
     if res.returncode != 0:
         raise ComposeError(f"`compose up` failed for {name} (exit {res.returncode})")
 
