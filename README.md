@@ -13,8 +13,8 @@ $ beetroot create alpha
 $ beetroot up alpha
 [beetroot] alpha up — ADB localhost:5555, Frida localhost:27042
 $ beetroot ls
-NAME   IDX  ADB             FRIDA            PATH         STATUS
-alpha  0    localhost:5555  localhost:27042  ./alpha      running
+NAME   IDX  ADB             FRIDA            STATUS    PATH
+alpha  0    localhost:5555  localhost:27042  running   ./alpha
 ```
 
 ## Quick start
@@ -42,7 +42,7 @@ The host-side `frida` CLI is exposed via a `[frida]` extra. Install with `uv too
 - **Android 14** (redroid base, headless, low-FPS by default)
 - **Magisk root** with Zygisk + denylist; GMS auto-denylisted
 - **LiteGapps** + **Houdini** ARM-on-x86_64 translation
-- **Frida server (opt-in, version-pinned per instance)** — declare a `frida:` block in `beetroot.yaml` (or start from the `with-frida` preset) and the CLI downloads, caches, and bind-mounts the matching `frida-server` into the container
+- **Frida server (opt-in, version-pinned per instance)** — declare a `frida:` block in `beetroot.yaml` (or copy [`examples/with-frida.yaml`](examples/with-frida.yaml) over the freshly-created file) and the CLI downloads, caches, and bind-mounts the matching `frida-server` into the container
 - **Drop-in Magisk module flashing** via `beetroot.yaml`
 - **`beetroot` CLI** — lifecycle (`create` / `register` / `up` / `down` / `destroy`), shell + module management, and a `build` bootstrap. See the [CLI reference](https://xiddoc.github.io/Beetroot/reference/cli/) for every verb.
 
