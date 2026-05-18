@@ -58,3 +58,9 @@ sequenceDiagram
 ## Shell environment
 
 `entrypoint.sh` runs with `/system/bin/sh` — Android's toybox-derived shell. This is not bash or dash. It supports basic POSIX sh features but not bashisms like `[[ ]]`, arrays, or `<(process substitution)`. The script is written for toybox compatibility — do not introduce bash-specific syntax if you modify it.
+
+## Helper scripts
+
+In v0.3, `entrypoint.sh` was split into three helpers — `magisk-config.sh`, `flash-modules.sh`, `launch-frida.sh` — that the slimmed-down glue sources in order. Each helper reads its container-side paths from a `BEETROOT_*` env var with a safe default, so v0.4's [stealth-posture path randomization](../design/stealth-posture.md) can swap paths per-build without touching helper code.
+
+For the per-helper contracts (env vars, idempotency, exit semantics) and the modify-helpers checklist, see [Boot Scripts](boot-scripts.md).

@@ -114,6 +114,7 @@ nav:
     - how-it-works/index.md
     - Architecture: how-it-works/architecture.md
     - Boot Flow: how-it-works/boot-flow.md
+    - Boot Scripts: how-it-works/boot-scripts.md
     - Filesystem Layout: how-it-works/filesystem.md
   - Design notes:
     - design/index.md
