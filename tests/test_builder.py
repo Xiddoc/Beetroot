@@ -1,4 +1,4 @@
-"""Tests for setup_runner.py — base-image bootstrap (clone + patch + build)."""
+"""Tests for builder.py — base-image bootstrap (clone + patch + build)."""
 from __future__ import annotations
 
 import subprocess
@@ -9,15 +9,15 @@ from unittest.mock import patch
 
 import pytest
 
-from beetroot import config, setup_runner
-from beetroot.settings import settings
-from beetroot.setup_runner import (
+from beetroot import builder, config
+from beetroot.builder import (
     GAPPS_FLAGS,
     BootstrapError,
     DefaultRunner,
     GappsVariant,
-    bootstrap_base_image,
+    build_image,
 )
+from beetroot.settings import settings
 
 
 @dataclass
@@ -78,7 +78,7 @@ class TestBootstrapErrorType:
 class TestCommandSequence:
     def test_three_steps_in_order(self) -> None:
         runner = FakeRunner()
-        bootstrap_base_image(gapps="lite", runner=runner)
+        build_image(gapps="lite", runner=runner)
         # rm -rf, git clone, uv run patcher, docker compose build → 4 calls
         assert len(runner.calls) == 4
         assert runner.calls[0].cmd[0] == "rm"
@@ -91,25 +91,25 @@ class TestCommandSequence:
 
     def test_clone_uses_depth_one(self) -> None:
         runner = FakeRunner()
-        bootstrap_base_image(runner=runner)
+        build_image(runner=runner)
         clone = runner.calls[1].cmd
         depth_idx = clone.index("--depth")
         assert clone[depth_idx + 1] == "1"
 
     def test_clone_url_default(self) -> None:
         runner = FakeRunner()
-        bootstrap_base_image(runner=runner)
+        build_image(runner=runner)
         assert "https://github.com/ayasa520/redroid-script.git" in runner.calls[1].cmd
 
     def test_clone_url_override(self) -> None:
         runner = FakeRunner()
         url = "https://example.com/fork.git"
-        bootstrap_base_image(redroid_script_url=url, runner=runner)
+        build_image(redroid_script_url=url, runner=runner)
         assert url in runner.calls[1].cmd
 
     def test_work_dir_default(self) -> None:
         runner = FakeRunner()
-        bootstrap_base_image(runner=runner)
+        build_image(runner=runner)
         # rm and git clone both target the work dir
         assert "/tmp/redroid" in runner.calls[0].cmd
         assert "/tmp/redroid" in runner.calls[1].cmd
@@ -118,28 +118,28 @@ class TestCommandSequence:
 
     def test_work_dir_override(self, tmp_path: Path) -> None:
         runner = FakeRunner()
-        bootstrap_base_image(work_dir=tmp_path, runner=runner)
+        build_image(work_dir=tmp_path, runner=runner)
         assert str(tmp_path) in runner.calls[0].cmd
         assert str(tmp_path) in runner.calls[1].cmd
         assert runner.calls[2].cwd == tmp_path
 
     def test_patcher_includes_android_version(self) -> None:
         runner = FakeRunner()
-        bootstrap_base_image(android_version=13, runner=runner)
+        build_image(android_version=13, runner=runner)
         patcher = runner.calls[2].cmd
         a_idx = patcher.index("-a")
         assert patcher[a_idx + 1] == "13.0.0"
 
     def test_patcher_always_includes_houdini_and_magisk(self) -> None:
         runner = FakeRunner()
-        bootstrap_base_image(runner=runner)
+        build_image(runner=runner)
         patcher = runner.calls[2].cmd
         assert "-i" in patcher
         assert "-m" in patcher
 
     def test_patcher_uv_run_uses_requests_and_tqdm(self) -> None:
         runner = FakeRunner()
-        bootstrap_base_image(runner=runner)
+        build_image(runner=runner)
         patcher = runner.calls[2].cmd
         assert patcher[:3] == ["uv", "run", "--with"]
         assert "requests" in patcher
@@ -148,7 +148,7 @@ class TestCommandSequence:
     def test_docker_compose_build_uses_settings_docker_bin(self) -> None:
         runner = FakeRunner()
         with patch.object(settings, "docker_bin", "/opt/docker"):
-            bootstrap_base_image(runner=runner)
+            build_image(runner=runner)
         build = runner.calls[3].cmd
         assert build[0] == "/opt/docker"
         assert build[1] == "compose"
@@ -156,14 +156,14 @@ class TestCommandSequence:
 
     def test_docker_compose_build_passes_base_image_env(self) -> None:
         runner = FakeRunner()
-        tag = bootstrap_base_image(gapps="lite", android_version=14, runner=runner)
+        tag = build_image(gapps="lite", android_version=14, runner=runner)
         assert runner.calls[3].env is not None
         assert runner.calls[3].env["BASE_IMAGE"] == tag
 
     def test_docker_compose_build_points_at_bundled_template(self) -> None:
         from beetroot import paths
         runner = FakeRunner()
-        bootstrap_base_image(runner=runner)
+        build_image(runner=runner)
         build = runner.calls[3].cmd
         f_idx = build.index("-f")
         assert build[f_idx + 1] == str(paths.bundled_compose_file())
@@ -180,13 +180,13 @@ class TestGappsFlagInjection:
     )
     def test_variant_injects_correct_flag(self, gapps: GappsVariant, expected_flag: str) -> None:
         runner = FakeRunner()
-        bootstrap_base_image(gapps=gapps, runner=runner)
+        build_image(gapps=gapps, runner=runner)
         patcher = runner.calls[2].cmd
         assert expected_flag in patcher
 
     def test_none_injects_no_gapps_flag(self) -> None:
         runner = FakeRunner()
-        bootstrap_base_image(gapps="none", runner=runner)
+        build_image(gapps="none", runner=runner)
         patcher = runner.calls[2].cmd
         for flag in ("-lg", "-g", "-mtg"):
             assert flag not in patcher
@@ -206,13 +206,13 @@ class TestReturnedTag:
         self, gapps: GappsVariant, version: int
     ) -> None:
         runner = FakeRunner()
-        tag = bootstrap_base_image(gapps=gapps, android_version=version, runner=runner)
+        tag = build_image(gapps=gapps, android_version=version, runner=runner)
         expected = config.base_image_tag(config.Android(version=version, gapps=gapps))
         assert tag == expected
 
     def test_lite_default(self) -> None:
         runner = FakeRunner()
-        tag = bootstrap_base_image(runner=runner)
+        tag = build_image(runner=runner)
         assert tag == "redroid/redroid:14.0.0_litegapps_houdini_magisk"
 
 
@@ -220,19 +220,19 @@ class TestFailures:
     def test_clone_failure_raises_bootstrap_error(self) -> None:
         runner = FakeRunner(fail_on="git")
         with pytest.raises(BootstrapError, match="git"):
-            bootstrap_base_image(runner=runner)
+            build_image(runner=runner)
         # docker compose build must not have run
         assert all(call.cmd[0] != "docker" for call in runner.calls)
 
     def test_patcher_failure_raises_bootstrap_error(self) -> None:
         runner = FakeRunner(fail_on="uv")
         with pytest.raises(BootstrapError, match="uv"):
-            bootstrap_base_image(runner=runner)
+            build_image(runner=runner)
 
     def test_build_failure_raises_bootstrap_error(self) -> None:
         runner = FakeRunner(fail_on="docker")
         with pytest.raises(BootstrapError, match="docker"):
-            bootstrap_base_image(runner=runner)
+            build_image(runner=runner)
 
 
 class TestDefaultRunner:
@@ -272,10 +272,10 @@ class TestDefaultRunner:
 
 class TestDefaultRunnerInjection:
     def test_no_runner_uses_default_runner(self) -> None:
-        with patch.object(setup_runner, "DefaultRunner") as mock_cls:
+        with patch.object(builder, "DefaultRunner") as mock_cls:
             mock_inst = mock_cls.return_value
             mock_inst.run.return_value = None
-            bootstrap_base_image(gapps="lite")
+            build_image(gapps="lite")
         mock_cls.assert_called_once()
         # Four subprocess invocations: rm, clone, patch, build
         assert mock_inst.run.call_count == 4
@@ -290,5 +290,5 @@ class TestSettingsHonoured:
         # patches the resolved settings instance rather than re-reading env.
         monkeypatch.setattr(settings, "docker_bin", "/opt/docker")
         runner = FakeRunner()
-        bootstrap_base_image(runner=runner)
+        build_image(runner=runner)
         assert runner.calls[3].cmd[0] == "/opt/docker"
