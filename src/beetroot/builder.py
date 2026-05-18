@@ -1,15 +1,10 @@
 """
-One-time base-image bootstrap.
+One-time base-image builder.
 
 Rewrite of the legacy ``scripts/setup.sh`` as testable Python. Clones the
 external ``ayasa520/redroid-script`` patcher, runs it to bake Magisk +
 optional GApps + Houdini into a redroid base image, then layers Beetroot's
 own ``entrypoint.sh`` / ``stealth.rc`` on top via ``docker compose build``.
-
-The module name is ``setup_runner`` rather than ``setup`` because the
-filename ``setup.py`` is historically reserved for the Python build system
-and tooling (setuptools, distutils, etc.) may special-case it even in
-non-package locations.
 
 Public surface:
 
@@ -20,8 +15,8 @@ Public surface:
   fails.
 * :data:`GAPPS_FLAGS` — mapping from gapps variant to the patcher CLI flags
   it needs.
-* :func:`bootstrap_base_image` — entry point that orchestrates the three
-  steps and returns the resulting image tag.
+* :func:`build_image` — entry point that orchestrates the three steps and
+  returns the resulting image tag.
 """
 from __future__ import annotations
 
@@ -123,7 +118,7 @@ def _image_tag(android_version: int, gapps: GappsVariant) -> str:
     return config.base_image_tag(android)
 
 
-def bootstrap_base_image(
+def build_image(
     *,
     gapps: GappsVariant = "lite",
     android_version: int = 14,
