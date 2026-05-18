@@ -20,6 +20,7 @@ Public surface:
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -99,13 +100,21 @@ class DefaultRunner:
             cmd: The argv to execute.
             cwd: Working directory; ``None`` inherits the parent's.
             check: If ``True``, raise :class:`BootstrapError` on non-zero exit.
-            env: Full environment to pass; ``None`` inherits the parent's.
+            env: Extra environment to overlay on the parent's. ``None``
+                inherits the parent's environment unmodified. A non-None
+                dict is merged on top of ``os.environ`` rather than
+                replacing it, so the child still sees ``PATH``,
+                ``HOME``, ``DOCKER_CONFIG``, etc. — without this merge a
+                bare ``{"BASE_IMAGE": tag}`` would launch ``docker``
+                with no ``PATH`` and the build would fail with
+                ``FileNotFoundError`` on a fresh shell.
 
         Raises:
             BootstrapError: If ``check`` is ``True`` and the command exits non-zero.
         """
+        merged_env = {**os.environ, **env} if env is not None else None
         try:
-            subprocess.run(list(cmd), cwd=cwd, check=check, env=env)
+            subprocess.run(list(cmd), cwd=cwd, check=check, env=merged_env)
         except subprocess.CalledProcessError as exc:
             raise BootstrapError(
                 f"command failed (exit {exc.returncode}): {' '.join(cmd)}"
