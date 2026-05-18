@@ -1,78 +1,156 @@
 # Snapshots
 
-There is no `beetroot snapshot` verb — and there doesn't need to be. The entire Android userdata lives at `<instance-dir>/data/`. Snapshotting is a plain filesystem copy.
+Beetroot's `snapshot` and `restore` verbs pack and unpack an instance's host-side state as a single `.tar.zst` archive. Use snapshots to roll back a research instance to a known-good baseline, hand off an instance to a colleague, or fork one instance into many to run a comparative experiment.
 
-Throughout this page, `$ALPHA` is the instance directory (look it up with `beetroot ls`):
+## When to snapshot
 
-```bash
-ALPHA=$(beetroot ls --json | jq -r '.alpha.path')
+A snapshot is the right tool when you need to capture an instance's *complete persisted state* and later re-create it byte-for-byte:
+
+- **Before a destructive experiment.** Take a snapshot, then hack on the live instance — if you brick it, `restore` the archive over a fresh instance.
+- **Forking for comparison.** Snapshot `alpha` once, restore it as `beta`, `gamma`, `delta` — each one starts from the identical Android userdata, has its own ports, and can run concurrently with the source.
+- **Hand-off.** Send the `.tar.zst` to a teammate. They run `beetroot restore` on their host and pick up exactly where you left off.
+
+For *destructive* experimentation against a single instance where you just want a quick "undo button" without leaving the host, the [filesystem `cp -a` recipe](#low-overhead-alternatives) at the bottom of this page is faster.
+
+## What's captured
+
+The archive is rooted at the instance directory and contains:
+
+```
+./beetroot.yaml
+./data/...                       (full Android /data tree)
+./modules/...                    (staged Magisk module zips)
+./frida-server                   (if it exists in the source)
+./.beetroot-snapshot.json        (manifest)
 ```
 
-## Basic snapshot and restore
+The manifest records the source instance's name, port index, the
+`beetroot` release that produced the snapshot, an ISO-8601 timestamp,
+and a reserved `path_layout` field (see [v0.4 forward
+compatibility](#v04-forward-compatibility) below).
+
+**The `.env` file is deliberately excluded.** It's regenerated from `beetroot.yaml` the next time you run `beetroot apply`, so leaving it out of the archive means the restored instance picks up its (freshly allocated) port indices and host paths cleanly. Don't commit the archive's contents — assume the next `beetroot apply` is load-bearing.
+
+!!! info "Docker overlay layer is not captured by design"
+    The container's writable overlay layer (everything inside the container that's not under the `/data` bind-mount) is *not* snapshotted. Redroid regenerates the overlay deterministically from the base image plus the persisted `/data` bind-mount, so `beetroot up` after a restore produces an equivalent container. If you need a snapshot of a customized base image, snapshot the Docker image itself (`docker image save`) — Beetroot snapshots are an instance-state artefact, not a Docker-image artefact.
+
+## Taking a snapshot
+
+Stop the instance first — the Android container has open file handles into `data/`, and `tar`-ing a live directory produces an inconsistent archive.
 
 ```bash
-# Stop the instance first (data must not be in use)
 beetroot down alpha
+beetroot snapshot alpha
+```
 
-# Snapshot
-cp -a "$ALPHA/data" "$ALPHA/data.clean"
+By default, the archive lands at `./alpha.tar.zst`. Use `-o` (or `--output`) to redirect:
+
+```bash
+beetroot snapshot alpha -o ~/beetroot-snapshots/alpha-$(date +%Y%m%d).tar.zst
+```
+
+The `.tar.zst` extension is appended automatically if you omit it.
+
+!!! tip "Keep a snapshots dir alongside your instances"
+    Pick a dir anywhere (e.g. `~/beetroot-snapshots/`) and route every snapshot through it. Versioned filenames (`alpha-20260518.tar.zst`) let you keep a campaign-wide rollback ladder without inventing a per-instance scheme.
+
+## Restoring a snapshot
+
+```bash
+beetroot restore ~/beetroot-snapshots/alpha-20260518.tar.zst --as beta
+```
+
+Without `--as <name>`, the restored instance uses the source's recorded name (from the manifest). Without `--path <dir>`, it lands at `./<name>/`. Both flags are optional:
+
+```bash
+# Most explicit form
+beetroot restore archive.tar.zst --as beta --path /srv/instances/beta
+
+# Defaults: name from manifest, path is ./<name>
+beetroot restore archive.tar.zst
+```
+
+After restore, the new instance is registered with a freshly allocated port index — **the source's index is never reused**, so the original and the restored instance can run concurrently if both directories still exist on disk:
+
+```bash
+beetroot up alpha &   # original keeps its index 0 (ADB 5555)
+beetroot up beta      # restored copy gets index 1 (ADB 5565)
+```
+
+You'll typically want to run `beetroot apply <new-name>` before `beetroot up` to re-render the per-instance `.env` (which wasn't in the archive). The CLI prints the exact next-step command on success.
+
+### Restore over an existing directory: `--force`
+
+Restoring into a non-empty target directory fails by default — Beetroot won't silently wipe your data:
+
+```bash
+$ beetroot restore archive.tar.zst --path ./existing-data
+error: /home/x/existing-data already exists and is non-empty; pass --force to overwrite, or pick another path
+```
+
+Pass `--force` to overwrite. The target is `rm -rf`'d, then the archive is extracted into the freshly empty directory:
+
+```bash
+beetroot restore archive.tar.zst --as beta --path ./existing-data --force
+```
+
+`--force` does *not* touch the registry. If a name already exists there, you'll get a separate error and need to `beetroot destroy <name>` first.
+
+## v0.4 forward compatibility
+
+The manifest carries a `path_layout: dict[str, str]` field. In v0.3 this is always `{}`. v0.4's [stealth-posture design](../design/stealth-posture.md) populates it with the source instance's randomized container-path mapping (the per-build `BEETROOT_MAGISK_DB`, `BEETROOT_MODULES_DIR`, and `BEETROOT_FRIDA_BIN` paths). The forthcoming v0.4 `restore` will replay the layout into the new instance's `.env` or `BEETROOT_*` env vars so a stealth-randomized snapshot round-trips with its container paths intact.
+
+v0.3 `restore` itself doesn't act on `path_layout` — but it never strips or rewrites the field, and the manifest is preserved on disk inside the restored instance directory at `.beetroot-snapshot.json`. A v0.4-produced archive restored by v0.3 keeps its layout intact; the v0.4 release will pick it up from disk on `beetroot apply`.
+
+## Round-tripping in scripts
+
+The exit code semantics match the rest of the CLI: `0` on success, `1` on any user-recoverable error (missing instance, malformed archive, name collision), with a single-line `error: <reason>` on stderr. Pipe-friendly:
+
+```bash
+set -e
+beetroot down alpha
+beetroot snapshot alpha -o ./baseline.tar.zst
+# ... destructive experiment ...
+beetroot down alpha
+beetroot destroy -y alpha
+beetroot restore ./baseline.tar.zst --as alpha
+beetroot apply alpha
+beetroot up alpha
+```
+
+## Low-overhead alternatives
+
+For the simplest case — quick "undo button" for a single instance, no
+hand-off, no forking — a plain filesystem copy is faster than packing a
+`.tar.zst`:
+
+```bash
+beetroot down alpha
+cp -a "$(beetroot ls --json | jq -r '.alpha.path')/data" /tmp/alpha-data.clean
 
 # ... do your research ...
 
-# Restore
 beetroot down alpha
-rm -rf "$ALPHA/data"
-cp -a "$ALPHA/data.clean" "$ALPHA/data"
+rm -rf "$(beetroot ls --json | jq -r '.alpha.path')/data"
+cp -a /tmp/alpha-data.clean "$(beetroot ls --json | jq -r '.alpha.path')/data"
 beetroot up alpha
 ```
 
-!!! warning "Stop before copying"
-    Always run `beetroot down <name>` before touching `data/`. The Android container has open file handles into this directory; copying while it's running produces inconsistent snapshots.
+This is fine for a transient snapshot you'll throw away in the same session. For anything you might `git annex add`, hand off to a colleague, or keep around for a campaign, use `beetroot snapshot`.
 
-## Compressed snapshots
-
-For large `data/` directories, use `tar` with `zstd` compression:
-
-```bash
-beetroot down alpha
-
-# Create snapshot
-tar --zstd -cf snapshots/alpha-clean.tar.zst -C "$ALPHA" data
-
-# Restore
-beetroot down alpha
-rm -rf "$ALPHA/data"
-tar --zstd -xf snapshots/alpha-clean.tar.zst -C "$ALPHA"
-beetroot up alpha
-```
-
-!!! tip "Keep a snapshots dir alongside your instances"
-    Pick a dir anywhere (e.g. `~/beetroot-snapshots/`) and use it as a snapshot store. Beetroot itself doesn't care.
-
-## Versioned snapshots
-
-If you're running a research campaign across multiple builds or dates, label your snapshots:
-
-```bash
-mkdir -p snapshots
-tar --zstd -cf snapshots/alpha-$(date +%Y%m%d).tar.zst -C "$ALPHA" data
-```
-
-## Fresh start without destroy
+## Fresh start without snapshot
 
 If you want to reset to a pristine Android install without recreating the instance (keeping the same ports and config):
 
 ```bash
 beetroot down alpha
-rm -rf "$ALPHA/data"   # wipe userdata only
-beetroot up alpha       # Android re-provisions /data on first boot
+rm -rf "$(beetroot ls --json | jq -r '.alpha.path')/data"
+beetroot up alpha
 ```
 
 Android will go through first-time setup again. Frida and modules are unaffected — they're staged separately.
 
 ## Full wipe and recreate
-
-If you want to start completely from scratch (new config, new ports possible):
 
 ```bash
 beetroot destroy -y alpha

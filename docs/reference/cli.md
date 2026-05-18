@@ -317,3 +317,39 @@ The module is appended to the instance's `beetroot.yaml` and immediately staged 
 ```bash
 beetroot down <name> && beetroot up <name>
 ```
+
+---
+
+## `snapshot`
+
+Pack an instance's host-side state into a `.tar.zst` archive.
+
+```
+beetroot snapshot <name> [-o <archive>]
+```
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `name` | positional | Instance name to snapshot. |
+| `-o`, `--output` | flag | Archive path (default: `./<name>.tar.zst`). The `.tar.zst` extension is appended automatically if you omit it. |
+
+Stop the instance first (`beetroot down <name>`) — `tar`-ing live `data/` produces an inconsistent archive. The archive excludes `.env` (it's regenerated on the next `apply`). See [Snapshots](../guides/snapshots.md) for the round-trip workflow and the `path_layout` forward-compat story.
+
+---
+
+## `restore`
+
+Unpack a snapshot archive into a new instance and register it.
+
+```
+beetroot restore <archive> [--as <name>] [--path <dir>] [--force]
+```
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `archive` | positional | Path to a `.tar.zst` snapshot archive. |
+| `--as` | flag | Registry name for the restored instance (default: the name recorded in the manifest). |
+| `--path` | flag | Directory to extract into (default: `./<name>`). |
+| `--force` | flag | Wipe a non-empty destination directory before extracting. |
+
+A fresh port index is allocated — the source's index is never reused, so the original and the restored instance can run concurrently if both directories still exist. After restore, run `beetroot apply <new-name>` to regenerate `.env`, then `beetroot up <new-name>`.
