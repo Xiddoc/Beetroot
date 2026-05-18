@@ -244,7 +244,8 @@ class InstanceConfig(BaseModel):
         android: Android version and GApps flavour.
         display: Virtual screen geometry and frame rate.
         resources: Docker resource caps.
-        frida: Frida-server version pin; ``None`` disables frida entirely.
+        frida: Frida-server version pin; ``None`` (the default) disables
+            frida entirely. Declare an explicit ``frida:`` block to opt in.
         modules: Magisk modules to flash at boot.
         stealth: Denylist / root-hiding settings.
         ports: Optional per-instance port overrides. Absent fields fall
@@ -255,7 +256,7 @@ class InstanceConfig(BaseModel):
     android: Android = Field(default_factory=Android)
     display: Display = Field(default_factory=Display)
     resources: Resources = Field(default_factory=Resources)
-    frida: Frida | None = Field(default_factory=Frida)
+    frida: Frida | None = None
     modules: list[Module] = Field(default_factory=list)
     stealth: Stealth = Field(default_factory=Stealth)
     ports: Ports = Field(default_factory=Ports)

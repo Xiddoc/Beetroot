@@ -211,6 +211,28 @@ class TestCmdCreate:
         with pytest.raises(SystemExit, match="not a directory"):
             cli.cmd_create(_create_ns("alpha", from_data=str(cli_root / "missing")))
 
+    def test_create_default_no_frida(self, cli_root: Path) -> None:
+        # v0.3 (T2): the default preset omits the `frida:` block, so the
+        # staged frida-server is a 0-byte non-executable placeholder.
+        # entrypoint.sh's `[ -x ]` check skips the launch in that case.
+        cli.cmd_create(_create_ns("alpha"))
+        root = registry.instance_path("alpha")
+        staged = paths.instance_frida(root)
+        assert staged.exists()
+        assert staged.stat().st_size == 0
+        assert staged.stat().st_mode & 0o111 == 0
+
+    def test_create_with_frida_preset_stages_binary(self, cli_root: Path) -> None:
+        # Companion behavior test: the new with-frida preset actually
+        # downloads + stages an executable binary (via the cli_root
+        # fixture's fake_download that writes b"fake-frida").
+        cli.cmd_create(_create_ns("alpha", preset="with-frida"))
+        root = registry.instance_path("alpha")
+        staged = paths.instance_frida(root)
+        assert staged.exists()
+        assert staged.stat().st_size > 0
+        assert staged.stat().st_mode & 0o111 != 0
+
 
 # ---------------------------------------------------------------------------
 # cmd_register

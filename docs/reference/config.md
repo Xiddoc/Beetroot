@@ -9,11 +9,11 @@ The schema is validated by Pydantic on every load. Fields you omit use the defau
 ## Top-level structure
 
 ```yaml
-api_version: 1
+api_version: 2
 android: ...
 display: ...
 resources: ...
-frida: ...
+frida: ...   # optional / opt-in
 modules: [...]
 stealth: ...
 ports: ...
@@ -27,17 +27,17 @@ Schema version this `beetroot.yaml` targets.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `api_version` | int | `1` | Schema version. Must match the value supported by this Beetroot release. |
+| `api_version` | int | `2` | Schema version. Must match the value supported by this Beetroot release. |
 
 ```yaml
-api_version: 1
+api_version: 2
 ```
 
 ### Versioning policy
 
 Each Beetroot release supports **exactly one** `api_version`. The current
-release supports `api_version: 1`. Loading a YAML that pins a different
-value (`0`, `2`, `99`, …) raises a `ValidationError` with a pointer to
+release supports `api_version: 2`. Loading a YAML that pins a different
+value (`0`, `1`, `99`, …) raises a `ValidationError` with a pointer to
 `CHANGELOG.md` for the migration steps.
 
 Omitting the field is equivalent to writing the currently supported value
@@ -46,7 +46,7 @@ field explicitly is recommended once you're committing an instance YAML to
 source control, so that a future Beetroot release with a breaking schema
 change fails loud instead of silently reinterpreting your config.
 
-All shipped presets declare `api_version: 1` explicitly as the first
+All shipped presets declare `api_version: 2` explicitly as the first
 field. When the schema breaks, the constant `SUPPORTED_API_VERSION` in
 `src/beetroot/config.py` is bumped and a migration entry is added to
 `CHANGELOG.md`.
@@ -122,21 +122,22 @@ resources:
 
 ## `frida`
 
-Frida server configuration. Set to `null` (`~` in YAML) to disable Frida entirely.
+Frida server configuration. **Opt-in starting in v0.3** — omit the block entirely (or set it explicitly to `null` / `~`) to disable Frida. Declare the block to opt in.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `version` | string | `"16.4.10"` | Frida server version to download from GitHub releases. Must match your host-side `frida-tools` major + minor version. |
+| `version` | string | `"16.4.10"` | Frida server version to download from GitHub releases. Applies when the `frida:` block IS present. Must match your host-side `frida-tools` major + minor version. |
 
 ```yaml
+# Opt in:
 frida:
   version: "16.4.10"
 
-# To disable:
+# Default (omit the block entirely, or:):
 # frida: ~
 ```
 
-The binary is downloaded from `github.com/frida/frida/releases`, decompressed (`.xz`), and cached at `~/.cache/beetroot/frida/` (respects `$XDG_CACHE_HOME`). The CLI then copies it into the instance directory at `frida-server`, which is bind-mounted into the container at `/data/local/tmp/frida-server`.
+When opted in, the binary is downloaded from `github.com/frida/frida/releases`, decompressed (`.xz`), and cached at `~/.cache/beetroot/frida/` (respects `$XDG_CACHE_HOME`). The CLI then copies it into the instance directory at `frida-server`, which is bind-mounted into the container at `/data/local/tmp/frida-server`. When opted out, that same path is a 0-byte non-executable placeholder and `entrypoint.sh` skips the launch.
 
 ---
 
@@ -224,7 +225,7 @@ stealth:
 ## Complete example
 
 ```yaml
-api_version: 1
+api_version: 2
 
 android:
   version: 14

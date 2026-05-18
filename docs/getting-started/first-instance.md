@@ -13,7 +13,7 @@ This:
 1. Picks the lowest free port index (`0` → ADB `5555`, Frida `27042` on a fresh host).
 2. Creates the instance directory at `./alpha/` (override with `--path /some/where`).
 3. Writes `./alpha/beetroot.yaml` from the default preset.
-4. Downloads and stages the Frida server binary at `./alpha/frida-server`.
+4. Stages a 0-byte placeholder at `./alpha/frida-server`. Frida is opt-in starting in v0.3 — if you want a real `frida-server` launched inside the container, create the instance with `--preset with-frida` (or add a `frida:` block to `beetroot.yaml` and re-`apply`). See [Frida](../guides/frida.md).
 5. Renders `./alpha/.env` for Docker Compose.
 6. Registers the instance under `~/.config/beetroot/instances.json` (the cross-instance registry).
 
@@ -49,10 +49,9 @@ Look for:
 ```
 [*] Android boot detected. Applying Stealth Configuration...
 [*] Enabling Zygisk and Denylist...
-[*] Launching Frida server...
 ```
 
-Once you see the Frida line, the device is ready to use.
+Once you see Zygisk + denylist applied, the device is ready to use. If you created the instance with `--preset with-frida` (or added a `frida:` block to `beetroot.yaml`), you'll also see `[*] Launching Frida server...` — the default preset skips the Frida launch.
 
 ## Connect
 

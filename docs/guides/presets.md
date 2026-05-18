@@ -6,7 +6,7 @@ Presets are starter `beetroot.yaml` configs that ship **inside the `beetroot` wh
 
 ### `default`
 
-The cheap baseline — low FPS, small framebuffer, host GPU passthrough. GMS is denylisted so it can't see Magisk root, but no additional stealth modules are installed.
+The cheap baseline — low FPS, small framebuffer, host GPU passthrough. GMS is denylisted so it can't see Magisk root, but no additional stealth modules are installed. **Frida is opt-in** (v0.3+) — the preset deliberately omits the `frida:` block, so no `frida-server` is downloaded or launched.
 
 ```yaml title="default.yaml"
 android:
@@ -18,9 +18,28 @@ stealth:
     - com.google.android.gms.unstable
 ```
 
-That's the entire preset. Every other field (display, resources, frida, modules) defaults to a sensible value — see the [config reference](../reference/config.md). This preset is intentionally minimal so the file shows *only* what the researcher cares about: which Android version, and which packages to hide root from.
+That's the entire preset. Every other field (display, resources, modules) defaults to a sensible value — see the [config reference](../reference/config.md). This preset is intentionally minimal so the file shows *only* what the researcher cares about: which Android version, and which packages to hide root from.
 
-Use this when you're testing something that doesn't use anti-root checks, or when you want the lightest-weight setup.
+Use this when you're testing something that doesn't use anti-root checks, or when you want the lightest-weight setup. For a Frida-enabled baseline, use [`with-frida`](#with-frida).
+
+### `with-frida`
+
+Same as `default` but with an explicit `frida:` block. Use this when you want `frida-server` downloaded, staged, and auto-launched inside the container at boot.
+
+```yaml title="with-frida.yaml"
+android:
+  version: 14
+
+frida:
+  version: "16.4.10"
+
+stealth:
+  denylist:
+    - com.google.android.gms
+    - com.google.android.gms.unstable
+```
+
+Pin `frida.version` to match the host-side `frida-tools` major + minor version you're using (see [Frida](frida.md)).
 
 ### `stealth`
 
@@ -52,7 +71,8 @@ Same as `default` but with `android.gapps: none`. Use this if you want a strippe
 ## Using presets
 
 ```bash
-beetroot create research-clean            # default preset
+beetroot create research-clean            # default preset (no frida)
+beetroot create research-hooked --preset with-frida
 beetroot create research-hidden --preset stealth
 ```
 
