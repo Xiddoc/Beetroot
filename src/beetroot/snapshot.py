@@ -339,6 +339,13 @@ def restore(
     # Validate the manifest first so a malformed archive bails out
     # before we touch the destination directory or the registry.
     read_manifest(archive)
+    # Track whether we created ``target`` so the rollback path knows
+    # whether ``rmtree`` is safe. ``target`` is always extracted into
+    # below — but if the user pointed ``--path`` at a pre-existing dir
+    # that we wiped under ``--force``, the pre-existing-flag is sticky
+    # on the wipe (the dir is logically ours now). Either way:
+    # ``created_dir`` is True iff Beetroot now owns the directory.
+    created_dir = not target.exists()
     target.mkdir(parents=True, exist_ok=True)
     _extract_archive_into(archive, target)
 
@@ -350,26 +357,35 @@ def restore(
     cfg = config.load_yaml(paths.instance_yaml(target))
     # Atomic allocation + registration under one file lock.
     index = registry.add_allocating(dest_name, target)
-    new_ports = ports.resolve_ports(index, cfg.ports)
-    others = {
-        n: p for n, p in registry.all_resolved_ports().items()
-        if n != dest_name
-    }
-    collision = registry.find_port_collision(new_ports, others)
-    if collision is not None:
-        port, other_name, kind = collision
+    try:
+        new_ports = ports.resolve_ports(index, cfg.ports)
+        others = {
+            n: p for n, p in registry.all_resolved_ports().items()
+            if n != dest_name
+        }
+        collision = registry.find_port_collision(new_ports, others)
+        if collision is not None:
+            port, other_name, kind = collision
+            raise SnapshotError(
+                f"port {port} ({kind}) collides with instance {other_name!r}; "
+                "edit the restored beetroot.yaml's ports: block before retrying"
+            )
+        # Stage .env + frida-server + modules now so `beetroot up <name>`
+        # works without a follow-up `beetroot apply`. Mirrors what
+        # Instance.create / Instance.register do. The import is local
+        # because api imports snapshot at module load — top-level here
+        # would loop.
+        from . import api  # noqa: PLC0415
+        api.Instance.load(dest_name)._stage()
+    except BaseException:
+        # Roll back BOTH the registry row AND the extracted directory
+        # (if we created it). Without the rmtree, a failed restore
+        # leaves a half-extracted tree behind that the user has to
+        # clean up manually before the next attempt.
         registry.remove(dest_name)
-        raise SnapshotError(
-            f"port {port} ({kind}) collides with instance {other_name!r}; "
-            "edit the restored beetroot.yaml's ports: block before retrying"
-        )
-    # Stage .env + frida-server + modules now so `beetroot up <name>`
-    # works without a follow-up `beetroot apply`. Mirrors what
-    # Instance.create / Instance.register do. The import is local
-    # because api imports snapshot at module load — top-level here
-    # would loop.
-    from . import api  # noqa: PLC0415
-    api.Instance.load(dest_name)._stage()
+        if created_dir and target.exists():
+            shutil.rmtree(target)
+        raise
     return target
 
 
