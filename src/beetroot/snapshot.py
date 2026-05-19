@@ -193,7 +193,8 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
 def _find_registry_entry(
     instance_root: Path,
 ) -> tuple[str, registry.InstanceMeta, registry.RedroidBackendConfig]:
-    """Look up the registry entry whose redroid ``absolute_path`` matches ``instance_root``.
+    """
+    Look up the registry entry matching ``instance_root``.
 
     Returns the matched name, the full meta row, AND the narrowed
     :class:`registry.RedroidBackendConfig` — callers need the backend
