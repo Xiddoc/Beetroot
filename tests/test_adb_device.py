@@ -340,3 +340,55 @@ class TestFromMeta:
         assert dev.frida_address == "localhost:27052"
 
 
+class TestHealth:
+    """T7's :meth:`AdbDevice.health` wire-up follow-up."""
+
+    def test_health_returns_check_result_dict(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # AdbDevice.health() delegates to api.adb_device_health which
+        # shells out via subprocess.run; stub shutil.which so all the
+        # PATH probes report present, and stub subprocess.run for the
+        # adb/nc/magisk calls to a successful response.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+        def _ok(cmd: list[str], *args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            del args, kwargs
+            stdout = ""
+            cmd_str = " ".join(str(x) for x in cmd)
+            if cmd[:1] == ["adb"] and "devices" in cmd:
+                stdout = "List of devices attached\nemulator-5554\tdevice\n"
+            elif "magisk" in cmd and "settings" in cmd_str:
+                stdout = "value=1\n"
+            elif "magisk" in cmd and "denylist" in cmd_str:
+                stdout = "package_name=com.google.android.gms\n"
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(subprocess, "run", _ok)
+        results = _make_device(serial="emulator-5554").health()
+        # Same key vocabulary as Instance.health (minus compose.status).
+        assert "compose.status" not in results
+        assert "adb.serial" in results
+        assert "magisk.zygisk" in results
+        for r in results.values():
+            assert isinstance(r, api.CheckResult)
+
+    def test_health_method_delegates_to_free_function(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The method body MUST call the free function so the two stay
+        # byte-identical — otherwise the back-compat shim drifts.
+        calls: list[object] = []
+        sentinel: dict[str, api.CheckResult] = {"adb.serial": api.CheckResult(status="pass")}
+
+        def _spy(device: api.DeviceBackend) -> dict[str, api.CheckResult]:
+            calls.append(device)
+            return sentinel
+
+        monkeypatch.setattr("beetroot.backends.adb.adb_device_health", _spy)
+        dev = _make_device()
+        out = dev.health()
+        assert out is sentinel
+        assert calls == [dev]
+
+

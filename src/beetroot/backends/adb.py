@@ -35,11 +35,12 @@ from beetroot.api import (
     AdbNotInstalledError,
     BackendCapabilityError,
     FridaNotInstalledError,
+    adb_device_health,
 )
 from beetroot.backends import register_backend
 
 if TYPE_CHECKING:
-    pass
+    from beetroot.api import CheckResult
 
 _ADB = "adb"
 _FRIDA = "frida"
@@ -357,6 +358,31 @@ class AdbDevice:
             f"snapshot is not supported for adb-backed instance "
             f"{self._name!r}; there is no host-side directory to pack.",
         )
+
+    # ---- health-check ----------------------------------------------------
+
+    def health(self) -> dict[str, CheckResult]:
+        """
+        Aggregate the adb-backed health checks for this device.
+
+        T7 wired this on as a real method (T6 shipped the body as a free
+        function in :mod:`beetroot.api` because T6 landed before T5's
+        :class:`AdbDevice` class existed). The free function
+        :func:`beetroot.api.adb_device_health` is preserved as a thin
+        shim that delegates here, so existing programmatic callers
+        (and the doctor-verb dispatch path that predates this method)
+        keep working unchanged.
+
+        The check NAMES (``frida.handshake``, ``magisk.zygisk``,
+        ``magisk.denylist.<pkg>``) match :meth:`beetroot.api.Instance.health`
+        exactly so downstream tools can grep uniformly across backend
+        kinds. ``compose.status`` is intentionally absent — there's no
+        container for an adb-backed device.
+
+        Returns:
+            Ordered dict of check name → :class:`CheckResult`.
+        """
+        return adb_device_health(self)
 
     # ---- internals --------------------------------------------------------
 
