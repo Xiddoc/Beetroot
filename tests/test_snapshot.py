@@ -282,6 +282,38 @@ class TestRestoreForce:
         )
         assert restored == target.resolve()
 
+    def test_force_corrupted_archive_does_not_destroy_target(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # T2 Agent 3 1.4: a corrupted archive + --force must NOT
+        # destroy the target directory before the manifest read fails.
+        # v0.3 ordered rmtree(target) before read_manifest, so a
+        # malformed archive wiped the user's existing dir AND blew up
+        # mid-restore — no way back.
+        target = tmp_path / "beta"
+        target.mkdir()
+        marker = target / "important.txt"
+        marker.write_bytes(b"do not lose me")
+        nested = target / "data" / "subdir"
+        nested.mkdir(parents=True)
+        (nested / "more.txt").write_bytes(b"also important")
+
+        # An obviously-broken "archive" — not a valid zstd stream.
+        bad = tmp_path / "bad.tar.zst"
+        bad.write_bytes(b"not a real archive")
+
+        with pytest.raises(snapshot.SnapshotError):
+            snapshot.restore(
+                bad, dest_name="beta", dest_path=target, force=True,
+            )
+
+        # The target directory and ALL its contents survived.
+        assert target.exists()
+        assert marker.read_bytes() == b"do not lose me"
+        assert (nested / "more.txt").read_bytes() == b"also important"
+        # Beta did not get registered.
+        assert registry.get("beta") is None
+
 
 class TestRestoreErrors:
     def test_dest_name_already_registered(

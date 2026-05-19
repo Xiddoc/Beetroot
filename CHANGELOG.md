@@ -110,6 +110,12 @@
   registry commits and is soft-fail: a Frida 404 prints a hint and
   leaves the instance registered for the user to recover via
   `beetroot apply <name>`. (Agent 2 B-2.)
+- **`snapshot.restore --force` validates the archive before wiping
+  the target.** v0.3 ordered `shutil.rmtree(target)` before
+  `read_manifest(archive)` — a corrupted archive paired with `--force`
+  destroyed the user's existing directory AND then bailed out with
+  no way back. v0.4 swaps the order so the manifest read is the gate.
+  (Agent 3 1.4.)
 
 ## v0.3.0 — 2026-05-19
 

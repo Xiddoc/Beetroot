@@ -292,6 +292,13 @@ def restore(
             "pick a different --as <name>"
         )
     target = dest_path.resolve()
+    # Validate the archive's manifest BEFORE any destructive action on
+    # the target directory. v0.3 ordered ``rmtree(target)`` first and
+    # ``read_manifest(archive)`` second — a corrupted archive paired
+    # with ``--force`` wiped the user's existing directory and THEN
+    # discovered the archive was unreadable, leaving no way back.
+    # (T2 Agent 3 1.4.)
+    read_manifest(archive)
     if target.exists() and any(target.iterdir()):
         # Refuse to wipe another registered instance's directory
         # even under --force. The user almost certainly didn't mean
@@ -316,9 +323,6 @@ def restore(
                 "pass --force to overwrite, or pick another path"
             )
         shutil.rmtree(target)
-    # Validate the manifest first so a malformed archive bails out
-    # before we touch the destination directory or the registry.
-    read_manifest(archive)
     # Track whether we created ``target`` so the rollback path knows
     # whether ``rmtree`` is safe. ``target`` is always extracted into
     # below — but if the user pointed ``--path`` at a pre-existing dir
