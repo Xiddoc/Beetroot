@@ -17,7 +17,7 @@
 #   memswap_limit: 4g     # cap mem+swap combined (prevents swap storms)
 #   pids_limit: 1500      # max PID count (default 4096)
 
-api_version: 2
+api_version: 3
 
 android:
   version: 14

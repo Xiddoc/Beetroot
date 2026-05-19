@@ -20,9 +20,17 @@ audiences are served here:
 The recommended entry point for programmatic users. Each `Instance`
 binds a registry name to an on-disk root and a parsed
 `InstanceConfig`. `Manager` exposes the cross-instance operations
-(list, get, allocate). `DeviceBackend` is the Protocol both v0.3's
-`Instance` (Redroid-via-compose) and v0.4's future `AdbDeviceBackend`
-satisfy.
+(`list`, `get`, `resolve`, `list_orphans`). `DeviceBackend` is the
+Protocol both `Instance` (Redroid-via-compose) and v0.4's `AdbDevice`
+satisfy. `Manager.resolve(name)` dispatches via the backend registry
+in `beetroot.backends`; verbs that don't generalise across backends
+(`up`, `down`, `apply`, `snapshot`) raise `BackendCapabilityError`
+when called on a backend that doesn't expose them.
+
+Adding a new backend (e.g. a cloud-emulator service that talks via
+its own shell instead of adb) takes about 30 LOC + one entry-point
+line — see the [Device backends design doc](../design/device-backends.md)
+for the full recipe.
 
 ::: beetroot.api
 
@@ -57,6 +65,10 @@ satisfy.
 ## `beetroot.snapshot`
 
 ::: beetroot.snapshot
+
+## `beetroot.backends`
+
+::: beetroot.backends
 
 ## `beetroot.builder`
 

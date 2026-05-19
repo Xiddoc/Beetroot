@@ -15,18 +15,22 @@ from __future__ import annotations
 
 from .api import (
     AdbNotInstalledError,
+    BackendCapabilityError,
     DeviceBackend,
     FridaNotInstalledError,
     Instance,
     InstanceNotFoundError,
     Manager,
 )
+from .backends import register_backend
 
 __all__ = [
     "AdbNotInstalledError",
+    "BackendCapabilityError",
     "DeviceBackend",
     "FridaNotInstalledError",
     "Instance",
     "InstanceNotFoundError",
     "Manager",
+    "register_backend",
 ]

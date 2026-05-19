@@ -91,7 +91,7 @@ def test_parallel_create_allocates_distinct_indices(
     monkeypatch.setenv("XDG_CACHE_HOME", str(xdg_cache))
     listed = registry.list_instances()
     assert set(listed.keys()) == set(names)
-    listed_indices = {meta["index"] for meta in listed.values()}
+    listed_indices = {meta.index for meta in listed.values()}
     assert len(listed_indices) == len(names)
 
 

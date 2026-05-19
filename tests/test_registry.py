@@ -8,6 +8,7 @@ import pytest
 
 from beetroot import paths, registry
 from beetroot.config import InstanceConfig, Ports, write_yaml
+from beetroot.registry import RedroidBackendConfig
 
 
 def _make_instance(
@@ -38,8 +39,9 @@ class TestRegistryAdd:
         root = _seed(tmp_path, "alpha", 0)
         entry = registry.get("alpha")
         assert entry is not None
-        assert entry["index"] == 0
-        assert entry["absolute_path"] == str(root)
+        assert entry.index == 0
+        assert isinstance(entry.backend, RedroidBackendConfig)
+        assert entry.backend.absolute_path == str(root)
 
     def test_add_stores_created_at(
         self, isolated_registry: Path, tmp_path: Path
@@ -47,7 +49,7 @@ class TestRegistryAdd:
         _seed(tmp_path, "alpha", 0)
         entry = registry.get("alpha")
         assert entry is not None
-        assert "created_at" in entry
+        assert entry.created_at is not None
 
     def test_add_duplicate_raises(
         self, isolated_registry: Path, tmp_path: Path
@@ -65,8 +67,8 @@ class TestRegistryAdd:
         bravo = registry.get("bravo")
         assert alpha is not None
         assert bravo is not None
-        assert alpha["index"] == 0
-        assert bravo["index"] == 1
+        assert alpha.index == 0
+        assert bravo.index == 1
 
 
 class TestRegistryGet:
@@ -256,7 +258,7 @@ class TestRoundtrip:
         registry.add("alpha", root, 0)
         entry = registry.get("alpha")
         assert entry is not None
-        assert entry["index"] == 0
+        assert entry.index == 0
 
     def test_sequential_add_remove_add(
         self, isolated_registry: Path, tmp_path: Path
@@ -288,13 +290,103 @@ class TestSchemaMigration:
         bak = path.with_suffix(path.suffix + ".bak")
         assert bak.exists()
         assert not path.exists() or json.loads(path.read_text())["instances"] == {}
-        out = capsys.readouterr().out
-        assert "register" in out
-        assert ".bak" in out
+        # The legacy-registry hint is emitted on stderr (not stdout) so
+        # it doesn't mangle JSON output streams. Mirrors the
+        # v0.2-registry-at-cwd hint's channel.
+        err = capsys.readouterr().err
+        assert "register" in err
+        assert ".bak" in err
 
-    def test_v2_registry_loads_directly(
+    def test_v2_registry_renamed_to_bak(
+        self, isolated_registry: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # T1's 2 → 3 migration. v0.3 registries had no
+        # ``backend.kind`` discriminator and a flat
+        # ``absolute_path`` field; the new strict validator rejects
+        # them, so they get backed up and a fresh v3 file is emitted
+        # — exactly the v1-readers fall-through pattern v0.3 used.
+        path = paths.user_registry_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        v2 = {
+            "version": 2,
+            "instances": {
+                "alpha": {
+                    "absolute_path": "/tmp/alpha",
+                    "index": 0,
+                    "created_at": "2025-01-01T00:00:00",
+                }
+            },
+        }
+        path.write_text(json.dumps(v2))
+        registry._LEGACY_HINT_PRINTED = False
+
+        # Read AND then write: list_instances() takes a shared lock
+        # (doesn't bootstrap a fresh file); a subsequent ``add`` writes
+        # under the exclusive lock and produces the v3-shaped doc on
+        # disk, matching the v0.2 → v0.3 path.
+        result = registry.list_instances()
+        assert result == {}
+        registry.add("placeholder", Path("/tmp/placeholder"), 0)
+        registry.remove("placeholder")
+
+        bak = path.with_suffix(path.suffix + ".bak")
+        assert bak.exists()
+        # The fresh v3 doc is emitted on the first exclusive-lock
+        # write after the migration.
+        assert path.exists()
+        new = json.loads(path.read_text())
+        assert new["version"] == 3
+        assert new["instances"] == {}
+        err = capsys.readouterr().err
+        assert "register" in err
+        assert ".bak" in err
+
+    def test_legacy_hint_fires_once_per_process(
+        self, isolated_registry: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The migration hint should dedup the same way the v0.2 cwd
+        # hint does (cascading reads in a single ``beetroot ls`` would
+        # otherwise blast stderr). Each ``_read`` call has to hit the
+        # legacy-fall-through path, so we re-write the broken file
+        # before the second call — without that, the file is renamed
+        # to .bak after the first call and subsequent reads hit the
+        # ``not path.exists()`` fast-path without re-running the
+        # validation.
+        path = paths.user_registry_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        registry._LEGACY_HINT_PRINTED = False
+
+        path.write_text(json.dumps({"version": 2, "instances": {}}))
+        registry._read(path)
+        # The first _read renamed the file to .bak; re-stage a broken
+        # file so the second _read takes the same fall-through and
+        # hits the dedup branch.
+        path.with_suffix(path.suffix + ".bak").unlink()
+        path.write_text(json.dumps({"version": 2, "instances": {}}))
+        registry._read(path)
+
+        err = capsys.readouterr().err
+        assert err.count("renamed to") == 1
+
+    def test_v3_registry_loads_directly(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         _seed(tmp_path, "alpha", 0)
         # Subsequent reads must succeed without "migrating".
         assert "alpha" in registry.list_instances()
+
+    def test_unparseable_registry_falls_through_to_empty(
+        self, isolated_registry: Path
+    ) -> None:
+        # A corrupt / non-JSON registry file fails strict validation
+        # AND fails the version-extraction probe; both branches should
+        # produce a backup + empty registry rather than crashing.
+        path = paths.user_registry_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("this is not json at all")
+        registry._LEGACY_HINT_PRINTED = False
+
+        result = registry.list_instances()
+        assert result == {}
+        bak = path.with_suffix(path.suffix + ".bak")
+        assert bak.exists()

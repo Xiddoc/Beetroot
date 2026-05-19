@@ -8,6 +8,7 @@ top-level sections: ``display``, ``resources``, ``frida``, ``modules``,
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Any, Final, Literal, Self, override
@@ -15,12 +16,27 @@ from typing import Any, Final, Literal, Self, override
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-SUPPORTED_API_VERSION: Final = 2
+SUPPORTED_API_VERSION: Final = 3
+
+# v0.4 (T1) bumped the schema 2 → 3. Old YAMLs that hard-pinned
+# ``api_version: 2`` auto-bump on load with a one-line stderr warning
+# (the bump is strictly additive — the v3 schema adds the
+# ``stealth.denylist`` per-package regex validator, no fields renamed).
+# v0.3's v0.2 → v0.3 (1 → 2) auto-bump is kept on the same code path so
+# users running ``v0.2 → v0.4`` in a single jump don't have to go
+# through an intermediate release.
+_AUTO_BUMPABLE_API_VERSIONS: Final = frozenset({1, 2})
 
 _VALID_ANDROID_VERSIONS = {11, 12, 13, 14}
 
 _MIN_PORT: Final = 1
 _MAX_PORT: Final = 65535
+
+# Stealth denylist packages must look like a normal Android package
+# id: alphanumerics, dots, and underscores only. Pre-validated at
+# config-load time as SQL-injection prophylaxis for T2's wire-up of
+# the denylist through ``magisk-config.sh``'s sqlite REPLACE INTO.
+_DENYLIST_PKG_RE: Final = re.compile(r"^[a-zA-Z0-9._]+$")
 
 # Module-level set of YAML paths we've already printed the "auto-bumped
 # api_version 1 → 2" warning for in this process. Without the dedup,
@@ -132,9 +148,27 @@ class Stealth(BaseModel):
 
     Attributes:
         denylist: Package names added to Magisk's denylist at boot.
+            Each entry must match the Android package-id grammar
+            (``[a-zA-Z0-9._]+``) — see :data:`_DENYLIST_PKG_RE`. The
+            grammar is enforced at validation time so T2's
+            ``magisk-config.sh`` wire-up can compose the entries into
+            a SQLite REPLACE-INTO statement without escaping; any
+            shape that wouldn't be a valid package name today is
+            assumed to be either a typo or an injection attempt.
     """
 
     denylist: list[str] = Field(default_factory=list)
+
+    @field_validator("denylist")
+    @classmethod
+    def _check_packages(cls, value: list[str]) -> list[str]:
+        for pkg in value:
+            if not _DENYLIST_PKG_RE.match(pkg):
+                raise ValueError(
+                    f"stealth.denylist entry {pkg!r} is not a valid Android "
+                    "package id (must match [a-zA-Z0-9._]+)"
+                )
+        return value
 
 
 class Android(BaseModel):
@@ -299,16 +333,18 @@ def load_yaml(path: Path) -> InstanceConfig:
     raw = yaml.safe_load(path.read_text())
     if raw is None:
         raw = {}
-    if isinstance(raw, dict) and raw.get("api_version") == 1:
+    if isinstance(raw, dict) and raw.get("api_version") in _AUTO_BUMPABLE_API_VERSIONS:
         # Dedup the warning by absolute path. ``beetroot ls`` over N
-        # v0.2 instances would otherwise print N copies of the line,
+        # legacy instances would otherwise print N copies of the line,
         # and a single ``register bravo`` triple-prints because
         # ``all_resolved_ports`` cascades into the same load twice.
         resolved = path.resolve()
+        old_version = raw["api_version"]
         if resolved not in _API_VERSION_BUMP_WARNED:
             print(
-                f"[beetroot] auto-upgraded api_version 1 → {SUPPORTED_API_VERSION} "
-                f"in {path}; run 'beetroot apply' to rewrite the YAML.",
+                f"[beetroot] auto-upgraded api_version {old_version} → "
+                f"{SUPPORTED_API_VERSION} in {path}; run 'beetroot apply' "
+                f"to rewrite the YAML.",
                 file=sys.stderr,
             )
             _API_VERSION_BUMP_WARNED.add(resolved)

@@ -3,7 +3,7 @@
 # don't talk to GMS, or to minimize the moving parts.
 # Note: beetroot build none must have been run to produce the base image.
 
-api_version: 2
+api_version: 3
 
 android:
   version: 14

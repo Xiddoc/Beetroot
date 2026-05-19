@@ -78,7 +78,7 @@ class TestInstanceCreate:
         # already verifies; the OOP path must match.
         inst = api.Instance.create("alpha")
         assert paths.instance_yaml(inst.root).read_bytes() == (
-            b"api_version: 2\nandroid:\n  version: 14\n"
+            b"api_version: 3\nandroid:\n  version: 14\n"
         )
 
     def test_create_with_explicit_cfg_serialises_full_model(
@@ -117,7 +117,7 @@ class TestInstanceCreate:
     def test_create_existing_yaml_raises_fileexists(self, cli_root: Path) -> None:
         target = cli_root / "alpha"
         target.mkdir()
-        (target / "beetroot.yaml").write_text("api_version: 2\n")
+        (target / "beetroot.yaml").write_text("api_version: 3\n")
         with pytest.raises(FileExistsError, match="already exists"):
             api.Instance.create("alpha", path=target)
 
@@ -218,7 +218,7 @@ class TestInstanceFromPath:
         # Has beetroot.yaml on disk but not in registry.
         target = cli_root / "orphan"
         target.mkdir()
-        (target / "beetroot.yaml").write_text("api_version: 2\nandroid:\n  version: 14\n")
+        (target / "beetroot.yaml").write_text("api_version: 3\nandroid:\n  version: 14\n")
         with pytest.raises(api.InstanceNotFoundError, match="not registered"):
             api.Instance.from_path(target)
 
@@ -231,7 +231,7 @@ class TestInstanceFromPath:
         orphan = cli_root / "orphan"
         orphan.mkdir()
         (orphan / "beetroot.yaml").write_text(
-            "api_version: 2\nandroid:\n  version: 14\n"
+            "api_version: 3\nandroid:\n  version: 14\n"
         )
         with pytest.raises(api.InstanceNotFoundError, match="not registered"):
             api.Instance.from_path(orphan)
@@ -280,7 +280,7 @@ class TestInstanceLifecycle:
         assert inst.config.frida is None
         # Externally edit the yaml — apply re-reads it.
         paths.instance_yaml(inst.root).write_text(
-            "api_version: 2\n"
+            "api_version: 3\n"
             "android:\n  version: 14\n"
             'frida:\n  version: "16.4.10"\n'
         )
@@ -297,7 +297,7 @@ class TestInstanceLifecycle:
         bravo = api.Instance.create("bravo")
         # Externally rewrite bravo to collide with alpha's ADB.
         paths.instance_yaml(bravo.root).write_text(
-            "api_version: 2\nandroid:\n  version: 14\n"
+            "api_version: 3\nandroid:\n  version: 14\n"
             "ports:\n  adb: 5555\n"
         )
         with pytest.raises(ValueError, match="5555"):
@@ -569,11 +569,15 @@ class TestManager:
     def test_get_missing_returns_none(self, cli_root: Path) -> None:
         assert api.Manager.get("ghost") is None
 
-    def test_allocate_port_index(self, cli_root: Path) -> None:
-        assert api.Manager.allocate_port_index() == 0
+    def test_allocate_port_index_is_module_private(self, cli_root: Path) -> None:
+        # T1 retired the public ``Manager.allocate_port_index`` per Agent
+        # 2 F-4: the index is not reserved by this call, so calling it
+        # without an immediate follow-up ``registry.add`` is a footgun.
+        # The module-private helper remains for in-tree callers.
+        assert not hasattr(api.Manager, "allocate_port_index")
+        assert api._allocate_port_index() == 0
         api.Instance.create("alpha")
-        # Index 0 is now used → next allocation returns 1.
-        assert api.Manager.allocate_port_index() == 1
+        assert api._allocate_port_index() == 1
 
 
 # ---------------------------------------------------------------------------

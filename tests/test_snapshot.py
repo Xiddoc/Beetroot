@@ -13,7 +13,7 @@ import zstandard
 
 from beetroot import registry, snapshot
 
-_MIN_YAML = "api_version: 2\nandroid:\n  version: 14\n"
+_MIN_YAML = "api_version: 3\nandroid:\n  version: 14\n"
 
 
 def _make_instance(root: Path, *, data_bytes: bytes = b"hello") -> Path:
@@ -98,8 +98,9 @@ class TestSnapshotRoundTrip:
 
         beta = registry.get("beta")
         assert beta is not None
-        assert Path(beta["absolute_path"]) == target.resolve()
-        assert beta["index"] == 0
+        assert isinstance(beta.backend, registry.RedroidBackendConfig)
+        assert Path(beta.backend.absolute_path) == target.resolve()
+        assert beta.index == 0
 
     def test_round_trip_runs_quickly(
         self, isolated_registry: Path, tmp_path: Path
@@ -193,10 +194,10 @@ class TestRestorePortAllocation:
 
         alpha = registry.get("alpha")
         assert alpha is not None
-        assert alpha["index"] == 0
+        assert alpha.index == 0
         beta = registry.get("beta")
         assert beta is not None
-        assert beta["index"] == 1
+        assert beta.index == 1
 
 
 class TestRestoreForce:
@@ -309,7 +310,7 @@ class TestRestoreErrors:
         # resolved port 5565 collides with the peer's resolved 5565.
         src = _make_instance(tmp_path / "alpha")
         (src / "beetroot.yaml").write_text(
-            "api_version: 2\n"
+            "api_version: 3\n"
             "android:\n  version: 14\n"
             "ports:\n  adb: 5565\n"
         )
@@ -425,7 +426,7 @@ class TestReadManifestErrors:
         broken = tmp_path / "broken.tar.zst"
         _repack_with_custom_manifest(archive, broken, b"{not-json")
 
-        with pytest.raises(snapshot.SnapshotError, match="not valid JSON"):
+        with pytest.raises(snapshot.SnapshotError, match="validation failed"):
             snapshot.read_manifest(broken)
 
     def test_manifest_top_level_must_be_object(
@@ -437,7 +438,7 @@ class TestReadManifestErrors:
         broken = tmp_path / "broken.tar.zst"
         _repack_with_custom_manifest(archive, broken, b"[1,2,3]")
 
-        with pytest.raises(snapshot.SnapshotError, match="JSON object"):
+        with pytest.raises(snapshot.SnapshotError, match="validation failed"):
             snapshot.read_manifest(broken)
 
     def test_manifest_missing_keys_raises(
@@ -451,7 +452,9 @@ class TestReadManifestErrors:
             archive, broken, json.dumps({"schema_version": 1}).encode("utf-8")
         )
 
-        with pytest.raises(snapshot.SnapshotError, match="missing required keys"):
+        with pytest.raises(
+            snapshot.SnapshotError, match="validation failed"
+        ):
             snapshot.read_manifest(broken)
 
     def test_manifest_wrong_schema_version_raises(
