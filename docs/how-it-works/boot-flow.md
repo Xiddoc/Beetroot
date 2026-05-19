@@ -1,5 +1,41 @@
 # Boot Flow
 
+## The configuration chain (`beetroot.yaml` → helper sh)
+
+Researcher-facing configuration lives in `beetroot.yaml` and flows
+through pydantic models. The container-side helpers (`docker/*.sh`)
+can't read YAML — Android's toybox sh has no YAML parser. Instead,
+every container-side path is read from a `BEETROOT_*` env var with a
+safe default, and the CLI plumbs the resolved values from the YAML
+into the container's environment via the bundled compose template's
+`environment:` block:
+
+```
+beetroot.yaml
+  ↓ pydantic models (config.py — InstanceConfig, Stealth, Frida, ...)
+  ↓ config.render_env()
+instance .env file (per-instance, in the instance directory)
+  ↓ docker compose --env-file <.env>  + the bundled compose template's
+    `environment:` block (one ${KEY} per BEETROOT_* var)
+container env vars (visible to PID 1 = Android `init`)
+  ↓ Android init propagates env to services it spawns
+helper shell scripts (entrypoint.sh / magisk-config.sh /
+                      flash-modules.sh / launch-frida.sh)
+  reads `${BEETROOT_FRIDA_BIN:-/data/local/tmp/frida-server}` etc.
+```
+
+Everything is YAML-config-driven at the user-facing boundary; the
+env-var layer exists strictly because toybox sh can't read YAML.
+v0.3 had two breakages in this chain (the bundled compose template
+hardcoded its mount targets, and `Stealth.denylist` was never plumbed
+past pydantic); v0.4's T2 fixed both, so the chain is now
+end-to-end. Adding a new helper-script env var means three coordinated
+edits: declare the field on the matching pydantic model, emit the
+`KEY=value` line from `render_env`, and add `${KEY}` substitution to
+the bundled compose template (the helper's `${KEY:-default}` fallback
+keeps the script runnable under a bare `docker run` without a
+Beetroot-rendered `.env`).
+
 ## There is no Docker ENTRYPOINT
 
 The Beetroot image has no `ENTRYPOINT` and no `CMD`. The container starts with redroid's default boot process, where `/init` runs as PID 1 — exactly as it does on a real Android device.

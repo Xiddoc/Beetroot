@@ -1,12 +1,13 @@
 # Device Backends: Design Doc
 
-!!! info "Status: design only"
-    This is a v0.3 design document. v0.3 ships a single implicit backend
-    (`Instance` itself, wrapping a Redroid container managed via
-    `docker compose`). The `AdbDeviceBackend` described here is scheduled
-    for v0.4 — no code in this repo currently implements it. See
+!!! success "Status: v0.4 implementation landed"
+    The `AdbDevice` backend (named `AdbDeviceBackend` in this doc's
+    original draft) shipped as part of v0.4 — see
     [§6 v0.4+ implementation roadmap](#6-v04-implementation-roadmap)
-    for the ordered list of PRs that will execute against this spec.
+    for the per-PR status. Researchers wiring up a new backend should
+    skip to [the Adding-a-backend guide](../guides/adding-a-backend.md)
+    for the step-by-step recipe; this doc remains the rationale +
+    Protocol-surface reference.
 
 This doc lands the rationale, Protocol surface, and concrete-backend
 plan for the device-backend abstraction Beetroot will introduce in
@@ -133,10 +134,23 @@ its own state).
 The `frida_address` property is non-trivial: Frida binds inside the
 device on a port that's not directly reachable from the host, so the
 backend sets up an `adb forward tcp:<host_port> tcp:27042` and reports
-`localhost:<host_port>`. The host port can be allocated via the same
-stride-of-10 allocator that `Manager.allocate_port_index()` uses for
-`Instance` — that keeps "I run two `AdbDeviceBackend`s on the same
-host" from colliding.
+`localhost:<host_port>`. The host port comes from the same stride-of-10
+allocator the redroid backend uses — adb-adopted rows are registered
+via `registry.add_allocating(name, backend=AdbBackendConfig(...))`,
+so `AdbDevice.from_meta` reads the row's allocated `index` and
+computes `ports.ports_for_index(index)["frida"]` for the forward.
+That keeps "I run two `AdbDevice`s on the same host" from colliding
+(and means an adb-adopted instance with index `N` reaches Frida on
+exactly the port a redroid instance with index `N` would have got).
+
+!!! note "v0.4 removed `Manager.allocate_port_index()`"
+    The original draft of this doc referenced a public
+    `Manager.allocate_port_index()` helper. v0.4 retired it (Agent 2 F-4:
+    the index isn't reserved by the call, so calling it without an
+    immediate follow-up `registry.add` is a footgun). Use
+    `registry.add_allocating(name, backend=...)` for the atomic
+    allocate + register; the private `api._allocate_port_index()` exists
+    for internal `Manager` callers and is not public surface.
 
 The cached binary in `install_frida` is the same
 `$XDG_CACHE_HOME/beetroot/frida/<filename>` blob that
@@ -216,43 +230,61 @@ for the cross-reference.
 
 ## 6. v0.4+ implementation roadmap
 
-Ordered list of concrete PRs. Each PR should land independently with
-its own tests; later PRs depend on the surface earlier ones expose.
+Ordered list of concrete PRs. Each PR landed independently in v0.4
+with its own tests; the per-PR status below is the v0.4-shipped
+shape.
 
-* **PR1: `AdbDeviceBackend` scaffolding.** Add the class in
-  `src/beetroot/backends/adb.py` (introducing the new sub-package).
-  Implement `__init__(serial)`, `adb_address`, `frida_address`
-  (raises `NotImplementedError` for now — wired in PR2), and
-  `is_available` (parses `adb devices`). The
-  `BackendCapabilityError` exception type lands here too. Tests stub
-  out `subprocess.run` so the suite stays offline.
-* **PR2: `install_frida()` via `adb push`.** Reuses
-  `frida_download.download()` to fetch the binary into the existing host
-  cache, then `adb -s <serial> push <cached> /data/local/tmp/`,
-  `adb shell chmod 755`, and `adb shell su -c
-  '/data/local/tmp/frida-server &'`. Sets up the
-  `adb forward tcp:<host> tcp:27042` and wires up `frida_address`.
-* **PR3: `shell()` via `adb shell`.** Mirror `Instance.shell` but
-  skip the `adb connect` step (USB serials don't need it). Returns
-  the `adb shell` exit code so research scripts can chain.
-* **PR4: `add_module()` via `adb push` + user instruction.** Lands
-  the "safe" variant — copy to `/sdcard/Download/`, print a one-line
-  instruction. The "route through Magisk's `/data/adb/modules/`
-  directly" path is left as a follow-up; the PR description should
-  link to a tracking issue.
-* **PR5: CLI integration — `beetroot adopt <serial>`.** New verb
-  registers an `AdbDeviceBackend` in the user-global registry so
-  subsequent `beetroot shell <name>` / `beetroot frida <name>` /
-  `beetroot module <name>` dispatch to it. The registry schema needs
-  a `kind: "redroid" | "adb"` discriminator field — register that
-  schema bump in `CHANGELOG.md` against `api_version: 3`. The CLI's
-  resolver returns a `DeviceBackend` (the Protocol type) and every
-  verb that doesn't need `Instance`-only methods narrows to that.
+* **PR1: `AdbDevice` scaffolding.** **DONE in v0.4 (T5).** Added the
+  class in `src/beetroot/backends/adb.py` (introducing the new
+  sub-package). The class name dropped the `Backend` suffix
+  (`AdbDevice`, not `AdbDeviceBackend`) for symmetry with `Instance`
+  — both are concrete classes that satisfy `DeviceBackend`. The
+  `__init__(name, config, host_forward_port)` shape takes a typed
+  `registry.AdbBackendConfig` instead of a bare serial, because the
+  T1 discriminated-union shape carries the config already validated.
+  `BackendCapabilityError` landed in T1's expanded `api.py`.
+* **PR2: `install_frida()` via `adb push`.** **DONE in v0.4 (T5).**
+  Reuses `frida_download.download(version)` for the cached binary,
+  then runs the full `adb push` → `chmod 755` → `su -c '... &'` →
+  `adb forward tcp:<host> tcp:27042` sequence. `frida_address` is
+  `localhost:<host_forward_port>`.
+* **PR3: `shell()` via `adb shell`.** **DONE in v0.4 (T5).** Mirrors
+  `Instance.shell` but skips the `adb connect` step (USB serials
+  don't need it). Returns the `adb shell` exit code verbatim so
+  research scripts can chain.
+* **PR4: `add_module()` via `adb push` + user instruction.** **DONE
+  in v0.4 (T5).** The safe-default variant ships: zip is pushed to
+  `/sdcard/Download/<basename>` and the user gets a one-line "install
+  via the Magisk app → Modules tab" instruction on stderr. The
+  auto-install variant (push directly into `/data/adb/modules_update/`
+  via `su -c`) is deferred to v0.5 pending UX work for per-module
+  success / failure reporting.
+* **PR5: CLI integration — `beetroot adopt <serial>`.** **DONE in v0.4
+  (T5).** New verb registers an `AdbBackendConfig` row in the
+  user-global registry so subsequent `beetroot shell <name>` /
+  `beetroot frida <name>` / `beetroot module <name>` dispatch to it
+  via `Manager.resolve`. The registry schema's `kind` discriminator
+  landed in T1's pydantic foundation (schema bumped to v3). Lifecycle
+  verbs that don't generalise narrow via `cli._resolve_redroid` and
+  raise `BackendCapabilityError` for the adb backend — caught by
+  `cli.main` and rendered as `error: ...` + exit code 2.
 
-After PR5, the `Manager.list()` API will return a heterogeneous list
-of `DeviceBackend` objects (both `RedroidBackend`-via-`Instance` and
-`AdbDeviceBackend`). Callers that need lifecycle methods narrow with
-`isinstance(b, Instance)`.
+After v0.4's PR5, `Manager.list()` returns redroid backends only (it's
+typed as `list[Instance]` and skips adb-kind rows), and the
+polymorphic walker is `Manager.resolve(name)` which dispatches via the
+backend registry to `DeviceBackend`-typed objects. Callers that need
+lifecycle methods narrow with `isinstance(b, Instance)` (or
+`isinstance(b, AdbDevice)` for adb-specific operations).
+
+For writing a third-party backend (the v0.5 cloud-emulator scenario),
+the load-bearing recipe lives at
+[Adding a backend](../guides/adding-a-backend.md) — it walks through
+the pydantic `BackendConfig` subclass, the Protocol-satisfying class,
+and the `[project.entry-points."beetroot.backends"]` registration in
+~30 lines of code. v0.4 ships the in-process registration end-to-end;
+v0.5 will land the registry-side extension hook for the third-party
+JSON-discriminator round-trip (see the guide's "What works in v0.4 vs
+deferred to v0.5" section for the exact limitation).
 
 ## 7. Out of scope
 
@@ -272,6 +304,8 @@ of `DeviceBackend` objects (both `RedroidBackend`-via-`Instance` and
 
 ## See also
 
+* [Adding a backend](../guides/adding-a-backend.md) — the v0.4
+  step-by-step recipe for shipping a third-party backend in ~30 LOC.
 * [API Reference](../reference/api.md) — the actual `DeviceBackend`
   Protocol definition in `beetroot.api`.
 * [Stealth posture design doc](stealth-posture.md) — the

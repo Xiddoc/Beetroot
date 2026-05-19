@@ -29,8 +29,73 @@ when called on a backend that doesn't expose them.
 
 Adding a new backend (e.g. a cloud-emulator service that talks via
 its own shell instead of adb) takes about 30 LOC + one entry-point
-line — see the [Device backends design doc](../design/device-backends.md)
-for the full recipe.
+line — see the [Adding a backend guide](../guides/adding-a-backend.md)
+for the step-by-step recipe (and the [Device backends design doc](../design/device-backends.md)
+for the rationale).
+
+### Surfaces introduced in v0.4
+
+The v0.3 OOP surface (`Instance`, `Manager`, `DeviceBackend`,
+`InstanceNotFoundError`, `FridaNotInstalledError`,
+`AdbNotInstalledError`) is preserved bit-for-bit. v0.4 adds:
+
+* **`AdbDevice`** (in `beetroot.backends.adb`) — sibling to `Instance`
+  for rooted-Android-device backends driven over the host `adb` CLI.
+  Import as `from beetroot.backends.adb import AdbDevice`. Satisfies
+  the expanded `DeviceBackend` Protocol; registers itself as
+  `kind="adb"` in the backend registry at module import time.
+* **Expanded `DeviceBackend` Protocol** — now has `name: str` (read-only
+  property), `kind: str` (the backend discriminator, e.g.
+  `"redroid"` / `"adb"`), `shell() -> int`, `frida_cli(args) -> int`,
+  and a `from_meta(name, backend_config)` classmethod used by the
+  backend-registry dispatcher. The Protocol stays `@runtime_checkable`
+  so `isinstance(b, DeviceBackend)` still works.
+* **`BackendCapabilityError(RuntimeError)`** — raised by lifecycle
+  verbs (`up`, `down`, `restart`, `apply`, `destroy`, `snapshot`) when
+  called on a backend that doesn't honour them (typically: any
+  non-`Instance` backend). The CLI catches it and renders a friendly
+  `error: ...` line + exit code `2` (distinct from "instance not
+  found" → exit `1`).
+* **`Manager.resolve(name) -> DeviceBackend`** — dispatches to the
+  concrete backend class via the backend registry. The return type is
+  the Protocol, so callers narrow with `isinstance(b, Instance)` for
+  Redroid-specific operations. This is the polymorphic entry point
+  most v0.4+ programmatic code wants.
+* **`register_backend(kind, cls)`** (in `beetroot.backends`) — register
+  an in-process third-party backend. Third-party packages typically
+  prefer the `[project.entry-points."beetroot.backends"]` mechanism
+  instead (loaded lazily on first `Manager.resolve` call), but the
+  in-process registration is what tests use and what the synthetic
+  third-backend test exercises.
+* **`registry.BackendConfig`** — `Annotated[RedroidBackendConfig |
+  AdbBackendConfig, Field(discriminator="kind")]`. The
+  discriminated-union shape of the `backend` field on
+  `registry.InstanceMeta`. In-tree concrete subclasses:
+  `registry.RedroidBackendConfig(absolute_path, stealth_paths)` and
+  `registry.AdbBackendConfig(serial)`. Third-party backends define
+  their own `BackendConfig` subclass with a unique `kind: Literal[...]`
+  discriminator — see the [Adding a backend guide](../guides/adding-a-backend.md)
+  for the in-process / entry-point registration split and the v0.4 →
+  v0.5 JSON-discriminator round-trip limitation.
+* **`CheckResult`** — frozen pydantic model with `status: Literal["pass",
+  "fail", "skip"]` and optional `reason: str | None`. Returned from
+  `Instance.health()` / `AdbDevice.health()` keyed by check name.
+* **`Instance.health() -> dict[str, CheckResult]`** — redroid-backed
+  health surface that `beetroot doctor` consumes. NOT part of the
+  `DeviceBackend` Protocol — callers narrow with `isinstance(b,
+  Instance)` (or call `AdbDevice.health()` after narrowing the other
+  way). See the design rationale at the top of the
+  [Device backends design doc](../design/device-backends.md).
+* **`AdbDevice.health() -> dict[str, CheckResult]`** — adb-backed
+  equivalent. Returns the same check-name vocabulary minus
+  `compose.status` (no container to inspect). Delegates to the free
+  function `api.adb_device_health(device)`, which is preserved as a
+  back-compat shim for pre-T7 programmatic callers.
+* **`registry.set_stealth_paths(name, blob)`** — write a `dict[str,
+  str]` into the named instance's `RedroidBackendConfig.stealth_paths`
+  slot (T4 plumbing for v0.5's stealth-path PR1). Locked + atomic-
+  replaced via the same `_write` pattern the rest of `registry.py`
+  uses. Rejects unknown names and adb-kind rows.
 
 ::: beetroot.api
 

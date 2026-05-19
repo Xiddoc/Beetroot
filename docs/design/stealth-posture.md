@@ -1,10 +1,16 @@
 # Stealth Posture: Threat Model and Design Doc
 
-!!! info "Status: design only"
-    This is a v0.3 design document. The mitigations described here are scheduled
-    for v0.4 — no code in this repo currently implements them. See [v0.4
-    implementation roadmap](#7-v04-implementation-roadmap) for the ordered list
-    of PRs that will execute against this spec.
+!!! info "Status: partial v0.4, balance deferred to v0.5"
+    v0.4 shipped **PR5 + PR6 (plumbing only)** — the `/flash_dir` →
+    `/data/adb/modules_update/` mount-target swap and the
+    `stealth_paths: dict[str, str]` registry slot + snapshot/restore
+    round-trip. **PR1** (the actual `/data/adb/modules/<random>/...`
+    Frida-path move) is explicitly **deferred to v0.5 pending stealth
+    research** — see the prerequisite documented inline in
+    [§3.1](#31-move-frida-off-datalocaltmp). **PR2 / PR3 / PR4 / PR7**
+    remain in the v0.5 backlog (no change). The
+    [v0.4 implementation roadmap](#7-v04-implementation-roadmap) has
+    per-PR status.
 
 This doc lands the threat model, current exposure inventory, mitigation
 playbook, and v0.4 implementation roadmap for Beetroot's stealth posture.
@@ -91,10 +97,14 @@ project will do it for us:
   have a file at `/entrypoint.sh`. Any process that runs a
   `stat("/entrypoint.sh", &st)` and gets `ENOENT == 0` knows
   immediately it is inside a container.
-- **`/flash_dir/` mount.** A non-Android mountpoint, visible in
-  `/proc/mounts` and `/proc/self/mountinfo`. The name is also a
-  giveaway — no production Android image mounts a directory called
-  `flash_dir`.
+- **~~`/flash_dir/` mount~~ (resolved in v0.4 PR5).** v0.3's
+  Beetroot-invented `/flash_dir/` mountpoint was a tell — non-Android,
+  visible in `/proc/mounts` and `/proc/self/mountinfo`, and named
+  giveawayingly. v0.4 moved the bind-mount target to
+  `/data/adb/modules_update/` (Magisk's standard module-staging dir),
+  removing the bespoke name from the mount table. v0.3 instances
+  rebind on the first `down + up` cycle after upgrade — see the
+  [migration guide](../guides/migration-v0.3-to-v0.4.md).
 - **Frida launched as PID-N child of `/entrypoint.sh`.** The parent
   process of `frida-server` is normally PID 1 (when launched via
   ADB-as-root) or a shell PID. Under Beetroot it's always our
@@ -148,6 +158,31 @@ ship as separate PRs in parallel; items 6 and 7 are cross-cutting and
 land after.
 
 ### 3.1 Move Frida off `/data/local/tmp/`
+
+!!! warning "v0.4 plumbing-only; default-flip deferred to v0.5"
+    v0.4 lands the wiring — `BEETROOT_FRIDA_BIN` is plumbed end-to-end
+    through `render_env`, the bundled compose template, and the helper
+    shells, and `RedroidBackendConfig.stealth_paths` plus
+    `registry.set_stealth_paths` plus the snapshot/restore
+    `path_layout` round-trip are all in place — but the default
+    container-side Frida path is still `/data/local/tmp/frida-server`.
+    The actual default-flip to `/data/adb/modules/<random>/bin/<random>`
+    is **deferred to v0.5 pending stealth research**:
+    **user concern: GMS may scan the entirety of `/data/adb/modules/`
+    regardless of Shamiko's namespace switch**, so the naïve
+    `/data/adb/modules/<random>/...` choice may not actually buy us
+    anything. v0.5's PR1 is gated on a written decision in this
+    section's "research prerequisite" callout below; once the chosen
+    path is validated, the default flip is a one-line change in
+    `Instance.create`'s `stealth_paths` generator.
+
+!!! note "Research prerequisite (v0.5)"
+    Output: a written decision in this section with the validated
+    path. Candidates: (a) another installed Magisk module's tree
+    (piggy-back on a legitimate module's directory), (b) an
+    inaccessible-by-default Android path (e.g.
+    `/data/data/<random-uid-app>/files/`), (c) Frida Gadget mode
+    entirely so there is no on-disk frida-server (cross-refs §3.2).
 
 The single highest-value change. Frida-server moves from
 `/data/local/tmp/frida-server` to a per-build randomized path of the
@@ -403,11 +438,19 @@ executes against. Complexity tags: **S** (≤1 day), **M** (2–3 days),
 
 ### PR1 — Frida path randomization
 
-- **Scope:** Implement §3.1. Generate randomized
-  `/data/adb/modules/<random>/bin/<random>` at `beetroot create`,
-  persist in registry, wire into compose template via
-  `BEETROOT_FRIDA_BIN`. T7's `launch-frida.sh` already reads it.
-- **Complexity:** S.
+- **Status: DEFERRED to v0.5 pending stealth research.** v0.4 lands
+  the plumbing only (the `BEETROOT_FRIDA_BIN` substitution is
+  end-to-end through the bundled compose template, `render_env`, and
+  the helper shells; the `stealth_paths` registry slot is in place).
+  The default-path-flip is gated on the research prerequisite in
+  [§3.1](#31-move-frida-off-datalocaltmp). Once chosen, this becomes a
+  one-line change in `Instance.create`'s `stealth_paths` generator.
+- **Scope (v0.5):** Implement §3.1. Generate randomized
+  `/data/adb/modules/<random>/bin/<random>` (or whatever the research
+  validates) at `beetroot create`, persist in registry, wire into
+  compose template via `BEETROOT_FRIDA_BIN`. T7's `launch-frida.sh`
+  already reads it.
+- **Complexity:** S (once research is in).
 - **Unblocks:** The single highest-risk indicator from §2. Makes
   `/data/local/tmp/frida-server` scans miss us.
 
@@ -448,15 +491,31 @@ executes against. Complexity tags: **S** (≤1 day), **M** (2–3 days),
 
 ### PR5 — `/flash_dir` → `/data/adb/modules_update/`
 
+- **Status: DONE in v0.4 (T2 + T4).** T2 shifted the bundled compose
+  template + `render_env`'s `BEETROOT_MODULES_DIR` default; T4 fell
+  through the same default in `docker/flash-modules.sh`'s POSIX
+  fallback. The `/flash_dir` directory is no longer created by the
+  Dockerfile; existing v0.3 instances rebind on the next `down + up`
+  cycle (no data loss — `<instance-dir>/modules/` is the host side
+  and never moved).
 - **Scope:** Implement §3.5. Change `compose.yaml`'s bind-mount
-  target via `${MODULE_STAGE_PATH}`. Update T7's `flash-modules.sh`
-  default fallback. Drop the `/flash_dir` directory from `Dockerfile`'s
-  setup.
+  target via `${BEETROOT_MODULES_DIR}`. Update T7's
+  `flash-modules.sh` default fallback.
 - **Complexity:** S.
 - **Unblocks:** Removes the `flash_dir` indicator from `/proc/mounts`.
 
 ### PR6 — Stable randomized-path registry blob
 
+- **Status: DONE in v0.4 (T1 + T4) — plumbing only; defaults still
+  empty.** T1's pydantic `RedroidBackendConfig` introduced
+  `stealth_paths: dict[str, str]` (defaults to `{}`). T4 wired the
+  full round-trip: `snapshot()` reads the registry slot into
+  `Manifest.path_layout`; `restore()` writes `Manifest.path_layout`
+  back into the destination's registry slot via the new
+  `registry.set_stealth_paths(name, blob)` helper; `_stage_local`
+  forwards the slot through `config.render_env(..., stealth_paths=...)`.
+  v0.4 leaves the slot empty by default — v0.5's PR1 generator
+  populates it once §3.1's research validates a path.
 - **Scope:** Implement §3.6. Add `stealth_paths: dict[str, str]` to
   the registry entry. Generated at `create`, read by `apply`, `up`,
   `down`, `snapshot`, `restore`. T6 (PR-for-T6) consumes
