@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 — 2026-05-19
 
 ### Breaking changes (upgrading from v0.2)
 
