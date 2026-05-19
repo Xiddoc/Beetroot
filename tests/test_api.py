@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import subprocess
+from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,7 +15,7 @@ def _ok_proc() -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
 
-def _patched_subprocess() -> Any:
+def _patched_subprocess() -> AbstractContextManager[MagicMock]:
     return patch("subprocess.run", return_value=_ok_proc())
 
 

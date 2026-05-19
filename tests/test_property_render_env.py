@@ -1,0 +1,122 @@
+"""
+Property-based invariants for ``config.render_env``.
+
+For arbitrary ``InstanceConfig`` shapes, asserts that every line of
+the rendered ``.env`` is:
+
+1. Of the form ``KEY=VALUE`` where ``KEY`` matches the shell-safe
+   regex ``^[A-Z_][A-Z0-9_]*$``.
+2. Free of un-quoted shell-injection vectors (single-quote, double-
+   quote, backtick, ``$``-substitution).
+
+The compose template's ``--env-file`` reader does the same parse;
+this test guarantees we never silently emit a line that compose
+would refuse or — worse — silently mis-parse.
+
+Hypothesis is derandomized so CI failures reproduce.
+"""
+from __future__ import annotations
+
+import re
+from typing import Literal
+
+import hypothesis.strategies as st
+from hypothesis import given, settings
+
+from beetroot import config, ports
+
+_GappsLit = Literal["none", "lite", "full", "mindthegapps"]
+_GpuLit = Literal["host", "swiftshader_indirect", "guest"]
+
+_KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+# Characters that would force shell-evaluation if interpreted as a
+# raw shell line. compose's --env-file documentation says "don't put
+# special characters in values"; we conservatively forbid the worst
+# of them outright.
+_INJECTION_CHARS = ("'", '"', "`", "$")
+
+
+@st.composite
+def instance_configs(draw: st.DrawFn) -> config.InstanceConfig:
+    """Generate a valid InstanceConfig spanning the most expressive fields."""
+    android_version = draw(st.sampled_from([11, 12, 13, 14]))
+    gapps: _GappsLit = draw(
+        st.sampled_from(["none", "lite", "full", "mindthegapps"]),
+    )
+    mem = draw(st.sampled_from(["1g", "2g", "3g", "4g", "8g"]))
+    cpus = draw(st.floats(min_value=0.5, max_value=8.0, allow_nan=False, allow_infinity=False))
+    width = draw(st.integers(min_value=240, max_value=4096))
+    height = draw(st.integers(min_value=240, max_value=4096))
+    fps = draw(st.integers(min_value=1, max_value=120))
+    gpu_mode: _GpuLit = draw(
+        st.sampled_from(["host", "swiftshader_indirect", "guest"]),
+    )
+    pids_limit = draw(st.integers(min_value=64, max_value=65536))
+    mem_reservation = draw(st.one_of(st.none(), st.sampled_from(["512m", "1g", "2g"])))
+    memswap_limit = draw(st.one_of(st.none(), st.sampled_from(["2g", "4g"])))
+    return config.InstanceConfig(
+        api_version=3,
+        android=config.Android(version=android_version, gapps=gapps),
+        display=config.Display(width=width, height=height, fps=fps, gpu_mode=gpu_mode),
+        resources=config.Resources(
+            mem=mem,
+            cpus=cpus,
+            shared_mem=draw(st.sampled_from(["128m", "256m", "512m"])),
+            mem_reservation=mem_reservation,
+            memswap_limit=memswap_limit,
+            pids_limit=pids_limit,
+        ),
+    )
+
+
+@given(cfg=instance_configs(), index=st.integers(min_value=0, max_value=100))
+@settings(deadline=None, derandomize=True, max_examples=200)
+def test_render_env_lines_are_shell_safe_key_value_pairs(
+    cfg: config.InstanceConfig, index: int,
+) -> None:
+    """Every rendered .env line parses as a shell-safe KEY=VALUE pair."""
+    resolved = ports.resolve_ports(index, cfg.ports)
+    out = config.render_env("alpha", cfg, resolved)
+    # The trailing newline is intentional; split on "\n" and drop the
+    # empty tail.
+    raw_lines = out.splitlines()
+    assert raw_lines, "render_env returned no lines"
+    for line in raw_lines:
+        # Empty lines are not emitted by render_env; assert that
+        # invariant first so a future regression surfaces here.
+        assert line, "unexpected blank line in render_env output"
+        key, _, value = line.partition("=")
+        assert _KEY_RE.match(key), f"invalid KEY shape: {line!r}"
+        # An empty value is allowed (e.g. the BEETROOT_MAGISK_DB
+        # default-emit-empty line) but must still be free of
+        # shell-injection chars.
+        for bad in _INJECTION_CHARS:
+            assert bad not in value, (
+                f"shell-injection character {bad!r} in value of {line!r}"
+            )
+
+
+@given(cfg=instance_configs())
+@settings(deadline=None, derandomize=True, max_examples=50)
+def test_render_env_emits_required_keys(cfg: config.InstanceConfig) -> None:
+    """The compose template's required substitutions are always present."""
+    resolved = ports.resolve_ports(0, cfg.ports)
+    out = config.render_env("alpha", cfg, resolved)
+    keys = {line.split("=", 1)[0] for line in out.splitlines() if "=" in line}
+    required = {
+        "INSTANCE_NAME",
+        "BASE_IMAGE",
+        "ADB_PORT",
+        "FRIDA_PORT",
+        "FRIDA_PORT2",
+        "MEM_LIMIT",
+        "CPUS",
+        "SHM_SIZE",
+        "PIDS_LIMIT",
+        "DISPLAY_WIDTH",
+        "DISPLAY_HEIGHT",
+        "DISPLAY_FPS",
+        "DISPLAY_GPU",
+    }
+    missing = required - keys
+    assert not missing, f"render_env missing required keys: {missing}"

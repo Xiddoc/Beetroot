@@ -38,12 +38,17 @@ def register_backend(kind: str, cls: type[DeviceBackend]) -> None:
     """
     Register a backend class under a ``kind`` discriminator.
 
-    The class must satisfy :class:`beetroot.api.DeviceBackend` AND
-    expose a ``from_meta(name, backend_config) -> DeviceBackend``
-    classmethod (used by :meth:`beetroot.api.Manager.resolve`). Both
-    contracts are checked at runtime via ``isinstance(cls, ...)`` so a
-    silently-broken third-party backend surfaces the error at
-    registration time rather than at dispatch time.
+    The class is expected to satisfy :class:`beetroot.api.DeviceBackend`
+    AND expose a ``from_meta(name, backend_config) -> DeviceBackend``
+    classmethod (used by :meth:`beetroot.api.Manager.resolve`). The
+    ``from_meta`` requirement is checked via ``hasattr`` at registration
+    time so a silently-broken third-party backend surfaces the error at
+    registration time rather than at dispatch time. The Protocol
+    surface itself is **not** runtime-checked — ``isinstance(cls,
+    type[DeviceBackend])`` isn't a meaningful operation (Protocols
+    aren't ABCs at the class level), so the contract is duck-typed and
+    relies on static type-checking + the per-backend unit tests
+    asserting ``isinstance(backend_instance, DeviceBackend)``.
 
     Args:
         kind: The discriminator value (e.g. ``"redroid"``, ``"adb"``,

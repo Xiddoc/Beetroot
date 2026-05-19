@@ -10,6 +10,7 @@ dependencies = [
     "pyyaml>=6.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.14.1",
+    "platformdirs>=4",
     "typer>=0.12",
     "zstandard>=0.22",
 ]
@@ -49,6 +50,13 @@ dev = [
     "pytest>=8",
     "pytest-cov",
     "pre-commit>=3.5",
+    "pyright>=1.1",
+    "hypothesis>=6.100",
+    "interrogate>=1.7",
+    "radon>=6.0",
+    "vulture>=2.10",
+    "pip-audit>=2.7",
+    "mutmut>=2.4",
 ]
 docs = [
     "mkdocs-material>=9.5",
@@ -78,6 +86,7 @@ select = [
     "B",    # flake8-bugbear
     "SIM",  # flake8-simplify
     "RUF",  # ruff-specific
+    "RUF100", # unused-noqa (added in T3 — every noqa must be load-bearing)
     "D",    # pydocstyle
     "N",    # pep8-naming
     "C4",   # flake8-comprehensions
@@ -92,6 +101,16 @@ select = [
     "FURB", # refurb-like checks
     "ERA",  # eradicate (no commented-out code)
     "A",    # flake8-builtins
+    "ICN",  # flake8-import-conventions
+    "DTZ",  # flake8-datetimez (timezone-aware datetimes only)
+    "ASYNC", # flake8-async
+    "BLE",  # flake8-blind-except (no bare `except:` or `except Exception`)
+    "S",    # flake8-bandit (security checks)
+    "EXE",  # flake8-executable
+    "Q",    # flake8-quotes
+    "INP",  # flake8-no-pep420 (no implicit-namespace packages)
+    "T20",  # flake8-print (no `print` in src — use logging or typer.echo)
+    "SLF",  # flake8-self (no _-prefixed attribute access from outside)
 ]
 extend-select = ["D213"]  # summary on line after opening """
 ignore = [
@@ -110,19 +129,41 @@ convention = "google"
 # PLR2004 — magic numbers in assertions are fine; extracting them to constants
 #            makes tests harder to read.
 # PLC0415 — some tests do deliberate mid-function imports for monkeypatching.
-"tests/*" = ["SIM117", "E501", "D", "ARG001", "ARG002", "ARG005", "PLR2004", "PLC0415"]
-
-[tool.ruff.lint.pylint]
-max-statements = 60  # build_parser() wires 12+ subparsers — 50 is too tight
+# S101 — ``assert`` is the whole point of a test file.
+# S105/S106/S107 — hardcoded "passwords" in test fixtures are not secrets.
+# S311 — non-cryptographic ``random`` in test scaffolding.
+# T201/T203 — ``print``-based debugging in tests is fine.
+# SLF001 — tests reach into ``_private`` attrs of the SUT on purpose
+#           (e.g. ``_API_VERSION_BUMP_WARNED.clear()`` in conftest).
+# DTZ — test datetime fixtures occasionally use naive datetimes for
+#        simplicity; the production paths already require ``UTC``.
+# BLE001 — broad ``except Exception`` in test-only fakes is sometimes
+#          load-bearing (catch-all rollback assertions).
+"tests/*" = [
+    "SIM117", "E501", "D", "ARG001", "ARG002", "ARG005", "PLR2004", "PLC0415",
+    "S101", "S105", "S106", "S107", "S108", "S311",
+    "T201", "T203",
+    "SLF001",
+    "DTZ001", "DTZ005",
+    "BLE001",
+    "INP001",  # tests/ is collected by pytest, not imported as a package.
+]
+# Scripts print to stdout / stderr as their primary output channel.
+# INP001 — scripts/ is invoked directly, not as a package.
+"scripts/*" = ["T20", "INP001"]
 
 [tool.mypy]
 python_version = "3.13"
 plugins = ["pydantic.mypy"]
 strict = true
+strict_optional = true
 warn_unreachable = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_any_explicit = true
 extra_checks = true
 disallow_any_unimported = true
-enable_error_code = ["redundant-self", "redundant-expr", "possibly-undefined", "truthy-bool", "truthy-iterable", "ignore-without-code", "unused-awaitable", "explicit-override", "mutable-override", "unimported-reveal"]
+enable_error_code = ["redundant-self", "redundant-expr", "possibly-undefined", "truthy-bool", "truthy-iterable", "ignore-without-code", "unused-awaitable", "explicit-override", "mutable-override", "unimported-reveal", "narrowed-type-not-subtype"]
 
 [tool.pydantic-mypy]
 init_forbid_extra = true
@@ -132,7 +173,13 @@ warn_untyped_fields = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --cov=beetroot --cov-report=term-missing"
+# ``--strict-config`` rejects unknown ini options (T3 — fail loud on
+# typos rather than silently dropping them). ``--cov-fail-under=100``
+# is defence-in-depth: ``[tool.coverage.report].fail_under = 100``
+# already gates ``pytest``, but if a future contributor accidentally
+# disables the coverage plugin, the flag here is a second line of
+# defence that ``pytest`` itself enforces.
+addopts = "-ra --strict-markers --strict-config --cov=beetroot --cov-report=term-missing --cov-fail-under=100"
 
 [tool.coverage.run]
 source = ["beetroot"]
@@ -147,3 +194,97 @@ exclude_also = [
     "if TYPE_CHECKING:",
     "@overload",
 ]
+
+[tool.interrogate]
+# Docstring coverage gate. The ``D`` ruff family already enforces
+# Google-style docstrings on public APIs at lint time; ``interrogate``
+# is the percentage gate that asserts we don't slowly drift below the
+# threshold. Private functions (leading ``_``) are excluded per ruff's
+# convention (D100/D103 don't fire on them either). Tests are
+# excluded because the per-file ignore in [tool.ruff.lint] drops the
+# ``D`` family there too.
+fail-under = 95
+ignore-init-module = true
+ignore-init-method = true
+ignore-private = true
+ignore-property-decorators = true
+ignore-magic = true
+ignore-semiprivate = true
+exclude = ["tests", "scripts"]
+verbose = 0
+quiet = false
+color = true
+
+[tool.vulture]
+# Vulture finds dead code but is famously prone to false positives
+# around pydantic ``default_factory`` fields and the
+# ``register_backend`` entry-point registry. ``--min-confidence 80``
+# already filters the worst of it; the inline allowlist below covers
+# the remaining cases. Run via ``uv run vulture src/beetroot/
+# --min-confidence 80``.
+paths = ["src/beetroot"]
+min_confidence = 80
+ignore_names = [
+    # pydantic model_post_init contract — _ctx arg is required even when unused.
+    "_ctx",
+    # pydantic field validators are method-decorator-targeted (renames break the framework).
+    "_*_factory",
+    "_reject_*",
+    "_check_*",
+    "model_config",
+    # backends are registered lazily; vulture can't see the entry-point path.
+    "register_backend",
+    "_register_builtin_backends",
+    "_load_entry_point_backends",
+]
+
+[tool.mutmut]
+# Mutation testing runs nightly out-of-band (see
+# .github/workflows/mutation-nightly.yml). Scoped to the load-bearing
+# subset of the codebase to keep the nightly under 90 minutes.
+# Expanding to all of ``src/beetroot/`` is on the v0.5 deferred list.
+paths_to_mutate = "src/beetroot/registry.py,src/beetroot/snapshot.py,src/beetroot/api.py,src/beetroot/config.py"
+runner = "uv run pytest -x -q"
+
+[tool.pyright]
+# Pyright's role here is "second opinion to mypy's strict pass": catch
+# anything mypy missed at standard-strictness without re-litigating
+# the per-rule choices mypy already enforces. Tests deliberately reach
+# into ``_private`` SUT members (registry._read, etc.) — pyright's
+# default ``reportPrivateUsage`` complaints there aren't actionable
+# and are already gated by ruff's ``SLF001`` (tests/* exempt). The
+# remaining reports stay at pyright's "strict" defaults.
+include = ["src", "tests"]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = "warning"
+reportUnusedCallResult = "none"
+reportPrivateUsage = "none"
+# Pydantic-mypy gives mypy ``init_typed`` visibility into BaseModel
+# constructors; pyright doesn't have a matching plugin, so it warns
+# on field-default-factory shapes that mypy clears. Down-rate to
+# avoid duplicating mypy's coverage.
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownVariableType = "none"
+reportUnknownLambdaType = "none"
+reportUnknownParameterType = "none"
+reportMissingParameterType = "none"
+reportUntypedFunctionDecorator = "none"
+reportArgumentType = "warning"
+reportGeneralTypeIssues = "warning"
+# UPPER_CASE module-level state (``_ENTRY_POINTS_LOADED``,
+# ``_LEGACY_HINT_PRINTED``, ``_V02_HINT_PRINTED``) is intentionally
+# reassigned in helper functions via ``global`` — pyright's
+# ``reportConstantRedefinition`` heuristic doesn't accommodate that
+# pattern.
+reportConstantRedefinition = "none"
+# pytest fixtures that start with ``_`` and the legacy holdover
+# ``api._allocate_port_index`` are accessed indirectly (fixtures
+# via pytest's collector; the private holdover via its public
+# wrappers + the deprecation hint in T1). Pyright can't see those
+# paths.
+reportUnusedFunction = "none"
+# ``@contextlib.contextmanager`` → ``-> Iterator[T]`` is the stdlib
+# pattern; pyright now wants ``Generator[T]``. Both work at runtime.
+reportDeprecated = "none"

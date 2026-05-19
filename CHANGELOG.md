@@ -2,6 +2,124 @@
 
 ## Unreleased
 
+### v0.4 — Theme T3: max-strictness CI / pre-commit / lint / type-check / test investment
+
+**Runtime dependencies**
+
+- **Added `platformdirs>=4`** as a runtime dep. `paths._xdg_dir` and
+  its hand-rolled `os.environ.get("XDG_*_HOME")` plumbing is gone —
+  user config / cache paths now resolve via
+  `platformdirs.user_config_path("beetroot")` and
+  `platformdirs.user_cache_path("beetroot")`. On Linux the same env
+  vars are honoured automatically; on macOS / Windows the paths now
+  match platform conventions.
+- **`builder._DEFAULT_WORK_DIR = Path("/tmp/redroid")` is gone** —
+  the redroid-script clone now lives under the per-user cache
+  (`user_cache_dir("redroid-script")`). Closes Agent 4's `S108`
+  bandit finding and stops the clone from being wiped by aggressive
+  `/tmp` cleaners between builds.
+
+**Settings hardening**
+
+- **`Settings` is now frozen + `extra="forbid"`**. The forwarded
+  container-bound vars (`BEETROOT_MAGISK_DB` / `BEETROOT_MODULES_DIR`
+  / `BEETROOT_FRIDA_BIN` / `BEETROOT_BUILD_CONTEXT`) are declared as
+  fields so the strict-extras flip doesn't break researchers who
+  export them. Mutating `settings` in-process now raises
+  `ValidationError` — tests that used to mutate `settings.docker_bin`
+  in-place were updated to swap the module-level singleton instead
+  (see `settings.py`'s module docstring for the new pattern).
+- **`docker/*.sh` boot helpers** all start with `set -eu` (Agent 2
+  CI-4). A typo'd `magisk --sqlite` or an unbound env var now fails
+  the boot loud instead of silently coming up half-configured.
+
+**Lint / type-check / test gates (all new, all blocking unless noted)**
+
+| Gate | Tool | Threshold |
+|------|------|-----------|
+| Docstring coverage | `interrogate` | `--fail-under=95` (currently 99.2%) |
+| Cyclomatic complexity | `radon cc -n C` | no function grade C or worse |
+| Dead-code finder | `vulture --min-confidence 80` | no findings outside the allowlist |
+| Dependency CVE scan | `pip-audit` | no high-severity CVEs (PYSEC-2022-42969 suppressed; transitive via interrogate) |
+| Second-opinion type-check | `pyright src/ tests/` | clean |
+| Dockerfile linter | `hadolint docker/Dockerfile` | clean (`DL3007` whitelisted for `${BASE_IMAGE}` ARG) |
+| Shellcheck severity | `shellcheck -S warning` | bumped from default |
+| Mutation testing | `mutmut run` (nightly cron) | non-blocking; survival rate artefact |
+
+**Mypy tightening**
+
+- `warn_return_any = true`
+- `disallow_any_explicit = true`
+- `warn_unused_configs = true`
+- explicit `strict_optional = true`
+- `enable_error_code` gained `narrowed-type-not-subtype`
+
+Every explicit `Any` annotation in src and tests was replaced with a
+concrete type, `object`, or removed entirely. The two surviving
+`# type: ignore[call-overload]` suppressions (in `compose.run` and
+`tests/test_subprocess_env_merge.py`) are needed because
+`**kwargs: object` is incompatible with subprocess.run's overload
+set — both narrow back to `CompletedProcess[str]` at the call
+boundary.
+
+**Ruff tightening**
+
+Added rule families: `ICN`, `DTZ`, `ASYNC`, `BLE`, `S`, `EXE`, `Q`,
+`INP`, `T20`, `SLF`, `RUF100`. Removed the stale `max-statements = 60`
+pylint exemption.
+
+Per-line `# noqa` justifications added to the four subprocess sites
+Agent 4 flagged (`api.shell`, `api.frida_cli`,
+`builder.DefaultRunner.run`, `compose.run`), the two `urlopen` sites
+(`frida_dl.download`, `modules_dl._fetch_url`), and the three
+stderr-migration print calls in `config.py` / `registry.py`.
+
+**Property-based tests (hypothesis, derandomized seed in CI)**
+
+- `tests/test_property_registry.py` — `InstanceMeta` and
+  `RegistryFile` JSON round-trip is identity across both backend-
+  config variants.
+- `tests/test_property_ports.py` — `lowest_free_index` never
+  collides under arbitrary `(used_indices, allocation_count)`;
+  `ports_for_index(N)` is always exactly `base + N*STRIDE` with all
+  three ports pairwise distinct.
+- `tests/test_property_render_env.py` — every `render_env` line is a
+  shell-safe `KEY=VALUE` pair (regex `^[A-Z_][A-Z0-9_]*=.*$`) free
+  of `'`, `"`, `` ` ``, `$`.
+
+**Refactor**
+
+- `snapshot.restore` was scoring radon grade C — split into
+  `_prepare_destination` + `_check_restored_port_collision` helpers.
+  No public-surface change; `restore` itself is now a 15-line
+  orchestrator that reads top-to-bottom.
+
+**Pre-commit & scripts**
+
+- `.pre-commit-config.yaml` — `changelog-lint` hook now fires on
+  changes to `src/beetroot/cli.py` too (a verb rename must
+  invalidate the linter). New `interrogate` hook keeps docstring
+  coverage above 95% on every commit.
+- `scripts/lint_changelog.py` — now scans prose-inline backtick
+  spans inside `## Unreleased`, not just fenced shell blocks. The
+  v0.3 retro showed inline drift sails through fenced-only matchers
+  too. Six new tests in `tests/test_lint_changelog.py` exercise the
+  extractor + matcher directly.
+
+**CI workflow (`.github/workflows/ci.yml`)**
+
+- Every third-party action SHA-pinned with a trailing `# v<version>`
+  comment.
+- New `docstring-and-complexity` and `dependency-audit` jobs.
+- `hadolint` job added.
+
+**Mutation-testing nightly (`.github/workflows/mutation-nightly.yml`)**
+
+New cron `0 4 * * *` runs `mutmut` against the four load-bearing
+modules (`registry`, `snapshot`, `api`, `config`). Survival rate is
+published as a 30-day-retained workflow artefact. Expanding the
+surface to all of `src/beetroot/` is on the v0.5 deferred list.
+
 ### v0.4 — Theme T1: pydantic foundation + schema v3 + Protocol expansion + backend registry
 
 **Breaking changes**

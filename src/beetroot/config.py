@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-from typing import Any, Final, Literal, Self, override
+from typing import Final, Literal, Self, override
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -124,7 +124,7 @@ class Module(BaseModel):
     sha256: str | None = None
 
     @override
-    def model_post_init(self, _ctx: Any) -> None:
+    def model_post_init(self, _ctx: object) -> None:
         if not self.url and not self.path:
             raise ValueError("module entry must set either `url` or `path`")
         if self.url and self.path:
@@ -341,7 +341,7 @@ def load_yaml(path: Path) -> InstanceConfig:
         resolved = path.resolve()
         old_version = raw["api_version"]
         if resolved not in _API_VERSION_BUMP_WARNED:
-            print(
+            print(  # noqa: T201  # stderr migration hint — typer.echo is unavailable from non-CLI callers
                 f"[beetroot] auto-upgraded api_version {old_version} → "
                 f"{SUPPORTED_API_VERSION} in {path}; run 'beetroot apply' "
                 f"to rewrite the YAML.",

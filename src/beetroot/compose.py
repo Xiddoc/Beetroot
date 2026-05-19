@@ -16,7 +16,7 @@ import shutil
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from . import paths
 from .settings import settings
@@ -86,8 +86,8 @@ def run(
     name: str,
     instance_root: Path,
     args: Sequence[str],
-    **kwargs: Any,
-) -> subprocess.CompletedProcess[Any]:
+    **kwargs: object,
+) -> subprocess.CompletedProcess[str]:
     """
     Run ``docker compose -p <name> ...``, inheriting stdio by default.
 
@@ -96,13 +96,27 @@ def run(
         instance_root: The instance directory (cwd for the subprocess and
             the value of ``--project-directory``).
         args: Subcommand and flags to append after the base compose args.
-        **kwargs: Forwarded verbatim to ``subprocess.run``.
+        **kwargs: Forwarded verbatim to ``subprocess.run``. Typed as
+            ``object`` so mypy under ``disallow_any_explicit`` accepts
+            them; callers pass shapes that ``subprocess.run`` itself
+            validates (``capture_output``, ``text``, …).
 
     Returns:
-        The completed process result.
+        The completed process result. ``[str]`` is correct under the
+        ``text=True`` default we add; callers that opt into binary
+        stdout would need to re-cast, but no caller does today.
     """
     cmd = _base_cmd(name, instance_root) + list(args)
-    return subprocess.run(cmd, cwd=instance_root, check=False, **kwargs)
+    # ``**kwargs: object`` makes the **kwargs spread incompatible with
+    # subprocess.run's overload set (which discriminates on
+    # ``capture_output``/``text``/etc.). We narrow back to
+    # ``CompletedProcess[str]`` at the call boundary; the two suppressions
+    # are the cost of expressing "callers pass whatever subprocess.run
+    # accepts" under ``disallow_any_explicit``.
+    result: subprocess.CompletedProcess[str] = subprocess.run(  # type: ignore[call-overload]  # noqa: S603  # **kwargs is object-typed; docker is resolved via PATH
+        cmd, cwd=instance_root, check=False, **kwargs,  # pyright: ignore[reportArgumentType]
+    )
+    return result
 
 
 def up(name: str, instance_root: Path) -> None:

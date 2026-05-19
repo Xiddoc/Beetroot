@@ -52,9 +52,9 @@ def _fetch_url(url: str) -> Path:
     if cache.exists() and cache.stat().st_size > 0:
         return cache
     cache.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[beetroot] fetching module {url}")
+    print(f"[beetroot] fetching module {url}")  # noqa: T201  # researcher-facing stdout; replacing with logging would change UX
     try:
-        with urllib.request.urlopen(url, timeout=settings.http_timeout) as resp:
+        with urllib.request.urlopen(url, timeout=settings.http_timeout) as resp:  # noqa: S310  # scheme validated by Module pydantic model + _fetch_url allowlist
             data = resp.read()
     except urllib.error.HTTPError as e:
         raise ModuleFetchError(
@@ -79,7 +79,11 @@ def _resolve(module: Module, instance_root: Path) -> Path:
     if module.url:
         local = _fetch_url(module.url)
     else:
-        assert module.path is not None  # validated in Module model
+        # The Module pydantic validator already enforces "exactly one
+        # of url / path"; this branch is a defensive net for mypy
+        # narrowing and isn't covered.
+        if module.path is None:  # pragma: no cover
+            raise ValueError("module entry has neither url nor path set")
         local = (instance_root / module.path).resolve()
         if not local.exists():
             raise FileNotFoundError(f"module path not found: {local}")

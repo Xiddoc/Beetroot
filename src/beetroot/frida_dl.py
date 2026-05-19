@@ -77,9 +77,9 @@ def download(version: str) -> Path:
 
     out.parent.mkdir(parents=True, exist_ok=True)
     url = release_url(version)
-    print(f"[beetroot] fetching {url}")
+    print(f"[beetroot] fetching {url}")  # noqa: T201  # researcher-facing stdout; replacing with logging would change UX
     try:
-        with urllib.request.urlopen(url, timeout=settings.http_timeout) as resp:
+        with urllib.request.urlopen(url, timeout=settings.http_timeout) as resp:  # noqa: S310  # URL built from a pinned GitHub release path; scheme is https
             compressed = resp.read()
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"download failed: HTTP {e.code} fetching {url}") from e

@@ -14,6 +14,7 @@
 #     internally. Exported here so v0.4 can flag-gate alternate DB paths.
 #
 # Idempotent: REPLACE INTO and INSERT OR IGNORE both no-op on re-run.
+set -eu  # fail fast on undefined vars and unhandled errors (T3).
 
 MAGISK_DB="${BEETROOT_MAGISK_DB:-/data/adb/magisk.db}"
 

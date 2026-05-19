@@ -15,17 +15,21 @@ concurrency:
 permissions:
   contents: read
 
+# T3 hardening: every third-party action is SHA-pinned (with the
+# version tag in a trailing comment) so a compromised tag can't
+# silently swap in a malicious workflow. ``actions/checkout@v4.2.1``
+# and ``astral-sh/setup-uv@v4.1.0`` are the floors as of v0.4 sprint;
+# bump SHAs in lockstep when upgrading versions.
+
 jobs:
   lint-and-type-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871  # v4.2.1
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
         with:
           python-version: "3.13"
-
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355  # v4.1.0
         with:
           enable-cache: true
 
@@ -33,14 +37,17 @@ jobs:
         run: uv sync --group dev --frozen
 
       - name: Ruff check
-        run: uv run ruff check src/beetroot/ tests/
+        run: uv run ruff check src/beetroot/ tests/ scripts/
 
       - name: Ensure arbitrary_types_allowed is never used
         run: |
           ! grep -rn 'arbitrary_types_allowed' src/ tests/ pyproject.toml
 
-      - name: Mypy (src + tests — both must type-check per CLAUDE.md)
-        run: uv run mypy src/beetroot/ tests/
+      - name: Mypy (src + tests + scripts — all must type-check)
+        run: uv run mypy src/beetroot/ tests/ scripts/
+
+      - name: Pyright (second-opinion type-checker; mypy is the primary)
+        run: uv run pyright src/ tests/
 
       - name: Changelog-lint (beetroot invocations under Unreleased)
         run: uv run python scripts/lint_changelog.py
@@ -48,32 +55,89 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871  # v4.2.1
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
         with:
           python-version: "3.13"
-
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355  # v4.1.0
         with:
           enable-cache: true
 
       - name: Install dev dependencies
         run: uv sync --group dev --frozen
 
-      - name: Pytest (100% coverage gate enforced via [tool.coverage.report])
-        run: uv run pytest
+      - name: Pytest (100% line+branch coverage gate)
+        run: uv run pytest --cov-fail-under=100
+
+  docstring-and-complexity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871  # v4.2.1
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355  # v4.1.0
+        with:
+          enable-cache: true
+
+      - name: Install dev dependencies
+        run: uv sync --group dev --frozen
+
+      - name: Interrogate (>=95% docstring coverage on src/beetroot/)
+        run: uv run interrogate src/beetroot/
+
+      - name: Radon (no function grade C or worse)
+        run: uv run radon cc src/ -n C --total-average
+
+      - name: Vulture (dead-code finder; allowlist in pyproject.toml)
+        run: uv run vulture src/beetroot/
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871  # v4.2.1
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355  # v4.1.0
+        with:
+          enable-cache: true
+
+      - name: Install dev dependencies
+        run: uv sync --group dev --frozen
+
+      - name: pip-audit (dependency CVE scan)
+        # PYSEC-2022-42969 is in the ``py`` 1.11.0 transitive dep of
+        # interrogate; the affected code path (svnwc) is not used by
+        # Beetroot or interrogate. Track it and drop the suppression
+        # if/when interrogate upgrades.
+        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969
 
   shellcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871  # v4.2.1
 
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
-      - name: Shellcheck (POSIX sh — boot helpers run under /system/bin/sh)
-        run: shellcheck -s sh docker/*.sh
+      - name: Shellcheck -S warning (POSIX sh — boot helpers run under /system/bin/sh)
+        run: shellcheck -S warning -s sh docker/*.sh
+
+  hadolint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871  # v4.2.1
+
+      - name: Hadolint (Dockerfile linter)
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf  # v3.1.0
+        with:
+          dockerfile: docker/Dockerfile
+          # DL3007 = "always tag the version of an image explicitly".
+          # Our base image arg is ``${BASE_IMAGE}`` which is resolved
+          # by ``beetroot build`` to an exact tag at substitution
+          # time; hadolint can't see that, so we whitelist the rule.
+          ignore: DL3007
 
   docs-strict:
     # CR #4: docs.yml's --strict build only ran on push-to-master, so PRs
@@ -82,13 +146,11 @@ jobs:
     # not deploy — the gh-pages deploy still lives in docs.yml.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871  # v4.2.1
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
         with:
           python-version: "3.13"
-
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355  # v4.1.0
         with:
           enable-cache: true
 

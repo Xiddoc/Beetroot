@@ -13,6 +13,7 @@
 #
 # Idempotent: Magisk handles re-install of an already-installed module
 # gracefully, so init re-triggering this script is safe.
+set -eu  # fail fast on undefined vars and unhandled errors (T3).
 
 MODULES_DIR="${BEETROOT_MODULES_DIR:-/flash_dir}"
 

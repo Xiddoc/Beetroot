@@ -74,7 +74,7 @@ def test_default_runner_env_merges_via_subprocess_call(
         # kwargs is loosely typed for the spy; the real_run call
         # returns CompletedProcess[Any] which mypy widens to Any.
         result: subprocess.CompletedProcess[str] = real_run(  # type: ignore[call-overload]
-            cmd, **kwargs
+            cmd, **kwargs,  # pyright: ignore[reportArgumentType]
         )
         return result
 

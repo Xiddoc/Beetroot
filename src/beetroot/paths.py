@@ -8,15 +8,21 @@ the current instance the way ``git`` discovers a repo: it walks up from
 the cwd looking for the marker file (``beetroot.yaml``).
 
 Global state (the cross-instance registry and download caches) lives under
-the user's XDG directories, not under any repo or instance.
+the user's platform-appropriate config / cache directories. We delegate
+to :mod:`platformdirs` so the same code does the right thing on Linux
+(``$XDG_CONFIG_HOME`` / ``$XDG_CACHE_HOME``), macOS (``~/Library/...``),
+and Windows (``%APPDATA%`` / ``%LOCALAPPDATA%``). The XDG env vars are
+honoured automatically by platformdirs on Linux.
 """
 from __future__ import annotations
 
 import importlib.resources
-import os
 from pathlib import Path
 
+from platformdirs import user_cache_path, user_config_path
+
 _INSTANCE_MARKER = "beetroot.yaml"
+_APP_NAME = "beetroot"
 
 
 class InstanceRootNotFoundError(FileNotFoundError):
@@ -95,37 +101,47 @@ def bundled_compose_file() -> Path:
     return Path(str(ref))
 
 
-def _xdg_dir(env_var: str, default_subdir: str) -> Path:
-    """Return the XDG-style base directory for ``env_var``, defaulting to ``~/<default>``."""
-    raw = os.environ.get(env_var)
-    if raw:
-        return Path(raw)
-    return Path.home() / default_subdir
+def user_config_dir() -> Path:
+    """
+    Return the user-global Beetroot config directory.
+
+    On Linux this resolves to ``$XDG_CONFIG_HOME/beetroot`` (defaulting
+    to ``~/.config/beetroot``); on macOS / Windows :mod:`platformdirs`
+    picks the platform-appropriate location. Use :func:`user_registry_file`
+    for the registry-file path specifically.
+
+    Returns:
+        Absolute path to the per-user Beetroot config dir.
+    """
+    return user_config_path(_APP_NAME)
 
 
 def user_registry_file() -> Path:
     """
     Return the absolute path to the cross-instance registry file.
 
-    Lives at ``$XDG_CONFIG_HOME/beetroot/instances.json`` if the env var
-    is set, otherwise ``~/.config/beetroot/instances.json``. Note this is
-    a *user-global* registry — every instance on the host is listed here,
-    regardless of where on disk its directory lives.
+    Lives at ``<user_config_dir>/instances.json``. The directory is
+    resolved by :mod:`platformdirs` so the same code does the right
+    thing on Linux / macOS / Windows; on Linux ``$XDG_CONFIG_HOME``
+    is honoured automatically. Note this is a *user-global* registry —
+    every instance on the host is listed here, regardless of where on
+    disk its directory lives.
 
     Returns:
         Absolute path to the registry JSON file.
     """
-    return _xdg_dir("XDG_CONFIG_HOME", ".config") / "beetroot" / "instances.json"
+    return user_config_dir() / "instances.json"
 
 
 def user_cache_dir(subdir: str) -> Path:
     """
     Return a per-subsystem subdirectory under the user's Beetroot cache.
 
-    Lives under ``$XDG_CACHE_HOME/beetroot/<subdir>`` if the env var is
-    set, otherwise ``~/.cache/beetroot/<subdir>``. Used for the Frida
-    binary cache and the Magisk module download cache, both shared
-    across instances to avoid re-downloading the same blobs.
+    Lives under ``<platformdirs-cache>/beetroot/<subdir>`` — on Linux
+    this is ``$XDG_CACHE_HOME/beetroot/<subdir>``, defaulting to
+    ``~/.cache/beetroot/<subdir>``. Used for the Frida binary cache
+    and the Magisk module download cache, both shared across instances
+    to avoid re-downloading the same blobs.
 
     Args:
         subdir: A subsystem name (e.g. ``"frida"``, ``"modules"``).
@@ -133,4 +149,4 @@ def user_cache_dir(subdir: str) -> Path:
     Returns:
         Absolute path to the requested cache subdirectory.
     """
-    return _xdg_dir("XDG_CACHE_HOME", ".cache") / "beetroot" / subdir
+    return user_cache_path(_APP_NAME) / subdir

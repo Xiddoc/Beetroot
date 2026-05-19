@@ -1,4 +1,5 @@
-"""Lint fenced bash examples inside CHANGELOG.md's ``## Unreleased`` block.
+"""
+Lint fenced bash examples inside CHANGELOG.md's ``## Unreleased`` block.
 
 Why this exists
 ---------------
@@ -41,26 +42,45 @@ NEXT_TOP_HEADING = re.compile(r"^## (?!Unreleased\b)")
 FENCE_DELIMITER = re.compile(r"^```(?P<lang>[A-Za-z0-9_+-]*)\s*$")
 SHELL_LANGS = frozenset({"", "bash", "sh", "shell", "console"})
 BEETROOT_INVOCATION = re.compile(r"\bbeetroot\s+(?P<rest>[^\n#`]+)")
+# Inline-code spans inside prose paragraphs, e.g. the prose sentence
+# ``the new ``beetroot doctor --foo`` verb …``. v0.4 (T3) extends
+# the scanner to flag invented flags / verbs cited in inline spans
+# too — the v0.3 CR-CR aggregation found one such drift case
+# (``--auto-install`` cited inline in a paragraph that had been
+# revised after the flag was deferred).
+INLINE_CODE_SPAN = re.compile(r"`([^`\n]+)`")
 
 
 def _slurp(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines()
 
 
-def _extract_unreleased_fences(lines: list[str]) -> list[tuple[int, str]]:
-    """Return ``(1-based line number, line text)`` pairs inside Unreleased shell fences.
+def _extract_unreleased_lines(
+    lines: list[str],
+) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
+    """
+    Return shell-fence lines and inline-code spans inside ``## Unreleased``.
 
-    Only lines inside shell-flavoured fenced code blocks (no language
-    specifier, or ``bash`` / ``sh`` / ``shell`` / ``console``) inside the
-    ``## Unreleased`` block are returned. yaml/python/etc. fences are
-    tracked-but-skipped so we don't leak fence state into the matcher.
-    Inline code spans (single-backtick) are ignored — they document
-    shapes, not runnable invocations.
+    The first list is shell-fenced lines (run as a shell command would
+    interpret them); the second is the contents of every inline-code
+    span (single-backtick) inside prose paragraphs of the same
+    section. Both lists are sources of ``beetroot <verb> [--flag]``
+    invocations the linter checks; the v0.3 retro showed that
+    inline-code references can also drift (an invented flag cited in
+    a prose paragraph after the flag was deferred from the release).
+
+    Args:
+        lines: The full CHANGELOG content split by ``splitlines()``.
+
+    Returns:
+        A two-tuple ``(fenced_lines, inline_spans)``. Each element is
+        a ``(1-based line number, text)`` pair.
     """
     in_unreleased = False
     in_fence = False
     fence_is_shell = False
-    out: list[tuple[int, str]] = []
+    fenced: list[tuple[int, str]] = []
+    inline: list[tuple[int, str]] = []
     for idx, line in enumerate(lines, start=1):
         if UNRELEASED_HEADING.match(line):
             in_unreleased = True
@@ -78,15 +98,22 @@ def _extract_unreleased_fences(lines: list[str]) -> list[tuple[int, str]]:
                 in_fence = True
                 fence_is_shell = delim.group("lang") in SHELL_LANGS
             continue
-        if in_fence and fence_is_shell:
-            out.append((idx, line))
-    return out
+        if in_fence:
+            if fence_is_shell:
+                fenced.append((idx, line))
+            # Inside any fence (shell or not) the prose-inline scanner
+            # is off — we don't want to interpret python-fence body
+            # text as a markdown inline-code span.
+            continue
+        # Prose paragraph. Pick up every inline-code span on this line.
+        inline.extend((idx, match.group(1)) for match in INLINE_CODE_SPAN.finditer(line))
+    return fenced, inline
 
 
 def _registered_verbs() -> set[str]:
     """Parse ``beetroot --help`` and return the set of registered verb names."""
-    proc = subprocess.run(  # noqa: S603 — beetroot is a project-internal CLI
-        ["uv", "run", "beetroot", "--help"],
+    proc = subprocess.run(
+        ["uv", "run", "beetroot", "--help"],  # noqa: S607  # uv resolved via PATH; argv hard-coded; beetroot is a project-internal CLI
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -108,8 +135,8 @@ def _registered_verbs() -> set[str]:
 
 def _verb_long_flags(verb: str) -> set[str]:
     """Parse ``beetroot <verb> --help`` and return the set of long-flag names."""
-    proc = subprocess.run(  # noqa: S603 — beetroot is a project-internal CLI
-        ["uv", "run", "beetroot", verb, "--help"],
+    proc = subprocess.run(  # noqa: S603  # ``verb`` is a verb name parsed from beetroot's own --help; not user input
+        ["uv", "run", "beetroot", verb, "--help"],  # noqa: S607  # uv resolved via PATH; beetroot is a project-internal CLI
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -132,13 +159,23 @@ def _strip_box_drawing(line: str) -> str:
 
 
 def _check_invocations(
-    fence_lines: list[tuple[int, str]],
+    sources: list[tuple[int, str]],
     known_verbs: set[str],
+    *,
+    flag_cache: dict[str, set[str]] | None = None,
 ) -> list[str]:
-    """Return a list of human-readable error strings (empty means all green)."""
+    """
+    Return a list of human-readable error strings (empty means all green).
+
+    ``sources`` is a list of ``(line_no, text)`` pairs from either
+    fenced shell blocks or inline-code spans inside prose. The same
+    matcher works against both because every ``beetroot <verb>
+    [--flag]`` invocation looks the same regardless of where it
+    appears.
+    """
     errors: list[str] = []
-    flag_cache: dict[str, set[str]] = {}
-    for line_no, raw in fence_lines:
+    flag_cache = flag_cache if flag_cache is not None else {}
+    for line_no, raw in sources:
         for match in BEETROOT_INVOCATION.finditer(raw):
             rest = match.group("rest").strip()
             tokens = rest.split()
@@ -171,6 +208,7 @@ def _check_invocations(
 
 
 def main() -> int:
+    """Entry point: lint the CHANGELOG and exit 0 / 1 accordingly."""
     if not CHANGELOG.exists():
         print(f"error: {CHANGELOG} not found", file=sys.stderr)
         return 1
@@ -178,11 +216,15 @@ def main() -> int:
         print("error: `uv` not on PATH — install uv to run the changelog lint", file=sys.stderr)
         return 1
     lines = _slurp(CHANGELOG)
-    fence_lines = _extract_unreleased_fences(lines)
-    if not fence_lines:
+    fence_lines, inline_spans = _extract_unreleased_lines(lines)
+    if not fence_lines and not inline_spans:
         return 0
     known_verbs = _registered_verbs()
-    errors = _check_invocations(fence_lines, known_verbs)
+    # Share the flag cache across the two passes so each verb's
+    # ``--help`` is invoked at most once per linter run.
+    flag_cache: dict[str, set[str]] = {}
+    errors = _check_invocations(fence_lines, known_verbs, flag_cache=flag_cache)
+    errors.extend(_check_invocations(inline_spans, known_verbs, flag_cache=flag_cache))
     if errors:
         print("changelog-lint: invalid beetroot invocations under ## Unreleased:", file=sys.stderr)
         for err in errors:

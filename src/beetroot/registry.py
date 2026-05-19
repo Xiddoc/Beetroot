@@ -220,7 +220,7 @@ def _read(path: Path) -> RegistryFile:
         backup = path.with_suffix(path.suffix + ".bak")
         path.rename(backup)
         if not _LEGACY_HINT_PRINTED:
-            print(
+            print(  # noqa: T201  # stderr migration hint — typer.echo is unavailable from non-CLI callers
                 f"[beetroot] registry at {path} was schema "
                 f"v{parsed_version!r}; renamed to {backup.name}. "
                 f"Re-register your instances with "
@@ -261,7 +261,7 @@ def _check_v02_registry_at_cwd(xdg_path: Path) -> None:
     is_v1_shape = "version" not in data and "instances" not in data
     if not is_v1_shape:
         return
-    print(
+    print(  # noqa: T201  # stderr migration hint — typer.echo is unavailable from non-CLI callers
         f"[beetroot] detected v0.2 registry at {candidate} — move it to "
         f"{xdg_path} (or re-register each instance with "
         f"'beetroot register <path>').",
