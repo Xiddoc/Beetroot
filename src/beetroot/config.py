@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-from typing import Any, Final, Literal, Self, override
+from typing import Final, Literal, Self, override
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -124,7 +124,7 @@ class Module(BaseModel):
     sha256: str | None = None
 
     @override
-    def model_post_init(self, _ctx: Any) -> None:
+    def model_post_init(self, _ctx: object) -> None:
         if not self.url and not self.path:
             raise ValueError("module entry must set either `url` or `path`")
         if self.url and self.path:

@@ -120,10 +120,14 @@ max-statements = 60  # build_parser() wires 12+ subparsers — 50 is too tight
 python_version = "3.13"
 plugins = ["pydantic.mypy"]
 strict = true
+strict_optional = true
 warn_unreachable = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_any_explicit = true
 extra_checks = true
 disallow_any_unimported = true
-enable_error_code = ["redundant-self", "redundant-expr", "possibly-undefined", "truthy-bool", "truthy-iterable", "ignore-without-code", "unused-awaitable", "explicit-override", "mutable-override", "unimported-reveal"]
+enable_error_code = ["redundant-self", "redundant-expr", "possibly-undefined", "truthy-bool", "truthy-iterable", "ignore-without-code", "unused-awaitable", "explicit-override", "mutable-override", "unimported-reveal", "narrowed-type-not-subtype"]
 
 [tool.pydantic-mypy]
 init_forbid_extra = true
