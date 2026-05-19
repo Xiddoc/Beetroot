@@ -24,6 +24,12 @@ import typer
 
 from . import api, builder, compose, config, modules_download, paths, ports, registry
 from . import snapshot as snapshot_mod
+from .backends import adb as adb_backend
+
+# Instance-name regex mirrors ``api._INSTANCE_NAME_RE`` — used to
+# validate names auto-derived from adb serials in :func:`adopt` before
+# any registry side-effect runs.
+_INSTANCE_NAME_RE = api._INSTANCE_NAME_RE  # noqa: SLF001  # intentional re-use of the api-layer regex so the two stay in lock-step
 
 
 class _GappsVariant(StrEnum):
@@ -62,6 +68,84 @@ def _ensure_exists(name: str) -> None:
 def _load(name: str) -> api.Instance:
     """Load an instance for a verb that has already passed ``_ensure_exists``."""
     return api.Instance.load(name)
+
+
+def _refuse_destroy_for_adb_kind(name: str) -> None:
+    """
+    Raise ``BackendCapabilityError`` if ``name``'s registry kind is not redroid.
+
+    Uses the registry meta directly rather than ``Manager.resolve`` so
+    orphan rows (redroid kind, missing on-disk yaml) still flow through
+    the v0.3 orphan-destroy path. Adb-kind rows surface a friendly
+    error pointing at the v0.5 ``beetroot forget`` verb.
+    """
+    meta = registry.get(name)
+    if meta is None:  # pragma: no cover  # ``_ensure_exists`` ran upstream; defensive net only
+        return
+    if isinstance(meta.backend, registry.RedroidBackendConfig):
+        return
+    raise api.BackendCapabilityError(
+        f"destroy is not supported for {meta.backend.kind!r}-backed "
+        f"instance {name!r}; use the v0.5 ``beetroot forget`` verb to "
+        "deregister an adopted device.",
+    )
+
+
+def _resolve_redroid_for_backend(
+    backend: api.DeviceBackend, *, verb: str,
+) -> api.Instance:
+    """
+    Narrow ``backend`` to :class:`api.Instance` or raise capability error.
+
+    Pulled out of :func:`_resolve_redroid` so the synthetic
+    third-backend test (``tests/test_backend_extension.py``) can
+    exercise the redroid-narrow guard without first constructing a
+    registry row through the in-tree discriminated union.
+
+    Args:
+        backend: The resolved backend.
+        verb: The verb name (used in the error message).
+
+    Returns:
+        The narrowed :class:`api.Instance`.
+
+    Raises:
+        api.BackendCapabilityError: If ``backend`` is not an
+            :class:`api.Instance`.
+    """
+    if isinstance(backend, api.Instance):
+        return backend
+    raise api.BackendCapabilityError(
+        f"{verb} is not supported for {backend.kind!r}-backed instance "
+        f"{backend.name!r}; only redroid-backed instances expose the "
+        f"compose-driven lifecycle.",
+    )
+
+
+def _resolve_redroid(name: str, *, verb: str) -> api.Instance:
+    """
+    Resolve a registry name to an :class:`api.Instance` or raise capability error.
+
+    Used by the lifecycle verbs (``up``, ``down``, ``restart``,
+    ``apply``, ``destroy``, ``snapshot``) — those only make sense for
+    a managed container, so a non-redroid backend surfaces a friendly
+    ``BackendCapabilityError`` rather than running compose-flavoured
+    glue against an adb-adopted device. ``cli.main`` catches the
+    error and exits with code 2 (distinct from "instance not found"
+    → 1) so scripts can distinguish.
+
+    Args:
+        name: Registry name to resolve.
+        verb: The verb name (used in the error message).
+
+    Returns:
+        The hydrated :class:`api.Instance`.
+
+    Raises:
+        api.BackendCapabilityError: If the resolved backend is not an
+            :class:`api.Instance`.
+    """
+    return _resolve_redroid_for_backend(api.Manager.resolve(name), verb=verb)
 
 
 def _resolve_names(names: list[str], all_flag: bool) -> list[str]:
@@ -184,13 +268,82 @@ def register(
     )
 
 
+def _adopt_default_name(serial: str) -> str:
+    """
+    Derive a deterministic default registry name from an adb serial.
+
+    The shape is ``adb-<serial-with-colons-and-underscores-as-hyphens>``,
+    lowercased, truncated to 24 chars total so the result always fits
+    inside the Docker compose project-name grammar
+    (``[a-z0-9_-]+``) and feels reasonable at the CLI. Truncation is
+    deterministic — a user who runs ``beetroot adopt <long-serial>``
+    twice gets the same name both times — so collision detection in
+    the registry produces a friendly "already exists" error rather
+    than a silent overwrite.
+
+    Args:
+        serial: The adb serial / endpoint identifier.
+
+    Returns:
+        A registry name guaranteed to match ``_INSTANCE_NAME_RE``.
+    """
+    munged = serial.replace(":", "-").replace("_", "-").lower()
+    candidate = f"adb-{munged}"[:24]
+    return candidate.rstrip("-") or "adb-device"
+
+
+@app.command()
+def adopt(
+    serial: Annotated[
+        str,
+        typer.Argument(help="adb serial (e.g. emulator-5554 or 192.168.1.10:5555)."),
+    ],
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="Registry name (default: adb-<serial>)."),
+    ] = None,
+) -> None:
+    """
+    Adopt a rooted Android device that's already reachable via ``adb``.
+
+    Allocates a Beetroot port index for the device (so a follow-up
+    ``beetroot install_frida <name>`` and ``beetroot frida <name>``
+    pick the same Frida port a redroid instance with the same index
+    would have got), then writes an ``adb``-kind row to the registry.
+    Unlike ``beetroot create``, no on-disk instance directory is made;
+    the device is managed by whatever installed it (real phone, third-
+    party emulator, ``adb connect`` from a network device).
+    """
+    resolved_name = name if name is not None else _adopt_default_name(serial)
+    if not _INSTANCE_NAME_RE.fullmatch(resolved_name):
+        raise _error(
+            f"derived instance name {resolved_name!r} is invalid — "
+            r"must match [a-z0-9_-]+. Pass --name explicitly to override.",
+        )
+    if registry.get(resolved_name) is not None:
+        raise _error(
+            f"instance {resolved_name!r} already registered. Use a different "
+            f"--name, or `beetroot destroy {resolved_name}` first.",
+        )
+    backend_config = registry.AdbBackendConfig(serial=serial)
+    index = registry.add_allocating(resolved_name, backend=backend_config)
+    typer.echo(
+        f"[beetroot] adopted {resolved_name} → adb serial {serial} "
+        f"(index {index})"
+    )
+    typer.echo(
+        f"[beetroot] next: beetroot shell {resolved_name} "
+        f"(or `beetroot frida {resolved_name}` once frida-server is running)"
+    )
+
+
 @app.command()
 def apply(
     name: Annotated[str, typer.Argument(help="Instance name.")],
 ) -> None:
     """Re-render ``.env`` and re-stage files from the instance's beetroot.yaml."""
     _ensure_exists(name)
-    inst = _load(name)
+    inst = _resolve_redroid(name, verb="apply")
     try:
         inst.apply()
     except ValueError as e:
@@ -230,7 +383,7 @@ def up(
         )
     for instance_name in _resolve_names(list(names or []), all_):
         _ensure_exists(instance_name)
-        inst = _load(instance_name)
+        inst = _resolve_redroid(instance_name, verb="up")
         inst.up()
         p = inst.ports
         typer.echo(
@@ -253,7 +406,7 @@ def down(
     """Stop one or more instances, preserving data."""
     for instance_name in _resolve_names(list(names or []), all_):
         _ensure_exists(instance_name)
-        _load(instance_name).down()
+        _resolve_redroid(instance_name, verb="down").down()
         typer.echo(f"[beetroot] {instance_name} down (data preserved)")
 
 
@@ -271,7 +424,7 @@ def restart(
     """Stop then start one or more instances."""
     for instance_name in _resolve_names(list(names or []), all_):
         _ensure_exists(instance_name)
-        _load(instance_name).restart()
+        _resolve_redroid(instance_name, verb="restart").restart()
         typer.echo(f"[beetroot] {instance_name} restarted")
 
 
@@ -285,6 +438,13 @@ def destroy(
 ) -> None:
     """Stop and permanently delete an instance including its data directory."""
     _ensure_exists(name)
+    # Check the backend kind via the registry row directly (cheaper
+    # than ``Manager.resolve``, and works for orphans whose on-disk
+    # yaml has been ``rm -rf``'d — ``Manager.resolve`` would otherwise
+    # fail to construct the redroid ``Instance`` for orphans). Adb-
+    # kind rows surface a friendly BackendCapabilityError (exit 2);
+    # redroid rows fall through to the v0.3 destroy path.
+    _refuse_destroy_for_adb_kind(name)
     root = registry.instance_path(name)
     if not yes:
         ans = input(f"Destroy {name} and delete {root}? [y/N] ").strip().lower()
@@ -446,7 +606,7 @@ def logs(
 ) -> None:
     """Tail container logs for an instance."""
     _ensure_exists(name)
-    _load(name).logs(follow=follow)
+    _resolve_redroid(name, verb="logs").logs(follow=follow)
 
 
 @app.command()
@@ -455,8 +615,9 @@ def shell(
 ) -> None:
     """Open an interactive ADB shell into an instance."""
     _ensure_exists(name)
+    backend = api.Manager.resolve(name)
     try:
-        rc = _load(name).shell()
+        rc = backend.shell()
     except api.AdbNotInstalledError as e:
         raise _error(str(e)) from e
     if rc != 0:
@@ -609,8 +770,9 @@ def frida(
     Typer's own option-parsing if needed.
     """
     _ensure_exists(name)
+    backend = api.Manager.resolve(name)
     try:
-        rc = _load(name).frida_cli(list(ctx.args))
+        rc = backend.frida_cli(list(ctx.args))
     except api.FridaNotInstalledError as e:
         raise _error(str(e)) from e
     if rc != 0:
@@ -634,10 +796,30 @@ def module(
 ) -> None:
     """Append a module to beetroot.yaml and re-stage. Caller restarts."""
     _ensure_exists(name)
-    inst = _load(name)
-    inst.add_module(source, sha256=sha256)
-    typer.echo(f"[beetroot] added module → {paths.instance_yaml(inst.root)}")
-    typer.echo(f"[beetroot] restart to flash: beetroot down {name} && beetroot up {name}")
+    backend = api.Manager.resolve(name)
+    if isinstance(backend, api.Instance):
+        # Redroid backend: append to beetroot.yaml + re-stage via the
+        # OOP API. The .yaml mutation is what makes the module survive
+        # the next ``up``.
+        backend.add_module(source, sha256=sha256)
+        typer.echo(f"[beetroot] added module → {paths.instance_yaml(backend.root)}")
+        typer.echo(
+            f"[beetroot] restart to flash: beetroot down {name} && beetroot up {name}"
+        )
+        return
+    if isinstance(backend, adb_backend.AdbDevice):
+        backend.add_module(source, sha256=sha256)
+        typer.echo(f"[beetroot] module pushed to {name}")
+        return
+    # Third-party backends without ``add_module`` get a friendly error
+    # rather than a bare AttributeError. The verb is optional on the
+    # backend Protocol; third-party packages can wire their own
+    # equivalent (or just not support it).
+    raise _error(
+        f"backend {name!r} (kind={backend.kind!r}) does not "
+        "support `beetroot module`. The verb is optional on the "
+        "backend Protocol.",
+    )
 
 
 @app.command(name="setup", hidden=True)
@@ -687,7 +869,7 @@ def snapshot(
 ) -> None:
     """Pack an instance's host-side state into a ``.tar.zst`` archive."""
     _ensure_exists(name)
-    inst = _load(name)
+    inst = _resolve_redroid(name, verb="snapshot")
     dest = output if output is not None else Path(f"{name}.tar.zst")
     try:
         final = inst.snapshot(dest)
@@ -753,6 +935,14 @@ def main() -> None:
     """
     try:
         app()
+    except api.BackendCapabilityError as e:
+        # Exit code 2 (distinct from "instance not found" / domain
+        # error → 1) so scripts wrapping the CLI can distinguish
+        # "this verb doesn't apply to this backend" from "this
+        # instance / file / network call failed". v0.4 introduces
+        # backend-typed exit codes; the rest stay 1 for source compat.
+        typer.echo(f"error: {e}", err=True)
+        sys.exit(2)
     except paths.InstanceRootNotFoundError as e:
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
