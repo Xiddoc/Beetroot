@@ -405,7 +405,30 @@ def write_yaml(path: Path, cfg: InstanceConfig) -> None:
     path.write_text(yaml.safe_dump(cfg.model_dump(), sort_keys=False))
 
 
-def render_env(name: str, cfg: InstanceConfig, ports: dict[str, int]) -> str:
+_STEALTH_PATH_DEFAULTS: Final = {
+    "magisk_db": "/data/adb/magisk.db",
+    "modules_dir": "/data/adb/modules_update",
+    "frida_bin": "/data/local/tmp/frida-server",
+}
+
+# Map ``stealth_paths`` keys to the ``BEETROOT_*`` env-var names the
+# bundled compose template + boot helpers consume. The key vocabulary
+# (``magisk_db`` / ``modules_dir`` / ``frida_bin``) matches the
+# snapshot manifest's ``path_layout`` field naming so a v0.5 snapshot
+# round-trips through restore without any per-key renaming.
+_STEALTH_PATH_ENV_KEYS: Final = {
+    "magisk_db": "BEETROOT_MAGISK_DB",
+    "modules_dir": "BEETROOT_MODULES_DIR",
+    "frida_bin": "BEETROOT_FRIDA_BIN",
+}
+
+
+def render_env(
+    name: str,
+    cfg: InstanceConfig,
+    ports: dict[str, int],
+    stealth_paths: dict[str, str] | None = None,
+) -> str:
     """
     Render the .env file that compose reads via --env-file.
 
@@ -416,10 +439,24 @@ def render_env(name: str, cfg: InstanceConfig, ports: dict[str, int]) -> str:
         name: Instance name used as the compose project name.
         cfg: The instance configuration.
         ports: Resolved port mapping produced by ``ports.resolve_ports``.
+        stealth_paths: Optional per-instance override blob (T4) carrying
+            the ``magisk_db`` / ``modules_dir`` / ``frida_bin`` keys.
+            Each key present here overrides the corresponding
+            ``BEETROOT_*`` default; absent keys fall back to the
+            well-known v0.4 defaults
+            (``/data/adb/magisk.db`` / ``/data/adb/modules_update`` /
+            ``/data/local/tmp/frida-server``). ``None`` and ``{}``
+            both mean "use defaults" — the helper merges either form
+            against ``_STEALTH_PATH_DEFAULTS`` so callers can pass the
+            ``RedroidBackendConfig.stealth_paths`` blob verbatim.
+            Unknown keys are silently ignored (so a v0.5-shaped blob
+            carrying a future ``stealth_module_id`` key restores
+            cleanly against a v0.4 ``render_env``).
 
     Returns:
         The rendered ``.env`` content as a newline-terminated string.
     """
+    resolved_paths = {**_STEALTH_PATH_DEFAULTS, **(stealth_paths or {})}
     lines = [
         f"INSTANCE_NAME={name}",
         f"BASE_IMAGE={base_image_tag(cfg.android)}",
@@ -445,11 +482,12 @@ def render_env(name: str, cfg: InstanceConfig, ports: dict[str, int]) -> str:
         # defaults (T2 Agent 1 1.1 / Agent 3 1.1: the compose template
         # parameterises mount targets too, so render_env is the single
         # source of truth instead of the YAML's ${VAR:-default}
-        # fallback). v0.5's PR1 will replace these defaults with
-        # randomised paths read from RedroidBackendConfig.stealth_paths.
-        "BEETROOT_MAGISK_DB=/data/adb/magisk.db",
-        "BEETROOT_MODULES_DIR=/data/adb/modules_update",
-        "BEETROOT_FRIDA_BIN=/data/local/tmp/frida-server",
+        # fallback). T4 reads from ``stealth_paths`` if populated;
+        # v0.5's PR1 flips the default in ``Instance.create``'s
+        # generator once stealth research validates a safe layout.
+        f"BEETROOT_MAGISK_DB={resolved_paths['magisk_db']}",
+        f"BEETROOT_MODULES_DIR={resolved_paths['modules_dir']}",
+        f"BEETROOT_FRIDA_BIN={resolved_paths['frida_bin']}",
     ]
     if cfg.resources.mem_reservation is not None:
         lines.append(f"MEM_RESERVATION={cfg.resources.mem_reservation}")
