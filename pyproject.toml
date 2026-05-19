@@ -173,7 +173,13 @@ warn_untyped_fields = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --cov=beetroot --cov-report=term-missing"
+# ``--strict-config`` rejects unknown ini options (T3 — fail loud on
+# typos rather than silently dropping them). ``--cov-fail-under=100``
+# is defence-in-depth: ``[tool.coverage.report].fail_under = 100``
+# already gates ``pytest``, but if a future contributor accidentally
+# disables the coverage plugin, the flag here is a second line of
+# defence that ``pytest`` itself enforces.
+addopts = "-ra --strict-markers --strict-config --cov=beetroot --cov-report=term-missing --cov-fail-under=100"
 
 [tool.coverage.run]
 source = ["beetroot"]
@@ -231,6 +237,14 @@ ignore_names = [
     "_register_builtin_backends",
     "_load_entry_point_backends",
 ]
+
+[tool.mutmut]
+# Mutation testing runs nightly out-of-band (see
+# .github/workflows/mutation-nightly.yml). Scoped to the load-bearing
+# subset of the codebase to keep the nightly under 90 minutes.
+# Expanding to all of ``src/beetroot/`` is on the v0.5 deferred list.
+paths_to_mutate = "src/beetroot/registry.py,src/beetroot/snapshot.py,src/beetroot/api.py,src/beetroot/config.py"
+runner = "uv run pytest -x -q"
 
 [tool.pyright]
 # Pyright's role here is "second opinion to mypy's strict pass": catch

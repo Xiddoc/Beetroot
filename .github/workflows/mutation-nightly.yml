@@ -1,0 +1,54 @@
+name: Mutation (nightly)
+
+# Nightly mutation-testing run via ``mutmut``. Non-blocking for PRs by
+# design — mutation suites are slow (~30-90 min on the full surface)
+# and noisy, so we run them out-of-band and publish the survival rate
+# as a workflow artefact. CI gates that *are* blocking live in
+# ci.yml.
+#
+# The scoped surface (registry / snapshot / api / config) is the
+# load-bearing subset of the codebase. Expanding mutmut to all of
+# ``src/beetroot/`` is on the v0.5 deferred list — see CHANGELOG.
+
+on:
+  schedule:
+    # 04:00 UTC daily (well outside the user's CI peak hours).
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mutmut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871  # v4.2.1
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355  # v4.1.0
+        with:
+          enable-cache: true
+
+      - name: Install dev dependencies
+        run: uv sync --group dev --frozen
+
+      - name: Run mutmut against the load-bearing modules
+        # ``mutmut run`` exits non-zero only when the runner crashes;
+        # surviving mutants exit 2, which we tolerate for the nightly.
+        # The survival rate is the artefact, not the exit code.
+        run: |
+          set +e
+          uv run mutmut run --paths-to-mutate src/beetroot/registry.py,src/beetroot/snapshot.py,src/beetroot/api.py,src/beetroot/config.py
+          mutmut_exit=$?
+          uv run mutmut results > mutmut-results.txt 2>&1 || true
+          echo "mutmut exit was $mutmut_exit; results captured to mutmut-results.txt"
+
+      - name: Upload mutmut results
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+        with:
+          name: mutmut-results
+          path: mutmut-results.txt
+          retention-days: 30

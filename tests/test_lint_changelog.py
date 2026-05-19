@@ -7,13 +7,15 @@ calling the helpers directly with synthetic CHANGELOG content.
 """
 from __future__ import annotations
 
-import sys
+import importlib.util
 from pathlib import Path
 
-_SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
-sys.path.insert(0, str(_SCRIPTS_DIR))
-
-import lint_changelog  # type: ignore[import-not-found]  # noqa: E402  # scripts/ isn't a package; sys.path insert above
+_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "lint_changelog.py"
+_SPEC = importlib.util.spec_from_file_location("lint_changelog", _SCRIPT_PATH)
+assert _SPEC is not None
+assert _SPEC.loader is not None
+lint_changelog = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(lint_changelog)
 
 
 def test_inline_code_span_picks_up_beetroot_invocation_in_prose() -> None:
