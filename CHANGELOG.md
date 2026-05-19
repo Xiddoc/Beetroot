@@ -2,6 +2,78 @@
 
 ## Unreleased
 
+### v0.4 — Theme T4: light stealth plumbing — stable registry blob + modules_update path
+
+This is the **plumbing-only** slice of `docs/design/stealth-posture.md`'s
+v0.4 scope (PR5 + PR6). The actual `/data/adb/modules/<random>/...`
+Frida-path move (PR1) is deferred to v0.5 pending stealth research —
+user concern: GMS may scan the entirety of `/data/adb/modules/`
+regardless of Shamiko's namespace switch. v0.4 lands the wiring so
+v0.5 can ship the default flip as a one-line change in
+`Instance.create`'s generator once a safe path is validated.
+
+**Mount-target swap (PR5 of stealth-posture.md)**
+
+- **`/flash_dir` → `/data/adb/modules_update` is the new default
+  bind-mount target.** T2 already shifted the bundled compose template
+  and `render_env`'s `BEETROOT_MODULES_DIR` default; T4 completes the
+  swap by also updating `docker/flash-modules.sh`'s
+  `${BEETROOT_MODULES_DIR:-/data/adb/modules_update}` POSIX fallback,
+  so a bare `docker run` without a Beetroot-rendered `.env` lands on
+  the same path as the CLI would emit. The `${VAR:-default}` form is
+  the right one under T3's `set -eu` (a bare `$VAR` would explode).
+  `/data/adb/modules_update` is Magisk's well-known module-staging
+  directory — Magisk's daemon recognises modules there at boot and
+  installs them on the next reboot, no user action needed.
+
+**`stealth_paths` round-trip (PR6 of stealth-posture.md)**
+
+- **`snapshot()` writes the source's
+  `RedroidBackendConfig.stealth_paths` blob into the manifest's
+  `path_layout` field.** v0.4's slot defaults to `{}`, so today's
+  snapshots carry `path_layout: {}` and round-trips are byte-identical
+  to v0.3-shape — but the moment v0.5's `Instance.create` generator
+  populates the slot, `snapshot → restore` will carry the randomized
+  layout through to the destination without any further code change.
+- **`restore()` replays `manifest.path_layout` into the new
+  instance's `stealth_paths` slot** via a new
+  `registry.set_stealth_paths(name, blob)` helper (exclusive-locked,
+  atomic-replace via the existing `_write` pattern; rejects unknown
+  names and adb-backed rows). The replay lives inside `restore`'s
+  rollback try/except so a malformed blob from a future manifest
+  schema bump tears down the half-registered row cleanly.
+- **`render_env` gains an optional `stealth_paths` argument** that
+  merges over the v0.4 defaults: `magisk_db` → `BEETROOT_MAGISK_DB`,
+  `modules_dir` → `BEETROOT_MODULES_DIR`, `frida_bin` →
+  `BEETROOT_FRIDA_BIN`. The key vocabulary matches the snapshot
+  manifest's `path_layout` naming so the round-trip is direct.
+  Unknown keys are silently ignored (forward-compat for v0.5/v0.6
+  schema bumps that add e.g. `stealth_module_id`). `_stage_local`
+  reads the per-instance slot from the registry and forwards it.
+
+**Migration**
+
+- **v0.3 instances need one `beetroot down && beetroot up` cycle**
+  after the v0.4 upgrade to rebind to the new
+  `/data/adb/modules_update` mount target. The host-side
+  `<instance-dir>/modules` directory does not move; only the
+  container-side bind-mount target changes. Magisk picks up modules
+  staged in `modules_update/` on the next boot the same way it
+  picked them up from `/flash_dir`.
+- Snapshots produced before T4 (with `path_layout: {}`) restore
+  cleanly against the T4 codepath — the empty replay is a no-op.
+
+**Tests**
+
+- `tests/test_stealth_paths.py` — five behaviour-test classes pin
+  the full round-trip surface: snapshot writes the blob, restore
+  replays it, empty manifests fall through to `modules_update`
+  defaults (including a `.env` artefact assertion proving the
+  `/flash_dir` invention is gone), `render_env` byte-pinned with
+  each combination of overrides + unknown-key forward-compat,
+  `set_stealth_paths` error paths (unknown name, adb-kind row,
+  caller-mutation-leak guard).
+
 ### v0.4 — Theme T3: max-strictness CI / pre-commit / lint / type-check / test investment
 
 **Runtime dependencies**
