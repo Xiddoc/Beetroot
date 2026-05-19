@@ -33,9 +33,12 @@ the function reference at import time.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -566,6 +569,25 @@ class Instance:
             ).strip().lower()
             if ans != "y":
                 raise RuntimeError("destroy aborted by user")
+        # Hold an exclusive lock on the instance for the entire
+        # teardown — blocks any concurrent ``snapshot()`` from reading
+        # the directory while we're rmtree'ing it. ``snapshot`` takes
+        # a shared lock so two parallel snapshots are fine, but a
+        # snapshot + destroy race would otherwise tear the archive.
+        # The lock file lives inside the instance root, so this only
+        # works while the root still exists; that's fine because the
+        # rmtree happens INSIDE the lock context. (T2 Agent 2 B-12.)
+        if self._root.exists():
+            with instance_lock(self._root, exclusive=True):
+                self._teardown_under_lock()
+        else:
+            # Root already gone — no need for the lock; just clear the
+            # registry row so ``Manager.list_orphans`` stops surfacing
+            # this name.
+            self._teardown_under_lock()
+
+    def _teardown_under_lock(self) -> None:
+        """Run ``destroy``'s steps under the assumption the lock is held."""
         # Order matters: compose.down → registry.remove → shutil.rmtree.
         # The CLI verb already enforces this order; the OOP path used
         # to do rmtree BEFORE registry.remove, which left a window
@@ -777,6 +799,51 @@ class Instance:
         if self._cfg.frida is not None:
             frida_download.stage_for_instance(self._root, self._cfg.frida.version)
         modules_download.stage_for_instance(self._root, self._cfg)
+
+
+_INSTANCE_LOCK_FILENAME = ".beetroot.lock"
+
+
+@contextlib.contextmanager
+def instance_lock(
+    instance_root: Path, *, exclusive: bool
+) -> Iterator[Path]:
+    """
+    Acquire an advisory ``fcntl.flock`` on ``<instance_root>/.beetroot.lock``.
+
+    Snapshot acquires a SHARED lock (``LOCK_SH``) — multiple snapshots
+    can run in parallel, but a concurrent destroy must wait. Destroy
+    acquires an EXCLUSIVE lock (``LOCK_EX``) — blocks every other
+    snapshot/destroy on the same instance until the destructive
+    operation completes. Without the lock, a destroy that races a
+    long-running snapshot could rmtree the directory while the
+    snapshot is reading from it, producing a torn archive. (T2 Agent
+    2 B-12.)
+
+    The lock file lives inside the instance root so it's naturally
+    scoped per-instance — two instances don't share a lock. The lock
+    file is created on first acquisition and never deleted; future
+    operations re-attach to the same inode. Sibling processes that
+    crash holding the lock release it automatically (the kernel drops
+    the flock on fd close at process exit).
+
+    Args:
+        instance_root: The instance directory.
+        exclusive: True for ``LOCK_EX``; False for ``LOCK_SH``.
+
+    Yields:
+        The lock-file path (for debugging — callers don't usually
+        need it).
+    """
+    instance_root.mkdir(parents=True, exist_ok=True)
+    lock_path = instance_root / _INSTANCE_LOCK_FILENAME
+    with lock_path.open("a+") as f:
+        flag = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(f.fileno(), flag)
+        try:
+            yield lock_path
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def _stage_network_soft(inst: Instance) -> None:

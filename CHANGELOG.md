@@ -134,6 +134,14 @@
   T3 will migrate to `platformdirs.user_cache_path`); the path is
   cached at module level so subsequent `docker compose -f` calls
   resolve identically. (Agent 2 B-8.)
+- **`fcntl.flock` on snapshot + destroy.** v0.3 had no inter-process
+  coordination — a `beetroot snapshot foo` racing a `beetroot
+  destroy foo` could rmtree the source directory mid-archive read,
+  producing a torn `.tar.zst`. v0.4 adds an advisory lock at
+  `<instance_root>/.beetroot.lock`: `snapshot()` takes `LOCK_SH`
+  (parallel snapshots are fine) and `Instance.destroy()` takes
+  `LOCK_EX` (blocks every reader and waits for in-flight readers
+  to release). (Agent 2 B-12.)
 
 ## v0.3.0 — 2026-05-19
 

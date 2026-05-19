@@ -34,14 +34,19 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from . import config, paths, ports, registry
 
 MANIFEST_FILENAME = ".beetroot-snapshot.json"
+INSTANCE_LOCK_FILENAME = ".beetroot.lock"
 SCHEMA_VERSION = 1
 _ARCHIVE_SUFFIX = ".tar.zst"
 # .env is regenerated from beetroot.yaml on the next apply. The
 # manifest itself is excluded because the archive's *root*-level
 # manifest is the authoritative one; if a previous restore left a
 # stale copy on disk we'd otherwise re-pack it and confuse
-# basename-based readers.
-_EXCLUDED_TOP_LEVEL = frozenset({".env", MANIFEST_FILENAME})
+# basename-based readers. The lock file is a per-host artefact;
+# carrying it through a snapshot would also export a now-broken
+# kernel flock state to a different host.
+_EXCLUDED_TOP_LEVEL = frozenset({
+    ".env", MANIFEST_FILENAME, INSTANCE_LOCK_FILENAME,
+})
 
 
 class SnapshotError(RuntimeError):
@@ -119,6 +124,13 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
     ``beetroot apply``. The manifest is written as the archive's last
     member.
 
+    Holds a SHARED ``fcntl.flock`` on ``<instance_root>/.beetroot.lock``
+    for the duration of the archive write — multiple snapshots can run
+    in parallel, but a concurrent :meth:`Instance.destroy` (which
+    takes the exclusive lock) blocks until snapshotting finishes.
+    Without this, a destroy race would rmtree the directory mid-read
+    and produce a torn archive. (T2 Agent 2 B-12.)
+
     Args:
         instance_root: The source instance directory (the one containing
             ``beetroot.yaml``). The instance must be registered.
@@ -143,8 +155,13 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
 
     manifest = _build_manifest(name=name, source_index=meta.index)
 
+    # Local import — api imports snapshot at module load, so a
+    # top-level ``from .api import instance_lock`` would loop.
+    from .api import instance_lock  # noqa: PLC0415
+
     cctx = zstandard.ZstdCompressor()
     with (
+        instance_lock(instance_root, exclusive=False),
         final_dest.open("wb") as raw_out,
         cctx.stream_writer(raw_out) as zst,
         tarfile.open(fileobj=zst, mode="w|") as tar,
