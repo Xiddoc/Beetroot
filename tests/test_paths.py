@@ -130,6 +130,87 @@ class TestBundledComposeFile:
         for var in ("INSTANCE_NAME", "ADB_PORT", "FRIDA_PORT", "FRIDA_PORT2"):
             assert f"${{{var}}}" in text or f"${{{var}:-" in text
 
+    def test_bundled_compose_file_is_stable_across_calls(self) -> None:
+        # T2 Agent 2 B-8: ``importlib.resources.as_file`` returns an
+        # extracted-tempdir path inside a context manager that's gone
+        # the moment the context exits. The helper caches a stable
+        # path under the user cache so subsequent ``docker compose -f``
+        # invocations resolve identically.
+        first = paths.bundled_compose_file()
+        second = paths.bundled_compose_file()
+        assert first == second
+        # The path must still resolve to a readable file after the
+        # ``as_file`` context manager has exited.
+        assert first.is_file()
+        assert first.read_text()
+
+    def test_bundled_compose_file_handles_zip_install(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # Simulate a wheel-install path by faking
+        # ``importlib.resources.files(...)`` to return a Traversable
+        # whose ``is_file()`` is False but ``read_bytes()`` works (the
+        # zipimporter / multi-zip shape). The helper must extract the
+        # bytes into the user cache and return the cache path.
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        # Clear the module-level cache so the helper actually runs.
+        monkeypatch.setattr(paths, "_BUNDLED_COMPOSE_CACHE", None)
+
+        class _ZipResource:
+            def is_file(self) -> bool:
+                return False
+
+            def read_bytes(self) -> bytes:
+                return b"zipped: compose content\n"
+
+        class _Files:
+            def joinpath(self, name: str) -> _ZipResource:
+                return _ZipResource()
+
+        # ``as_file`` must accept this traversable too — patch it to
+        # yield the resource unchanged (the real implementation extracts
+        # into a tempdir, but the contract is "yields a thing
+        # ``read_bytes`` works on").
+        import contextlib
+        from collections.abc import Iterator
+
+        @contextlib.contextmanager
+        def _fake_as_file(resource: _ZipResource) -> Iterator[_ZipResource]:
+            yield resource
+
+        # Patch the importlib.resources symbols the helper imports at
+        # module load. Direct attribute access on ``paths.importlib``
+        # works at runtime but doesn't satisfy mypy strict-mode export
+        # checks; using the canonical module reference does.
+        monkeypatch.setattr(
+            importlib.resources, "files", lambda _pkg: _Files()
+        )
+        monkeypatch.setattr(
+            importlib.resources, "as_file", _fake_as_file
+        )
+
+        result = paths.bundled_compose_file()
+        assert result.is_file()
+        assert result.read_bytes() == b"zipped: compose content\n"
+        # The cache lives under user_cache_dir("templates").
+        assert (
+            result.parent == paths.user_cache_dir("templates")
+        ), f"unexpected cache location: {result}"
+
+        # Hit the "cache already exists with identical bytes" branch
+        # (no write). Clear the in-memory cache so the helper re-runs
+        # the cache-target check, then verify the file's mtime hasn't
+        # moved — proves no redundant write happened.
+        monkeypatch.setattr(paths, "_BUNDLED_COMPOSE_CACHE", None)
+        first_mtime = result.stat().st_mtime_ns
+        second = paths.bundled_compose_file()
+        assert second == result
+        assert second.stat().st_mtime_ns == first_mtime, (
+            "helper re-wrote a cached file whose bytes already matched"
+        )
+
 
 class TestUserRegistryFile:
     def test_default_under_home_config(

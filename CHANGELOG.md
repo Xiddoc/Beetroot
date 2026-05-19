@@ -125,6 +125,15 @@
   between the last two steps leaves a tidy registry + a stale dir
   the user wipes manually. The CLI verb's order already matched;
   this aligns the OOP path. (Agent 2 B-4.)
+- **`paths.bundled_compose_file` uses `importlib.resources.as_file`.**
+  v0.3 stringified the `Traversable` returned by `files()` and
+  wrapped it in `Path()` — fine for editable installs (where the
+  resource lives on disk) but breaks wheel installs where the
+  resource lives inside a zip. v0.4 uses `as_file()` to materialise
+  a stable on-disk copy under `user_cache_dir("templates")` (which
+  T3 will migrate to `platformdirs.user_cache_path`); the path is
+  cached at module level so subsequent `docker compose -f` calls
+  resolve identically. (Agent 2 B-8.)
 
 ## v0.3.0 — 2026-05-19
 
