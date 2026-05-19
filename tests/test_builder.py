@@ -152,10 +152,16 @@ class TestCommandSequence:
         assert "requests" in patcher
         assert "tqdm" in patcher
 
-    def test_docker_compose_build_uses_settings_docker_bin(self) -> None:
+    def test_docker_compose_build_uses_settings_docker_bin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``settings`` is now a frozen pydantic model (T3) so direct
+        # attribute assignment raises. Swap the module-level singleton
+        # via the same monkeypatch pattern the env-tests use.
+        from beetroot.settings import Settings
+        monkeypatch.setattr(builder, "settings", Settings(docker_bin="/opt/docker"))
         runner = FakeRunner()
-        with patch.object(settings, "docker_bin", "/opt/docker"):
-            build_image(runner=runner)
+        build_image(runner=runner)
         build = runner.calls[3].cmd
         assert build[0] == "/opt/docker"
         assert build[1] == "compose"
@@ -305,10 +311,11 @@ class TestSettingsHonoured:
     def test_beetroot_docker_bin_env_overrides_build_command(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Settings is read at import time, so patch the attribute directly —
-        # this mirrors how the rest of the suite (test_compose.py via shutil.which)
-        # patches the resolved settings instance rather than re-reading env.
-        monkeypatch.setattr(settings, "docker_bin", "/opt/docker")
+        # T3 froze ``Settings`` so the in-place ``setattr`` pattern no
+        # longer works. Swap the module-level instance instead — this
+        # is the contract documented in settings.py's module docstring.
+        from beetroot.settings import Settings
+        monkeypatch.setattr(builder, "settings", Settings(docker_bin="/opt/docker"))
         runner = FakeRunner()
         build_image(runner=runner)
         assert runner.calls[3].cmd[0] == "/opt/docker"
