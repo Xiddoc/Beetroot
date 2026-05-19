@@ -79,11 +79,10 @@ def _resolve(module: Module, instance_root: Path) -> Path:
     if module.url:
         local = _fetch_url(module.url)
     else:
-        if module.path is None:  # pragma: no cover  # defensive — Module validator enforces exactly one of url/path
-            # Defence-in-depth: the Module pydantic validator already
-            # enforces that exactly one of ``url`` / ``path`` is set.
-            # An explicit error here keeps mypy's narrowing clean
-            # without leaning on ``assert`` (banned in src by S101).
+        # The Module pydantic validator already enforces "exactly one
+        # of url / path"; this branch is a defensive net for mypy
+        # narrowing and isn't covered.
+        if module.path is None:  # pragma: no cover
             raise ValueError("module entry has neither url nor path set")
         local = (instance_root / module.path).resolve()
         if not local.exists():

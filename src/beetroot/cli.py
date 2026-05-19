@@ -326,10 +326,11 @@ def ls(
         for inst in instances:
             p = inst.ports
             meta = registry.get(inst.name)
-            if meta is None:  # pragma: no cover  # defensive — Manager.list already filtered orphans
-                # ``Manager.list`` already filtered orphans, so a None
-                # meta here would be a registry race that's already
-                # caught upstream. Defensive check keeps mypy's
+            # Manager.list already filtered orphans; this branch is a
+            # defensive net against a registry race and isn't covered.
+            if meta is None:  # pragma: no cover
+                # A None ``meta`` here would be a registry race that's
+                # already caught upstream. Defensive check keeps mypy's
                 # narrowing clean without an ``assert`` (banned by S101).
                 raise registry.RegistryError(
                     f"instance {inst.name!r} disappeared from the registry",

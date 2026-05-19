@@ -253,6 +253,58 @@ def _is_manifest_member(member: tarfile.TarInfo) -> bool:
     return member.name in _MANIFEST_ARCNAMES
 
 
+def _prepare_destination(target: Path, *, force: bool) -> None:
+    """
+    Validate / clear ``target`` before extraction. Pulled out of :func:`restore`.
+
+    Raises :class:`SnapshotError` if the destination is occupied by a
+    sibling registered instance (refused even under ``--force``) or is
+    non-empty without ``--force``.
+    """
+    if not (target.exists() and any(target.iterdir())):
+        return
+    for other_name, meta in registry.list_instances().items():
+        if not isinstance(meta.backend, registry.RedroidBackendConfig):
+            continue
+        if Path(meta.backend.absolute_path).resolve() == target:
+            raise SnapshotError(
+                f"{target} is the registered directory of instance "
+                f"{other_name!r}; refusing to overwrite (even with "
+                f"--force). 'beetroot destroy {other_name}' first, "
+                "or pick a different --path."
+            )
+    if not force:
+        raise SnapshotError(
+            f"{target} already exists and is non-empty; "
+            "pass --force to overwrite, or pick another path"
+        )
+    shutil.rmtree(target)
+
+
+def _check_restored_port_collision(dest_name: str, index: int, target: Path) -> None:
+    """
+    Refuse if the restored instance's ports collide with a registered peer.
+
+    Without this check, restoring a snapshot that pins ``ports.adb: 5555``
+    next to an existing instance using ``5555`` would register cleanly
+    and only fail at compose-up time.
+    """
+    cfg = config.load_yaml(paths.instance_yaml(target))
+    new_ports = ports.resolve_ports(index, cfg.ports)
+    others = {
+        n: p for n, p in registry.all_resolved_ports().items()
+        if n != dest_name
+    }
+    collision = registry.find_port_collision(new_ports, others)
+    if collision is None:
+        return
+    port, other_name, kind = collision
+    raise SnapshotError(
+        f"port {port} ({kind}) collides with instance {other_name!r}; "
+        "edit the restored beetroot.yaml's ports: block before retrying"
+    )
+
+
 def restore(
     archive: Path,
     *,
@@ -292,69 +344,22 @@ def restore(
             "pick a different --as <name>"
         )
     target = dest_path.resolve()
-    if target.exists() and any(target.iterdir()):
-        # Refuse to wipe another registered instance's directory
-        # even under --force. The user almost certainly didn't mean
-        # to clobber a sibling's data; the safe path is to pick a
-        # new --path or destroy the conflict first. dest_name is
-        # already known not to be in the registry by the earlier
-        # ``already registered`` check, so any registry match here
-        # is a foreign instance.
-        for other_name, meta in registry.list_instances().items():
-            if not isinstance(meta.backend, registry.RedroidBackendConfig):
-                continue
-            if Path(meta.backend.absolute_path).resolve() == target:
-                raise SnapshotError(
-                    f"{target} is the registered directory of instance "
-                    f"{other_name!r}; refusing to overwrite (even with "
-                    f"--force). 'beetroot destroy {other_name}' first, "
-                    "or pick a different --path."
-                )
-        if not force:
-            raise SnapshotError(
-                f"{target} already exists and is non-empty; "
-                "pass --force to overwrite, or pick another path"
-            )
-        shutil.rmtree(target)
+    _prepare_destination(target, force=force)
     # Validate the manifest first so a malformed archive bails out
     # before we touch the destination directory or the registry.
     read_manifest(archive)
-    # Track whether we created ``target`` so the rollback path knows
-    # whether ``rmtree`` is safe. ``target`` is always extracted into
-    # below — but if the user pointed ``--path`` at a pre-existing dir
-    # that we wiped under ``--force``, the pre-existing-flag is sticky
-    # on the wipe (the dir is logically ours now). Either way:
-    # ``created_dir`` is True iff Beetroot now owns the directory.
+    # ``created_dir`` is True iff Beetroot now owns the directory; the
+    # rollback path uses it to decide whether to ``rmtree``.
     created_dir = not target.exists()
     target.mkdir(parents=True, exist_ok=True)
     _extract_archive_into(archive, target)
-
-    # Resolve the restored instance's ports against the freshly-picked
-    # index and refuse if they collide with an already-registered
-    # peer's resolved ports. Without this check, restoring a snapshot
-    # that pins ports.adb: 5555 next to an existing instance using
-    # 5555 would register cleanly and only fail at compose-up time.
-    cfg = config.load_yaml(paths.instance_yaml(target))
     # Atomic allocation + registration under one file lock.
     index = registry.add_allocating(dest_name, target)
     try:
-        new_ports = ports.resolve_ports(index, cfg.ports)
-        others = {
-            n: p for n, p in registry.all_resolved_ports().items()
-            if n != dest_name
-        }
-        collision = registry.find_port_collision(new_ports, others)
-        if collision is not None:
-            port, other_name, kind = collision
-            raise SnapshotError(
-                f"port {port} ({kind}) collides with instance {other_name!r}; "
-                "edit the restored beetroot.yaml's ports: block before retrying"
-            )
+        _check_restored_port_collision(dest_name, index, target)
         # Stage .env + frida-server + modules now so `beetroot up <name>`
-        # works without a follow-up `beetroot apply`. Mirrors what
-        # Instance.create / Instance.register do. The import is local
-        # because api imports snapshot at module load — top-level here
-        # would loop.
+        # works without a follow-up `beetroot apply`. The import is
+        # local because api imports snapshot at module load.
         from . import api  # noqa: PLC0415
         api.Instance.load(dest_name)._stage()  # noqa: SLF001  # snapshot ↔ api are siblings; _stage is the inter-module re-stage hook
     except BaseException:
