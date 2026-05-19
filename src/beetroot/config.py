@@ -142,22 +142,33 @@ class Module(BaseModel):
             )
 
 
+_DEFAULT_DENYLIST: Final = (
+    "com.google.android.gms",
+    "com.google.android.gms.unstable",
+)
+
+
 class Stealth(BaseModel):
     """
     Root-hiding (denylist) configuration.
 
     Attributes:
-        denylist: Package names added to Magisk's denylist at boot.
-            Each entry must match the Android package-id grammar
+        denylist: Package names added to Magisk's denylist at boot. Each
+            entry must match the Android package-id grammar
             (``[a-zA-Z0-9._]+``) — see :data:`_DENYLIST_PKG_RE`. The
             grammar is enforced at validation time so T2's
             ``magisk-config.sh`` wire-up can compose the entries into
             a SQLite REPLACE-INTO statement without escaping; any
             shape that wouldn't be a valid package name today is
             assumed to be either a typo or an injection attempt.
+            Defaults to the GMS package pair (the v0.3 helper enrolled
+            these unconditionally; v0.4 moves the enrolment under
+            user control but keeps the default behaviour identical).
     """
 
-    denylist: list[str] = Field(default_factory=list)
+    denylist: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_DENYLIST)
+    )
 
     @field_validator("denylist")
     @classmethod
@@ -393,15 +404,22 @@ def render_env(name: str, cfg: InstanceConfig, ports: dict[str, int]) -> str:
         f"DISPLAY_HEIGHT={cfg.display.height}",
         f"DISPLAY_FPS={cfg.display.fps}",
         f"DISPLAY_GPU={cfg.display.gpu_mode}",
-        # v0.4 stealth-posture overrides — emitted empty by default
-        # so the bundled compose template's ${VAR:-} fallback is
-        # the source of truth. v0.4 sets these from the manifest
-        # path_layout. Keeping them in render_env keeps the
-        # compose-template / render_env contract symmetric (see
-        # tests/test_compose_template_envs.py).
-        "BEETROOT_MAGISK_DB=",
-        "BEETROOT_MODULES_DIR=",
-        "BEETROOT_FRIDA_BIN=",
+        # T2 (Agent 2 B-1): wire Stealth.denylist through to
+        # magisk-config.sh. Encoded as a comma-separated list because
+        # toybox sh has no array support — the helper iterates over
+        # ``IFS=,``. Per-package shape is already validated by the
+        # ``Stealth._check_packages`` regex (T1), so we can safely
+        # join with a delimiter that's not in the package-id grammar.
+        f"BEETROOT_DENYLIST_PACKAGES={','.join(cfg.stealth.denylist)}",
+        # v0.4 stealth-posture overrides — emitted with the known-safe
+        # defaults (T2 Agent 1 1.1 / Agent 3 1.1: the compose template
+        # parameterises mount targets too, so render_env is the single
+        # source of truth instead of the YAML's ${VAR:-default}
+        # fallback). v0.5's PR1 will replace these defaults with
+        # randomised paths read from RedroidBackendConfig.stealth_paths.
+        "BEETROOT_MAGISK_DB=/data/adb/magisk.db",
+        "BEETROOT_MODULES_DIR=/data/adb/modules_update",
+        "BEETROOT_FRIDA_BIN=/data/local/tmp/frida-server",
     ]
     if cfg.resources.mem_reservation is not None:
         lines.append(f"MEM_RESERVATION={cfg.resources.mem_reservation}")

@@ -272,8 +272,15 @@ class TestStealthDenylist:
         )
         assert cfg.denylist[0] == "com.google.android.gms"
 
-    def test_empty_denylist_default(self) -> None:
-        assert Stealth().denylist == []
+    def test_gms_denylist_default(self) -> None:
+        # T2 (Agent 2 B-1): the v0.3 entrypoint hard-coded the GMS pair
+        # into ``magisk-config.sh``. v0.4 moves enrolment under the
+        # config model — the default now ships the same GMS pair so a
+        # bare ``beetroot create`` keeps the v0.3 behaviour intact.
+        assert Stealth().denylist == [
+            "com.google.android.gms",
+            "com.google.android.gms.unstable",
+        ]
 
     def test_package_with_space_rejected(self) -> None:
         with pytest.raises(ValidationError, match="package id"):
@@ -530,6 +537,54 @@ class TestRenderEnv:
         cfg = InstanceConfig(resources=Resources(memswap_limit="4g"))
         result = render_env("alpha", cfg, self._ports())
         assert "MEMSWAP_LIMIT=4g" in result
+
+    def test_emits_default_denylist_packages(self) -> None:
+        # T2 (Agent 2 B-1): the default Stealth model carries the GMS
+        # pair so a bare ``beetroot create`` keeps v0.3's hard-coded
+        # behaviour intact.
+        cfg = InstanceConfig()
+        result = render_env("alpha", cfg, self._ports())
+        assert (
+            "BEETROOT_DENYLIST_PACKAGES=com.google.android.gms,"
+            "com.google.android.gms.unstable"
+        ) in result
+
+    def test_emits_custom_denylist_packages_as_csv(self) -> None:
+        # T2 (Agent 2 B-1): the env var the bundled compose template
+        # consumes must be a comma-separated list; toybox sh has no
+        # array support, so the helper iterates via ``IFS=,``.
+        from beetroot.config import Stealth
+        cfg = InstanceConfig(stealth=Stealth(
+            denylist=["com.app.one", "com.app.two", "com.x.y.z123"]
+        ))
+        result = render_env("alpha", cfg, self._ports())
+        assert (
+            "BEETROOT_DENYLIST_PACKAGES=com.app.one,com.app.two,com.x.y.z123"
+            in result
+        )
+
+    def test_emits_empty_denylist_packages_when_explicitly_disabled(self) -> None:
+        # An explicit empty list (``stealth.denylist: []``) must surface
+        # as ``BEETROOT_DENYLIST_PACKAGES=`` (no value) so the helper's
+        # ``if [ -n "$DENYLIST_PACKAGES" ]`` guard short-circuits and no
+        # rows are SQL'd.
+        from beetroot.config import Stealth
+        cfg = InstanceConfig(stealth=Stealth(denylist=[]))
+        result = render_env("alpha", cfg, self._ports())
+        assert "BEETROOT_DENYLIST_PACKAGES=\n" in result
+
+    def test_emits_known_safe_container_paths(self) -> None:
+        # T2 (Agent 1 1.1 / Agent 3 1.1): render_env is the single
+        # source of truth for the helper-side defaults — the compose
+        # template still carries ``${VAR:-default}`` fallbacks for the
+        # raw-compose escape hatch, but a Beetroot-rendered .env file
+        # always sets them to known-safe values. v0.5's PR1 will
+        # randomise these once stealth research validates a path.
+        cfg = InstanceConfig()
+        result = render_env("alpha", cfg, self._ports())
+        assert "BEETROOT_MAGISK_DB=/data/adb/magisk.db" in result
+        assert "BEETROOT_MODULES_DIR=/data/adb/modules_update" in result
+        assert "BEETROOT_FRIDA_BIN=/data/local/tmp/frida-server" in result
 
 
 class TestWriteLoadYamlRoundtrip:

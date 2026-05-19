@@ -46,9 +46,9 @@ This is reliable because the DB is only read by Zygisk after Zygote starts, whic
 
 ## Module staging
 
-Magisk modules are staged at `<instance-dir>/modules/` on the host (bind-mounted read-only to `/flash_dir` inside the container). The CLI is responsible for downloading and placing zips there — the container just reads them at boot.
+Magisk modules are staged at `<instance-dir>/modules/` on the host (bind-mounted read-only to `/data/adb/modules_update` inside the container — `BEETROOT_MODULES_DIR` overrides the target if you need a different path). The CLI is responsible for downloading and placing zips there — the container just reads them at boot.
 
-At boot, `entrypoint.sh` iterates `*.zip` files in `/flash_dir` and calls `magisk --install-module <zip>` for each. Modules are installed once at boot; adding a new zip requires a restart.
+At boot, `flash-modules.sh` iterates `*.zip` files under `$BEETROOT_MODULES_DIR` (default `/data/adb/modules_update`) and calls `magisk --install-module <zip>` for each. Modules are installed once at boot; adding a new zip requires a restart.
 
 ## Registry
 

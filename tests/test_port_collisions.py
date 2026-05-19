@@ -158,6 +158,11 @@ class TestCmdCreateEndToEndEnvBytes:
         alpha_env_bytes = paths.instance_env(alpha_root).read_bytes()
         bravo_env_bytes = paths.instance_env(bravo_root).read_bytes()
 
+        # T2 wired ``BEETROOT_DENYLIST_PACKAGES`` through render_env
+        # (defaults to the GMS pair) and switched the stealth-path
+        # defaults from empty to the known-safe v0.3 container paths;
+        # this pins the full byte-for-byte ordering of the .env so
+        # render_env can't drift silently.
         expected_alpha = (
             b"INSTANCE_NAME=alpha\n"
             b"BASE_IMAGE=redroid/redroid:14.0.0_litegapps_houdini_magisk\n"
@@ -172,9 +177,11 @@ class TestCmdCreateEndToEndEnvBytes:
             b"DISPLAY_HEIGHT=960\n"
             b"DISPLAY_FPS=3\n"
             b"DISPLAY_GPU=host\n"
-            b"BEETROOT_MAGISK_DB=\n"
-            b"BEETROOT_MODULES_DIR=\n"
-            b"BEETROOT_FRIDA_BIN=\n"
+            b"BEETROOT_DENYLIST_PACKAGES=com.google.android.gms,"
+            b"com.google.android.gms.unstable\n"
+            b"BEETROOT_MAGISK_DB=/data/adb/magisk.db\n"
+            b"BEETROOT_MODULES_DIR=/data/adb/modules_update\n"
+            b"BEETROOT_FRIDA_BIN=/data/local/tmp/frida-server\n"
         )
         expected_bravo = (
             b"INSTANCE_NAME=bravo\n"
@@ -190,9 +197,11 @@ class TestCmdCreateEndToEndEnvBytes:
             b"DISPLAY_HEIGHT=960\n"
             b"DISPLAY_FPS=3\n"
             b"DISPLAY_GPU=host\n"
-            b"BEETROOT_MAGISK_DB=\n"
-            b"BEETROOT_MODULES_DIR=\n"
-            b"BEETROOT_FRIDA_BIN=\n"
+            b"BEETROOT_DENYLIST_PACKAGES=com.google.android.gms,"
+            b"com.google.android.gms.unstable\n"
+            b"BEETROOT_MAGISK_DB=/data/adb/magisk.db\n"
+            b"BEETROOT_MODULES_DIR=/data/adb/modules_update\n"
+            b"BEETROOT_FRIDA_BIN=/data/local/tmp/frida-server\n"
         )
         assert alpha_env_bytes == expected_alpha
         assert bravo_env_bytes == expected_bravo

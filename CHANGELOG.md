@@ -67,6 +67,36 @@
   surface (`download`, `stage_for_instance`, `stage_empty`,
   `sha256_of`, `release_url`, `cached_binary`, `frida_cache_dir`,
   `ModuleFetchError`) is otherwise unchanged.
+- **`/flash_dir` → `/data/adb/modules_update` bind-mount target.** v0.3
+  bind-mounted `<instance-dir>/modules` to `/flash_dir`; v0.4 moves
+  the target to Magisk's standard module-staging directory
+  (`/data/adb/modules_update`), driven by `BEETROOT_MODULES_DIR`. The
+  default applies to every new `down + up` cycle — existing running
+  v0.3 containers see the change at next restart.
+
+**Bug fixes (audit-flagged)**
+
+- **`Stealth.denylist` wired through to `magisk-config.sh`.** v0.3 read
+  the YAML field and threw it away — the helper enrolled a hard-coded
+  GMS pair regardless. v0.4 pipes `cfg.stealth.denylist` through
+  `render_env` as `BEETROOT_DENYLIST_PACKAGES` (comma-separated; toybox
+  sh has no array support), and the helper iterates the list via
+  `IFS=,`. The pydantic regex from T1 still gates per-package shape so
+  the SQL is safe to compose without escaping. `Stealth.denylist`'s
+  default now ships the GMS pair so a bare `beetroot create` keeps the
+  v0.3 enrolment behaviour intact. (Agent 2 B-1, Agent 3 1.3.)
+- **Compose mount targets parameterised.** The bundled compose template
+  now reads `${BEETROOT_FRIDA_BIN}` / `${BEETROOT_MODULES_DIR}` on
+  **both sides** of the bind-mount entry (v0.3 hardcoded the container
+  side). `render_env` emits both with the known-safe v0.3 paths
+  (`/data/local/tmp/frida-server`, `/data/adb/modules_update`). v0.5's
+  PR1 will replace these defaults with randomised values once stealth
+  research validates a path. (Agent 1 1.1, Agent 3 1.1.)
+- **Magisk Zygisk write is verified.** After the `REPLACE INTO settings
+  VALUES ('zygisk', 1)`, `magisk-config.sh` now `SELECT`s the row back
+  and exits non-zero if Magisk returned anything other than `1`. v0.3
+  silently trusted the REPLACE; this catches schema drift or daemon-race
+  regressions loudly. (Agent 1, Agent 2 F-9, Agent 3 1.2.)
 
 ## v0.3.0 — 2026-05-19
 
