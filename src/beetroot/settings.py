@@ -1,14 +1,24 @@
 """
 Environment-driven overrides for beetroot.
 
-Settings are read from the process environment (or a .env file if present).
-All variables are prefixed with ``BEETROOT_``.
+Settings are read **strictly from the process environment** (no
+``.env`` auto-load). All variables are prefixed with ``BEETROOT_``.
 
 Examples::
 
     BEETROOT_DOCKER_BIN=/usr/local/bin/docker  # override docker binary
     BEETROOT_FRIDA_ARCH=android-arm64          # frida-server arch for ARM VMs
     BEETROOT_HTTP_TIMEOUT=60                   # urllib timeout in seconds
+
+T2 Agent 3 1.5 / Agent 4: v0.3 had ``env_file=".env"`` in
+``SettingsConfigDict``, which auto-loaded the *current working
+directory's* .env file at every ``Settings()`` instantiation. Inside
+an instance directory the per-instance .env (which is consumed by
+Docker compose, not Beetroot) carries keys like ``INSTANCE_NAME``,
+``ADB_PORT`` etc. — none of which match ``BEETROOT_*`` — but the
+discovery walk + extra-key warnings tripped on the missing match.
+Dropping ``env_file`` decouples Beetroot's CLI overrides from the
+instance .env contract entirely.
 """
 from __future__ import annotations
 
@@ -28,8 +38,6 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="BEETROOT_",
-        env_file=".env",
-        env_file_encoding="utf-8",
         extra="ignore",
     )
 

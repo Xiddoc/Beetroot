@@ -151,6 +151,13 @@
   digest is verified case-insensitively and a mismatch raises
   `ValueError` (defends against a hostile mirror substituting the
   release). (Agent 1.)
+- **`Settings` no longer auto-loads `.env`.** v0.3's
+  `SettingsConfigDict(env_file=".env", ...)` made every
+  `Settings()` instantiation walk the *current working directory's*
+  `.env` file. Inside an instance directory that's the
+  Docker-compose env file (`INSTANCE_NAME=…`, `ADB_PORT=…`, etc.) —
+  values Beetroot must not pick up. v0.4 drops `env_file`; settings
+  read strictly from `os.environ`. (Agent 3 1.5, Agent 4.)
 
 ## v0.3.0 — 2026-05-19
 
