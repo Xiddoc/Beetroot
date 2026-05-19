@@ -104,6 +104,47 @@ def test_check_invocations_rejects_invented_inline_flag() -> None:
     assert "unknown flag '--foo'" in errors[0]
 
 
+def test_python_import_in_inline_span_is_not_a_cli_invocation() -> None:
+    """Regression: ``from beetroot import X`` is Python, not a CLI verb.
+
+    T3's expanded inline-code scanner false-positived on T2's CHANGELOG
+    block where the rename announcement said ``from beetroot import
+    frida_dl`` — the scanner parsed it as ``beetroot import`` =
+    "unknown verb 'import'". The fix skips any inline span whose
+    stripped content begins with ``from `` or ``import ``.
+    """
+    sources = [
+        (5, "from beetroot import frida_dl"),
+        (6, "from beetroot import frida_download"),
+        (7, "import beetroot"),
+        (8, "import beetroot.api"),
+    ]
+    known = {"create", "up", "down"}
+    errors = lint_changelog._check_invocations(
+        sources, known, flag_cache={"create": {"--help"}},
+    )
+    assert errors == []
+
+
+def test_python_import_skip_does_not_swallow_real_invocation_in_same_paragraph() -> None:
+    """A real ``beetroot <verb>`` later in prose is still caught.
+
+    The skip is per-inline-span (each span is its own ``(line_no,
+    text)`` source), so a paragraph containing both an import line and
+    a CLI invocation gets the invocation scanned normally.
+    """
+    sources = [
+        (5, "from beetroot import frida_download"),  # skipped
+        (5, "beetroot doctor --foo"),                 # scanned
+    ]
+    known = {"create"}
+    errors = lint_changelog._check_invocations(
+        sources, known, flag_cache={"create": {"--help"}},
+    )
+    assert len(errors) == 1
+    assert "unknown beetroot verb 'doctor'" in errors[0]
+
+
 def test_empty_unreleased_returns_no_lines() -> None:
     raw = """\
 ## Unreleased

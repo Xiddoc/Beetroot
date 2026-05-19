@@ -49,6 +49,14 @@ BEETROOT_INVOCATION = re.compile(r"\bbeetroot\s+(?P<rest>[^\n#`]+)")
 # (``--auto-install`` cited inline in a paragraph that had been
 # revised after the flag was deferred).
 INLINE_CODE_SPAN = re.compile(r"`([^`\n]+)`")
+# Python-import statements that mention ``beetroot`` are NOT CLI
+# invocations even though the regex above would otherwise treat the
+# token after ``beetroot`` as a verb. The CHANGELOG often quotes
+# imports like ``from beetroot import frida_download`` in rename
+# entries, which would false-positive as ``beetroot import`` =
+# "unknown verb 'import'". Skip any inline-code span whose stripped
+# content begins with ``from `` or ``import ``.
+_PYTHON_IMPORT_PREFIXES = ("from ", "import ")
 
 
 def _slurp(path: Path) -> list[str]:
@@ -176,6 +184,10 @@ def _check_invocations(
     errors: list[str] = []
     flag_cache = flag_cache if flag_cache is not None else {}
     for line_no, raw in sources:
+        if raw.lstrip().startswith(_PYTHON_IMPORT_PREFIXES):
+            # Python-import statement quoted in prose, not a CLI
+            # invocation — skip the whole span (see comment above).
+            continue
         for match in BEETROOT_INVOCATION.finditer(raw):
             rest = match.group("rest").strip()
             tokens = rest.split()
