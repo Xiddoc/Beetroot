@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from beetroot import builder, cli, compose
+from beetroot import builder, cli, compose, registry
 
 
 def _run_main_with_argv(
@@ -131,4 +131,27 @@ class TestBootstrapErrorSurfacing:
         assert code == 1
         assert "error:" in err
         assert "simulated bootstrap failure" in err
+        assert "Traceback" not in err
+
+
+class TestRegistryErrorSurfacing:
+    """T2 Agent 3 1.9: registry.RegistryError catches in cli.main."""
+
+    def test_registry_error_surfaced_via_main(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Inject a verb that raises ``RegistryError``. Pre-T2 the
+        # CLI would have propagated this as a Rich-rendered
+        # traceback; post-T2 ``cli.main`` catches it alongside
+        # ComposeError / BootstrapError / etc.
+        def _boom() -> None:
+            raise registry.RegistryError("simulated registry inconsistency")
+
+        monkeypatch.setattr(cli, "app", _boom)
+        code, err = _run_main_with_argv(
+            ["beetroot", "ls"], monkeypatch
+        )
+        assert code == 1
+        assert "error:" in err
+        assert "simulated registry inconsistency" in err
         assert "Traceback" not in err

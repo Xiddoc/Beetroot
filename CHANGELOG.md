@@ -176,6 +176,12 @@
   `FileNotFoundError` from `Instance.load` — only the
   yaml-missing pre-check filters orphans now; any unexpected
   OSError bubbles. (v0.3.1 deferred, Agent 2 F-12, Agent 3 1.7.)
+- **`cli.main` catches `registry.RegistryError`.** v0.3 let
+  `RegistryError` ("unknown instance X", "X is an adb backend, no
+  on-disk dir") propagate as a Rich-rendered traceback. v0.4
+  catches it alongside `ComposeError` / `BootstrapError` /
+  `ModuleFetchError` for the same friendly `error: ...` line.
+  (Agent 3 1.9.)
 
 ## v0.3.0 — 2026-05-19
 

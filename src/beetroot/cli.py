@@ -585,6 +585,14 @@ def main() -> None:
     except modules_download.ModuleFetchError as e:
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
+    except registry.RegistryError as e:
+        # T2 Agent 3 1.9: any code path that walks the registry can
+        # surface a RegistryError ("unknown instance X", "X is an
+        # adb backend, no on-disk dir") that v0.3 let propagate as
+        # a Rich-rendered traceback. Catch it alongside the other
+        # domain exceptions for a friendly ``error: ...`` line.
+        typer.echo(f"error: {e}", err=True)
+        sys.exit(1)
     except FileNotFoundError as e:
         # Belt-and-suspenders: an instance whose on-disk dir was
         # ``rm -rf``'d behind the CLI's back leaves a stale registry
