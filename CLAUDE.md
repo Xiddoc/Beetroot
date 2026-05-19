@@ -68,8 +68,8 @@ src/beetroot/
 ├── ports.py       # stride-10 allocator
 ├── registry.py    # instances.json, fcntl.flock guards mutations
 ├── compose.py     # subprocess wrappers around `docker compose`
-├── frida_dl.py    # download frida-server.xz, decompress (lzma), cache
-├── modules_dl.py  # fetch + sha256-verify Magisk module zips
+├── frida_download.py    # download frida-server.xz, decompress (lzma), cache
+├── modules_download.py  # fetch + sha256-verify Magisk module zips
 ├── snapshot.py    # pack/unpack instances as .tar.zst with manifest
 ├── builder.py     # one-time base-image build (`beetroot build`)
 └── paths.py       # single source of truth for filesystem layout
@@ -142,7 +142,7 @@ uv run pytest                                         # full suite (coverage gat
 uv run pytest --cov=beetroot --cov-report=term-missing  # equivalent — explicit cov flags
 ```
 
-Tests live under `tests/` and use pytest's built-in mocking (`unittest.mock`) — no real network or docker calls. `conftest.py` provides two composable fixtures: `isolated_registry` (points `$XDG_CONFIG_HOME` and `$XDG_CACHE_HOME` at a per-test tmp dir) and `isolated_instance` (creates a minimal instance dir and `chdir`s into it). Most CLI/registry tests use the `cli_root` composite fixture, which layers `isolated_registry` with stubbed `shutil.which` + a no-op `frida_dl.download`.
+Tests live under `tests/` and use pytest's built-in mocking (`unittest.mock`) — no real network or docker calls. `conftest.py` provides two composable fixtures: `isolated_registry` (points `$XDG_CONFIG_HOME` and `$XDG_CACHE_HOME` at a per-test tmp dir) and `isolated_instance` (creates a minimal instance dir and `chdir`s into it). Most CLI/registry tests use the `cli_root` composite fixture, which layers `isolated_registry` with stubbed `shutil.which` + a no-op `frida_download.download`.
 
 **Coverage**
 
