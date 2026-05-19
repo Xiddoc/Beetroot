@@ -1,4 +1,4 @@
-# Local hooks. Two are wired in:
+# Local hooks. Wired in:
 #
 # 1. ``pytest-coverage`` runs the full pytest + 100% coverage gate on every
 #    ``git push``. One-time setup (after ``uv sync --group dev``):
@@ -6,13 +6,16 @@
 #        uv run pre-commit install --hook-type pre-push
 #
 # 2. ``changelog-lint`` validates beetroot invocations cited in fenced
-#    shell blocks under ``## Unreleased`` of ``CHANGELOG.md``. It runs on
-#    pre-commit when CHANGELOG.md is touched (cheap — one ``--help`` per
-#    cited verb) and is also runnable as ``pre-commit run --hook-stage
-#    manual changelog-lint`` for the CI mirror. Why: CR aggregation
-#    surfaced a CHANGELOG entry citing a flag that had been removed in
-#    the same Unreleased block — invisible to per-theme review because
-#    the failure mode requires parsing the fence + probing the CLI.
+#    shell blocks AND prose-inline backtick spans under ``## Unreleased``
+#    of ``CHANGELOG.md``. It runs on pre-commit when CHANGELOG.md OR
+#    ``src/beetroot/cli.py`` is touched (T3: a verb-renaming commit
+#    must invalidate the linter too) and is also runnable as
+#    ``pre-commit run --hook-stage manual changelog-lint`` for the CI
+#    mirror.
+#
+# 3. ``interrogate`` keeps docstring coverage above 95% on
+#    ``src/beetroot/``. Fast enough to run every commit; the
+#    matching CI gate provides defence-in-depth.
 repos:
   - repo: local
     hooks:
@@ -29,7 +32,19 @@ repos:
         name: lint beetroot invocations under Unreleased
         entry: uv run python scripts/lint_changelog.py
         language: system
-        files: ^CHANGELOG\.md$
+        # T3: a verb-renaming commit in cli.py must invalidate the
+        # linter too, otherwise the CHANGELOG entry that cites the
+        # old name sails through.
+        files: ^(CHANGELOG\.md|src/beetroot/cli\.py)$
+        pass_filenames: false
+        stages: [pre-commit, manual]
+        verbose: true
+
+      - id: interrogate
+        name: interrogate (>=95% docstring coverage)
+        entry: uv run interrogate src/beetroot/
+        language: system
+        types: [python]
         pass_filenames: false
         stages: [pre-commit, manual]
         verbose: true
