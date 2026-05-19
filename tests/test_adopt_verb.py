@@ -170,8 +170,13 @@ class TestAdoptedInstanceDispatch:
         runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
         result = runner.invoke(cli.app, ["env", "phone"])
         assert result.exit_code == 0
-        assert "ANDROID_DEVICE=emulator-5554" in result.stdout
-        assert "FRIDA_DEVICE=localhost:27042" in result.stdout
+        # T6's _emit_env_adb emits ADB_SERIAL + FRIDA_HOST for adb-backed
+        # instances (render_env is redroid-only — emits compose .env
+        # keys that don't apply to a physical phone). T5's adopt verb
+        # registers the row; the env verb dispatches via the registry's
+        # kind discriminator into the adb-specific helper.
+        assert "export ADB_SERIAL=emulator-5554" in result.stdout
+        assert "FRIDA_HOST=localhost:" in result.stdout
 
     def test_up_raises_backend_capability_error_with_exit_code_2(
         self,
