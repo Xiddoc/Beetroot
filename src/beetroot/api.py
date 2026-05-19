@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -283,10 +284,16 @@ class Instance:
         inst = cls(name=name, root=target_root, cfg=effective_cfg)
         try:
             _check_port_collisions(name, new_ports)
-            inst._stage()
+            inst._stage_local()
         except BaseException:
             _rollback_partial_create(name, target_root, created_dir=created_dir)
             raise
+        # Network-touching stage runs OUTSIDE the rollback try/except —
+        # a Frida 404 or module HTTP error should not destroy the
+        # already-registered local artefacts. The user re-runs
+        # ``beetroot apply <name>`` once the network heals. (T2 Agent
+        # 2 B-2.)
+        _stage_network_soft(inst)
         return inst
 
     @classmethod
@@ -320,10 +327,12 @@ class Instance:
         inst = cls(name=resolved_name, root=target_root, cfg=cfg)
         try:
             _check_port_collisions(resolved_name, new_ports)
-            # Stage .env + frida-server + modules now so a follow-up
+            # Stage .env + dirs + frida placeholder so a follow-up
             # `beetroot up <name>` works without an intermediate
-            # `beetroot apply`. Mirrors what Instance.create does.
-            inst._stage()
+            # `beetroot apply`. Network artefacts (real Frida binary
+            # + module zips) stage outside this try/except — see
+            # _stage_network_soft below.
+            inst._stage_local()
         except BaseException:
             # ``register`` adopts an existing directory — never delete
             # it on rollback. The user's beetroot.yaml + data/ + any
@@ -333,6 +342,10 @@ class Instance:
                 resolved_name, target_root, created_dir=False,
             )
             raise
+        # Network step runs post-commit; soft failure leaves a usable
+        # registered instance behind for the user to retry via
+        # ``beetroot apply``. (T2 Agent 2 B-2.)
+        _stage_network_soft(inst)
         return inst
 
     @classmethod
@@ -705,18 +718,79 @@ class Instance:
         return meta
 
     def _stage(self) -> None:
-        """Render .env, stage frida-server, stage modules. Idempotent."""
+        """
+        Stage everything: local artefacts first, then network artefacts.
+
+        Convenience wrapper used by :meth:`apply` (where a single
+        try/except over the whole batch is what the user wants — apply
+        is interactive, and a network failure should surface).
+        :meth:`create` / :meth:`register` / :func:`snapshot.restore`
+        call the two halves explicitly so the network half runs
+        AFTER the registry commits — a Frida 404 there leaves a usable
+        instance behind that the user can retry with ``beetroot apply``.
+        """
+        self._stage_local()
+        self._stage_network()
+
+    def _stage_local(self) -> None:
+        """
+        Render .env + create empty dirs + place the Frida placeholder.
+
+        Rollback-safe by design: every action is local-only (no
+        network), so if any step raises the constructor's
+        ``_rollback_partial_create`` can ``rmtree`` the dir without
+        risking a half-consumed downloaded artefact. (T2 Agent 2 B-2.)
+        """
         new_ports = ports.resolve_ports(self.index, self._cfg.ports)
         paths.instance_data(self._root).mkdir(parents=True, exist_ok=True)
         paths.instance_modules(self._root).mkdir(parents=True, exist_ok=True)
         paths.instance_env(self._root).write_text(
             config.render_env(self._name, self._cfg, new_ports)
         )
+        # Always place the placeholder, even when frida is configured.
+        # ``_stage_network`` overwrites it with the real binary on
+        # success; on a network failure the placeholder survives so
+        # the bind-mount target exists and the compose ``up`` doesn't
+        # fail at mount-resolution time.
+        frida_download.stage_empty(self._root)
+
+    def _stage_network(self) -> None:
+        """
+        Download + stage Frida and modules. May hit the network.
+
+        Runs AFTER the registry write commits — a soft failure here
+        (Frida 404, module HTTP error) leaves a usable instance
+        behind that the user can retry with ``beetroot apply``
+        instead of losing the directory + registry slot to a hard
+        rollback. (T2 Agent 2 B-2.)
+        """
         if self._cfg.frida is not None:
             frida_download.stage_for_instance(self._root, self._cfg.frida.version)
-        else:
-            frida_download.stage_empty(self._root)
         modules_download.stage_for_instance(self._root, self._cfg)
+
+
+def _stage_network_soft(inst: Instance) -> None:
+    """
+    Run the network-touching stage step, swallowing failures with a hint.
+
+    Frida 404s and module HTTP errors after a successful local-stage
+    leave the instance registered + the .env rendered + the frida
+    placeholder in place — usable in every respect except that the
+    Frida binary / module zips aren't there yet. Surfacing the
+    failure as a soft "[beetroot] ..." line + a hint to re-run
+    ``beetroot apply`` once the network heals is friendlier than
+    blowing the instance away on a transient outage. (T2 Agent 2 B-2.)
+    """
+    try:
+        inst._stage_network()
+    except Exception as e:
+        print(
+            f"[beetroot] note: network-stage step failed for "
+            f"{inst.name!r} ({e!s}). The instance is registered and "
+            f"its .env is rendered; rerun `beetroot apply {inst.name}` "
+            f"once the network recovers.",
+            file=sys.stderr,
+        )
 
 
 def _rollback_partial_create(

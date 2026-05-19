@@ -350,13 +350,16 @@ def restore(
                 f"port {port} ({kind}) collides with instance {other_name!r}; "
                 "edit the restored beetroot.yaml's ports: block before retrying"
             )
-        # Stage .env + frida-server + modules now so `beetroot up <name>`
-        # works without a follow-up `beetroot apply`. Mirrors what
-        # Instance.create / Instance.register do. The import is local
-        # because api imports snapshot at module load — top-level here
-        # would loop.
+        # Stage .env + frida placeholder + dirs now so `beetroot up
+        # <name>` works without a follow-up `beetroot apply`. Mirrors
+        # what Instance.create / Instance.register do. The import is
+        # local because api imports snapshot at module load — top-level
+        # here would loop. Only the LOCAL stage step is rollback-fatal
+        # (T2 Agent 2 B-2); the network step runs post-commit via the
+        # shared soft-fail helper below.
         from . import api  # noqa: PLC0415
-        api.Instance.load(dest_name)._stage()
+        restored_inst = api.Instance.load(dest_name)
+        restored_inst._stage_local()
     except BaseException:
         # Roll back BOTH the registry row AND the extracted directory
         # (if we created it). Without the rmtree, a failed restore
@@ -366,6 +369,10 @@ def restore(
         if created_dir and target.exists():
             shutil.rmtree(target)
         raise
+    # Soft-fail network stage runs AFTER the rollback try/except so a
+    # Frida 404 doesn't destroy a freshly-extracted instance the user
+    # can recover via ``beetroot apply``.
+    api._stage_network_soft(restored_inst)
     return target
 
 

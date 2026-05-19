@@ -103,6 +103,13 @@
   reach. v0.4 stages first against a transient `InstanceConfig` and
   only commits to the YAML + in-memory model on success. Re-running
   the verb with a corrected URL is now safe. (Agent 2 B-6, Agent 3 1.6.)
+- **`Instance._stage` split into `_stage_local` + `_stage_network`.**
+  Local artefacts (`.env`, data/modules dirs, Frida placeholder) are
+  rollback-fatal — a failure there destroys the partial install. The
+  network step (real Frida binary, module zips) runs AFTER the
+  registry commits and is soft-fail: a Frida 404 prints a hint and
+  leaves the instance registered for the user to recover via
+  `beetroot apply <name>`. (Agent 2 B-2.)
 
 ## v0.3.0 — 2026-05-19
 
