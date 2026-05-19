@@ -70,6 +70,18 @@ for the full recipe.
 
 ::: beetroot.backends
 
+## `beetroot.backends.adb` — the `AdbDevice` backend
+
+T5's real-device backend. Drives a rooted Android device (real phone, third-party emulator, `adb connect`-ed network device) via the host `adb` CLI. Satisfies the `DeviceBackend` Protocol so every universal CLI verb (`shell`, `frida`, `module`, `env`) works uniformly against an adopted instance; lifecycle verbs (`up`, `down`, `restart`, `apply`, `destroy`, `snapshot`) raise `BackendCapabilityError` cleanly because there's no on-disk container to manage.
+
+```python
+from beetroot.backends.adb import AdbDevice
+```
+
+The class registers itself as `kind="adb"` at module import time so `Manager.resolve("phone")` returns an `AdbDevice` for any registry row with `backend.kind == "adb"`.
+
+::: beetroot.backends.adb
+
 ## `beetroot.builder`
 
 ::: beetroot.builder

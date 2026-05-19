@@ -111,6 +111,121 @@ T6 landed before T5's `AdbDevice` class. The dispatch in `beetroot doctor` check
 
 ---
 
+### v0.4 — Theme T5: `AdbDevice` backend + `beetroot adopt` + 30-LOC backend recipe
+
+**The second-backend deliverable.** v0.3's `DeviceBackend` Protocol existed
+on paper only — `Instance` was the sole implementation. T5 ships the
+real `AdbDevice` (driving rooted phones / emulators / network-adb
+devices via the host `adb` CLI) so the Protocol's modularity is now
+load-bearing, plus a synthetic third-backend test that grades the
+"~30 LOC + one entry-point line" extension recipe at every CI run.
+
+**New backend: `AdbDevice`**
+
+- **`src/beetroot/backends/adb.py`** — implements every property and
+  method on the `DeviceBackend` Protocol. `install_frida` downloads
+  via the existing `frida_download.download` cache, then runs the
+  full `adb push` + `chmod 755` + `su -c '... &'` + `adb forward
+  tcp:<host_port> tcp:27042` sequence. `shell` / `frida_cli` are
+  thin shells over `adb -s <serial> shell` and `frida -H
+  localhost:<host_port>`. `add_module` ships the **safe-default
+  variant**: pushes the zip to `/sdcard/Download/<basename>` and
+  prints a "install via Magisk app → Modules tab" instruction; the
+  `--auto-install` direct-to-`/data/adb/modules_update/` variant is
+  deferred to v0.5.
+- Lifecycle methods (`up` / `down` / `restart` / `apply` / `destroy`
+  / `snapshot`) raise `BackendCapabilityError` with a friendly
+  message — adb-adopted devices are managed outside Beetroot, so
+  there's no container to start/stop and no on-disk directory to pack.
+- Registers itself at import time as `kind="adb"` in the in-tree
+  backend registry; `Manager.resolve("phone")` returns an `AdbDevice`
+  for every adb-kind registry row.
+
+**New CLI verb: `beetroot adopt`**
+
+- `beetroot adopt <serial> [--name <n>]` — registers a rooted device
+  that's already reachable via `adb` under the global registry. Picks
+  the lowest free stride-of-10 port index so a follow-up
+  `beetroot frida <name>` lands on the same port a redroid instance
+  with the same index would have got. The default name is
+  `adb-<serial>` (lowercased, colons folded to hyphens, truncated to
+  24 chars to fit the Docker compose project-name grammar). IPv4-
+  shaped serials (with dots) require an explicit `--name`.
+
+**CLI Protocol-dispatch refactor**
+
+- `shell` / `env` / `frida` / `module` now resolve via
+  `Manager.resolve(name)` so the same verb body works uniformly for
+  redroid and adb backends. `module` keeps the redroid-specific
+  beetroot.yaml update path for `Instance` backends, dispatches via
+  the AdbDevice helper for adb backends, and emits a friendly error
+  for third-party backends without `add_module`.
+- Lifecycle verbs (`up` / `down` / `restart` / `apply` / `destroy`
+  / `snapshot`) narrow via the new `cli._resolve_redroid` helper.
+  Non-redroid backends surface `BackendCapabilityError` — caught by
+  `cli.main` and rendered as `error: ...` + **exit code 2** (distinct
+  from "instance not found" → 1) so wrapping scripts can distinguish.
+- `destroy` checks the registry kind directly (rather than via
+  `Manager.resolve`) so orphan redroid rows (registered, on-disk dir
+  removed) still flow through the v0.3 orphan-destroy path.
+
+**Registry surface**
+
+- `registry.add` and `registry.add_allocating` now accept a `backend=
+  <BackendConfig>` keyword for the discriminated-union form alongside
+  the v0.3 positional `(name, absolute_path, index)` form. The v0.3
+  form is preserved for source-compat; the v0.4 form is what
+  `beetroot adopt` calls.
+
+**Documentation**
+
+- `docs/reference/cli.md` — new `## adopt` section documenting the
+  verb, the default-name builder, and the exit-code-2 convention.
+- `docs/reference/api.md` — new `## beetroot.backends.adb` section
+  for the `AdbDevice` class.
+- `examples/adb-device.yaml` — documentation-only file describing the
+  conceptual shape of an adb-kind registry row (because adb-backed
+  instances do **not** have a real `beetroot.yaml`).
+
+**Tests**
+
+- `tests/test_adb_device.py` — every `subprocess.run(["adb", ...])`
+  stubbed; per-method argv assertions cover `is_available` (parses
+  `adb devices`), `install_frida` (full 4-call sequence with the
+  exact argv shape), `shell`, `frida_cli`, `add_module`, `from_meta`,
+  and every lifecycle stub.
+- `tests/test_adopt_verb.py` — `CliRunner` tests for `beetroot adopt`
+  default-name + explicit-name + collision + invalid-name paths, plus
+  Protocol-dispatch tests confirming `shell` / `env` work and `up` /
+  `destroy` / `snapshot` exit 2.
+- `tests/test_manager_polymorphism.py` — registers one redroid + one
+  adb instance; asserts `Manager.list()` returns both as
+  `DeviceBackend`-typed objects, narrows correctly via `isinstance`,
+  and that lifecycle calls on the adb backend raise
+  `BackendCapabilityError`.
+- `tests/test_backend_extension.py` — **the load-bearing synthetic
+  third-backend test**. Defines a `FakeBackend` + `FakeBackendConfig`
+  inline in ~30 LOC, registers via `register_backend("fake",
+  FakeBackend)` in an autouse-cleanup fixture, and asserts (a) the
+  Protocol is satisfied structurally, (b) `Manager.resolve` returns
+  the fake class, (c) `shell()` dispatches via the Protocol surface
+  with the right argv, (d) the `_resolve_redroid_for_backend` helper
+  raises `BackendCapabilityError` cleanly for non-Instance backends,
+  and (e) the third-party config round-trips through pydantic JSON.
+  If this test passes, third-party backends will work too.
+- `tests/conftest.py` — autouse `_snapshot_backend_registry` fixture
+  snapshots `_BACKEND_REGISTRY` before each test and restores after,
+  defending against the existing `pop("adb", None)` pattern in
+  `test_backend_registry.py` permanently dropping AdbDevice from
+  later tests in the same process.
+
+**Migration**
+
+- Pure addition. No breaking changes. Existing redroid workflows
+  unchanged. Programmatic users that did
+  `registry.add_allocating(name, path)` keep working; the new
+  `backend=...` keyword is optional.
+
 ### v0.4 — Theme T3: max-strictness CI / pre-commit / lint / type-check / test investment
 
 **Runtime dependencies**
