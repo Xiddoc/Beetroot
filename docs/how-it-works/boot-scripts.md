@@ -95,9 +95,9 @@ Iterates `*.zip` in the modules directory and calls
 `magisk --install-module` on each. The host CLI mirrors
 `beetroot.yaml`'s `modules:` list into this directory on `apply`.
 
-| Env var                 | Default      | Notes                                                                                                       |
-|-------------------------|--------------|-------------------------------------------------------------------------------------------------------------|
-| `BEETROOT_MODULES_DIR`  | `/flash_dir` | Container path where zips are staged. v0.4 (§3.5 of the stealth-posture design) moves this to `/data/adb/modules_update`. |
+| Env var                 | Default                      | Notes                                                                                                                                                                  |
+|-------------------------|------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `BEETROOT_MODULES_DIR`  | `/data/adb/modules_update`   | Container path where zips are staged. v0.4 T4 (§3.5 of the stealth-posture design) replaced the Beetroot-invented `/flash_dir` with Magisk's well-known staging dir. |
 
 If the directory is missing, the helper prints `[!] Modules directory
 $DIR not present — skipping flash step.` and exits 0 (a missing modules
@@ -132,7 +132,7 @@ attempt's port bind anyway).
 | Env var                | Default                              | Consumer            |
 |------------------------|--------------------------------------|---------------------|
 | `BEETROOT_MAGISK_DB`   | `/data/adb/magisk.db`                | `magisk-config.sh`  |
-| `BEETROOT_MODULES_DIR` | `/flash_dir`                         | `flash-modules.sh`  |
+| `BEETROOT_MODULES_DIR` | `/data/adb/modules_update`           | `flash-modules.sh`  |
 | `BEETROOT_FRIDA_BIN`   | `/data/local/tmp/frida-server`       | `launch-frida.sh`   |
 
 All three are passed through `compose.yaml`'s service `environment:`
@@ -162,7 +162,7 @@ When editing any of these files:
 
 - Run `shellcheck -s sh docker/*.sh` locally before commit. CI
   enforces a clean run.
-- Run `grep -E '/data/local/tmp/frida-server|/flash_dir|/data/adb/magisk.db' docker/*.sh`
+- Run `grep -E '/data/local/tmp/frida-server|/data/adb/modules_update|/data/adb/magisk.db' docker/*.sh`
   — every match should be inside a `${VAR:-/default}` expansion (or a
   doc comment). Hard-coded paths break v0.4's randomization design.
 - The Magisk DB schema is load-bearing; do not rewrite the SQL

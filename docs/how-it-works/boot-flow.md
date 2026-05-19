@@ -38,7 +38,7 @@ sequenceDiagram
     E->>E: wait for /data/adb/magisk.db to exist
     E->>M: magisk --sqlite: enable Zygisk + denylist
     E->>M: magisk --sqlite: add denylist entries
-    E->>M: magisk --install-module for each zip in /flash_dir
+    E->>M: magisk --install-module for each zip in /data/adb/modules_update
     E->>E: launch /data/local/tmp/frida-server &
     E->>E: wait (keeps frida-server as child)
 ```
@@ -51,7 +51,7 @@ In v0.3, each numbered step below lives in a dedicated helper (see [Boot Scripts
 
 2. **Configure Magisk via SQL.** (`magisk-config.sh`.) Calls `magisk --sqlite` to enable Zygisk and the denylist, then inserts each package from `stealth.denylist` as a denylist entry. These writes take effect the next time Zygisk reads the DB — which happens before any app process starts, because Zygisk hooks into Zygote before forking app processes.
 
-3. **Flash modules.** (`flash-modules.sh`.) Iterates every `*.zip` in `/flash_dir` (the bind-mounted `<instance-dir>/modules/` directory) and calls `magisk --install-module <zip>`. Modules that are already installed are reinstalled safely (Magisk handles idempotency).
+3. **Flash modules.** (`flash-modules.sh`.) Iterates every `*.zip` in `/data/adb/modules_update` (the bind-mounted `<instance-dir>/modules/` directory — v0.4 T4 moved the target from the Beetroot-invented `/flash_dir` to Magisk's well-known staging dir) and calls `magisk --install-module <zip>`. Modules that are already installed are reinstalled safely (Magisk handles idempotency).
 
 4. **Launch Frida (if opted in).** (`launch-frida.sh`.) If `/data/local/tmp/frida-server` is executable, starts it in the background with `&`. When the instance's `beetroot.yaml` omits the `frida:` block (v0.3+ default), this path is a 0-byte non-executable placeholder and the launch is skipped — no Frida process inside the container.
 
