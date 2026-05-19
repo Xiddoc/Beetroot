@@ -8,19 +8,41 @@ top-level sections: ``display``, ``resources``, ``frida``, ``modules``,
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
-from typing import Any, Final, Literal, Self, override
+from typing import Final, Literal, Self, override
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-SUPPORTED_API_VERSION: Final = 2
+SUPPORTED_API_VERSION: Final = 3
+
+# v0.4 (T1) bumped the schema 2 → 3. Old YAMLs that hard-pinned
+# ``api_version: 2`` auto-bump on load with a one-line stderr warning
+# (the bump is strictly additive — the v3 schema adds the
+# ``stealth.denylist`` per-package regex validator, no fields renamed).
+# v0.3's v0.2 → v0.3 (1 → 2) auto-bump is kept on the same code path so
+# users running ``v0.2 → v0.4`` in a single jump don't have to go
+# through an intermediate release.
+_AUTO_BUMPABLE_API_VERSIONS: Final = frozenset({1, 2})
 
 _VALID_ANDROID_VERSIONS = {11, 12, 13, 14}
 
 _MIN_PORT: Final = 1
 _MAX_PORT: Final = 65535
+
+# Stealth denylist packages must look like a normal Android package
+# id: alphanumerics, dots, and underscores only. Pre-validated at
+# config-load time as SQL-injection prophylaxis for T2's wire-up of
+# the denylist through ``magisk-config.sh``'s sqlite REPLACE INTO.
+_DENYLIST_PKG_RE: Final = re.compile(r"^[a-zA-Z0-9._]+$")
+
+# Frida release tags follow the major.minor.patch shape upstream.
+# Pre-validated so a typo in ``frida.version`` (e.g. ``"16.4"`` or
+# ``"16.4.10-rc1"``) surfaces at config-load time rather than as a
+# 404 from the cdn at download time. (T2 Agent 1.)
+_FRIDA_VERSION_RE: Final = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
 # Module-level set of YAML paths we've already printed the "auto-bumped
 # api_version 1 → 2" warning for in this process. Without the dedup,
@@ -84,9 +106,33 @@ class Frida(BaseModel):
 
     Attributes:
         version: The frida release tag to download (e.g. ``16.4.10``).
+            Must match ``major.minor.patch`` (the upstream Frida tag
+            grammar); typos like ``"16.4"`` or ``"16.4.10-rc1"`` raise
+            a ValidationError at load time rather than 404-ing on the
+            CDN at ``frida_download.download`` time.
+        sha256: Optional expected hex digest of the decompressed
+            frida-server binary. ``frida_download.download`` verifies
+            the digest against the cached binary when set and raises
+            ``ValueError`` on mismatch (defends against a hostile
+            mirror replacing the upstream release). Lowercase or
+            mixed-case hex are both accepted; comparison is
+            case-insensitive.
     """
 
     version: str = "16.4.10"
+    sha256: str | None = None
+
+    @field_validator("version")
+    @classmethod
+    def _check_version_shape(cls, v: str) -> str:
+        if not _FRIDA_VERSION_RE.match(v):
+            raise ValueError(
+                f"frida.version {v!r} is not a major.minor.patch tag "
+                "(e.g. '16.4.10'). Frida releases at "
+                "https://github.com/frida/frida/releases follow this "
+                "shape; typos surface 404s at download time otherwise."
+            )
+        return v
 
 
 class Module(BaseModel):
@@ -108,7 +154,7 @@ class Module(BaseModel):
     sha256: str | None = None
 
     @override
-    def model_post_init(self, _ctx: Any) -> None:
+    def model_post_init(self, _ctx: object) -> None:
         if not self.url and not self.path:
             raise ValueError("module entry must set either `url` or `path`")
         if self.url and self.path:
@@ -117,7 +163,7 @@ class Module(BaseModel):
         # time. Without this, a malicious beetroot.yaml with
         # ``url: file:///etc/passwd`` would silently exfiltrate that
         # file into the module cache and stage it as a module zip.
-        # ``modules_dl._fetch_url`` re-checks the same prefix at the
+        # ``modules_download._fetch_url`` re-checks the same prefix at the
         # call site so a third-party script can't bypass it either.
         if self.url and not self.url.startswith(("http://", "https://")):
             raise ValueError(
@@ -126,15 +172,44 @@ class Module(BaseModel):
             )
 
 
+_DEFAULT_DENYLIST: Final = (
+    "com.google.android.gms",
+    "com.google.android.gms.unstable",
+)
+
+
 class Stealth(BaseModel):
     """
     Root-hiding (denylist) configuration.
 
     Attributes:
-        denylist: Package names added to Magisk's denylist at boot.
+        denylist: Package names added to Magisk's denylist at boot. Each
+            entry must match the Android package-id grammar
+            (``[a-zA-Z0-9._]+``) — see :data:`_DENYLIST_PKG_RE`. The
+            grammar is enforced at validation time so T2's
+            ``magisk-config.sh`` wire-up can compose the entries into
+            a SQLite REPLACE-INTO statement without escaping; any
+            shape that wouldn't be a valid package name today is
+            assumed to be either a typo or an injection attempt.
+            Defaults to the GMS package pair (the v0.3 helper enrolled
+            these unconditionally; v0.4 moves the enrolment under
+            user control but keeps the default behaviour identical).
     """
 
-    denylist: list[str] = Field(default_factory=list)
+    denylist: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_DENYLIST)
+    )
+
+    @field_validator("denylist")
+    @classmethod
+    def _check_packages(cls, value: list[str]) -> list[str]:
+        for pkg in value:
+            if not _DENYLIST_PKG_RE.match(pkg):
+                raise ValueError(
+                    f"stealth.denylist entry {pkg!r} is not a valid Android "
+                    "package id (must match [a-zA-Z0-9._]+)"
+                )
+        return value
 
 
 class Android(BaseModel):
@@ -299,16 +374,18 @@ def load_yaml(path: Path) -> InstanceConfig:
     raw = yaml.safe_load(path.read_text())
     if raw is None:
         raw = {}
-    if isinstance(raw, dict) and raw.get("api_version") == 1:
+    if isinstance(raw, dict) and raw.get("api_version") in _AUTO_BUMPABLE_API_VERSIONS:
         # Dedup the warning by absolute path. ``beetroot ls`` over N
-        # v0.2 instances would otherwise print N copies of the line,
+        # legacy instances would otherwise print N copies of the line,
         # and a single ``register bravo`` triple-prints because
         # ``all_resolved_ports`` cascades into the same load twice.
         resolved = path.resolve()
+        old_version = raw["api_version"]
         if resolved not in _API_VERSION_BUMP_WARNED:
-            print(
-                f"[beetroot] auto-upgraded api_version 1 → {SUPPORTED_API_VERSION} "
-                f"in {path}; run 'beetroot apply' to rewrite the YAML.",
+            print(  # noqa: T201  # stderr migration hint — typer.echo is unavailable from non-CLI callers
+                f"[beetroot] auto-upgraded api_version {old_version} → "
+                f"{SUPPORTED_API_VERSION} in {path}; run 'beetroot apply' "
+                f"to rewrite the YAML.",
                 file=sys.stderr,
             )
             _API_VERSION_BUMP_WARNED.add(resolved)
@@ -328,7 +405,30 @@ def write_yaml(path: Path, cfg: InstanceConfig) -> None:
     path.write_text(yaml.safe_dump(cfg.model_dump(), sort_keys=False))
 
 
-def render_env(name: str, cfg: InstanceConfig, ports: dict[str, int]) -> str:
+_STEALTH_PATH_DEFAULTS: Final = {
+    "magisk_db": "/data/adb/magisk.db",
+    "modules_dir": "/data/adb/modules_update",
+    "frida_bin": "/data/local/tmp/frida-server",
+}
+
+# Map ``stealth_paths`` keys to the ``BEETROOT_*`` env-var names the
+# bundled compose template + boot helpers consume. The key vocabulary
+# (``magisk_db`` / ``modules_dir`` / ``frida_bin``) matches the
+# snapshot manifest's ``path_layout`` field naming so a v0.5 snapshot
+# round-trips through restore without any per-key renaming.
+_STEALTH_PATH_ENV_KEYS: Final = {
+    "magisk_db": "BEETROOT_MAGISK_DB",
+    "modules_dir": "BEETROOT_MODULES_DIR",
+    "frida_bin": "BEETROOT_FRIDA_BIN",
+}
+
+
+def render_env(
+    name: str,
+    cfg: InstanceConfig,
+    ports: dict[str, int],
+    stealth_paths: dict[str, str] | None = None,
+) -> str:
     """
     Render the .env file that compose reads via --env-file.
 
@@ -339,10 +439,24 @@ def render_env(name: str, cfg: InstanceConfig, ports: dict[str, int]) -> str:
         name: Instance name used as the compose project name.
         cfg: The instance configuration.
         ports: Resolved port mapping produced by ``ports.resolve_ports``.
+        stealth_paths: Optional per-instance override blob (T4) carrying
+            the ``magisk_db`` / ``modules_dir`` / ``frida_bin`` keys.
+            Each key present here overrides the corresponding
+            ``BEETROOT_*`` default; absent keys fall back to the
+            well-known v0.4 defaults
+            (``/data/adb/magisk.db`` / ``/data/adb/modules_update`` /
+            ``/data/local/tmp/frida-server``). ``None`` and ``{}``
+            both mean "use defaults" — the helper merges either form
+            against ``_STEALTH_PATH_DEFAULTS`` so callers can pass the
+            ``RedroidBackendConfig.stealth_paths`` blob verbatim.
+            Unknown keys are silently ignored (so a v0.5-shaped blob
+            carrying a future ``stealth_module_id`` key restores
+            cleanly against a v0.4 ``render_env``).
 
     Returns:
         The rendered ``.env`` content as a newline-terminated string.
     """
+    resolved_paths = {**_STEALTH_PATH_DEFAULTS, **(stealth_paths or {})}
     lines = [
         f"INSTANCE_NAME={name}",
         f"BASE_IMAGE={base_image_tag(cfg.android)}",
@@ -357,15 +471,23 @@ def render_env(name: str, cfg: InstanceConfig, ports: dict[str, int]) -> str:
         f"DISPLAY_HEIGHT={cfg.display.height}",
         f"DISPLAY_FPS={cfg.display.fps}",
         f"DISPLAY_GPU={cfg.display.gpu_mode}",
-        # v0.4 stealth-posture overrides — emitted empty by default
-        # so the bundled compose template's ${VAR:-} fallback is
-        # the source of truth. v0.4 sets these from the manifest
-        # path_layout. Keeping them in render_env keeps the
-        # compose-template / render_env contract symmetric (see
-        # tests/test_compose_template_envs.py).
-        "BEETROOT_MAGISK_DB=",
-        "BEETROOT_MODULES_DIR=",
-        "BEETROOT_FRIDA_BIN=",
+        # T2 (Agent 2 B-1): wire Stealth.denylist through to
+        # magisk-config.sh. Encoded as a comma-separated list because
+        # toybox sh has no array support — the helper iterates over
+        # ``IFS=,``. Per-package shape is already validated by the
+        # ``Stealth._check_packages`` regex (T1), so we can safely
+        # join with a delimiter that's not in the package-id grammar.
+        f"BEETROOT_DENYLIST_PACKAGES={','.join(cfg.stealth.denylist)}",
+        # v0.4 stealth-posture overrides — emitted with the known-safe
+        # defaults (T2 Agent 1 1.1 / Agent 3 1.1: the compose template
+        # parameterises mount targets too, so render_env is the single
+        # source of truth instead of the YAML's ${VAR:-default}
+        # fallback). T4 reads from ``stealth_paths`` if populated;
+        # v0.5's PR1 flips the default in ``Instance.create``'s
+        # generator once stealth research validates a safe layout.
+        f"BEETROOT_MAGISK_DB={resolved_paths['magisk_db']}",
+        f"BEETROOT_MODULES_DIR={resolved_paths['modules_dir']}",
+        f"BEETROOT_FRIDA_BIN={resolved_paths['frida_bin']}",
     ]
     if cfg.resources.mem_reservation is not None:
         lines.append(f"MEM_RESERVATION={cfg.resources.mem_reservation}")

@@ -10,10 +10,13 @@ base image plus the persisted ``/data`` bind mount, so re-running
 ``beetroot up`` after a restore produces an equivalent container.
 
 The archive carries a ``.beetroot-snapshot.json`` manifest at its root.
-The manifest's ``path_layout`` field is reserved for the v0.4
-stealth-posture work: it will record the source instance's randomized
-container-path mapping so the restored instance can replay it. v0.3
-always writes ``{}``; restore preserves whatever the manifest carries.
+The manifest's ``path_layout`` field carries the source instance's
+``RedroidBackendConfig.stealth_paths`` blob (T4) so a randomized
+v0.5 layout round-trips through ``snapshot → restore`` into the new
+instance's registry entry. v0.4 itself defaults the slot to the empty
+dict, so v0.4 → v0.4 round-trips preserve ``{}``; v0.5's PR1 will
+populate the slot in ``Instance.create``'s generator and the same
+round-trip will preserve those randomized paths.
 
 The ``.env`` file is deliberately excluded — it's regenerated from
 ``beetroot.yaml`` on the next ``beetroot apply``.
@@ -22,37 +25,47 @@ from __future__ import annotations
 
 import importlib.metadata
 import io
-import json
 import shutil
 import tarfile
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Literal
 
 import zstandard
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import config, paths, ports, registry
 
 MANIFEST_FILENAME = ".beetroot-snapshot.json"
+INSTANCE_LOCK_FILENAME = ".beetroot.lock"
 SCHEMA_VERSION = 1
 _ARCHIVE_SUFFIX = ".tar.zst"
 # .env is regenerated from beetroot.yaml on the next apply. The
 # manifest itself is excluded because the archive's *root*-level
 # manifest is the authoritative one; if a previous restore left a
 # stale copy on disk we'd otherwise re-pack it and confuse
-# basename-based readers.
-_EXCLUDED_TOP_LEVEL = frozenset({".env", MANIFEST_FILENAME})
+# basename-based readers. The lock file is a per-host artefact;
+# carrying it through a snapshot would also export a now-broken
+# kernel flock state to a different host.
+_EXCLUDED_TOP_LEVEL = frozenset({
+    ".env", MANIFEST_FILENAME, INSTANCE_LOCK_FILENAME,
+})
 
 
 class SnapshotError(RuntimeError):
     """Raised on snapshot/restore failures (missing source, bad archive, etc.)."""
 
 
-@dataclass(frozen=True)
-class Manifest:
+class Manifest(BaseModel):
     """
     Per-snapshot metadata embedded as ``.beetroot-snapshot.json`` in the archive.
+
+    Frozen + ``extra="forbid"`` so an archive carrying an unknown
+    future key surfaces a :class:`ValidationError` at restore time
+    rather than silently dropping the field. v0.4 snapshots are
+    redroid-only by design (``kind: Literal["redroid"]``); the field
+    exists so a future cross-backend snapshot story doesn't need a
+    second schema bump.
 
     Attributes:
         schema_version: Manifest schema version. Currently ``1``.
@@ -60,43 +73,25 @@ class Manifest:
         source_index: Source instance's allocated port index.
         created_at: ISO-8601 UTC timestamp of when the snapshot was taken.
         beetroot_version: Beetroot release that produced the snapshot.
-        path_layout: Reserved for v0.4 stealth-posture work. v0.3 always
-            writes ``{}``; restore preserves whatever the manifest carries.
+        kind: Backend kind discriminator. v0.4 snapshots are
+            redroid-only.
+        path_layout: Stealth-posture path mapping carried alongside the
+            instance. Populated from the source's
+            ``RedroidBackendConfig.stealth_paths`` at snapshot time
+            (T4) and replayed into the destination's slot on restore.
+            Default ``{}`` in v0.4; v0.5's ``Instance.create`` generator
+            will populate the slot per-instance.
     """
 
-    schema_version: int
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal[1] = 1
     name: str
     source_index: int
     created_at: str
     beetroot_version: str
-    path_layout: dict[str, str]
-
-
-def _coerce_manifest(raw: dict[str, Any]) -> Manifest:
-    """Validate and convert a parsed JSON dict into a ``Manifest``."""
-    required = ("schema_version", "name", "source_index", "created_at",
-                "beetroot_version", "path_layout")
-    missing = [k for k in required if k not in raw]
-    if missing:
-        raise SnapshotError(
-            f"manifest is missing required keys: {', '.join(missing)}"
-        )
-    if raw["schema_version"] != SCHEMA_VERSION:
-        raise SnapshotError(
-            f"manifest schema_version {raw['schema_version']!r} is not supported "
-            f"by this Beetroot release (expects {SCHEMA_VERSION})"
-        )
-    path_layout = raw["path_layout"]
-    if not isinstance(path_layout, dict):
-        raise SnapshotError("manifest.path_layout must be a JSON object")
-    return Manifest(
-        schema_version=int(raw["schema_version"]),
-        name=str(raw["name"]),
-        source_index=int(raw["source_index"]),
-        created_at=str(raw["created_at"]),
-        beetroot_version=str(raw["beetroot_version"]),
-        path_layout={str(k): str(v) for k, v in path_layout.items()},
-    )
+    kind: Literal["redroid"] = "redroid"
+    path_layout: dict[str, str] = Field(default_factory=dict)
 
 
 def _ensure_suffix(dest: Path) -> Path:
@@ -106,29 +101,27 @@ def _ensure_suffix(dest: Path) -> Path:
     return dest.with_name(dest.name + _ARCHIVE_SUFFIX)
 
 
-def _build_manifest(name: str, source_index: int) -> Manifest:
-    """Build a fresh v0.3 manifest with an empty ``path_layout``."""
+def _build_manifest(
+    name: str,
+    source_index: int,
+    path_layout: dict[str, str],
+) -> Manifest:
+    """Build a fresh manifest carrying the source's ``stealth_paths`` blob (T4)."""
     return Manifest(
-        schema_version=SCHEMA_VERSION,
         name=name,
         source_index=source_index,
         created_at=datetime.now(UTC).isoformat(),
         beetroot_version=importlib.metadata.version("beetroot"),
-        path_layout={},
+        path_layout=path_layout,
     )
 
 
 def _manifest_to_json(manifest: Manifest) -> bytes:
     """Serialise a ``Manifest`` to UTF-8 JSON bytes (sorted keys, two-space indent)."""
-    payload: dict[str, Any] = {
-        "schema_version": manifest.schema_version,
-        "name": manifest.name,
-        "source_index": manifest.source_index,
-        "created_at": manifest.created_at,
-        "beetroot_version": manifest.beetroot_version,
-        "path_layout": manifest.path_layout,
-    }
-    return json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    # ``by_alias=False`` is the default; ``sort_keys`` is requested by
+    # the v0.3 contract so two archives produced from identical state
+    # have byte-identical manifest members.
+    return manifest.model_dump_json(indent=2).encode("utf-8")
 
 
 def snapshot(instance_root: Path, dest: Path) -> Path:
@@ -141,6 +134,13 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
     it's regenerated from ``beetroot.yaml`` on the next
     ``beetroot apply``. The manifest is written as the archive's last
     member.
+
+    Holds a SHARED ``fcntl.flock`` on ``<instance_root>/.beetroot.lock``
+    for the duration of the archive write — multiple snapshots can run
+    in parallel, but a concurrent :meth:`Instance.destroy` (which
+    takes the exclusive lock) blocks until snapshotting finishes.
+    Without this, a destroy race would rmtree the directory mid-read
+    and produce a torn archive. (T2 Agent 2 B-12.)
 
     Args:
         instance_root: The source instance directory (the one containing
@@ -160,14 +160,27 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
         raise SnapshotError(
             f"no beetroot.yaml at {yaml_path}; not a Beetroot instance directory"
         )
-    name, meta = _find_registry_entry(instance_root)
+    name, meta, backend = _find_registry_entry(instance_root)
     final_dest = _ensure_suffix(dest)
     final_dest.parent.mkdir(parents=True, exist_ok=True)
 
-    manifest = _build_manifest(name=name, source_index=int(meta["index"]))
+    # Take a copy of the dict so the manifest model holds an
+    # independent snapshot of the source's path layout — a later
+    # mutation of the registry entry must not retroactively change
+    # an already-written manifest.
+    manifest = _build_manifest(
+        name=name,
+        source_index=meta.index,
+        path_layout=dict(backend.stealth_paths),
+    )
+
+    # Local import — api imports snapshot at module load, so a
+    # top-level ``from .api import instance_lock`` would loop.
+    from .api import instance_lock  # noqa: PLC0415
 
     cctx = zstandard.ZstdCompressor()
     with (
+        instance_lock(instance_root, exclusive=False),
         final_dest.open("wb") as raw_out,
         cctx.stream_writer(raw_out) as zst,
         tarfile.open(fileobj=zst, mode="w|") as tar,
@@ -177,12 +190,27 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
     return final_dest
 
 
-def _find_registry_entry(instance_root: Path) -> tuple[str, dict[str, Any]]:
-    """Look up the registry entry whose ``absolute_path`` matches ``instance_root``."""
+def _find_registry_entry(
+    instance_root: Path,
+) -> tuple[str, registry.InstanceMeta, registry.RedroidBackendConfig]:
+    """
+    Look up the registry entry matching ``instance_root``.
+
+    Returns the matched name, the full meta row, AND the narrowed
+    :class:`registry.RedroidBackendConfig` — callers need the backend
+    type-narrowed so they can reach ``backend.stealth_paths`` without
+    re-asserting the kind (S101 forbids ``assert isinstance(...)``
+    bridges in src). Adb-backed entries are skipped because snapshots
+    are redroid-only (the ``kind: Literal["redroid"]`` discriminator
+    on :class:`Manifest`).
+    """
     target = instance_root.resolve()
     for name, meta in registry.list_instances().items():
-        if Path(meta["absolute_path"]).resolve() == target:
-            return name, meta
+        backend = meta.backend
+        if not isinstance(backend, registry.RedroidBackendConfig):
+            continue
+        if Path(backend.absolute_path).resolve() == target:
+            return name, meta, backend
     raise SnapshotError(
         f"instance at {instance_root} is not registered; "
         "run `beetroot register <path>` first"
@@ -224,12 +252,9 @@ def read_manifest(archive: Path) -> Manifest:
     """
     raw = _extract_manifest_bytes(archive)
     try:
-        parsed = json.loads(raw.decode("utf-8"))
-    except json.JSONDecodeError as e:
-        raise SnapshotError(f"manifest is not valid JSON: {e}") from e
-    if not isinstance(parsed, dict):
-        raise SnapshotError("manifest must be a JSON object")
-    return _coerce_manifest(parsed)
+        return Manifest.model_validate_json(raw.decode("utf-8"))
+    except ValidationError as e:
+        raise SnapshotError(f"manifest validation failed: {e}") from e
 
 
 def _extract_manifest_bytes(archive: Path) -> bytes:
@@ -275,6 +300,58 @@ def _is_manifest_member(member: tarfile.TarInfo) -> bool:
     return member.name in _MANIFEST_ARCNAMES
 
 
+def _prepare_destination(target: Path, *, force: bool) -> None:
+    """
+    Validate / clear ``target`` before extraction. Pulled out of :func:`restore`.
+
+    Raises :class:`SnapshotError` if the destination is occupied by a
+    sibling registered instance (refused even under ``--force``) or is
+    non-empty without ``--force``.
+    """
+    if not (target.exists() and any(target.iterdir())):
+        return
+    for other_name, meta in registry.list_instances().items():
+        if not isinstance(meta.backend, registry.RedroidBackendConfig):
+            continue
+        if Path(meta.backend.absolute_path).resolve() == target:
+            raise SnapshotError(
+                f"{target} is the registered directory of instance "
+                f"{other_name!r}; refusing to overwrite (even with "
+                f"--force). 'beetroot destroy {other_name}' first, "
+                "or pick a different --path."
+            )
+    if not force:
+        raise SnapshotError(
+            f"{target} already exists and is non-empty; "
+            "pass --force to overwrite, or pick another path"
+        )
+    shutil.rmtree(target)
+
+
+def _check_restored_port_collision(dest_name: str, index: int, target: Path) -> None:
+    """
+    Refuse if the restored instance's ports collide with a registered peer.
+
+    Without this check, restoring a snapshot that pins ``ports.adb: 5555``
+    next to an existing instance using ``5555`` would register cleanly
+    and only fail at compose-up time.
+    """
+    cfg = config.load_yaml(paths.instance_yaml(target))
+    new_ports = ports.resolve_ports(index, cfg.ports)
+    others = {
+        n: p for n, p in registry.all_resolved_ports().items()
+        if n != dest_name
+    }
+    collision = registry.find_port_collision(new_ports, others)
+    if collision is None:
+        return
+    port, other_name, kind = collision
+    raise SnapshotError(
+        f"port {port} ({kind}) collides with instance {other_name!r}; "
+        "edit the restored beetroot.yaml's ports: block before retrying"
+    )
+
+
 def restore(
     archive: Path,
     *,
@@ -289,9 +366,13 @@ def restore(
     :func:`ports.lowest_free_index` — the source's index is NOT reused,
     so an instance can be restored alongside its source.
 
-    The manifest's ``path_layout`` is preserved as-is: v0.3 writes ``{}``
-    and the restore path doesn't act on it, but v0.4's stealth-posture
-    work will replay a populated layout into the new instance's env vars.
+    The manifest's ``path_layout`` is replayed into the new instance's
+    :class:`registry.RedroidBackendConfig.stealth_paths` slot via
+    :func:`registry.set_stealth_paths`. A v0.4 snapshot ships
+    ``{}``, so the assignment is a no-op for today's snapshots — but
+    a v0.5 snapshot carrying randomized paths round-trips into a
+    matching slot on the new instance, ready for ``render_env`` to
+    consume on the next ``apply``.
 
     Args:
         archive: Path to a ``.tar.zst`` snapshot archive.
@@ -314,69 +395,43 @@ def restore(
             "pick a different --as <name>"
         )
     target = dest_path.resolve()
-    if target.exists() and any(target.iterdir()):
-        # Refuse to wipe another registered instance's directory
-        # even under --force. The user almost certainly didn't mean
-        # to clobber a sibling's data; the safe path is to pick a
-        # new --path or destroy the conflict first. dest_name is
-        # already known not to be in the registry by the earlier
-        # ``already registered`` check, so any registry match here
-        # is a foreign instance.
-        for other_name, meta in registry.list_instances().items():
-            if Path(meta["absolute_path"]).resolve() == target:
-                raise SnapshotError(
-                    f"{target} is the registered directory of instance "
-                    f"{other_name!r}; refusing to overwrite (even with "
-                    f"--force). 'beetroot destroy {other_name}' first, "
-                    "or pick a different --path."
-                )
-        if not force:
-            raise SnapshotError(
-                f"{target} already exists and is non-empty; "
-                "pass --force to overwrite, or pick another path"
-            )
-        shutil.rmtree(target)
-    # Validate the manifest first so a malformed archive bails out
-    # before we touch the destination directory or the registry.
-    read_manifest(archive)
-    # Track whether we created ``target`` so the rollback path knows
-    # whether ``rmtree`` is safe. ``target`` is always extracted into
-    # below — but if the user pointed ``--path`` at a pre-existing dir
-    # that we wiped under ``--force``, the pre-existing-flag is sticky
-    # on the wipe (the dir is logically ours now). Either way:
-    # ``created_dir`` is True iff Beetroot now owns the directory.
+    # Validate the archive's manifest BEFORE any destructive action on
+    # the target directory. v0.3 ordered ``rmtree(target)`` first and
+    # ``read_manifest(archive)`` second — a corrupted archive paired
+    # with ``--force`` wiped the user's existing directory and THEN
+    # discovered the archive was unreadable, leaving no way back.
+    # (T2 Agent 3 1.4.)
+    manifest = read_manifest(archive)
+    _prepare_destination(target, force=force)
+    # ``created_dir`` is True iff Beetroot now owns the directory; the
+    # rollback path uses it to decide whether to ``rmtree``.
     created_dir = not target.exists()
     target.mkdir(parents=True, exist_ok=True)
     _extract_archive_into(archive, target)
-
-    # Resolve the restored instance's ports against the freshly-picked
-    # index and refuse if they collide with an already-registered
-    # peer's resolved ports. Without this check, restoring a snapshot
-    # that pins ports.adb: 5555 next to an existing instance using
-    # 5555 would register cleanly and only fail at compose-up time.
-    cfg = config.load_yaml(paths.instance_yaml(target))
     # Atomic allocation + registration under one file lock.
     index = registry.add_allocating(dest_name, target)
+    # Local import — api imports snapshot at module load, so a top-level
+    # ``from . import api`` would loop.
+    from . import api  # noqa: PLC0415
     try:
-        new_ports = ports.resolve_ports(index, cfg.ports)
-        others = {
-            n: p for n, p in registry.all_resolved_ports().items()
-            if n != dest_name
-        }
-        collision = registry.find_port_collision(new_ports, others)
-        if collision is not None:
-            port, other_name, kind = collision
-            raise SnapshotError(
-                f"port {port} ({kind}) collides with instance {other_name!r}; "
-                "edit the restored beetroot.yaml's ports: block before retrying"
-            )
-        # Stage .env + frida-server + modules now so `beetroot up <name>`
-        # works without a follow-up `beetroot apply`. Mirrors what
-        # Instance.create / Instance.register do. The import is local
-        # because api imports snapshot at module load — top-level here
-        # would loop.
-        from . import api  # noqa: PLC0415
-        api.Instance.load(dest_name)._stage()
+        # T4: replay the snapshot's path_layout into the new registry
+        # entry's stealth_paths slot. v0.4 manifests carry ``{}`` so
+        # this is a structural no-op today; a v0.5 snapshot carrying
+        # randomized paths round-trips into a matching slot on the new
+        # instance. Done INSIDE the rollback try/except so a malformed
+        # blob (e.g. an unrecognised key in a future schema bump)
+        # still tears down the half-registered row cleanly.
+        if manifest.path_layout:
+            registry.set_stealth_paths(dest_name, manifest.path_layout)
+        _check_restored_port_collision(dest_name, index, target)
+        # Stage .env + frida placeholder + dirs now so `beetroot up
+        # <name>` works without a follow-up `beetroot apply`. Mirrors
+        # what Instance.create / Instance.register do. Only the LOCAL
+        # stage step is rollback-fatal (T2 Agent 2 B-2); the network
+        # step runs post-commit via the soft-fail helper outside this
+        # try block.
+        restored_inst = api.Instance.load(dest_name)
+        restored_inst._stage_local()  # noqa: SLF001  # snapshot ↔ api are siblings; _stage_local is the inter-module re-stage hook
     except BaseException:
         # Roll back BOTH the registry row AND the extracted directory
         # (if we created it). Without the rmtree, a failed restore
@@ -386,6 +441,10 @@ def restore(
         if created_dir and target.exists():
             shutil.rmtree(target)
         raise
+    # Soft-fail network stage runs AFTER the rollback try/except so a
+    # Frida 404 doesn't destroy a freshly-extracted instance the user
+    # can recover via ``beetroot apply``.
+    api._stage_network_soft(restored_inst)  # noqa: SLF001  # snapshot ↔ api are siblings
     return target
 
 

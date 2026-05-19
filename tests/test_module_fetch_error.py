@@ -3,7 +3,7 @@
 CR #2 finding E1+E2: a 404 (or any HTTP error) on a module download
 used to raise a bare ``RuntimeError`` that ``cli.main()`` didn't catch,
 so the user saw a Rich-rendered Python traceback. The fix introduces
-:class:`modules_dl.ModuleFetchError` (a ``RuntimeError`` subclass for
+:class:`modules_download.ModuleFetchError` (a ``RuntimeError`` subclass for
 backward compat), converts the bare raises in ``_fetch_url``, and adds
 the new type to ``cli.main()``'s except chain.
 
@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from beetroot import cli, modules_dl, paths, registry
+from beetroot import cli, modules_download, paths, registry
 
 runner = CliRunner()
 
@@ -39,8 +39,8 @@ class TestWrapperConvertsHttpError:
             )
 
         with patch("urllib.request.urlopen", side_effect=_raise):
-            with pytest.raises(modules_dl.ModuleFetchError) as exc_info:
-                modules_dl._fetch_url("https://example.com/missing.zip")
+            with pytest.raises(modules_download.ModuleFetchError) as exc_info:
+                modules_download._fetch_url("https://example.com/missing.zip")
 
         msg = str(exc_info.value)
         assert "404" in msg
@@ -59,7 +59,7 @@ class TestCliSurfacesAsErrorLine:
         assert result.exit_code == 0, result.stderr
         root = registry.instance_path("alpha")
         paths.instance_yaml(root).write_text(
-            "api_version: 2\n"
+            "api_version: 3\n"
             "android:\n  version: 14\n"
             "modules:\n"
             "  - url: https://example.com/gone.zip\n"
@@ -85,7 +85,7 @@ class TestCliSurfacesAsErrorLine:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         def _raise() -> None:
-            raise modules_dl.ModuleFetchError(
+            raise modules_download.ModuleFetchError(
                 "download failed: HTTP 404 fetching https://example.com/x.zip"
             )
 

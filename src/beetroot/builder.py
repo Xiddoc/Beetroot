@@ -38,8 +38,19 @@ GAPPS_FLAGS: Final[dict[GappsVariant, list[str]]] = {
     "mindthegapps": ["-mtg"],
 }
 
-_DEFAULT_WORK_DIR: Final[Path] = Path("/tmp/redroid")
 _DEFAULT_REDROID_URL: Final[str] = "https://github.com/ayasa520/redroid-script.git"
+
+
+def _default_work_dir() -> Path:
+    """
+    Return the default redroid-script clone directory under the user cache.
+
+    Computed lazily so tests can monkeypatch ``platformdirs`` before the
+    first call. v0.3 used ``/tmp/redroid``; v0.4 moves it under the
+    per-user cache (T3) so it survives ``/tmp`` cleanups, and removes a
+    static ``S108`` bandit finding.
+    """
+    return paths.user_cache_dir("redroid-script")
 
 
 class BootstrapError(RuntimeError):
@@ -114,7 +125,7 @@ class DefaultRunner:
         """
         merged_env = {**os.environ, **env} if env is not None else None
         try:
-            subprocess.run(list(cmd), cwd=cwd, check=check, env=merged_env)
+            subprocess.run(list(cmd), cwd=cwd, check=check, env=merged_env)  # noqa: S603  # argv passed through from build_image; resolved via PATH
         except subprocess.CalledProcessError as exc:
             raise BootstrapError(
                 f"command failed (exit {exc.returncode}): {' '.join(cmd)}"
@@ -152,7 +163,8 @@ def build_image(
             ``12``, ``13``, ``14`` — validated against
             :class:`beetroot.config.Android`.
         redroid_script_url: Override the patcher source (testing / forks).
-        work_dir: Override the clone directory (default ``/tmp/redroid``).
+        work_dir: Override the clone directory (default is a subdir of
+            the user cache; see :func:`_default_work_dir`).
         runner: Inject a :class:`SubprocessRunner` for testing. Defaults to
             :class:`DefaultRunner`.
 
@@ -166,7 +178,7 @@ def build_image(
         ValueError: If ``android_version`` is not one of the supported
             redroid versions (delegated to :class:`beetroot.config.Android`).
     """
-    work = work_dir if work_dir is not None else _DEFAULT_WORK_DIR
+    work = work_dir if work_dir is not None else _default_work_dir()
     run = runner if runner is not None else DefaultRunner()
 
     tag = _image_tag(android_version, gapps)

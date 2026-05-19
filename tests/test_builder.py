@@ -17,7 +17,6 @@ from beetroot.builder import (
     GappsVariant,
     build_image,
 )
-from beetroot.settings import settings
 
 
 @dataclass
@@ -107,14 +106,21 @@ class TestCommandSequence:
         build_image(redroid_script_url=url, runner=runner)
         assert url in runner.calls[1].cmd
 
-    def test_work_dir_default(self) -> None:
+    def test_work_dir_default(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # v0.4 (T3) moved the default clone location off ``/tmp/redroid``
+        # to the per-user cache via ``platformdirs`` (closes Agent 4's
+        # ``S108`` bandit finding). Pin the cache root via the XDG env
+        # var so the assertion has a stable expected path; platformdirs
+        # honours ``XDG_CACHE_HOME`` on Linux.
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        expected = str(tmp_path / "beetroot" / "redroid-script")
         runner = FakeRunner()
         build_image(runner=runner)
-        # rm and git clone both target the work dir
-        assert "/tmp/redroid" in runner.calls[0].cmd
-        assert "/tmp/redroid" in runner.calls[1].cmd
-        # patcher runs from inside it
-        assert runner.calls[2].cwd == Path("/tmp/redroid")
+        assert expected in runner.calls[0].cmd
+        assert expected in runner.calls[1].cmd
+        assert runner.calls[2].cwd == Path(expected)
 
     def test_work_dir_override(self, tmp_path: Path) -> None:
         runner = FakeRunner()
@@ -145,10 +151,16 @@ class TestCommandSequence:
         assert "requests" in patcher
         assert "tqdm" in patcher
 
-    def test_docker_compose_build_uses_settings_docker_bin(self) -> None:
+    def test_docker_compose_build_uses_settings_docker_bin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``settings`` is now a frozen pydantic model (T3) so direct
+        # attribute assignment raises. Swap the module-level singleton
+        # via the same monkeypatch pattern the env-tests use.
+        from beetroot.settings import Settings
+        monkeypatch.setattr(builder, "settings", Settings(docker_bin="/opt/docker"))
         runner = FakeRunner()
-        with patch.object(settings, "docker_bin", "/opt/docker"):
-            build_image(runner=runner)
+        build_image(runner=runner)
         build = runner.calls[3].cmd
         assert build[0] == "/opt/docker"
         assert build[1] == "compose"
@@ -298,10 +310,11 @@ class TestSettingsHonoured:
     def test_beetroot_docker_bin_env_overrides_build_command(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Settings is read at import time, so patch the attribute directly —
-        # this mirrors how the rest of the suite (test_compose.py via shutil.which)
-        # patches the resolved settings instance rather than re-reading env.
-        monkeypatch.setattr(settings, "docker_bin", "/opt/docker")
+        # T3 froze ``Settings`` so the in-place ``setattr`` pattern no
+        # longer works. Swap the module-level instance instead — this
+        # is the contract documented in settings.py's module docstring.
+        from beetroot.settings import Settings
+        monkeypatch.setattr(builder, "settings", Settings(docker_bin="/opt/docker"))
         runner = FakeRunner()
         build_image(runner=runner)
         assert runner.calls[3].cmd[0] == "/opt/docker"

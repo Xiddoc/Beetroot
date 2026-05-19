@@ -9,7 +9,7 @@ The schema is validated by Pydantic on every load. Fields you omit use the defau
 ## Top-level structure
 
 ```yaml
-api_version: 2
+api_version: 3
 android: ...
 display: ...
 resources: ...
@@ -27,18 +27,21 @@ Schema version this `beetroot.yaml` targets.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `api_version` | int | `2` | Schema version. Must match the value supported by this Beetroot release. |
+| `api_version` | int | `3` | Schema version. Must match the value supported by this Beetroot release. |
 
 ```yaml
-api_version: 2
+api_version: 3
 ```
 
 ### Versioning policy
 
 Each Beetroot release supports **exactly one** `api_version`. The current
-release supports `api_version: 2`. Loading a YAML that pins a different
-value (`0`, `1`, `99`, …) raises a `ValidationError` with a pointer to
-`CHANGELOG.md` for the migration steps.
+release supports `api_version: 3`. Loading a YAML that pins a different
+value (`0`, `99`, …) raises a `ValidationError` with a pointer to
+`CHANGELOG.md` for the migration steps. v0.2's `api_version: 1` and
+v0.3's `api_version: 2` are recognised legacy values and auto-bumped on
+load with a one-line warning (the bumps are strictly additive — no
+fields renamed); persistence happens on the next `beetroot apply`.
 
 Omitting the field is equivalent to writing the currently supported value
 — existing instance YAMLs without `api_version` keep working. Pinning the
@@ -46,7 +49,7 @@ field explicitly is recommended once you're committing an instance YAML to
 source control, so that a future Beetroot release with a breaking schema
 change fails loud instead of silently reinterpreting your config.
 
-All [example YAMLs](../guides/examples.md) declare `api_version: 2`
+All [example YAMLs](../guides/examples.md) declare `api_version: 3`
 explicitly as the first field. When the schema breaks, the constant
 `SUPPORTED_API_VERSION` in `src/beetroot/config.py` is bumped and a
 migration entry is added to `CHANGELOG.md`.
@@ -225,7 +228,7 @@ stealth:
 ## Complete example
 
 ```yaml
-api_version: 2
+api_version: 3
 
 android:
   version: 14

@@ -125,7 +125,7 @@ uv tool install frida-tools
 
 ## `beetroot module` added a zip but it didn't flash
 
-**Cause:** `entrypoint.sh` only iterates `/flash_dir` once, at boot time. Adding a module after boot doesn't flash it automatically.
+**Cause:** `entrypoint.sh` only iterates the modules-staging directory (default `/data/adb/modules_update`) once, at boot time. Adding a module after boot doesn't flash it automatically.
 
 **Fix:** Restart:
 

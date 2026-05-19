@@ -51,7 +51,7 @@ def test_live_header_matches_expected_columns(
     # `Manager.list()` path needs a registered instance whose dir exists.
     inst_root = tmp_path / "alpha"
     inst_root.mkdir()
-    (inst_root / "beetroot.yaml").write_text("api_version: 2\nandroid:\n  version: 14\n")
+    (inst_root / "beetroot.yaml").write_text("api_version: 3\nandroid:\n  version: 14\n")
     registry.add("alpha", inst_root, 0)
 
     runner = CliRunner()

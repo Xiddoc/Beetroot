@@ -8,6 +8,34 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _snapshot_backend_registry() -> Iterator[None]:
+    """Snapshot and restore the in-process backend registry between tests.
+
+    T5 registers ``AdbDevice`` at import time via
+    ``beetroot.backends.adb``'s module-level ``register_backend`` call.
+    Existing tests in ``tests/test_backend_registry.py`` ``pop("adb",
+    None)`` to remove that entry as part of their setup — without
+    restoration, the entry would be permanently gone for every
+    subsequent test in the same process (test order dependent), and
+    the synthetic third-backend test would see a different starting
+    state than a fresh import.
+
+    The autouse fixture is the simplest fix: snapshot the dict before
+    each test, restore it after. ``register_backend`` raises on
+    duplicate, so this is also defensively safer than the
+    ``pop`` + ``register_backend`` pattern in the legacy tests.
+    """
+    from beetroot import backends
+
+    snapshot = dict(backends._BACKEND_REGISTRY)
+    try:
+        yield
+    finally:
+        backends._BACKEND_REGISTRY.clear()
+        backends._BACKEND_REGISTRY.update(snapshot)
+
+
+@pytest.fixture(autouse=True)
 def _reset_api_version_warning_dedup() -> Iterator[None]:
     """Reset the api_version-auto-bump dedup set between tests.
 
@@ -53,7 +81,7 @@ def isolated_instance(
     """
     root = tmp_path / "instance"
     root.mkdir()
-    (root / "beetroot.yaml").write_text("api_version: 2\nandroid:\n  version: 14\n")
+    (root / "beetroot.yaml").write_text("api_version: 3\nandroid:\n  version: 14\n")
     monkeypatch.chdir(root)
     return root
 
@@ -66,7 +94,7 @@ def cli_root(
 
     Every subprocess invocation is short-circuited at the test level, so
     ``shutil.which`` returns synthetic paths for the binaries Beetroot
-    looks up (``docker``, ``adb``, ``frida``). ``frida_dl.download`` is
+    looks up (``docker``, ``adb``, ``frida``). ``frida_download.download`` is
     no-op'd so tests don't hit the network. Tests chdir into ``tmp_path``
     so a default ``--path`` resolves under it.
     """
@@ -79,16 +107,29 @@ def cli_root(
 
     monkeypatch.setattr(shutil, "which", _which)
 
-    from beetroot import frida_dl
+    from beetroot import frida_download
 
-    def _fake_download(version: str) -> Path:
-        out = frida_dl.cached_binary(version)
+    def _fake_download(
+        version: str, *, expected_sha256: str | None = None,
+    ) -> Path:
+        out = frida_download.cached_binary(version)
         out.parent.mkdir(parents=True, exist_ok=True)
         if not out.exists():
             out.write_bytes(b"fake-frida")
             out.chmod(0o755)
+        # Honour the digest contract — tests that pass an
+        # ``expected_sha256`` mismatched against ``b"fake-frida"``
+        # must see the same ValueError they would in production.
+        if expected_sha256 is not None:
+            import hashlib
+            actual = hashlib.sha256(out.read_bytes()).hexdigest()
+            if actual.lower() != expected_sha256.lower():
+                raise ValueError(
+                    f"sha256 mismatch for frida-server at {out}: "
+                    f"expected {expected_sha256.lower()}, got {actual.lower()}"
+                )
         return out
 
-    monkeypatch.setattr(frida_dl, "download", _fake_download)
+    monkeypatch.setattr(frida_download, "download", _fake_download)
     monkeypatch.chdir(tmp_path)
     return tmp_path

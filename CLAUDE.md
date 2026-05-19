@@ -11,7 +11,7 @@ There is no application code here — the deliverable is the container image, th
 ## Commands
 
 - `uv sync` — install the CLI's Python deps (PyYAML + Pydantic) into a project-local `.venv`. See [Development workflow](#development-workflow) for lint, type-check, and dev deps. *Contributors only.* End users should install with `uv tool install git+https://github.com/Xiddoc/Beetroot.git`, which exposes `beetroot` on `PATH` without the `uv run` prefix. The host-side `frida` CLI used by `beetroot frida` is **optional** and exposed via a `[frida]` extra (`uv sync --extra frida` in-tree, or `uv tool install 'beetroot[frida]'` for end users); plain installs omit `frida-tools` and `beetroot frida` errors out with an install hint.
-- `uv run beetroot <verb>` — invoke any CLI verb during development. Verbs: `create`, `register`, `apply`, `up`, `down`, `restart`, `destroy`, `ls`, `logs`, `shell`, `env`, `frida`, `module`, `build`, `snapshot`, `restore`. Run `beetroot <verb> --help` for flags. (With a `uv tool install`-based setup, drop the `uv run` prefix entirely.)
+- `uv run beetroot <verb>` — invoke any CLI verb during development. Verbs: `create`, `register`, `adopt`, `apply`, `up`, `down`, `restart`, `destroy`, `ls`, `logs`, `shell`, `env`, `status`, `doctor`, `frida`, `module`, `build`, `snapshot`, `restore`. Run `beetroot <verb> --help` for flags. (With a `uv tool install`-based setup, drop the `uv run` prefix entirely.)
 - `beetroot build [variant]` (or `uv run beetroot build [variant]` in-tree) — one-time bootstrap. Clones `ayasa520/redroid-script` into `/tmp/redroid`, runs its patcher via `uv` to produce a local base image (e.g. `redroid/redroid:14.0.0_litegapps_houdini_magisk`), then `docker compose build`s the research layer on top of it via the `BASE_IMAGE` build arg. The optional argument selects the GMS variant: `none`, `lite` (default), `full`, or `mindthegapps`. Re-run once per variant whenever the base image needs to be regenerated. `beetroot up` does **not** auto-rebuild — run `beetroot build` first if you want a fresh image. The implementation lives in `src/beetroot/builder.py`.
 - `docker compose -p <name> -f <bundled-compose> --project-directory <instance-dir> --env-file <instance-dir>/.env <subcommand>` — the raw escape hatch. The CLI just wraps this; if the CLI breaks, you can still drive instances directly. The bundled compose template lives at `src/beetroot/templates/compose.yaml` (resolve at runtime via `paths.bundled_compose_file()`).
 
@@ -68,8 +68,8 @@ src/beetroot/
 ├── ports.py       # stride-10 allocator
 ├── registry.py    # instances.json, fcntl.flock guards mutations
 ├── compose.py     # subprocess wrappers around `docker compose`
-├── frida_dl.py    # download frida-server.xz, decompress (lzma), cache
-├── modules_dl.py  # fetch + sha256-verify Magisk module zips
+├── frida_download.py    # download frida-server.xz, decompress (lzma), cache
+├── modules_download.py  # fetch + sha256-verify Magisk module zips
 ├── snapshot.py    # pack/unpack instances as .tar.zst with manifest
 ├── builder.py     # one-time base-image build (`beetroot build`)
 └── paths.py       # single source of truth for filesystem layout
@@ -142,7 +142,7 @@ uv run pytest                                         # full suite (coverage gat
 uv run pytest --cov=beetroot --cov-report=term-missing  # equivalent — explicit cov flags
 ```
 
-Tests live under `tests/` and use pytest's built-in mocking (`unittest.mock`) — no real network or docker calls. `conftest.py` provides two composable fixtures: `isolated_registry` (points `$XDG_CONFIG_HOME` and `$XDG_CACHE_HOME` at a per-test tmp dir) and `isolated_instance` (creates a minimal instance dir and `chdir`s into it). Most CLI/registry tests use the `cli_root` composite fixture, which layers `isolated_registry` with stubbed `shutil.which` + a no-op `frida_dl.download`.
+Tests live under `tests/` and use pytest's built-in mocking (`unittest.mock`) — no real network or docker calls. `conftest.py` provides two composable fixtures: `isolated_registry` (points `$XDG_CONFIG_HOME` and `$XDG_CACHE_HOME` at a per-test tmp dir) and `isolated_instance` (creates a minimal instance dir and `chdir`s into it). Most CLI/registry tests use the `cli_root` composite fixture, which layers `isolated_registry` with stubbed `shutil.which` + a no-op `frida_download.download`.
 
 **Coverage**
 

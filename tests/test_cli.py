@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,7 +19,7 @@ def _ok_proc() -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
 
-def _patched_subprocess() -> Any:
+def _patched_subprocess() -> AbstractContextManager[MagicMock]:
     """Patch subprocess.run inside compose.* so no real docker is invoked."""
     return patch("subprocess.run", return_value=_ok_proc())
 
@@ -182,7 +182,7 @@ class TestCmdCreate:
     def test_create_refuses_existing_yaml(self, cli_root: Path) -> None:
         target = cli_root / "alpha"
         target.mkdir()
-        (target / "beetroot.yaml").write_text("api_version: 2\n")
+        (target / "beetroot.yaml").write_text("api_version: 3\n")
         result = runner.invoke(cli.app, ["create", "alpha"])
         assert result.exit_code == 1
         assert "register" in result.stderr
@@ -232,7 +232,7 @@ class TestCmdCreate:
         assert result.exit_code == 0, result.stderr
         root = registry.instance_path("alpha")
         assert paths.instance_yaml(root).read_bytes() == (
-            b"api_version: 2\nandroid:\n  version: 14\n"
+            b"api_version: 3\nandroid:\n  version: 14\n"
         )
 
     def test_create_default_no_frida(self, cli_root: Path) -> None:
@@ -256,7 +256,7 @@ class TestCmdCreate:
         assert result.exit_code == 0, result.stderr
         root = registry.instance_path("alpha")
         paths.instance_yaml(root).write_text(
-            "api_version: 2\n"
+            "api_version: 3\n"
             "android:\n"
             "  version: 14\n"
             'frida:\n  version: "16.4.10"\n'
@@ -351,7 +351,7 @@ class TestCmdApply:
         runner.invoke(cli.app, ["create", "alpha"])
         root = registry.instance_path("alpha")
         (root / "beetroot.yaml").write_text(
-            "api_version: 2\nandroid:\n  version: 14\nfrida: null\n"
+            "api_version: 3\nandroid:\n  version: 14\nfrida: null\n"
         )
         result = runner.invoke(cli.app, ["apply", "alpha"])
         assert result.exit_code == 0, result.stderr
@@ -878,9 +878,10 @@ class TestCmdRestore:
         assert result.exit_code == 0, result.stderr
         beta = registry.get("beta")
         assert beta is not None
-        assert Path(beta["absolute_path"]) == (cli_root / "beta-dir").resolve()
+        assert isinstance(beta.backend, registry.RedroidBackendConfig)
+        assert Path(beta.backend.absolute_path) == (cli_root / "beta-dir").resolve()
         assert (
-            Path(beta["absolute_path"]) / "data" / "marker.txt"
+            Path(beta.backend.absolute_path) / "data" / "marker.txt"
         ).read_bytes() == b"survives"
         # CR #3 finding 10: the stale ``beetroot apply <name> &&``
         # hint was dropped. ``snapshot.restore`` calls ``_stage()``

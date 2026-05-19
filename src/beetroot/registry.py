@@ -7,8 +7,18 @@ The registry is a single user-global JSON file (at
 host regardless of where on disk its directory lives.
 
 Container status is NOT cached here; query Docker live so we can't lie.
-Only assignment-time data lives in the registry: the absolute path to the
-instance directory, its allocated port index, and the created-at timestamp.
+Only assignment-time data lives in the registry: the discriminated-union
+backend config, the allocated port index, and the created-at timestamp.
+
+The on-disk schema is now (v3) defined by :class:`RegistryFile`: a
+strongly-typed pydantic model that round-trips via
+``model_validate_json`` / ``model_dump_json``. Backend configs are a
+discriminated union over ``kind`` — ``RedroidBackendConfig`` (the
+container-managed backend that v0.3 was hard-coded for) and
+``AdbBackendConfig`` (the real-device backend that T5 will add). Third
+parties register additional backends via the
+``beetroot.backends`` entry-point group; their configs validate against
+their own pydantic models and live in their own packages.
 """
 from __future__ import annotations
 
@@ -21,21 +31,126 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import paths, ports
 from .config import load_yaml
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Module-level flag so the "v0.2 registry at PWD" hint fires once per
 # process. The check is cheap, but spamming the hint on every verb
 # call would drown out the actual command output.
 _V02_HINT_PRINTED = False
 
+# Module-level flag so the legacy-registry migration hint fires once
+# per process. _read() backs up the legacy file and emits a fresh v3
+# document; this flag dedupes the stderr nudge so cascading reads
+# (``beetroot ls`` → ``all_resolved_ports`` → ...) don't print it once
+# per call.
+_LEGACY_HINT_PRINTED = False
+
 
 class RegistryError(RuntimeError):
     """Raised on registry consistency errors (e.g. unknown name lookups)."""
+
+
+class RedroidBackendConfig(BaseModel):
+    """
+    Backend config for the v0.3-shaped Redroid-container backend.
+
+    Attributes:
+        kind: Discriminator tag — always ``"redroid"``.
+        absolute_path: Absolute path to the instance directory (the
+            directory containing ``beetroot.yaml``).
+        stealth_paths: Reserved slot for the v0.4 stealth-posture
+            plumbing. Empty in v0.4; v0.5's PR1 populates it with the
+            randomized container-path layout produced by
+            ``Instance.create``. Snapshot / restore round-trips the
+            blob so a v0.5 snapshot lands cleanly on a v0.4 host.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=False)
+
+    kind: Literal["redroid"] = "redroid"
+    absolute_path: str
+    stealth_paths: dict[str, str] = Field(default_factory=dict)
+
+
+class AdbBackendConfig(BaseModel):
+    """
+    Backend config for the real-device-over-ADB backend that lands in T5.
+
+    The full :class:`AdbDevice` class arrives in T5; T1 only ships the
+    config model so the discriminated union in :class:`InstanceMeta`
+    has both arms in place.
+
+    Attributes:
+        kind: Discriminator tag — always ``"adb"``.
+        serial: The adb serial / endpoint identifier (e.g.
+            ``"emulator-5554"`` or ``"192.168.1.10:5555"``). Passed
+            verbatim to ``adb -s <serial>`` invocations.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=False)
+
+    kind: Literal["adb"] = "adb"
+    serial: str
+
+
+# In-tree backends are pinned in the union; third-party backends
+# register their concrete class at runtime via the entry-point
+# mechanism in :mod:`beetroot.backends`. Their config validates against
+# a *separate* pydantic model that they own — that model never goes
+# through this union and so doesn't need to be registered here.
+BackendConfig = Annotated[
+    RedroidBackendConfig | AdbBackendConfig,
+    Field(discriminator="kind"),
+]
+
+
+class InstanceMeta(BaseModel):
+    """
+    Per-instance metadata stored in the registry.
+
+    Replaces the v0.3 ``dict[str, Any]`` payload. Every consumer that
+    used to subscript ``meta["absolute_path"]`` now reaches through
+    ``meta.backend.absolute_path`` (for redroid) or ``meta.backend.serial``
+    (for adb).
+
+    Attributes:
+        backend: Discriminated-union backend config (``kind: "redroid"``
+            or ``kind: "adb"``).
+        index: Stride-of-10 port index allocated to this instance.
+        created_at: ISO-8601 UTC timestamp when the entry was added.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=False)
+
+    backend: BackendConfig
+    index: int
+    created_at: datetime
+
+
+class RegistryFile(BaseModel):
+    """
+    On-disk shape of ``instances.json``.
+
+    The discriminator-bearing ``version`` field gates schema
+    compatibility — :func:`_read` falls through to the legacy-migration
+    path for any mismatch.
+
+    Attributes:
+        version: Always ``3`` for this Beetroot release.
+        instances: Mapping of instance name → :class:`InstanceMeta`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[3] = 3
+    instances: dict[str, InstanceMeta] = Field(default_factory=dict)
 
 
 @contextlib.contextmanager
@@ -69,37 +184,51 @@ def _locked(path: Path, *, exclusive: bool = True) -> Iterator[Path]:
                 # because no concurrent reader can have observed
                 # ``path`` yet (it didn't exist a moment ago, and
                 # we hold the exclusive lock).
-                path.write_text(json.dumps(
-                    {"version": SCHEMA_VERSION, "instances": {}}
-                ))
+                path.write_text(RegistryFile().model_dump_json(indent=2))
             yield path
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
-def _read(path: Path) -> dict[str, Any]:
+def _read(path: Path) -> RegistryFile:
     """
-    Read and parse the registry, auto-handling the v1 → v2 migration.
+    Read and parse the registry, auto-handling legacy-schema migrations.
 
-    A v1 registry is renamed to ``<file>.bak`` and an empty v2 registry is
-    returned. The user must re-register their instances with
-    ``beetroot register <path>`` (paths can't be auto-migrated because
-    v1 had no per-instance absolute path).
+    A v1 / v2 registry is renamed to ``<file>.bak`` and an empty v3
+    registry is returned. The user must re-register their instances
+    with ``beetroot register <path>`` (paths can't be auto-migrated
+    because v1 had no per-instance absolute path, and v2's payload was
+    a free-form dict that won't survive validation against
+    :class:`InstanceMeta`).
     """
+    global _LEGACY_HINT_PRINTED  # noqa: PLW0603
     _check_v02_registry_at_cwd(path)
     if not path.exists():
-        return {"version": SCHEMA_VERSION, "instances": {}}
-    data: dict[str, Any] = json.loads(path.read_text())
-    if data.get("version") != SCHEMA_VERSION:
+        return RegistryFile()
+    raw_text = path.read_text()
+    try:
+        return RegistryFile.model_validate_json(raw_text)
+    except ValidationError:
+        # Either an outright legacy registry (v1 / v2 / no version key)
+        # or a v3-shaped doc that fails strict validation. In either
+        # case we back the file up rather than risk corrupting it, and
+        # return a fresh empty registry so the caller can continue.
+        try:
+            parsed_version = json.loads(raw_text).get("version")
+        except (json.JSONDecodeError, AttributeError):
+            parsed_version = None
         backup = path.with_suffix(path.suffix + ".bak")
         path.rename(backup)
-        print(
-            f"[beetroot] registry at {path} was schema v{data.get('version')!r}; "
-            f"renamed to {backup.name}. Re-register your instances with "
-            f"`beetroot register <path>`."
-        )
-        return {"version": SCHEMA_VERSION, "instances": {}}
-    return data
+        if not _LEGACY_HINT_PRINTED:
+            print(  # noqa: T201  # stderr migration hint — typer.echo is unavailable from non-CLI callers
+                f"[beetroot] registry at {path} was schema "
+                f"v{parsed_version!r}; renamed to {backup.name}. "
+                f"Re-register your instances with "
+                f"`beetroot register <path>`.",
+                file=sys.stderr,
+            )
+            _LEGACY_HINT_PRINTED = True
+        return RegistryFile()
 
 
 def _check_v02_registry_at_cwd(xdg_path: Path) -> None:
@@ -132,7 +261,7 @@ def _check_v02_registry_at_cwd(xdg_path: Path) -> None:
     is_v1_shape = "version" not in data and "instances" not in data
     if not is_v1_shape:
         return
-    print(
+    print(  # noqa: T201  # stderr migration hint — typer.echo is unavailable from non-CLI callers
         f"[beetroot] detected v0.2 registry at {candidate} — move it to "
         f"{xdg_path} (or re-register each instance with "
         f"'beetroot register <path>').",
@@ -141,7 +270,7 @@ def _check_v02_registry_at_cwd(xdg_path: Path) -> None:
     _V02_HINT_PRINTED = True
 
 
-def _write(path: Path, data: dict[str, Any]) -> None:
+def _write(path: Path, data: RegistryFile) -> None:
     # Atomic replace via a per-call unique tmp file: write the new
     # content to a sibling whose name includes pid+uuid so parallel
     # writers don't trample each other's tmp file, then os.replace
@@ -154,7 +283,7 @@ def _write(path: Path, data: dict[str, Any]) -> None:
     # first process renamed the tmp out from under it.
     tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
+        tmp.write_text(data.model_dump_json(indent=2))
         tmp.replace(path)
     finally:
         # If the replace happened, this is a no-op (tmp no longer
@@ -163,7 +292,7 @@ def _write(path: Path, data: dict[str, Any]) -> None:
             tmp.unlink()
 
 
-def list_instances() -> dict[str, dict[str, Any]]:
+def list_instances() -> dict[str, InstanceMeta]:
     """Return all known instances as name → metadata. Empty if registry is missing."""
     path = paths.user_registry_file()
     if not path.exists():
@@ -172,46 +301,79 @@ def list_instances() -> dict[str, dict[str, Any]]:
         _check_v02_registry_at_cwd(path)
         return {}
     with _locked(path, exclusive=False):
-        return _read(path).get("instances", {})  # type: ignore[no-any-return]
+        return _read(path).instances
 
 
-def get(name: str) -> dict[str, Any] | None:
-    """Return the metadata dict for ``name``, or ``None`` if not registered."""
+def get(name: str) -> InstanceMeta | None:
+    """Return the :class:`InstanceMeta` for ``name``, or ``None`` if not registered."""
     return list_instances().get(name)
 
 
 def used_indices() -> set[int]:
     """Return the set of port indices currently allocated to registered instances."""
-    return {meta["index"] for meta in list_instances().values()}
+    return {meta.index for meta in list_instances().values()}
 
 
-def add(name: str, absolute_path: Path, index: int) -> None:
+def add(
+    name: str,
+    absolute_path: Path | None = None,
+    index: int = 0,
+    *,
+    backend: BackendConfig | None = None,
+) -> None:
     """
     Register a new instance in the registry under an exclusive file lock.
 
+    Two calling conventions are supported for v0.3 → v0.4 source compat:
+
+    * **v0.3 form** (positional): ``add(name, absolute_path, index)``
+      registers a redroid-kind backend pointing at ``absolute_path``.
+    * **v0.4 form** (keyword): ``add(name, index=N, backend=<config>)``
+      registers any pre-built :class:`BackendConfig` discriminated-union
+      arm — adb, redroid, or third-party.
+
     Args:
         name: Instance name to register.
-        absolute_path: Absolute path to the instance directory (the one
-            containing ``beetroot.yaml``).
+        absolute_path: Absolute path to the instance directory (the
+            one containing ``beetroot.yaml``). Required when ``backend``
+            is None; ignored otherwise.
         index: Port index to assign to this instance.
+        backend: Pre-built backend config (any
+            :class:`BackendConfig` union arm). When omitted, the
+            v0.3-form redroid shape is synthesised from
+            ``absolute_path``.
 
     Raises:
-        ValueError: If ``name`` is already in the registry.
+        ValueError: If ``name`` is already in the registry or if neither
+            ``absolute_path`` nor ``backend`` is supplied.
     """
+    if backend is None:
+        if absolute_path is None:
+            raise ValueError(
+                "registry.add requires either ``absolute_path`` (for the "
+                "v0.3 redroid-only form) or ``backend`` (for the v0.4 "
+                "discriminated-union form).",
+            )
+        backend = RedroidBackendConfig(absolute_path=str(absolute_path))
     path = paths.user_registry_file()
     with _locked(path):
         data = _read(path)
-        if name in data["instances"]:
+        if name in data.instances:
             raise ValueError(f"instance {name!r} already in registry")
-        data["instances"][name] = {
-            "absolute_path": str(absolute_path),
-            "index": index,
-            "created_at": datetime.now(UTC).isoformat(),
-        }
+        data.instances[name] = InstanceMeta(
+            backend=backend,
+            index=index,
+            created_at=datetime.now(UTC),
+        )
         _write(path, data)
 
 
-def add_allocating(name: str, absolute_path: Path) -> int:
+def add_allocating(
+    name: str,
+    absolute_path: Path | None = None,
+    *,
+    backend: BackendConfig | None = None,
+) -> int:
     """
     Atomically allocate the lowest free port index AND register ``name``.
 
@@ -222,28 +384,51 @@ def add_allocating(name: str, absolute_path: Path) -> int:
     the failure at ``docker compose up`` time, when the second
     instance's bind fails.
 
+    Two calling conventions are supported for v0.3 → v0.4 source compat:
+
+    * **v0.3 form** (positional): ``add_allocating(name, absolute_path)``
+      registers a redroid-kind backend pointing at ``absolute_path``.
+    * **v0.4 form** (keyword): ``add_allocating(name, backend=<config>)``
+      registers any pre-built :class:`BackendConfig` arm — used by the
+      ``beetroot adopt`` verb for adb-kind rows that have no
+      ``absolute_path``.
+
     Args:
         name: Instance name to register.
         absolute_path: Absolute path to the instance directory.
+            Required when ``backend`` is None; ignored otherwise.
+        backend: Pre-built backend config (any
+            :class:`BackendConfig` union arm). When omitted, the
+            v0.3-form redroid shape is synthesised from
+            ``absolute_path``.
 
     Returns:
         The port index that was allocated.
 
     Raises:
-        ValueError: If ``name`` is already in the registry.
+        ValueError: If ``name`` is already in the registry or if neither
+            ``absolute_path`` nor ``backend`` is supplied.
     """
+    if backend is None:
+        if absolute_path is None:
+            raise ValueError(
+                "registry.add_allocating requires either ``absolute_path`` "
+                "(for the v0.3 redroid-only form) or ``backend`` (for the "
+                "v0.4 discriminated-union form).",
+            )
+        backend = RedroidBackendConfig(absolute_path=str(absolute_path))
     path = paths.user_registry_file()
     with _locked(path):
         data = _read(path)
-        if name in data["instances"]:
+        if name in data.instances:
             raise ValueError(f"instance {name!r} already in registry")
-        used = {meta["index"] for meta in data["instances"].values()}
+        used = {meta.index for meta in data.instances.values()}
         index = ports.lowest_free_index(used)
-        data["instances"][name] = {
-            "absolute_path": str(absolute_path),
-            "index": index,
-            "created_at": datetime.now(UTC).isoformat(),
-        }
+        data.instances[name] = InstanceMeta(
+            backend=backend,
+            index=index,
+            created_at=datetime.now(UTC),
+        )
         _write(path, data)
         return index
 
@@ -260,7 +445,47 @@ def remove(name: str) -> None:
     path = paths.user_registry_file()
     with _locked(path):
         data = _read(path)
-        data["instances"].pop(name, None)
+        data.instances.pop(name, None)
+        _write(path, data)
+
+
+def set_stealth_paths(name: str, stealth_paths: dict[str, str]) -> None:
+    """
+    Replace the stealth-path blob on an existing redroid instance row.
+
+    Used by :func:`snapshot.restore` (T4) to replay a v0.5-shaped
+    ``path_layout`` from the snapshot manifest into the freshly-allocated
+    registry entry. Keeping the mutation on its own helper (rather
+    than threading the blob through ``add_allocating``) keeps the hot
+    create-path's signature stable and avoids coupling T4's
+    snapshot/restore plumbing to T5's ``AdbBackendConfig`` work.
+
+    Args:
+        name: Instance name to update.
+        stealth_paths: New stealth-path mapping. A copy is taken so the
+            caller can mutate the dict afterwards without retroactively
+            changing the registry row.
+
+    Raises:
+        RegistryError: If ``name`` is not registered, or if the
+            registered backend is not directory-backed (the
+            ``stealth_paths`` slot lives on
+            :class:`RedroidBackendConfig` only — adb-backed devices
+            don't have container paths to randomize).
+    """
+    path = paths.user_registry_file()
+    with _locked(path):
+        data = _read(path)
+        meta = data.instances.get(name)
+        if meta is None:
+            raise RegistryError(f"unknown instance {name!r}; not in registry")
+        backend = meta.backend
+        if not isinstance(backend, RedroidBackendConfig):
+            raise RegistryError(
+                f"instance {name!r} is a {backend.kind!r} backend; "
+                "stealth_paths is a redroid-only slot"
+            )
+        backend.stealth_paths = dict(stealth_paths)
         _write(path, data)
 
 
@@ -268,20 +493,31 @@ def instance_path(name: str) -> Path:
     """
     Return the absolute path to an instance's directory, from the registry.
 
+    Only redroid-kind instances have a meaningful on-disk root; adb-kind
+    instances raise :class:`RegistryError` because they're not backed by
+    a directory.
+
     Args:
         name: Instance name.
 
     Returns:
-        The path recorded under ``absolute_path`` when the instance was
-        registered.
+        The path recorded under the backend config's ``absolute_path``
+        when the instance was registered.
 
     Raises:
-        RegistryError: If ``name`` is not in the registry.
+        RegistryError: If ``name`` is not in the registry, or if the
+            registered backend is not directory-backed.
     """
     meta = get(name)
     if meta is None:
         raise RegistryError(f"unknown instance {name!r}; not in registry")
-    return Path(meta["absolute_path"])
+    backend = meta.backend
+    if not isinstance(backend, RedroidBackendConfig):
+        raise RegistryError(
+            f"instance {name!r} is a {backend.kind!r} backend; "
+            "it has no on-disk directory"
+        )
+    return Path(backend.absolute_path)
 
 
 def all_resolved_ports() -> dict[str, dict[str, int]]:
@@ -303,11 +539,13 @@ def all_resolved_ports() -> dict[str, dict[str, int]]:
     """
     out: dict[str, dict[str, int]] = {}
     for name, meta in list_instances().items():
+        if not isinstance(meta.backend, RedroidBackendConfig):
+            continue
         try:
-            cfg = load_yaml(paths.instance_yaml(Path(meta["absolute_path"])))
+            cfg = load_yaml(paths.instance_yaml(Path(meta.backend.absolute_path)))
         except FileNotFoundError:
             continue
-        out[name] = ports.resolve_ports(meta["index"], cfg.ports)
+        out[name] = ports.resolve_ports(meta.index, cfg.ports)
     return out
 
 

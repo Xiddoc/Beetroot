@@ -6,15 +6,19 @@
 # helper iterates them and calls `magisk --install-module` on each one.
 #
 # Env vars (all optional, defaults shown):
-#   BEETROOT_MODULES_DIR=/flash_dir
-#     Container path where module zips are staged. v0.4 (see
-#     docs/design/stealth-posture.md §3.5) moves this to
-#     /data/adb/modules_update by setting this var.
+#   BEETROOT_MODULES_DIR=/data/adb/modules_update
+#     Container path where module zips are staged. v0.4 T4 (see
+#     docs/design/stealth-posture.md §3.5) replaces the
+#     Beetroot-invented /flash_dir with Magisk's well-known staging
+#     directory. The POSIX ${VAR:-default} fallback below matches what
+#     render_env emits so a bare ``docker run`` without a
+#     Beetroot-rendered .env still lands on the same path.
 #
 # Idempotent: Magisk handles re-install of an already-installed module
 # gracefully, so init re-triggering this script is safe.
+set -eu  # fail fast on undefined vars and unhandled errors (T3).
 
-MODULES_DIR="${BEETROOT_MODULES_DIR:-/flash_dir}"
+MODULES_DIR="${BEETROOT_MODULES_DIR:-/data/adb/modules_update}"
 
 # This script is sourced by entrypoint.sh (`. /flash-modules.sh`), so
 # any `exit` here would terminate the parent shell and skip every

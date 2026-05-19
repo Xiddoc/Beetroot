@@ -40,7 +40,7 @@ class TestCmdCreateCollision:
         assert alpha_meta is not None
         assert bravo_meta is not None
         # Distinct stride indices → distinct port slots.
-        assert alpha_meta["index"] != bravo_meta["index"]
+        assert alpha_meta.index != bravo_meta.index
 
     def test_create_collides_with_neighbour_pinned_to_next_stride_slot(
         self, cli_root: Path
@@ -69,7 +69,7 @@ class TestCmdApplyCollision:
         assert runner.invoke(cli.app, ["apply", "alpha"]).exit_code == 0
         meta = registry.get("alpha")
         assert meta is not None
-        assert meta["index"] == 0
+        assert meta.index == 0
 
     def test_apply_with_pinned_adb_collides(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
@@ -158,6 +158,11 @@ class TestCmdCreateEndToEndEnvBytes:
         alpha_env_bytes = paths.instance_env(alpha_root).read_bytes()
         bravo_env_bytes = paths.instance_env(bravo_root).read_bytes()
 
+        # T2 wired ``BEETROOT_DENYLIST_PACKAGES`` through render_env
+        # (defaults to the GMS pair) and switched the stealth-path
+        # defaults from empty to the known-safe v0.3 container paths;
+        # this pins the full byte-for-byte ordering of the .env so
+        # render_env can't drift silently.
         expected_alpha = (
             b"INSTANCE_NAME=alpha\n"
             b"BASE_IMAGE=redroid/redroid:14.0.0_litegapps_houdini_magisk\n"
@@ -172,9 +177,11 @@ class TestCmdCreateEndToEndEnvBytes:
             b"DISPLAY_HEIGHT=960\n"
             b"DISPLAY_FPS=3\n"
             b"DISPLAY_GPU=host\n"
-            b"BEETROOT_MAGISK_DB=\n"
-            b"BEETROOT_MODULES_DIR=\n"
-            b"BEETROOT_FRIDA_BIN=\n"
+            b"BEETROOT_DENYLIST_PACKAGES=com.google.android.gms,"
+            b"com.google.android.gms.unstable\n"
+            b"BEETROOT_MAGISK_DB=/data/adb/magisk.db\n"
+            b"BEETROOT_MODULES_DIR=/data/adb/modules_update\n"
+            b"BEETROOT_FRIDA_BIN=/data/local/tmp/frida-server\n"
         )
         expected_bravo = (
             b"INSTANCE_NAME=bravo\n"
@@ -190,9 +197,11 @@ class TestCmdCreateEndToEndEnvBytes:
             b"DISPLAY_HEIGHT=960\n"
             b"DISPLAY_FPS=3\n"
             b"DISPLAY_GPU=host\n"
-            b"BEETROOT_MAGISK_DB=\n"
-            b"BEETROOT_MODULES_DIR=\n"
-            b"BEETROOT_FRIDA_BIN=\n"
+            b"BEETROOT_DENYLIST_PACKAGES=com.google.android.gms,"
+            b"com.google.android.gms.unstable\n"
+            b"BEETROOT_MAGISK_DB=/data/adb/magisk.db\n"
+            b"BEETROOT_MODULES_DIR=/data/adb/modules_update\n"
+            b"BEETROOT_FRIDA_BIN=/data/local/tmp/frida-server\n"
         )
         assert alpha_env_bytes == expected_alpha
         assert bravo_env_bytes == expected_bravo

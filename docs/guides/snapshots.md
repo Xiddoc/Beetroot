@@ -26,8 +26,8 @@ The archive is rooted at the instance directory and contains:
 
 The manifest records the source instance's name, port index, the
 `beetroot` release that produced the snapshot, an ISO-8601 timestamp,
-and a reserved `path_layout` field (see [v0.4 forward
-compatibility](#v04-forward-compatibility) below).
+and a `path_layout` field carrying the source's `stealth_paths` blob
+(see [path_layout round-trip](#path_layout-round-trip) below).
 
 **The `.env` file is deliberately excluded.** It's regenerated from `beetroot.yaml` the next time you run `beetroot apply`, so leaving it out of the archive means the restored instance picks up its (freshly allocated) port indices and host paths cleanly. Don't commit the archive's contents — assume the next `beetroot apply` is load-bearing.
 
@@ -96,11 +96,13 @@ beetroot restore archive.tar.zst --as beta --path ./existing-data --force
 
 `--force` does *not* touch the registry. If a name already exists there, you'll get a separate error and need to `beetroot destroy <name>` first.
 
-## v0.4 forward compatibility
+## `path_layout` round-trip
 
-The manifest carries a `path_layout: dict[str, str]` field. In v0.3 this is always `{}`. v0.4's [stealth-posture design](../design/stealth-posture.md) populates it with the source instance's randomized container-path mapping (the per-build `BEETROOT_MAGISK_DB`, `BEETROOT_MODULES_DIR`, and `BEETROOT_FRIDA_BIN` paths). The forthcoming v0.4 `restore` will replay the layout into the new instance's `.env` or `BEETROOT_*` env vars so a stealth-randomized snapshot round-trips with its container paths intact.
+The manifest carries a `path_layout: dict[str, str]` field. `snapshot` reads the source instance's [`RedroidBackendConfig.stealth_paths`](../design/stealth-posture.md) blob and writes it verbatim into this field; `restore` reads the field and replays it into the new instance's slot via the registry. The recognised keys today are `magisk_db`, `modules_dir`, and `frida_bin`, each overriding the corresponding `BEETROOT_*` line in the rendered `.env`.
 
-v0.3 `restore` itself doesn't act on `path_layout` — but it never strips or rewrites the field, and the manifest is preserved on disk inside the restored instance directory at `.beetroot-snapshot.json`. A v0.4-produced archive restored by v0.3 keeps its layout intact; the v0.4 release will pick it up from disk on `beetroot apply`.
+In v0.4 the slot defaults to `{}` — `Instance.create` does not yet generate a randomized layout — so today's snapshots carry `path_layout: {}` and `restore` is a structural no-op. v0.5's PR1 will populate the slot in `Instance.create` once stealth research validates a safe path; from that point on, snapshot → restore will carry the per-instance randomized paths through to the destination's `.env` on the very first `beetroot apply`.
+
+Unknown keys in `path_layout` are silently ignored by `render_env`, so a v0.5/v0.6 snapshot carrying a future key (e.g. `stealth_module_id`) restores cleanly against a v0.4 host without faulting — the recognised keys still take effect, and the unknown one is preserved in the registry slot for a later upgrade to consume.
 
 ## Round-tripping in scripts
 

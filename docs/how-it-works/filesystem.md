@@ -9,7 +9,7 @@ Beetroot does **not** require any central project tree. An instance is just a di
 ├── beetroot.yaml               # Source of truth — NOT gitignored
 ├── .env                        # Generated from beetroot.yaml
 ├── data/                       # Bind-mount → /data inside Android
-├── modules/                    # Bind-mount → /flash_dir (read-only)
+├── modules/                    # Bind-mount → /data/adb/modules_update (read-only)
 └── frida-server                # Bind-mount → /data/local/tmp/frida-server
 
 ~/elsewhere/bravo-phone/        # A second instance lives wherever
@@ -36,7 +36,7 @@ The Android `/data` partition, bind-mounted read-write. Gigabytes of state; pack
 
 ### `modules/`
 
-Magisk module staging, bind-mounted read-only at `/flash_dir`. The CLI mirrors `beetroot.yaml`'s `modules:` list here on `create` and `apply`.
+Magisk module staging, bind-mounted read-only at `/data/adb/modules_update` (v0.4 T4 moved this from the Beetroot-invented `/flash_dir`; `BEETROOT_MODULES_DIR` overrides the container-side target). The CLI mirrors `beetroot.yaml`'s `modules:` list here on `create` and `apply`.
 
 ### `frida-server`
 

@@ -19,6 +19,7 @@ from beetroot.config import (
     Module,
     Ports,
     Resources,
+    Stealth,
     base_image_tag,
     load_yaml,
     render_env,
@@ -30,15 +31,15 @@ class TestApiVersion:
     def test_default_api_version_is_supported(self) -> None:
         cfg = InstanceConfig()
         assert cfg.api_version == SUPPORTED_API_VERSION
-        assert cfg.api_version == 2
+        assert cfg.api_version == 3
 
     def test_explicit_supported_version_succeeds(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": 2})
-        assert cfg.api_version == 2
+        cfg = InstanceConfig.model_validate({"api_version": 3})
+        assert cfg.api_version == 3
 
     def test_string_api_version_is_coerced(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": "2"})
-        assert cfg.api_version == 2
+        cfg = InstanceConfig.model_validate({"api_version": "3"})
+        assert cfg.api_version == 3
 
     def test_zero_api_version_raises(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
@@ -47,10 +48,21 @@ class TestApiVersion:
         assert "not supported" in msg
         assert "CHANGELOG" in msg
 
-    def test_v1_api_version_raises(self) -> None:
-        # v0.2 used api_version: 1; T1 bumps the schema to 2.
+    def test_v1_api_version_raises_via_direct_validate(self) -> None:
+        # ``InstanceConfig.model_validate`` doesn't run the auto-bump
+        # path — that lives in ``load_yaml``. A direct validate call
+        # with a legacy api_version still raises so any code that
+        # constructs the model without going through ``load_yaml``
+        # surfaces the error explicitly.
         with pytest.raises(ValidationError) as exc_info:
             InstanceConfig.model_validate({"api_version": 1})
+        msg = str(exc_info.value)
+        assert "not supported" in msg
+        assert "CHANGELOG" in msg
+
+    def test_v2_api_version_raises_via_direct_validate(self) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            InstanceConfig.model_validate({"api_version": 2})
         msg = str(exc_info.value)
         assert "not supported" in msg
         assert "CHANGELOG" in msg
@@ -126,7 +138,7 @@ class TestFridaOptional:
         cfg = InstanceConfig()
         rendered_ports = {"adb": 5555, "frida": 27042, "frida2": 27043}
         result = render_env("alpha", cfg, rendered_ports)
-        # FRIDA_VERSION never appears — the version is consumed by frida_dl,
+        # FRIDA_VERSION never appears — the version is consumed by frida_download,
         # not rendered into .env.
         assert "FRIDA_VERSION" not in result
         # The bind-mount port substitutions DO remain — disabled-frida
@@ -136,6 +148,51 @@ class TestFridaOptional:
         assert "FRIDA_PORT=" in result
         assert "FRIDA_PORT2=" in result
 
+
+class TestFridaVersionRegex:
+    """T2 Agent 1: ``Frida.version`` is gated by a major.minor.patch regex."""
+
+    def test_valid_version_accepted(self) -> None:
+        assert Frida(version="16.4.10").version == "16.4.10"
+        assert Frida(version="100.0.0").version == "100.0.0"
+        assert Frida(version="1.0.0").version == "1.0.0"
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "16.4",           # missing patch
+            "16.4.10-rc1",    # pre-release suffix
+            "16.4.10.dev",    # extra component
+            "v16.4.10",       # leading v
+            "16.4.10 ",       # trailing whitespace
+            "",               # empty
+            "abc",            # non-numeric
+        ],
+    )
+    def test_invalid_version_rejected(self, bad: str) -> None:
+        with pytest.raises(ValidationError, match=r"major\.minor\.patch"):
+            Frida(version=bad)
+
+
+class TestFridaSha256:
+    """T2 Agent 1: optional ``Frida.sha256`` is round-tripped via YAML."""
+
+    def test_default_sha256_is_none(self) -> None:
+        assert Frida().sha256 is None
+
+    def test_explicit_sha256_preserved(self) -> None:
+        digest = "a" * 64
+        assert Frida(sha256=digest).sha256 == digest
+
+    def test_yaml_roundtrip_with_sha256(self, tmp_path: Path) -> None:
+        p = tmp_path / "cfg.yaml"
+        digest = "b" * 64
+        p.write_text(
+            yaml.safe_dump({"frida": {"version": "16.4.10", "sha256": digest}})
+        )
+        cfg = load_yaml(p)
+        assert cfg.frida is not None
+        assert cfg.frida.sha256 == digest
 
 
 class TestAndroidGapps:
@@ -243,6 +300,52 @@ class TestModule:
     def test_both_url_and_path_raises(self) -> None:
         with pytest.raises(ValidationError, match="sets both"):
             Module(url="https://example.com/mod.zip", path="/tmp/mod.zip")
+
+
+class TestStealthDenylist:
+    """T1: per-package regex validator on ``stealth.denylist``.
+
+    SQL-injection prophylaxis for T2's wire-up of the denylist through
+    ``magisk-config.sh``'s SQLite REPLACE INTO. Refusing the malformed
+    shape at config-load time keeps the helper script free of escaping
+    logic.
+    """
+
+    def test_valid_packages_accepted(self) -> None:
+        cfg = Stealth(
+            denylist=["com.google.android.gms", "com.app_id", "com.x.y.z123"]
+        )
+        assert cfg.denylist[0] == "com.google.android.gms"
+
+    def test_gms_denylist_default(self) -> None:
+        # T2 (Agent 2 B-1): the v0.3 entrypoint hard-coded the GMS pair
+        # into ``magisk-config.sh``. v0.4 moves enrolment under the
+        # config model — the default now ships the same GMS pair so a
+        # bare ``beetroot create`` keeps the v0.3 behaviour intact.
+        assert Stealth().denylist == [
+            "com.google.android.gms",
+            "com.google.android.gms.unstable",
+        ]
+
+    def test_package_with_space_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="package id"):
+            Stealth(denylist=["com.bad package"])
+
+    def test_package_with_semicolon_rejected(self) -> None:
+        # SQL-injection probe: a literal "; DROP TABLE settings;" must
+        # be rejected by the validator before T2's helper ever sees it.
+        with pytest.raises(ValidationError, match="package id"):
+            Stealth(denylist=["com.app'; DROP TABLE settings;--"])
+
+    def test_package_with_dash_rejected(self) -> None:
+        # Dashes are not part of the Android package-id grammar; refuse
+        # them so the validator can't drift to a looser shape later.
+        with pytest.raises(ValidationError, match="package id"):
+            Stealth(denylist=["com.bad-package"])
+
+    def test_empty_package_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="package id"):
+            Stealth(denylist=[""])
 
 
 class TestPorts:
@@ -480,6 +583,54 @@ class TestRenderEnv:
         result = render_env("alpha", cfg, self._ports())
         assert "MEMSWAP_LIMIT=4g" in result
 
+    def test_emits_default_denylist_packages(self) -> None:
+        # T2 (Agent 2 B-1): the default Stealth model carries the GMS
+        # pair so a bare ``beetroot create`` keeps v0.3's hard-coded
+        # behaviour intact.
+        cfg = InstanceConfig()
+        result = render_env("alpha", cfg, self._ports())
+        assert (
+            "BEETROOT_DENYLIST_PACKAGES=com.google.android.gms,"
+            "com.google.android.gms.unstable"
+        ) in result
+
+    def test_emits_custom_denylist_packages_as_csv(self) -> None:
+        # T2 (Agent 2 B-1): the env var the bundled compose template
+        # consumes must be a comma-separated list; toybox sh has no
+        # array support, so the helper iterates via ``IFS=,``.
+        from beetroot.config import Stealth
+        cfg = InstanceConfig(stealth=Stealth(
+            denylist=["com.app.one", "com.app.two", "com.x.y.z123"]
+        ))
+        result = render_env("alpha", cfg, self._ports())
+        assert (
+            "BEETROOT_DENYLIST_PACKAGES=com.app.one,com.app.two,com.x.y.z123"
+            in result
+        )
+
+    def test_emits_empty_denylist_packages_when_explicitly_disabled(self) -> None:
+        # An explicit empty list (``stealth.denylist: []``) must surface
+        # as ``BEETROOT_DENYLIST_PACKAGES=`` (no value) so the helper's
+        # ``if [ -n "$DENYLIST_PACKAGES" ]`` guard short-circuits and no
+        # rows are SQL'd.
+        from beetroot.config import Stealth
+        cfg = InstanceConfig(stealth=Stealth(denylist=[]))
+        result = render_env("alpha", cfg, self._ports())
+        assert "BEETROOT_DENYLIST_PACKAGES=\n" in result
+
+    def test_emits_known_safe_container_paths(self) -> None:
+        # T2 (Agent 1 1.1 / Agent 3 1.1): render_env is the single
+        # source of truth for the helper-side defaults — the compose
+        # template still carries ``${VAR:-default}`` fallbacks for the
+        # raw-compose escape hatch, but a Beetroot-rendered .env file
+        # always sets them to known-safe values. v0.5's PR1 will
+        # randomise these once stealth research validates a path.
+        cfg = InstanceConfig()
+        result = render_env("alpha", cfg, self._ports())
+        assert "BEETROOT_MAGISK_DB=/data/adb/magisk.db" in result
+        assert "BEETROOT_MODULES_DIR=/data/adb/modules_update" in result
+        assert "BEETROOT_FRIDA_BIN=/data/local/tmp/frida-server" in result
+
 
 class TestWriteLoadYamlRoundtrip:
     def test_default_config_roundtrip(self, tmp_path: Path) -> None:
@@ -535,8 +686,8 @@ class TestDockerComposeConfig:
     """
 
     def _run_compose_config(self, instance_root: Path) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [
+        return subprocess.run(  # noqa: S603  # ``instance_root`` is a test-controlled tmp_path
+            [  # noqa: S607  # docker resolved via PATH; test helper invokes docker CLI on the host
                 "docker",
                 "compose",
                 "-p",

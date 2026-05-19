@@ -18,9 +18,7 @@ but forgets to stage its derived files. ``Instance.register`` and
 """
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -162,8 +160,11 @@ def test_invariants_helper_detects_collision_regression(cli_root: Path) -> None:
 
 
 # Tag this file with the operation names so a grep across the test
-# tree turns up every operation that must satisfy the contract.
-_OPERATIONS: dict[str, Callable[..., Any]] = {
+# tree turns up every operation that must satisfy the contract. The
+# mapping value type is left as a plain object reference (not a
+# ``Callable[..., Any]``) because we never invoke through this dict —
+# it's an audit-only marker.
+_OPERATIONS = {
     "create": api.Instance.create,
     "register": api.Instance.register,
     "restore": snapshot.restore,

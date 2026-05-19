@@ -44,7 +44,9 @@ The host-side `frida` CLI is exposed via a `[frida]` extra. Install with `uv too
 - **LiteGapps** + **Houdini** ARM-on-x86_64 translation
 - **Frida server (opt-in, version-pinned per instance)** — declare a `frida:` block in `beetroot.yaml` (or copy [`examples/with-frida.yaml`](examples/with-frida.yaml) over the freshly-created file) and the CLI downloads, caches, and bind-mounts the matching `frida-server` into the container
 - **Drop-in Magisk module flashing** via `beetroot.yaml`
-- **`beetroot` CLI** — lifecycle (`create` / `register` / `up` / `down` / `destroy`), shell + module management, and a `build` bootstrap. See the [CLI reference](https://xiddoc.github.io/Beetroot/reference/cli/) for every verb.
+- **`beetroot` CLI** — lifecycle (`create` / `register` / `up` / `down` / `destroy`), shell + module management, health checks (`status` / `doctor`), and a `build` bootstrap. See the [CLI reference](https://xiddoc.github.io/Beetroot/reference/cli/) for every verb.
+- **Already have a rooted phone?** `beetroot adopt <adb-serial>` registers it under the same registry — the same `beetroot shell` / `beetroot frida` / `beetroot module` verbs dispatch via the host `adb` CLI instead of compose. No on-disk container; the device is managed outside Beetroot.
+- **Pluggable backends.** Beyond the in-tree redroid + adb backends, Beetroot ships a small extension surface so a third-party package can ship a custom backend (cloud-emulator service, network-adb gateway, …) in ~30 LOC + one `[project.entry-points."beetroot.backends"]` line. See [Adding a backend](https://xiddoc.github.io/Beetroot/guides/adding-a-backend/) for the recipe.
 
 ## Read the docs
 
@@ -59,6 +61,8 @@ Full documentation lives at <https://xiddoc.github.io/Beetroot/>.
 | [Architecture](https://xiddoc.github.io/Beetroot/how-it-works/architecture/) | Image build, orchestration, boot flow |
 | [Filesystem layout](https://xiddoc.github.io/Beetroot/how-it-works/filesystem/) | Per-instance state, what's gitignored |
 | [Python API](https://xiddoc.github.io/Beetroot/reference/api/) | `from beetroot import Instance, Manager` — drive Beetroot programmatically |
+| [Adding a backend](https://xiddoc.github.io/Beetroot/guides/adding-a-backend/) | Ship a third-party device backend in ~30 LOC |
+| [Migrating from v0.3 to v0.4](https://xiddoc.github.io/Beetroot/guides/migration-v0.3-to-v0.4/) | Schema bump, new verbs, exit codes, known v0.5 deferred items |
 | [Troubleshooting](https://xiddoc.github.io/Beetroot/troubleshooting/) | Common breakages and how to unstick them |
 
 Contributors should read [CLAUDE.md](CLAUDE.md) for the development workflow (uv, ruff, mypy, pytest, 100% coverage gate).

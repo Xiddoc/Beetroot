@@ -1,5 +1,41 @@
 # Boot Flow
 
+## The configuration chain (`beetroot.yaml` → helper sh)
+
+Researcher-facing configuration lives in `beetroot.yaml` and flows
+through pydantic models. The container-side helpers (`docker/*.sh`)
+can't read YAML — Android's toybox sh has no YAML parser. Instead,
+every container-side path is read from a `BEETROOT_*` env var with a
+safe default, and the CLI plumbs the resolved values from the YAML
+into the container's environment via the bundled compose template's
+`environment:` block:
+
+```
+beetroot.yaml
+  ↓ pydantic models (config.py — InstanceConfig, Stealth, Frida, ...)
+  ↓ config.render_env()
+instance .env file (per-instance, in the instance directory)
+  ↓ docker compose --env-file <.env>  + the bundled compose template's
+    `environment:` block (one ${KEY} per BEETROOT_* var)
+container env vars (visible to PID 1 = Android `init`)
+  ↓ Android init propagates env to services it spawns
+helper shell scripts (entrypoint.sh / magisk-config.sh /
+                      flash-modules.sh / launch-frida.sh)
+  reads `${BEETROOT_FRIDA_BIN:-/data/local/tmp/frida-server}` etc.
+```
+
+Everything is YAML-config-driven at the user-facing boundary; the
+env-var layer exists strictly because toybox sh can't read YAML.
+v0.3 had two breakages in this chain (the bundled compose template
+hardcoded its mount targets, and `Stealth.denylist` was never plumbed
+past pydantic); v0.4's T2 fixed both, so the chain is now
+end-to-end. Adding a new helper-script env var means three coordinated
+edits: declare the field on the matching pydantic model, emit the
+`KEY=value` line from `render_env`, and add `${KEY}` substitution to
+the bundled compose template (the helper's `${KEY:-default}` fallback
+keeps the script runnable under a bare `docker run` without a
+Beetroot-rendered `.env`).
+
 ## There is no Docker ENTRYPOINT
 
 The Beetroot image has no `ENTRYPOINT` and no `CMD`. The container starts with redroid's default boot process, where `/init` runs as PID 1 — exactly as it does on a real Android device.
@@ -38,7 +74,7 @@ sequenceDiagram
     E->>E: wait for /data/adb/magisk.db to exist
     E->>M: magisk --sqlite: enable Zygisk + denylist
     E->>M: magisk --sqlite: add denylist entries
-    E->>M: magisk --install-module for each zip in /flash_dir
+    E->>M: magisk --install-module for each zip in /data/adb/modules_update
     E->>E: launch /data/local/tmp/frida-server &
     E->>E: wait (keeps frida-server as child)
 ```
@@ -51,7 +87,7 @@ In v0.3, each numbered step below lives in a dedicated helper (see [Boot Scripts
 
 2. **Configure Magisk via SQL.** (`magisk-config.sh`.) Calls `magisk --sqlite` to enable Zygisk and the denylist, then inserts each package from `stealth.denylist` as a denylist entry. These writes take effect the next time Zygisk reads the DB — which happens before any app process starts, because Zygisk hooks into Zygote before forking app processes.
 
-3. **Flash modules.** (`flash-modules.sh`.) Iterates every `*.zip` in `/flash_dir` (the bind-mounted `<instance-dir>/modules/` directory) and calls `magisk --install-module <zip>`. Modules that are already installed are reinstalled safely (Magisk handles idempotency).
+3. **Flash modules.** (`flash-modules.sh`.) Iterates every `*.zip` in `/data/adb/modules_update` (the bind-mounted `<instance-dir>/modules/` directory — v0.4 T4 moved the target from the Beetroot-invented `/flash_dir` to Magisk's well-known staging dir) and calls `magisk --install-module <zip>`. Modules that are already installed are reinstalled safely (Magisk handles idempotency).
 
 4. **Launch Frida (if opted in).** (`launch-frida.sh`.) If `/data/local/tmp/frida-server` is executable, starts it in the background with `&`. When the instance's `beetroot.yaml` omits the `frida:` block (v0.3+ default), this path is a 0-byte non-executable placeholder and the launch is skipped — no Frida process inside the container.
 

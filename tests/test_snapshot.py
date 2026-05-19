@@ -13,7 +13,7 @@ import zstandard
 
 from beetroot import registry, snapshot
 
-_MIN_YAML = "api_version: 2\nandroid:\n  version: 14\n"
+_MIN_YAML = "api_version: 3\nandroid:\n  version: 14\n"
 
 
 def _make_instance(root: Path, *, data_bytes: bytes = b"hello") -> Path:
@@ -98,8 +98,9 @@ class TestSnapshotRoundTrip:
 
         beta = registry.get("beta")
         assert beta is not None
-        assert Path(beta["absolute_path"]) == target.resolve()
-        assert beta["index"] == 0
+        assert isinstance(beta.backend, registry.RedroidBackendConfig)
+        assert Path(beta.backend.absolute_path) == target.resolve()
+        assert beta.index == 0
 
     def test_round_trip_runs_quickly(
         self, isolated_registry: Path, tmp_path: Path
@@ -193,10 +194,10 @@ class TestRestorePortAllocation:
 
         alpha = registry.get("alpha")
         assert alpha is not None
-        assert alpha["index"] == 0
+        assert alpha.index == 0
         beta = registry.get("beta")
         assert beta is not None
-        assert beta["index"] == 1
+        assert beta.index == 1
 
 
 class TestRestoreForce:
@@ -281,6 +282,38 @@ class TestRestoreForce:
         )
         assert restored == target.resolve()
 
+    def test_force_corrupted_archive_does_not_destroy_target(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # T2 Agent 3 1.4: a corrupted archive + --force must NOT
+        # destroy the target directory before the manifest read fails.
+        # v0.3 ordered rmtree(target) before read_manifest, so a
+        # malformed archive wiped the user's existing dir AND blew up
+        # mid-restore — no way back.
+        target = tmp_path / "beta"
+        target.mkdir()
+        marker = target / "important.txt"
+        marker.write_bytes(b"do not lose me")
+        nested = target / "data" / "subdir"
+        nested.mkdir(parents=True)
+        (nested / "more.txt").write_bytes(b"also important")
+
+        # An obviously-broken "archive" — not a valid zstd stream.
+        bad = tmp_path / "bad.tar.zst"
+        bad.write_bytes(b"not a real archive")
+
+        with pytest.raises(snapshot.SnapshotError):
+            snapshot.restore(
+                bad, dest_name="beta", dest_path=target, force=True,
+            )
+
+        # The target directory and ALL its contents survived.
+        assert target.exists()
+        assert marker.read_bytes() == b"do not lose me"
+        assert (nested / "more.txt").read_bytes() == b"also important"
+        # Beta did not get registered.
+        assert registry.get("beta") is None
+
 
 class TestRestoreErrors:
     def test_dest_name_already_registered(
@@ -309,7 +342,7 @@ class TestRestoreErrors:
         # resolved port 5565 collides with the peer's resolved 5565.
         src = _make_instance(tmp_path / "alpha")
         (src / "beetroot.yaml").write_text(
-            "api_version: 2\n"
+            "api_version: 3\n"
             "android:\n  version: 14\n"
             "ports:\n  adb: 5565\n"
         )
@@ -425,7 +458,7 @@ class TestReadManifestErrors:
         broken = tmp_path / "broken.tar.zst"
         _repack_with_custom_manifest(archive, broken, b"{not-json")
 
-        with pytest.raises(snapshot.SnapshotError, match="not valid JSON"):
+        with pytest.raises(snapshot.SnapshotError, match="validation failed"):
             snapshot.read_manifest(broken)
 
     def test_manifest_top_level_must_be_object(
@@ -437,7 +470,7 @@ class TestReadManifestErrors:
         broken = tmp_path / "broken.tar.zst"
         _repack_with_custom_manifest(archive, broken, b"[1,2,3]")
 
-        with pytest.raises(snapshot.SnapshotError, match="JSON object"):
+        with pytest.raises(snapshot.SnapshotError, match="validation failed"):
             snapshot.read_manifest(broken)
 
     def test_manifest_missing_keys_raises(
@@ -451,7 +484,9 @@ class TestReadManifestErrors:
             archive, broken, json.dumps({"schema_version": 1}).encode("utf-8")
         )
 
-        with pytest.raises(snapshot.SnapshotError, match="missing required keys"):
+        with pytest.raises(
+            snapshot.SnapshotError, match="validation failed"
+        ):
             snapshot.read_manifest(broken)
 
     def test_manifest_wrong_schema_version_raises(

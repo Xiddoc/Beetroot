@@ -1,5 +1,669 @@
 # Changelog
 
+## v0.4.0 — 2026-05-19
+
+### Breaking changes (upgrading from v0.3)
+
+Beetroot v0.4 is a foundation release: pydantic-typed registry,
+second device backend (`AdbDevice`), three new user-facing verbs,
+hardened CI / lint / type-check, and the plumbing for v0.5's
+randomized-path stealth work. The CLI auto-migrates v0.3 registries
+and YAMLs (one warning per process), but a handful of changes need
+attention.
+
+Step-by-step walkthrough:
+[Migrating from v0.3 to v0.4](docs/guides/migration-v0.3-to-v0.4.md).
+
+- **Schema bump 2 → 3.** `SUPPORTED_API_VERSION = 3`; v0.3 YAMLs
+  with `api_version: 2` auto-bump on load (one-line stderr warning,
+  no field renames). v0.2 YAMLs still auto-bump too — v0.2 → v0.4 in
+  one hop is supported.
+- **Registry schema v2 → v3.** `instances.json` round-trips through
+  the strict pydantic `RegistryFile` → `InstanceMeta` →
+  discriminated-union `BackendConfig` over `kind: "redroid"` /
+  `"adb"`. v2 registries are renamed to `instances.json.bak` and a
+  fresh empty v3 file is emitted. Re-register existing instances
+  with `beetroot register <path>` after the upgrade.
+- **`Manager.allocate_port_index` removed.** Now module-private
+  `_allocate_port_index`. The public method was a footgun (Agent 2
+  F-4) — use `registry.add_allocating(name, ...)` for atomic allocate
+  + register.
+- **`Settings.extra="forbid"`.** Typo'd `BEETROOT_*` env vars now
+  fail loudly at import time with `ValidationError`. The four
+  forwarded vars (`BEETROOT_MAGISK_DB`, `BEETROOT_MODULES_DIR`,
+  `BEETROOT_FRIDA_BIN`, `BEETROOT_BUILD_CONTEXT`) are declared as
+  fields so they pass the gate.
+- **`Settings` dropped `env_file=".env"`.** No more CWD-based `.env`
+  auto-load — Beetroot reads settings strictly from `os.environ`.
+- **`Frida.version` regex.** Only `X.Y.Z` shapes are accepted —
+  typos surface at config-load time instead of as a download 404.
+  A new optional `Frida.sha256` field verifies the cached binary.
+- **Module renames `frida_dl` → `frida_download`, `modules_dl` →
+  `modules_download`.** Update `from beetroot import frida_dl`
+  imports to the expanded names. Public function/class surface is
+  otherwise unchanged.
+- **Instance-name regex `[a-z0-9_-]+`** (the Docker compose
+  project-name grammar). v0.3 silently accepted `Alpha` /
+  `alpha bravo` / `alpha.bravo`, then compose blew up at the first
+  `up`. v0.4 validates at the OOP boundary before any side effect.
+- **Mount target `/flash_dir` → `/data/adb/modules_update/`.**
+  Existing v0.3 instances need one `beetroot down && beetroot up`
+  cycle to rebind. No data movement on the host side.
+- **`BackendCapabilityError` → exit code 2.** Lifecycle verbs
+  (`up` / `down` / `apply` / `destroy` / `snapshot`) raised against a
+  non-redroid backend now exit with code 2 — distinct from
+  "instance not found" (exit 1) and from generic errors. Wrapping
+  scripts can now distinguish via `$?`.
+
+### v0.4 — Theme T1: pydantic foundation + schema v3 + Protocol expansion + backend registry
+
+**Breaking changes**
+
+- **`api_version` bumped to `3`.** v0.3 YAMLs that hard-pinned
+  `api_version: 2` auto-bump on load with a one-line stderr warning
+  (the bump is strictly additive — no fields renamed). v0.2's
+  `api_version: 1` continues to auto-bump too, so users on the v0.2 →
+  v0.4 path don't need an intermediate stop. Persistence happens
+  organically on the next `beetroot apply`.
+- **Registry schema v2 → v3 migration.** `instances.json` now
+  round-trips through a strict pydantic model (`RegistryFile` →
+  `InstanceMeta` → discriminated-union `BackendConfig` over `kind:
+  "redroid"` and `kind: "adb"`). v2 registries are renamed to
+  `instances.json.bak` on first read and a fresh empty v3 file is
+  emitted — same backup-and-empty pattern v0.3 used for v1 → v2.
+  Re-register your existing instances with `beetroot register <path>`
+  after the upgrade.
+- **`Manager.allocate_port_index` is removed** (Agent 2 F-4: the index
+  isn't reserved by this call, so calling it without an immediate
+  follow-up `registry.add` is a footgun). Use
+  `registry.add_allocating(name, path)` for atomic allocate +
+  register.
+
+**New surface**
+
+- **`DeviceBackend` Protocol expansion.** New members on the Protocol:
+  `name: str`, `kind: str`, `shell() -> int`, `frida_cli(args:
+  list[str]) -> int`, and a `from_meta(name, backend_config)`
+  classmethod used by the backend-registry dispatcher.
+- **`beetroot.backends` registry.** Discovers third-party backends via
+  `[project.entry-points."beetroot.backends"]`; in-tree backends
+  (currently just `redroid`) register programmatically at import time.
+  `Manager.resolve(name)` dispatches via the registry.
+- **`BackendCapabilityError(RuntimeError)`.** Verbs that don't
+  generalise across backends (`up`, `down`, `apply`, `snapshot`)
+  raise this when called on a backend that doesn't expose them.
+- **`Stealth.denylist` regex validator.** Per-entry packages must
+  match the Android package-id grammar (`[a-zA-Z0-9._]+`). SQL-injection
+  prophylaxis for T2's wire-up of the denylist through
+  `magisk-config.sh`'s SQLite REPLACE INTO.
+
+**Internal**
+
+- `Manifest` (snapshot.py) is a frozen pydantic `BaseModel` with
+  `extra="forbid"` and a new `kind: Literal["redroid"]` discriminator
+  + typed `path_layout: dict[str, str]` field. The `_coerce_manifest`
+  helper is gone.
+- `compose.ps_status` returns a closed `Literal` (`ComposeStatus`)
+  rather than free-form `str`. Adds explicit
+  `"docker-unreachable"` / `"starting"` / `"created"` / `"paused"`
+  / `"unknown"` mapping. Agent 2 B-7.
+
+### v0.4 — Theme T2: audit-pass bug fixes + rename pass
+
+**Breaking changes**
+
+- **`beetroot.frida_dl` → `beetroot.frida_download`** and
+  **`beetroot.modules_dl` → `beetroot.modules_download`.** Python is
+  explicit-by-design — `_dl` was the only ambiguity in the public
+  module surface. Update `from beetroot import frida_dl` imports to
+  `from beetroot import frida_download`. The module-level public
+  surface (`download`, `stage_for_instance`, `stage_empty`,
+  `sha256_of`, `release_url`, `cached_binary`, `frida_cache_dir`,
+  `ModuleFetchError`) is otherwise unchanged.
+- **`/flash_dir` → `/data/adb/modules_update` bind-mount target.** v0.3
+  bind-mounted `<instance-dir>/modules` to `/flash_dir`; v0.4 moves
+  the target to Magisk's standard module-staging directory
+  (`/data/adb/modules_update`), driven by `BEETROOT_MODULES_DIR`. The
+  default applies to every new `down + up` cycle — existing running
+  v0.3 containers see the change at next restart.
+
+**Bug fixes (audit-flagged)**
+
+- **`Stealth.denylist` wired through to `magisk-config.sh`.** v0.3 read
+  the YAML field and threw it away — the helper enrolled a hard-coded
+  GMS pair regardless. v0.4 pipes `cfg.stealth.denylist` through
+  `render_env` as `BEETROOT_DENYLIST_PACKAGES` (comma-separated; toybox
+  sh has no array support), and the helper iterates the list via
+  `IFS=,`. The pydantic regex from T1 still gates per-package shape so
+  the SQL is safe to compose without escaping. `Stealth.denylist`'s
+  default now ships the GMS pair so a bare `beetroot create` keeps the
+  v0.3 enrolment behaviour intact. (Agent 2 B-1, Agent 3 1.3.)
+- **Compose mount targets parameterised.** The bundled compose template
+  now reads `${BEETROOT_FRIDA_BIN}` / `${BEETROOT_MODULES_DIR}` on
+  **both sides** of the bind-mount entry (v0.3 hardcoded the container
+  side). `render_env` emits both with the known-safe v0.3 paths
+  (`/data/local/tmp/frida-server`, `/data/adb/modules_update`). v0.5's
+  PR1 will replace these defaults with randomised values once stealth
+  research validates a path. (Agent 1 1.1, Agent 3 1.1.)
+- **Magisk Zygisk write is verified.** After the `REPLACE INTO settings
+  VALUES ('zygisk', 1)`, `magisk-config.sh` now `SELECT`s the row back
+  and exits non-zero if Magisk returned anything other than `1`. v0.3
+  silently trusted the REPLACE; this catches schema drift or daemon-race
+  regressions loudly. (Agent 1, Agent 2 F-9, Agent 3 1.2.)
+- **`Instance.add_module` is now stage-first.** v0.3 mutated
+  `self._cfg.modules` and wrote `beetroot.yaml` BEFORE downloading the
+  zip — a 404 left the YAML polluted with a module the user couldn't
+  reach. v0.4 stages first against a transient `InstanceConfig` and
+  only commits to the YAML + in-memory model on success. Re-running
+  the verb with a corrected URL is now safe. (Agent 2 B-6, Agent 3 1.6.)
+- **`Instance._stage` split into `_stage_local` + `_stage_network`.**
+  Local artefacts (`.env`, data/modules dirs, Frida placeholder) are
+  rollback-fatal — a failure there destroys the partial install. The
+  network step (real Frida binary, module zips) runs AFTER the
+  registry commits and is soft-fail: a Frida 404 prints a hint and
+  leaves the instance registered for the user to recover via
+  `beetroot apply <name>`. (Agent 2 B-2.)
+- **`snapshot.restore --force` validates the archive before wiping
+  the target.** v0.3 ordered `shutil.rmtree(target)` before
+  `read_manifest(archive)` — a corrupted archive paired with `--force`
+  destroyed the user's existing directory AND then bailed out with
+  no way back. v0.4 swaps the order so the manifest read is the gate.
+  (Agent 3 1.4.)
+- **`Instance.destroy` reorders cleanup steps.** v0.3 ran
+  `compose.down` → `shutil.rmtree` → `registry.remove`. A ^C between
+  the rmtree and `registry.remove` stranded a registry row pointing
+  at a now-gone directory — an orphan the user could only fix by
+  re-creating the dir then running destroy again. v0.4 reorders to
+  `compose.down` → `registry.remove` → `shutil.rmtree` so a ^C
+  between the last two steps leaves a tidy registry + a stale dir
+  the user wipes manually. The CLI verb's order already matched;
+  this aligns the OOP path. (Agent 2 B-4.)
+- **`paths.bundled_compose_file` uses `importlib.resources.as_file`.**
+  v0.3 stringified the `Traversable` returned by `files()` and
+  wrapped it in `Path()` — fine for editable installs (where the
+  resource lives on disk) but breaks wheel installs where the
+  resource lives inside a zip. v0.4 uses `as_file()` to materialise
+  a stable on-disk copy under `user_cache_dir("templates")` (which
+  T3 will migrate to `platformdirs.user_cache_path`); the path is
+  cached at module level so subsequent `docker compose -f` calls
+  resolve identically. (Agent 2 B-8.)
+- **`fcntl.flock` on snapshot + destroy.** v0.3 had no inter-process
+  coordination — a `beetroot snapshot foo` racing a `beetroot
+  destroy foo` could rmtree the source directory mid-archive read,
+  producing a torn `.tar.zst`. v0.4 adds an advisory lock at
+  `<instance_root>/.beetroot.lock`: `snapshot()` takes `LOCK_SH`
+  (parallel snapshots are fine) and `Instance.destroy()` takes
+  `LOCK_EX` (blocks every reader and waits for in-flight readers
+  to release). (Agent 2 B-12.)
+- **`Frida.version` regex validator + optional `sha256`.**
+  `Frida.version` now matches `^[0-9]+\.[0-9]+\.[0-9]+$` so typos
+  surface at config-load time instead of as a 404 from
+  `github.com/frida/frida/releases` at `frida_download.download`
+  time. A new optional `Frida.sha256` field is forwarded to
+  `download(..., expected_sha256=...)`; if set, the cached binary's
+  digest is verified case-insensitively and a mismatch raises
+  `ValueError` (defends against a hostile mirror substituting the
+  release). (Agent 1.)
+- **`Settings` no longer auto-loads `.env`.** v0.3's
+  `SettingsConfigDict(env_file=".env", ...)` made every
+  `Settings()` instantiation walk the *current working directory's*
+  `.env` file. Inside an instance directory that's the
+  Docker-compose env file (`INSTANCE_NAME=…`, `ADB_PORT=…`, etc.) —
+  values Beetroot must not pick up. v0.4 drops `env_file`; settings
+  read strictly from `os.environ`. (Agent 3 1.5, Agent 4.)
+- **Instance-name regex on `Instance.create` / `Instance.register`.**
+  Names must match `[a-z0-9_-]+` (the Docker compose project-name
+  grammar). v0.3 silently accepted `Alpha` / `alpha bravo` /
+  `alpha.bravo`, then compose blew up with a cryptic error at the
+  first `up`. v0.4 validates at the OOP boundary before any side
+  effect runs — no mkdir, no registry write, no port allocation
+  for a bad name. The default basename used by `register` (when
+  `name=` is omitted) goes through the same gate. (v0.3.1 deferred.)
+- **`Manager.list` + `Manager.list_orphans` now surface unparseable
+  YAML.** v0.3's `list_orphans` only surfaced rows whose
+  `beetroot.yaml` was *missing*; a corrupted or
+  api_version-mismatched YAML was invisible to both `list` and
+  `list_orphans`, so the user had no way to surface the row for
+  cleanup. v0.4 treats "can't parse" identically to "doesn't
+  exist". `Manager.list` also stops swallowing every
+  `FileNotFoundError` from `Instance.load` — only the
+  yaml-missing pre-check filters orphans now; any unexpected
+  OSError bubbles. (v0.3.1 deferred, Agent 2 F-12, Agent 3 1.7.)
+- **`cli.main` catches `registry.RegistryError`.** v0.3 let
+  `RegistryError` ("unknown instance X", "X is an adb backend, no
+  on-disk dir") propagate as a Rich-rendered traceback. v0.4
+  catches it alongside `ComposeError` / `BootstrapError` /
+  `ModuleFetchError` for the same friendly `error: ...` line.
+  (Agent 3 1.9.)
+
+### v0.4 — Theme T3: max-strictness CI / pre-commit / lint / type-check / test investment
+
+**Runtime dependencies**
+
+- **Added `platformdirs>=4`** as a runtime dep. `paths._xdg_dir` and
+  its hand-rolled `os.environ.get("XDG_*_HOME")` plumbing is gone —
+  user config / cache paths now resolve via
+  `platformdirs.user_config_path("beetroot")` and
+  `platformdirs.user_cache_path("beetroot")`. On Linux the same env
+  vars are honoured automatically; on macOS / Windows the paths now
+  match platform conventions.
+- **`builder._DEFAULT_WORK_DIR = Path("/tmp/redroid")` is gone** —
+  the redroid-script clone now lives under the per-user cache
+  (`user_cache_dir("redroid-script")`). Closes Agent 4's `S108`
+  bandit finding and stops the clone from being wiped by aggressive
+  `/tmp` cleaners between builds.
+
+**Settings hardening**
+
+- **`Settings` is now frozen + `extra="forbid"`**. The forwarded
+  container-bound vars (`BEETROOT_MAGISK_DB` / `BEETROOT_MODULES_DIR`
+  / `BEETROOT_FRIDA_BIN` / `BEETROOT_BUILD_CONTEXT`) are declared as
+  fields so the strict-extras flip doesn't break researchers who
+  export them. Mutating `settings` in-process now raises
+  `ValidationError` — tests that used to mutate `settings.docker_bin`
+  in-place were updated to swap the module-level singleton instead
+  (see `settings.py`'s module docstring for the new pattern).
+- **`docker/*.sh` boot helpers** all start with `set -eu` (Agent 2
+  CI-4). A typo'd `magisk --sqlite` or an unbound env var now fails
+  the boot loud instead of silently coming up half-configured.
+
+**Lint / type-check / test gates (all new, all blocking unless noted)**
+
+| Gate | Tool | Threshold |
+|------|------|-----------|
+| Docstring coverage | `interrogate` | `--fail-under=95` (currently 99.2%) |
+| Cyclomatic complexity | `radon cc -n C` | no function grade C or worse |
+| Dead-code finder | `vulture --min-confidence 80` | no findings outside the allowlist |
+| Dependency CVE scan | `pip-audit` | no high-severity CVEs (PYSEC-2022-42969 suppressed; transitive via interrogate) |
+| Second-opinion type-check | `pyright src/ tests/` | clean |
+| Dockerfile linter | `hadolint docker/Dockerfile` | clean (`DL3007` whitelisted for `${BASE_IMAGE}` ARG) |
+| Shellcheck severity | `shellcheck -S warning` | bumped from default |
+| Mutation testing | `mutmut run` (nightly cron) | non-blocking; survival rate artefact |
+
+**Mypy tightening**
+
+- `warn_return_any = true`
+- `disallow_any_explicit = true`
+- `warn_unused_configs = true`
+- explicit `strict_optional = true`
+- `enable_error_code` gained `narrowed-type-not-subtype`
+
+Every explicit `Any` annotation in src and tests was replaced with a
+concrete type, `object`, or removed entirely. The two surviving
+`# type: ignore[call-overload]` suppressions (in `compose.run` and
+`tests/test_subprocess_env_merge.py`) are needed because
+`**kwargs: object` is incompatible with subprocess.run's overload
+set — both narrow back to `CompletedProcess[str]` at the call
+boundary.
+
+**Ruff tightening**
+
+Added rule families: `ICN`, `DTZ`, `ASYNC`, `BLE`, `S`, `EXE`, `Q`,
+`INP`, `T20`, `SLF`, `RUF100`. Removed the stale `max-statements = 60`
+pylint exemption.
+
+Per-line `# noqa` justifications added to the four subprocess sites
+Agent 4 flagged (`api.shell`, `api.frida_cli`,
+`builder.DefaultRunner.run`, `compose.run`), the two `urlopen` sites
+(`frida_dl.download`, `modules_dl._fetch_url`), and the three
+stderr-migration print calls in `config.py` / `registry.py`.
+
+**Property-based tests (hypothesis, derandomized seed in CI)**
+
+- `tests/test_property_registry.py` — `InstanceMeta` and
+  `RegistryFile` JSON round-trip is identity across both backend-
+  config variants.
+- `tests/test_property_ports.py` — `lowest_free_index` never
+  collides under arbitrary `(used_indices, allocation_count)`;
+  `ports_for_index(N)` is always exactly `base + N*STRIDE` with all
+  three ports pairwise distinct.
+- `tests/test_property_render_env.py` — every `render_env` line is a
+  shell-safe `KEY=VALUE` pair (regex `^[A-Z_][A-Z0-9_]*=.*$`) free
+  of `'`, `"`, `` ` ``, `$`.
+
+**Refactor**
+
+- `snapshot.restore` was scoring radon grade C — split into
+  `_prepare_destination` + `_check_restored_port_collision` helpers.
+  No public-surface change; `restore` itself is now a 15-line
+  orchestrator that reads top-to-bottom.
+
+**Pre-commit & scripts**
+
+- `.pre-commit-config.yaml` — `changelog-lint` hook now fires on
+  changes to `src/beetroot/cli.py` too (a verb rename must
+  invalidate the linter). New `interrogate` hook keeps docstring
+  coverage above 95% on every commit.
+- `scripts/lint_changelog.py` — now scans prose-inline backtick
+  spans inside `## Unreleased`, not just fenced shell blocks. The
+  v0.3 retro showed inline drift sails through fenced-only matchers
+  too. Six new tests in `tests/test_lint_changelog.py` exercise the
+  extractor + matcher directly.
+
+**CI workflow (`.github/workflows/ci.yml`)**
+
+- Every third-party action SHA-pinned with a trailing `# v<version>`
+  comment.
+- New `docstring-and-complexity` and `dependency-audit` jobs.
+- `hadolint` job added.
+
+**Mutation-testing nightly (`.github/workflows/mutation-nightly.yml`)**
+
+New cron `0 4 * * *` runs `mutmut` against the four load-bearing
+modules (`registry`, `snapshot`, `api`, `config`). Survival rate is
+published as a 30-day-retained workflow artefact. Expanding the
+surface to all of `src/beetroot/` is on the v0.5 deferred list.
+
+### v0.4 — Theme T4: light stealth plumbing — stable registry blob + modules_update path
+
+This is the **plumbing-only** slice of `docs/design/stealth-posture.md`'s
+v0.4 scope (PR5 + PR6). The actual `/data/adb/modules/<random>/...`
+Frida-path move (PR1) is deferred to v0.5 pending stealth research —
+user concern: GMS may scan the entirety of `/data/adb/modules/`
+regardless of Shamiko's namespace switch. v0.4 lands the wiring so
+v0.5 can ship the default flip as a one-line change in
+`Instance.create`'s generator once a safe path is validated.
+
+**Mount-target swap (PR5 of stealth-posture.md)**
+
+- **`/flash_dir` → `/data/adb/modules_update` is the new default
+  bind-mount target.** T2 already shifted the bundled compose template
+  and `render_env`'s `BEETROOT_MODULES_DIR` default; T4 completes the
+  swap by also updating `docker/flash-modules.sh`'s
+  `${BEETROOT_MODULES_DIR:-/data/adb/modules_update}` POSIX fallback,
+  so a bare `docker run` without a Beetroot-rendered `.env` lands on
+  the same path as the CLI would emit. The `${VAR:-default}` form is
+  the right one under T3's `set -eu` (a bare `$VAR` would explode).
+  `/data/adb/modules_update` is Magisk's well-known module-staging
+  directory — Magisk's daemon recognises modules there at boot and
+  installs them on the next reboot, no user action needed.
+
+**`stealth_paths` round-trip (PR6 of stealth-posture.md)**
+
+- **`snapshot()` writes the source's
+  `RedroidBackendConfig.stealth_paths` blob into the manifest's
+  `path_layout` field.** v0.4's slot defaults to `{}`, so today's
+  snapshots carry `path_layout: {}` and round-trips are byte-identical
+  to v0.3-shape — but the moment v0.5's `Instance.create` generator
+  populates the slot, `snapshot → restore` will carry the randomized
+  layout through to the destination without any further code change.
+- **`restore()` replays `manifest.path_layout` into the new
+  instance's `stealth_paths` slot** via a new
+  `registry.set_stealth_paths(name, blob)` helper (exclusive-locked,
+  atomic-replace via the existing `_write` pattern; rejects unknown
+  names and adb-backed rows). The replay lives inside `restore`'s
+  rollback try/except so a malformed blob from a future manifest
+  schema bump tears down the half-registered row cleanly.
+- **`render_env` gains an optional `stealth_paths` argument** that
+  merges over the v0.4 defaults: `magisk_db` → `BEETROOT_MAGISK_DB`,
+  `modules_dir` → `BEETROOT_MODULES_DIR`, `frida_bin` →
+  `BEETROOT_FRIDA_BIN`. The key vocabulary matches the snapshot
+  manifest's `path_layout` naming so the round-trip is direct.
+  Unknown keys are silently ignored (forward-compat for v0.5/v0.6
+  schema bumps that add e.g. `stealth_module_id`). `_stage_local`
+  reads the per-instance slot from the registry and forwards it.
+
+**Migration**
+
+- **v0.3 instances need one `beetroot down && beetroot up` cycle**
+  after the v0.4 upgrade to rebind to the new
+  `/data/adb/modules_update` mount target. The host-side
+  `<instance-dir>/modules` directory does not move; only the
+  container-side bind-mount target changes. Magisk picks up modules
+  staged in `modules_update/` on the next boot the same way it
+  picked them up from `/flash_dir`.
+- Snapshots produced before T4 (with `path_layout: {}`) restore
+  cleanly against the T4 codepath — the empty replay is a no-op.
+
+**Tests**
+
+- `tests/test_stealth_paths.py` — five behaviour-test classes pin
+  the full round-trip surface: snapshot writes the blob, restore
+  replays it, empty manifests fall through to `modules_update`
+  defaults (including a `.env` artefact assertion proving the
+  `/flash_dir` invention is gone), `render_env` byte-pinned with
+  each combination of overrides + unknown-key forward-compat,
+  `set_stealth_paths` error paths (unknown name, adb-kind row,
+  caller-mutation-leak guard).
+
+### v0.4 — Theme T5: `AdbDevice` backend + `beetroot adopt` + 30-LOC backend recipe
+
+**The second-backend deliverable.** v0.3's `DeviceBackend` Protocol existed
+on paper only — `Instance` was the sole implementation. T5 ships the
+real `AdbDevice` (driving rooted phones / emulators / network-adb
+devices via the host `adb` CLI) so the Protocol's modularity is now
+load-bearing, plus a synthetic third-backend test that grades the
+"~30 LOC + one entry-point line" extension recipe at every CI run.
+
+**New backend: `AdbDevice`**
+
+- **`src/beetroot/backends/adb.py`** — implements every property and
+  method on the `DeviceBackend` Protocol. `install_frida` downloads
+  via the existing `frida_download.download` cache, then runs the
+  full `adb push` + `chmod 755` + `su -c '... &'` + `adb forward
+  tcp:<host_port> tcp:27042` sequence. `shell` / `frida_cli` are
+  thin shells over `adb -s <serial> shell` and `frida -H
+  localhost:<host_port>`. `add_module` ships the **safe-default
+  variant**: pushes the zip to `/sdcard/Download/<basename>` and
+  prints a "install via Magisk app → Modules tab" instruction; the
+  `--auto-install` direct-to-`/data/adb/modules_update/` variant is
+  deferred to v0.5.
+- Lifecycle methods (`up` / `down` / `restart` / `apply` / `destroy`
+  / `snapshot`) raise `BackendCapabilityError` with a friendly
+  message — adb-adopted devices are managed outside Beetroot, so
+  there's no container to start/stop and no on-disk directory to pack.
+- Registers itself at import time as `kind="adb"` in the in-tree
+  backend registry; `Manager.resolve("phone")` returns an `AdbDevice`
+  for every adb-kind registry row.
+
+**New CLI verb: `beetroot adopt`**
+
+- `beetroot adopt <serial> [--name <n>]` — registers a rooted device
+  that's already reachable via `adb` under the global registry. Picks
+  the lowest free stride-of-10 port index so a follow-up
+  `beetroot frida <name>` lands on the same port a redroid instance
+  with the same index would have got. The default name is
+  `adb-<serial>` (lowercased, colons folded to hyphens, truncated to
+  24 chars to fit the Docker compose project-name grammar). IPv4-
+  shaped serials (with dots) require an explicit `--name`.
+
+**CLI Protocol-dispatch refactor**
+
+- `shell` / `env` / `frida` / `module` now resolve via
+  `Manager.resolve(name)` so the same verb body works uniformly for
+  redroid and adb backends. `module` keeps the redroid-specific
+  beetroot.yaml update path for `Instance` backends, dispatches via
+  the AdbDevice helper for adb backends, and emits a friendly error
+  for third-party backends without `add_module`.
+- Lifecycle verbs (`up` / `down` / `restart` / `apply` / `destroy`
+  / `snapshot`) narrow via the new `cli._resolve_redroid` helper.
+  Non-redroid backends surface `BackendCapabilityError` — caught by
+  `cli.main` and rendered as `error: ...` + **exit code 2** (distinct
+  from "instance not found" → 1) so wrapping scripts can distinguish.
+- `destroy` checks the registry kind directly (rather than via
+  `Manager.resolve`) so orphan redroid rows (registered, on-disk dir
+  removed) still flow through the v0.3 orphan-destroy path.
+
+**Registry surface**
+
+- `registry.add` and `registry.add_allocating` now accept a `backend=
+  <BackendConfig>` keyword for the discriminated-union form alongside
+  the v0.3 positional `(name, absolute_path, index)` form. The v0.3
+  form is preserved for source-compat; the v0.4 form is what
+  `beetroot adopt` calls.
+
+**Documentation**
+
+- `docs/reference/cli.md` — new `## adopt` section documenting the
+  verb, the default-name builder, and the exit-code-2 convention.
+- `docs/reference/api.md` — new `## beetroot.backends.adb` section
+  for the `AdbDevice` class.
+- `examples/adb-device.yaml` — documentation-only file describing the
+  conceptual shape of an adb-kind registry row (because adb-backed
+  instances do **not** have a real `beetroot.yaml`).
+
+**Tests**
+
+- `tests/test_adb_device.py` — every `subprocess.run(["adb", ...])`
+  stubbed; per-method argv assertions cover `is_available` (parses
+  `adb devices`), `install_frida` (full 4-call sequence with the
+  exact argv shape), `shell`, `frida_cli`, `add_module`, `from_meta`,
+  and every lifecycle stub.
+- `tests/test_adopt_verb.py` — `CliRunner` tests for `beetroot adopt`
+  default-name + explicit-name + collision + invalid-name paths, plus
+  Protocol-dispatch tests confirming `shell` / `env` work and `up` /
+  `destroy` / `snapshot` exit 2.
+- `tests/test_manager_polymorphism.py` — registers one redroid + one
+  adb instance; asserts `Manager.list()` returns both as
+  `DeviceBackend`-typed objects, narrows correctly via `isinstance`,
+  and that lifecycle calls on the adb backend raise
+  `BackendCapabilityError`.
+- `tests/test_backend_extension.py` — **the load-bearing synthetic
+  third-backend test**. Defines a `FakeBackend` + `FakeBackendConfig`
+  inline in ~30 LOC, registers via `register_backend("fake",
+  FakeBackend)` in an autouse-cleanup fixture, and asserts (a) the
+  Protocol is satisfied structurally, (b) `Manager.resolve` returns
+  the fake class, (c) `shell()` dispatches via the Protocol surface
+  with the right argv, (d) the `_resolve_redroid_for_backend` helper
+  raises `BackendCapabilityError` cleanly for non-Instance backends,
+  and (e) the third-party config round-trips through pydantic JSON.
+  If this test passes, third-party backends will work too.
+- `tests/conftest.py` — autouse `_snapshot_backend_registry` fixture
+  snapshots `_BACKEND_REGISTRY` before each test and restores after,
+  defending against the existing `pop("adb", None)` pattern in
+  `test_backend_registry.py` permanently dropping AdbDevice from
+  later tests in the same process.
+
+**Migration**
+
+- Pure addition. No breaking changes. Existing redroid workflows
+  unchanged. Programmatic users that did
+  `registry.add_allocating(name, path)` keep working; the new
+  `backend=...` keyword is optional.
+
+### v0.4 — Theme T6: new user-facing verbs — `status`, `doctor`, `env --all`
+
+**New CLI verbs**
+
+- **`beetroot status <name>`** — print a single-instance JSON snapshot to stdout. Reuses the row formatter that backs `ls --json` (factored into a new private `_instance_json_row` helper) so the per-instance shape is a strict superset of the v0.3 ls row. Required fields per the T6 spec: `name`, `kind`, `index`, `created_at`, `ports`, `status` (or `is_available` for adb), `adb_address`, `frida_address`, `stealth_paths` (empty `dict` in v0.4 — populated by the v0.5 stealth-paths PR). v0.3 back-compat keys (`path`, `adb`, `frida`) are retained alongside the new fields so existing `jq` pipelines keep working. Exits 0 on success; exits 1 if `name` is not in the registry.
+- **`beetroot doctor <name>`** — run aggregated health checks. Output is one machine-parseable `<check>: pass|fail|skip [reason]` line per check. Exit code is the count of `fail` results, clamped to `min(fail_count, 255)` (POSIX exit-code ceiling). `skip` rows do not count toward the exit code. Redroid checks: `compose.status`, `adb.connect`, `frida.handshake` (skip if `cfg.frida is None`), `magisk.zygisk`, `magisk.denylist.com.google.android.gms`. Adb checks: `adb.serial`, `frida.handshake`, `magisk.zygisk`, `magisk.denylist.com.google.android.gms` (no `compose.status` — not applicable to a physical phone). Check names are shared verbatim across backends so downstream tools can grep uniformly.
+- **`beetroot env <name> --all`** — extends the existing `env` verb. Without `--all`, `env` keeps its v0.3 shape (exactly two `export` lines: `ANDROID_DEVICE` + `FRIDA_DEVICE`) so `eval $(beetroot env alpha)` scripts keep working. With `--all`, every key from `config.render_env()` is emitted as a shell export (`ADB_PORT`, `FRIDA_PORT`, `BEETROOT_MAGISK_DB`, `BEETROOT_DENYLIST_PACKAGES`, etc.) followed by the v0.3 `ANDROID_DEVICE` / `FRIDA_DEVICE` pair. For adb-backed instances `--all` emits a minimal `ADB_SERIAL` + `FRIDA_HOST` pair — `render_env` assumes a redroid backend, so the compose `.env` keys don't apply to a physical phone.
+
+**`Instance.health()` + `CheckResult` + `adb_device_health()` API**
+
+- **`api.CheckResult`** — frozen pydantic model with `status: Literal["pass", "fail", "skip"]` + optional `reason: str | None`. Returned from the new health surface keyed by check name. `frozen=True` + `extra="forbid"` so accidental mutation / typo'd fields surface at construction time.
+- **`Instance.health() -> dict[str, CheckResult]`** — the redroid-backed health surface that `beetroot doctor` consumes. NOT part of the `DeviceBackend` Protocol — it's a capability method that not every backend supports (third-party cloud backends may not have any equivalent), so per the v0.3 device-backend design doc it lives on the concrete class rather than the Protocol. Callers narrow via `isinstance(b, Instance)` (or the free function below for adb).
+- **`api.adb_device_health(device: DeviceBackend) -> dict[str, CheckResult]`** — a free function (not a method on `AdbDevice`) because T6 lands BEFORE T5's `AdbDevice` exists. T5 (or a follow-up commit after both T5 and T6 merge into `dev/v0.4`) wires this in as an actual method — either by aliasing `AdbDevice.health = lambda self: adb_device_health(self)` or by migrating the body to a proper method. Uses only the Protocol surface (`adb_address`, `frida_address`) so it works against a minimal stub `DeviceBackend` in tests before `AdbDevice` lands.
+
+**Subprocess calls + noqa rationale**
+
+The doctor verb's `subprocess.run` sites (`adb connect`, `adb -s <serial> shell magisk --sqlite`, `nc -zw 1 host port`, `adb devices`) all carry per-line `# noqa: S603` / `S607` rationale comments. SQL composition for `magisk.denylist.<pkg>` is grammar-validated upstream by `config.Stealth` (only `[a-zA-Z0-9._]`), so the bandit `S608` warning is suppressed with a justification comment.
+
+**Output rules**
+
+- Doctor's stdout output uses `typer.echo(...)` (T3 enabled `T201`).
+- Status's JSON output uses `json.dumps(..., indent=2, sort_keys=True)` for byte-stable output that `jq` and `diff` consume reliably.
+- Doctor's `pass` rows elide the reason; `fail` and `skip` rows include it (separated by a single space).
+
+**Tests**
+
+- `tests/test_status_verb.py` — redroid happy path, adb happy path (asserts `serial` is present and `absolute_path` / `ports.frida2` are absent), error path (`status nonexistent` → exit 1 + `error: ...` line).
+- `tests/test_doctor.py` — healthy redroid → exit 0, unhealthy redroid (zygisk = 0) → exit 1 with `magisk.zygisk: fail expected 1, got 0`, multi-fail → exit code = fail count, healthy adb → exit 0 with no `compose.status` line, frida-disabled → `frida.handshake: skip frida not configured`, frida-enabled → handshake runs.
+- `tests/test_env_all.py` — bare `env` emits exactly the v0.3 two-line shape, `env --all` emits every `BEETROOT_*` key + the v0.3 pair, adb `env --all` falls back to `ADB_SERIAL` + `FRIDA_HOST`.
+- `tests/test_health_checks.py` — unit coverage for every private `_check_*` helper's skip / OSError / nonzero-exit / value=0 / unknown-output / offline-state branch, plus the `min(fail_count, 255)` exit-code clamp.
+
+**T5 coordination seam**
+
+T6 landed before T5's `AdbDevice` class. The dispatch in `beetroot doctor` checks `meta.backend.kind` directly: redroid → `Instance.load(name).health()`; adb → `Manager.resolve(name)` then `adb_device_health(...)`. T5 (or a follow-up commit once both have landed) can attach `adb_device_health` as a method on `AdbDevice` — the free function already takes only Protocol-surface attributes, so the migration is a one-line `AdbDevice.health = lambda self: adb_device_health(self)` if a class-method body isn't preferred.
+
+---
+
+### v0.4 — Theme T7: documentation pass + v0.4.0 release roll
+
+The closing theme of v0.4. Lands the documentation work the prior
+themes flagged but couldn't ship cleanly without all surfaces in
+place, plus the version + CHANGELOG roll that promotes the sprint to
+a tagged release.
+
+**New documentation**
+
+- `docs/guides/migration-v0.3-to-v0.4.md` — schema bump, the new
+  backend discriminated-union shape, the `stealth_paths` slot, new
+  verbs (`adopt`, `status`, `doctor`, `env --all`), module renames,
+  `Manager.allocate_port_index` removal, `Settings.extra="forbid"`
+  + the four newly-declared `BEETROOT_*` vars, `Frida.version`
+  regex + optional `sha256`, mount-target swap, exit-code-2
+  convention for `BackendCapabilityError`, instance-name regex,
+  `bundled_compose_file` via `importlib.resources.as_file()`, and
+  `platformdirs` for cache + config paths. Closes with a v0.5
+  known-limitations subsection covering the three T5 CR risks
+  (`beetroot adopt` serial verification, dual-form
+  `add_allocating`, third-party `kind` JSON round-trip).
+- `docs/guides/adding-a-backend.md` — the T5 30-LOC recipe expanded
+  end-to-end: why-third-backend scenarios, the Protocol surface
+  verbatim, a complete `CloudBackend` + `CloudBackendConfig`
+  example, entry-point registration, the in-process vs entry-point
+  split, and the explicit "what works now vs deferred to v0.5"
+  callout (registry-side JSON discrimination for third-party kinds
+  is the v0.5 piece). Cross-links to the design doc and the API
+  reference.
+
+**Updated reference + design docs**
+
+- `docs/reference/api.md` — new "Surfaces introduced in v0.4"
+  section cataloguing `AdbDevice`, the expanded `DeviceBackend`
+  Protocol, `BackendCapabilityError`, `Manager.resolve`,
+  `register_backend`, the `BackendConfig` discriminated union,
+  `CheckResult` + `Instance.health()` + `AdbDevice.health()`, and
+  `registry.set_stealth_paths`. Cross-link to the adding-a-backend
+  guide.
+- `docs/reference/cli.md` — gains `## adopt` / `## status` /
+  `## doctor` sections and the `--all` flag documentation on the
+  `env` verb (these landed in the T5 + T6 docs commits but are
+  cross-referenced from T7's release block).
+- `docs/design/device-backends.md` — §6 PR1–PR5 marked DONE in v0.4
+  with the v0.4-shipped class/file shape; the stale
+  `Manager.allocate_port_index()` reference fixed (replaced with
+  `registry.add_allocating`); forward-pointer to the new
+  adding-a-backend guide.
+- `docs/design/stealth-posture.md` — §7 PR5 + PR6 (plumbing only)
+  marked DONE in v0.4; PR1 (default-path flip) explicitly deferred
+  to v0.5 pending stealth research, with the research prerequisite
+  documented inline in §3.1.
+- `docs/how-it-works/boot-flow.md` — prepended with the
+  `beetroot.yaml → render_env → .env → compose → helper-sh` diagram
+  from the v0.4 plan's Context section, noting the env-driven chain
+  is now plumbed end-to-end after T2's compose-template
+  parameterisation fix.
+
+**`AdbDevice.health()` follow-up (T5 / T6 coordination seam)**
+
+T6 landed `adb_device_health` as a free function in `beetroot.api`
+because T5's `AdbDevice` class didn't yet exist. T7 closes the seam:
+the body lives in one canonical place (the free function), and
+`AdbDevice.health()` is a real method that delegates to it so
+backends own their own health surface. The free function is
+preserved as a back-compat shim — programmatic callers that
+imported `api.adb_device_health` pre-T7 keep working, and the
+`cli.doctor` dispatch (which calls the free function on a
+`DeviceBackend`-typed `Manager.resolve` result) is unchanged.
+
+**`README.md` + `CLAUDE.md` updates**
+
+README's "What you get" gains two v0.4 bullets — `beetroot adopt`
+for researchers with rooted phones, and the third-party-backend
+extension point (`[project.entry-points."beetroot.backends"]`). The
+docs table grows rows for the adding-a-backend guide and the v0.3 →
+v0.4 migration guide. CLAUDE.md's verb-list in the dev-workflow
+section gains `adopt` / `status` / `doctor` so contributor muscle
+memory matches the v0.4 CLI surface.
+
+**Version + nav**
+
+- `pyproject.toml` — `version = "0.3.0"` → `version = "0.4.0"`.
+- `mkdocs.yml` — Guides section grows the two new pages; `mkdocs
+  build --strict` is clean.
+
 ## v0.3.0 — 2026-05-19
 
 ### Breaking changes (upgrading from v0.2)
