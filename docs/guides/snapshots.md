@@ -26,8 +26,8 @@ The archive is rooted at the instance directory and contains:
 
 The manifest records the source instance's name, port index, the
 `beetroot` release that produced the snapshot, an ISO-8601 timestamp,
-and a reserved `path_layout` field (see [v0.4 forward
-compatibility](#v04-forward-compatibility) below).
+and a `path_layout` field carrying the source's `stealth_paths` blob
+(see [path_layout round-trip](#path_layout-round-trip) below).
 
 **The `.env` file is deliberately excluded.** It's regenerated from `beetroot.yaml` the next time you run `beetroot apply`, so leaving it out of the archive means the restored instance picks up its (freshly allocated) port indices and host paths cleanly. Don't commit the archive's contents — assume the next `beetroot apply` is load-bearing.
 
