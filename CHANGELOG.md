@@ -1,5 +1,60 @@
 # Changelog
 
+## Unreleased
+
+### v0.4 — Theme T1: pydantic foundation + schema v3 + Protocol expansion + backend registry
+
+**Breaking changes**
+
+- **`api_version` bumped to `3`.** v0.3 YAMLs that hard-pinned
+  `api_version: 2` auto-bump on load with a one-line stderr warning
+  (the bump is strictly additive — no fields renamed). v0.2's
+  `api_version: 1` continues to auto-bump too, so users on the v0.2 →
+  v0.4 path don't need an intermediate stop. Persistence happens
+  organically on the next `beetroot apply`.
+- **Registry schema v2 → v3 migration.** `instances.json` now
+  round-trips through a strict pydantic model (`RegistryFile` →
+  `InstanceMeta` → discriminated-union `BackendConfig` over `kind:
+  "redroid"` and `kind: "adb"`). v2 registries are renamed to
+  `instances.json.bak` on first read and a fresh empty v3 file is
+  emitted — same backup-and-empty pattern v0.3 used for v1 → v2.
+  Re-register your existing instances with `beetroot register <path>`
+  after the upgrade.
+- **`Manager.allocate_port_index` is removed** (Agent 2 F-4: the index
+  isn't reserved by this call, so calling it without an immediate
+  follow-up `registry.add` is a footgun). Use
+  `registry.add_allocating(name, path)` for atomic allocate +
+  register.
+
+**New surface**
+
+- **`DeviceBackend` Protocol expansion.** New members on the Protocol:
+  `name: str`, `kind: str`, `shell() -> int`, `frida_cli(args:
+  list[str]) -> int`, and a `from_meta(name, backend_config)`
+  classmethod used by the backend-registry dispatcher.
+- **`beetroot.backends` registry.** Discovers third-party backends via
+  `[project.entry-points."beetroot.backends"]`; in-tree backends
+  (currently just `redroid`) register programmatically at import time.
+  `Manager.resolve(name)` dispatches via the registry.
+- **`BackendCapabilityError(RuntimeError)`.** Verbs that don't
+  generalise across backends (`up`, `down`, `apply`, `snapshot`)
+  raise this when called on a backend that doesn't expose them.
+- **`Stealth.denylist` regex validator.** Per-entry packages must
+  match the Android package-id grammar (`[a-zA-Z0-9._]+`). SQL-injection
+  prophylaxis for T2's wire-up of the denylist through
+  `magisk-config.sh`'s SQLite REPLACE INTO.
+
+**Internal**
+
+- `Manifest` (snapshot.py) is a frozen pydantic `BaseModel` with
+  `extra="forbid"` and a new `kind: Literal["redroid"]` discriminator
+  + typed `path_layout: dict[str, str]` field. The `_coerce_manifest`
+  helper is gone.
+- `compose.ps_status` returns a closed `Literal` (`ComposeStatus`)
+  rather than free-form `str`. Adds explicit
+  `"docker-unreachable"` / `"starting"` / `"created"` / `"paused"`
+  / `"unknown"` mapping. Agent 2 B-7.
+
 ## v0.3.0 — 2026-05-19
 
 ### Breaking changes (upgrading from v0.2)

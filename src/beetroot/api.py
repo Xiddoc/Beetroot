@@ -19,7 +19,7 @@ backends):
   (``up`` / ``down`` / ``apply`` / ``destroy``) plus operations
   (``shell``, ``frida_cli``, ``add_module``, ``snapshot``).
 * :class:`Manager` — aggregate operations over the global registry
-  (``list``, ``get``, ``allocate_port_index``).
+  (``list``, ``get``, ``resolve``).
 * :class:`DeviceBackend` — the Protocol that v0.3's implicit
   Redroid-via-compose backend satisfies and that v0.4's
   ``AdbDeviceBackend`` will satisfy too.

@@ -5,7 +5,7 @@ Beetroot ships a handful of starter `beetroot.yaml` files under the [`examples/`
 `beetroot create <name>` always writes a minimal `beetroot.yaml`:
 
 ```yaml
-api_version: 2
+api_version: 3
 android:
   version: 14
 ```
@@ -19,7 +19,7 @@ That's the full file. Every other field falls back to schema defaults (see the [
 The lightweight baseline — GMS is denylisted from Magisk root, but no additional stealth modules are installed.
 
 ```yaml title="examples/default.yaml"
-api_version: 2
+api_version: 3
 
 android:
   version: 14
@@ -37,7 +37,7 @@ Use this when you're testing something that doesn't perform anti-root checks, or
 A wider Magisk denylist suitable for use with a root-hider like [Shamiko](https://github.com/LSPosed/LSPosed.github.io). Shamiko turns Magisk's denylist mode into a true allowlist-based hide — processes on the denylist can't detect Magisk at all. The denylist below covers all GMS variants and the Play Store.
 
 ```yaml title="examples/stealth.yaml"
-api_version: 2
+api_version: 3
 
 android:
   version: 14
@@ -67,7 +67,7 @@ stealth:
 Same as `default.yaml` but with `android.gapps: none`. Use this if you want a stripped-down Android without Google Mobile Services — fewer running processes, smaller `/data`, no GMS-specific anti-emulator checks. Requires `beetroot build none` to have produced a matching base image.
 
 ```yaml title="examples/no-gapps.yaml"
-api_version: 2
+api_version: 3
 
 android:
   version: 14
@@ -79,7 +79,7 @@ android:
 The baseline plus an explicit, version-pinned `frida-server`. Copy this over a freshly-generated `beetroot.yaml` whenever you want Frida on for that instance — the version pin must match your host-side `frida-tools` on major + minor.
 
 ```yaml title="examples/with-frida.yaml"
-api_version: 2
+api_version: 3
 
 android:
   version: 14
@@ -128,7 +128,7 @@ There is no plugin or extension hook for adding new examples — they're just do
 ```bash
 mkdir my-custom-instance
 cat > my-custom-instance/beetroot.yaml <<'YAML'
-api_version: 2
+api_version: 3
 android:
   version: 14
   gapps: none
