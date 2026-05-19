@@ -116,6 +116,15 @@
   destroyed the user's existing directory AND then bailed out with
   no way back. v0.4 swaps the order so the manifest read is the gate.
   (Agent 3 1.4.)
+- **`Instance.destroy` reorders cleanup steps.** v0.3 ran
+  `compose.down` → `shutil.rmtree` → `registry.remove`. A ^C between
+  the rmtree and `registry.remove` stranded a registry row pointing
+  at a now-gone directory — an orphan the user could only fix by
+  re-creating the dir then running destroy again. v0.4 reorders to
+  `compose.down` → `registry.remove` → `shutil.rmtree` so a ^C
+  between the last two steps leaves a tidy registry + a stale dir
+  the user wipes manually. The CLI verb's order already matched;
+  this aligns the OOP path. (Agent 2 B-4.)
 
 ## v0.3.0 — 2026-05-19
 

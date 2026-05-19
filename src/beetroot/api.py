@@ -566,14 +566,24 @@ class Instance:
             ).strip().lower()
             if ans != "y":
                 raise RuntimeError("destroy aborted by user")
+        # Order matters: compose.down → registry.remove → shutil.rmtree.
+        # The CLI verb already enforces this order; the OOP path used
+        # to do rmtree BEFORE registry.remove, which left a window
+        # where a ``^C`` between the two steps stranded a registry row
+        # pointing at a now-gone directory (an "orphan" the user could
+        # only fix by re-creating the dir then running destroy again,
+        # because ``Instance.load`` trips on the missing yaml).
+        # Removing the registry row first means a ^C between
+        # ``registry.remove`` and the rmtree leaves a tidy registry +
+        # stale directory the user can wipe by hand. (T2 Agent 2 B-4.)
         compose_error: compose.ComposeError | None = None
         try:
             compose.down(self._name, self._root, volumes=True)
         except compose.ComposeError as e:
             compose_error = e
+        registry.remove(self._name)
         if self._root.exists():
             shutil.rmtree(self._root)
-        registry.remove(self._name)
         if compose_error is not None:
             raise compose_error
 

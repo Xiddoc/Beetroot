@@ -360,6 +360,37 @@ class TestInstanceDestroy:
         assert registry.get("alpha") is None
         assert not root.exists()
 
+    def test_destroy_ctrlc_after_registry_remove_leaves_no_orphan(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # T2 Agent 2 B-4: ``Instance.destroy`` used to ``rmtree`` BEFORE
+        # ``registry.remove``. A ``^C`` between the two steps stranded
+        # a registry row pointing at a now-gone directory — an orphan
+        # the user could only fix by re-creating the dir then running
+        # destroy again (``Instance.load`` trips on the missing yaml).
+        # v0.4 reorders to ``compose.down`` → ``registry.remove`` →
+        # ``rmtree`` so a ``^C`` between the last two steps leaves a
+        # tidy registry and the user just rm -rf's the stale dir.
+        inst = api.Instance.create("alpha")
+        root = inst.root
+
+        def _ctrl_c(target: Path) -> None:
+            raise KeyboardInterrupt
+
+        # Patch the ``shutil`` module that ``api.py`` calls — every
+        # module that ``import shutil``s sees the same module object,
+        # so monkeypatching ``shutil.rmtree`` propagates to api.
+        import shutil as _shutil
+        monkeypatch.setattr(_shutil, "rmtree", _ctrl_c)
+        with _patched_subprocess():
+            with pytest.raises(KeyboardInterrupt):
+                inst.destroy(yes=True)
+        # Registry row IS gone — we got past ``registry.remove`` before
+        # the ^C fired. The on-disk dir survives because rmtree raised
+        # before doing any work; the user can wipe it manually.
+        assert registry.get("alpha") is None
+        assert root.exists()
+
 
 # ---------------------------------------------------------------------------
 # Instance operations: shell, frida_cli, logs, add_module, snapshot
