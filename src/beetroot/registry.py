@@ -286,19 +286,27 @@ def instance_path(name: str) -> Path:
 
 def all_resolved_ports() -> dict[str, dict[str, int]]:
     """
-    Return resolved ports for every registered instance.
+    Return resolved ports for every healthy registered instance.
 
     For each instance, loads its ``beetroot.yaml`` to pick up any
     ``ports:`` override block and merges it with the stride-of-10
-    defaults derived from the registered index.
+    defaults derived from the registered index. Orphan entries
+    (registered names whose ``beetroot.yaml`` is gone) are silently
+    skipped — they're surfaced via ``Manager.list_orphans()`` and the
+    ``beetroot ls`` skip-line, not via cascading failures in
+    ``create``/``register``/``apply``/``restore``.
 
     Returns:
         A mapping ``instance_name → {"adb", "frida", "frida2"}`` covering
-        every registered instance. Empty dict if the registry is empty.
+        every registered instance whose on-disk YAML still exists. Empty
+        dict if the registry is empty or every entry is an orphan.
     """
     out: dict[str, dict[str, int]] = {}
     for name, meta in list_instances().items():
-        cfg = load_yaml(paths.instance_yaml(Path(meta["absolute_path"])))
+        try:
+            cfg = load_yaml(paths.instance_yaml(Path(meta["absolute_path"])))
+        except FileNotFoundError:
+            continue
         out[name] = ports.resolve_ports(meta["index"], cfg.ports)
     return out
 

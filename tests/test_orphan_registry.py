@@ -146,3 +146,38 @@ class TestCliMainCatchesFileNotFound:
         assert exc.value.code == 1
         err = capsys.readouterr().err
         assert "error:" in err
+
+
+class TestOrphanDoesNotBlockOtherVerbs:
+    """The final-CR finding: an orphan in the registry was cascading
+    through ``registry.all_resolved_ports`` → ``_check_port_collisions``
+    and confusing every other verb (``create``, ``register``, ``apply``,
+    ``restore``) with a ``FileNotFoundError`` pointing at the orphan's
+    YAML instead of the YAML the user was operating on.
+    """
+
+    def test_create_succeeds_when_orphan_in_registry(self, cli_root: Path) -> None:
+        # Set up an orphan: register alpha, then wipe its dir on disk.
+        api.Instance.create("alpha")
+        shutil.rmtree(registry.instance_path("alpha"))
+        # Creating bravo must succeed — the orphan's missing yaml must
+        # not be loaded by the port-collision check.
+        result = runner.invoke(cli.app, ["create", "bravo"])
+        assert result.exit_code == 0, result.stderr
+        assert registry.get("bravo") is not None
+
+    def test_apply_succeeds_when_orphan_in_registry(self, cli_root: Path) -> None:
+        api.Instance.create("alpha")
+        api.Instance.create("bravo")
+        shutil.rmtree(registry.instance_path("alpha"))
+        # Apply on the healthy bravo must not surface alpha's missing yaml.
+        result = runner.invoke(cli.app, ["apply", "bravo"])
+        assert result.exit_code == 0, result.stderr
+
+    def test_all_resolved_ports_skips_orphans(self, cli_root: Path) -> None:
+        api.Instance.create("alpha")
+        api.Instance.create("bravo")
+        shutil.rmtree(registry.instance_path("alpha"))
+        resolved = registry.all_resolved_ports()
+        assert "alpha" not in resolved
+        assert "bravo" in resolved

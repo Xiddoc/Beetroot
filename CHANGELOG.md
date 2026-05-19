@@ -93,7 +93,9 @@ of `beetroot setup`. To get a fresh image before `beetroot up`, run
 
 **Removed:**
 
-* `beetroot up --build` flag. Typer now rejects it.
+* `beetroot up --build` flag. The CLI now intercepts the v0.2 invocation
+  with a friendly migration hint pointing at `beetroot build` (kept as a
+  hidden Typer option for one release; will be deleted in v0.4).
 * `compose.up()`'s `build: bool` kwarg. The `compose.build()` helper
   is unchanged — call it separately if you need to rebuild from
   Python.
