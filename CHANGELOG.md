@@ -74,6 +74,43 @@ v0.5 can ship the default flip as a one-line change in
   `set_stealth_paths` error paths (unknown name, adb-kind row,
   caller-mutation-leak guard).
 
+### v0.4 — Theme T6: new user-facing verbs — `status`, `doctor`, `env --all`
+
+**New CLI verbs**
+
+- **`beetroot status <name>`** — print a single-instance JSON snapshot to stdout. Reuses the row formatter that backs `ls --json` (factored into a new private `_instance_json_row` helper) so the per-instance shape is a strict superset of the v0.3 ls row. Required fields per the T6 spec: `name`, `kind`, `index`, `created_at`, `ports`, `status` (or `is_available` for adb), `adb_address`, `frida_address`, `stealth_paths` (empty `dict` in v0.4 — populated by the v0.5 stealth-paths PR). v0.3 back-compat keys (`path`, `adb`, `frida`) are retained alongside the new fields so existing `jq` pipelines keep working. Exits 0 on success; exits 1 if `name` is not in the registry.
+- **`beetroot doctor <name>`** — run aggregated health checks. Output is one machine-parseable `<check>: pass|fail|skip [reason]` line per check. Exit code is the count of `fail` results, clamped to `min(fail_count, 255)` (POSIX exit-code ceiling). `skip` rows do not count toward the exit code. Redroid checks: `compose.status`, `adb.connect`, `frida.handshake` (skip if `cfg.frida is None`), `magisk.zygisk`, `magisk.denylist.com.google.android.gms`. Adb checks: `adb.serial`, `frida.handshake`, `magisk.zygisk`, `magisk.denylist.com.google.android.gms` (no `compose.status` — not applicable to a physical phone). Check names are shared verbatim across backends so downstream tools can grep uniformly.
+- **`beetroot env <name> --all`** — extends the existing `env` verb. Without `--all`, `env` keeps its v0.3 shape (exactly two `export` lines: `ANDROID_DEVICE` + `FRIDA_DEVICE`) so `eval $(beetroot env alpha)` scripts keep working. With `--all`, every key from `config.render_env()` is emitted as a shell export (`ADB_PORT`, `FRIDA_PORT`, `BEETROOT_MAGISK_DB`, `BEETROOT_DENYLIST_PACKAGES`, etc.) followed by the v0.3 `ANDROID_DEVICE` / `FRIDA_DEVICE` pair. For adb-backed instances `--all` emits a minimal `ADB_SERIAL` + `FRIDA_HOST` pair — `render_env` assumes a redroid backend, so the compose `.env` keys don't apply to a physical phone.
+
+**`Instance.health()` + `CheckResult` + `adb_device_health()` API**
+
+- **`api.CheckResult`** — frozen pydantic model with `status: Literal["pass", "fail", "skip"]` + optional `reason: str | None`. Returned from the new health surface keyed by check name. `frozen=True` + `extra="forbid"` so accidental mutation / typo'd fields surface at construction time.
+- **`Instance.health() -> dict[str, CheckResult]`** — the redroid-backed health surface that `beetroot doctor` consumes. NOT part of the `DeviceBackend` Protocol — it's a capability method that not every backend supports (third-party cloud backends may not have any equivalent), so per the v0.3 device-backend design doc it lives on the concrete class rather than the Protocol. Callers narrow via `isinstance(b, Instance)` (or the free function below for adb).
+- **`api.adb_device_health(device: DeviceBackend) -> dict[str, CheckResult]`** — a free function (not a method on `AdbDevice`) because T6 lands BEFORE T5's `AdbDevice` exists. T5 (or a follow-up commit after both T5 and T6 merge into `dev/v0.4`) wires this in as an actual method — either by aliasing `AdbDevice.health = lambda self: adb_device_health(self)` or by migrating the body to a proper method. Uses only the Protocol surface (`adb_address`, `frida_address`) so it works against a minimal stub `DeviceBackend` in tests before `AdbDevice` lands.
+
+**Subprocess calls + noqa rationale**
+
+The doctor verb's `subprocess.run` sites (`adb connect`, `adb -s <serial> shell magisk --sqlite`, `nc -zw 1 host port`, `adb devices`) all carry per-line `# noqa: S603` / `S607` rationale comments. SQL composition for `magisk.denylist.<pkg>` is grammar-validated upstream by `config.Stealth` (only `[a-zA-Z0-9._]`), so the bandit `S608` warning is suppressed with a justification comment.
+
+**Output rules**
+
+- Doctor's stdout output uses `typer.echo(...)` (T3 enabled `T201`).
+- Status's JSON output uses `json.dumps(..., indent=2, sort_keys=True)` for byte-stable output that `jq` and `diff` consume reliably.
+- Doctor's `pass` rows elide the reason; `fail` and `skip` rows include it (separated by a single space).
+
+**Tests**
+
+- `tests/test_status_verb.py` — redroid happy path, adb happy path (asserts `serial` is present and `absolute_path` / `ports.frida2` are absent), error path (`status nonexistent` → exit 1 + `error: ...` line).
+- `tests/test_doctor.py` — healthy redroid → exit 0, unhealthy redroid (zygisk = 0) → exit 1 with `magisk.zygisk: fail expected 1, got 0`, multi-fail → exit code = fail count, healthy adb → exit 0 with no `compose.status` line, frida-disabled → `frida.handshake: skip frida not configured`, frida-enabled → handshake runs.
+- `tests/test_env_all.py` — bare `env` emits exactly the v0.3 two-line shape, `env --all` emits every `BEETROOT_*` key + the v0.3 pair, adb `env --all` falls back to `ADB_SERIAL` + `FRIDA_HOST`.
+- `tests/test_health_checks.py` — unit coverage for every private `_check_*` helper's skip / OSError / nonzero-exit / value=0 / unknown-output / offline-state branch, plus the `min(fail_count, 255)` exit-code clamp.
+
+**T5 coordination seam**
+
+T6 landed before T5's `AdbDevice` class. The dispatch in `beetroot doctor` checks `meta.backend.kind` directly: redroid → `Instance.load(name).health()`; adb → `Manager.resolve(name)` then `adb_device_health(...)`. T5 (or a follow-up commit once both have landed) can attach `adb_device_health` as a method on `AdbDevice` — the free function already takes only Protocol-surface attributes, so the migration is a one-line `AdbDevice.health = lambda self: adb_device_health(self)` if a class-method body isn't preferred.
+
+---
+
 ### v0.4 — Theme T3: max-strictness CI / pre-commit / lint / type-check / test investment
 
 **Runtime dependencies**
