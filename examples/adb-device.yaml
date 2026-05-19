@@ -1,0 +1,50 @@
+# Documentation only — not loaded by the CLI.
+#
+# adb-backed instances (created via `beetroot adopt <serial>`) do NOT
+# have a beetroot.yaml. The on-disk instance directory model is for
+# redroid containers; adb devices are managed outside Beetroot (real
+# phone, third-party emulator, `adb connect`-ed network device).
+#
+# This file documents the *conceptual* shape the registry entry takes
+# under the hood so researchers know what `beetroot adopt` produces.
+# The actual storage is JSON in $XDG_CONFIG_HOME/beetroot/instances.json
+# under the InstanceMeta schema (see src/beetroot/registry.py).
+#
+# Run: `beetroot adopt emulator-5554 --name phone`
+# Result (conceptual): the registry row below.
+
+# Registry name (matches [a-z0-9_-]+ — Docker compose project-name grammar).
+name: phone
+
+# The discriminated-union backend config. Always `kind: adb` for an
+# adopted device; the rest is backend-specific.
+backend:
+  kind: adb
+
+  # adb serial passed verbatim to `adb -s <serial> ...`. Examples:
+  #   emulator-5554              (a locally-running emulator)
+  #   192.168.1.10:5555          (network adb, post `adb connect`)
+  #   ABCD1234567890             (USB-attached real phone)
+  serial: emulator-5554
+
+# Stride-of-10 port index — exposes Frida on localhost:27042+(index*10).
+# `beetroot adopt` allocates the lowest free index automatically; users
+# don't pin this manually.
+index: 0
+
+# ISO-8601 UTC timestamp set on creation. Read-only.
+created_at: "2026-05-19T00:00:00+00:00"
+
+# ---- Things adb-backed instances do NOT have ----
+#
+# - `android:` block — the device's Android version is whatever the
+#   device's bootloader / vendor blob provides.
+# - `frida:` block — call `beetroot install_frida <name> --version X`
+#   (v0.5 verb; for v0.4 push frida-server manually) to install. The
+#   `AdbDevice.install_frida()` Python API method works today.
+# - `modules:` block — install via the Magisk app's Modules tab. The
+#   `beetroot module <name> <zip>` verb pushes the zip to
+#   /sdcard/Download/<name> and prints the next-step instruction.
+# - `stealth:` block — no `denylist` plumbing for adopted devices in
+#   v0.4. Manage Zygisk + denylist via the Magisk app on the device.
+# - `mem_limit` / `cpus` — the device's resources are whatever it has.

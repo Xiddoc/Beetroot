@@ -128,6 +128,23 @@ def _register_builtin_backends() -> None:
 
     if "redroid" not in _BACKEND_REGISTRY:
         register_backend("redroid", Instance)
+    # AdbDevice (T5) lives in a sibling module. Importing it for its
+    # side-effect (the module-level ``register_backend("adb", ...)``
+    # call at the bottom of ``adb.py``) registers it once per process.
+    # The ``in`` guard keeps a second ``_register_builtin_backends()``
+    # call (e.g. a test that resets the registry) from raising
+    # ``BackendRegistrationError``.
+    if "adb" not in _BACKEND_REGISTRY:
+        # Local-import is intentional — module-level would create an
+        # import cycle with adb.py's ``from beetroot.backends import
+        # register_backend``. The ``importlib.import_module`` form
+        # avoids a top-level ``from`` import that ruff's PLC0415 (no
+        # local-import) would flag. Imported for its side-effect
+        # (``register_backend("adb", AdbDevice)`` at the bottom of
+        # ``adb.py``).
+        import importlib  # noqa: PLC0415  # local-import is intentional; see above
+
+        importlib.import_module("beetroot.backends.adb")
 
 
 _register_builtin_backends()

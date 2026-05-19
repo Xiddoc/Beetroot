@@ -390,3 +390,60 @@ class TestSchemaMigration:
         assert result == {}
         bak = path.with_suffix(path.suffix + ".bak")
         assert bak.exists()
+
+
+class TestAddV04BackendForm:
+    """T5: ``add`` / ``add_allocating`` accept a ``backend=<BackendConfig>``."""
+
+    def test_add_with_adb_backend_kwarg(
+        self, isolated_registry: Path,
+    ) -> None:
+        cfg = registry.AdbBackendConfig(serial="emulator-5554")
+        registry.add("phone", index=0, backend=cfg)
+        meta = registry.get("phone")
+        assert meta is not None
+        assert isinstance(meta.backend, registry.AdbBackendConfig)
+        assert meta.backend.serial == "emulator-5554"
+
+    def test_add_allocating_with_adb_backend_kwarg(
+        self, isolated_registry: Path,
+    ) -> None:
+        cfg = registry.AdbBackendConfig(serial="emulator-5554")
+        idx = registry.add_allocating("phone", backend=cfg)
+        assert idx == 0
+        meta = registry.get("phone")
+        assert meta is not None
+        assert isinstance(meta.backend, registry.AdbBackendConfig)
+
+    def test_add_without_any_args_raises(
+        self, isolated_registry: Path,
+    ) -> None:
+        with pytest.raises(ValueError, match="absolute_path"):
+            registry.add("orphan", index=0)
+
+    def test_add_allocating_without_any_args_raises(
+        self, isolated_registry: Path,
+    ) -> None:
+        with pytest.raises(ValueError, match="absolute_path"):
+            registry.add_allocating("orphan")
+
+    def test_adb_entry_round_trips_through_json(
+        self, isolated_registry: Path,
+    ) -> None:
+        # Discriminated-union persistence — write an adb row, re-read,
+        # confirm the union picks the right arm.
+        cfg = registry.AdbBackendConfig(serial="emulator-5554")
+        registry.add_allocating("phone", backend=cfg)
+        meta = registry.get("phone")
+        assert meta is not None
+        assert meta.backend.kind == "adb"
+        assert isinstance(meta.backend, registry.AdbBackendConfig)
+        assert meta.backend.serial == "emulator-5554"
+
+    def test_instance_path_rejects_adb_backend(
+        self, isolated_registry: Path,
+    ) -> None:
+        cfg = registry.AdbBackendConfig(serial="emulator-5554")
+        registry.add_allocating("phone", backend=cfg)
+        with pytest.raises(registry.RegistryError, match="adb"):
+            registry.instance_path("phone")
