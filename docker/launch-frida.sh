@@ -16,6 +16,7 @@
 # Idempotent: launching twice would bind to the same port and fail, so we
 # don't guard against that here — init only runs us once per boot. The
 # helper exits 0 either way (binary missing is a warning, not an error).
+set -eu  # fail fast on undefined vars and unhandled errors (T3).
 
 FRIDA_BIN="${BEETROOT_FRIDA_BIN:-/data/local/tmp/frida-server}"
 
