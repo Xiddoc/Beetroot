@@ -107,14 +107,21 @@ class TestCommandSequence:
         build_image(redroid_script_url=url, runner=runner)
         assert url in runner.calls[1].cmd
 
-    def test_work_dir_default(self) -> None:
+    def test_work_dir_default(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # v0.4 (T3) moved the default clone location off ``/tmp/redroid``
+        # to the per-user cache via ``platformdirs`` (closes Agent 4's
+        # ``S108`` bandit finding). Pin the cache root via the XDG env
+        # var so the assertion has a stable expected path; platformdirs
+        # honours ``XDG_CACHE_HOME`` on Linux.
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        expected = str(tmp_path / "beetroot" / "redroid-script")
         runner = FakeRunner()
         build_image(runner=runner)
-        # rm and git clone both target the work dir
-        assert "/tmp/redroid" in runner.calls[0].cmd
-        assert "/tmp/redroid" in runner.calls[1].cmd
-        # patcher runs from inside it
-        assert runner.calls[2].cwd == Path("/tmp/redroid")
+        assert expected in runner.calls[0].cmd
+        assert expected in runner.calls[1].cmd
+        assert runner.calls[2].cwd == Path(expected)
 
     def test_work_dir_override(self, tmp_path: Path) -> None:
         runner = FakeRunner()
