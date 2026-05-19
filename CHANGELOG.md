@@ -166,6 +166,16 @@
   effect runs — no mkdir, no registry write, no port allocation
   for a bad name. The default basename used by `register` (when
   `name=` is omitted) goes through the same gate. (v0.3.1 deferred.)
+- **`Manager.list` + `Manager.list_orphans` now surface unparseable
+  YAML.** v0.3's `list_orphans` only surfaced rows whose
+  `beetroot.yaml` was *missing*; a corrupted or
+  api_version-mismatched YAML was invisible to both `list` and
+  `list_orphans`, so the user had no way to surface the row for
+  cleanup. v0.4 treats "can't parse" identically to "doesn't
+  exist". `Manager.list` also stops swallowing every
+  `FileNotFoundError` from `Instance.load` — only the
+  yaml-missing pre-check filters orphans now; any unexpected
+  OSError bubbles. (v0.3.1 deferred, Agent 2 F-12, Agent 3 1.7.)
 
 ## v0.3.0 — 2026-05-19
 

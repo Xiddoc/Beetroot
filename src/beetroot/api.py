@@ -959,11 +959,11 @@ class Manager:
         Adb-kind rows are skipped because :class:`Instance` only
         represents redroid backends — use :meth:`resolve` to walk every
         backend uniformly via the Protocol. Orphan entries (redroid
-        rows whose on-disk directory has been ``rm -rf``'d) are also
-        silently skipped — without this, a single orphan would crash
-        ``beetroot ls`` with a bare ``FileNotFoundError`` and prevent
-        the user from cleaning up. Use :meth:`list_orphans` to surface
-        them for cleanup.
+        rows whose on-disk directory has been ``rm -rf``'d, or whose
+        ``beetroot.yaml`` is now unparseable) are silently skipped —
+        without this, a single orphan would crash ``beetroot ls`` and
+        prevent the user from cleaning up. Use :meth:`list_orphans`
+        to surface them for cleanup.
 
         Returns:
             A list of :class:`Instance` objects, one per healthy
@@ -973,30 +973,50 @@ class Manager:
         for name, meta in sorted(registry.list_instances().items()):
             if not isinstance(meta.backend, registry.RedroidBackendConfig):
                 continue
+            # Filter orphans by the yaml-exists pre-check rather than
+            # ``except FileNotFoundError`` around ``Instance.load``.
+            # The bare except used to swallow ANY FileNotFoundError —
+            # including permission errors on a parent directory and
+            # the unrelated cache-miss FileNotFoundError that arose
+            # during T2's pivot to ``platformdirs``. (T2 Agent 2 F-12 /
+            # Agent 3 1.7.)
+            yaml_path = paths.instance_yaml(Path(meta.backend.absolute_path))
+            if not yaml_path.is_file():
+                continue
             try:
                 out.append(Instance.load(name))
-            except FileNotFoundError:
-                # Orphan: registry entry exists, on-disk dir is gone.
-                # list_orphans() is the channel for cleanup discovery.
+            except Exception:
+                # YAML present but unparseable — mirrors the orphan
+                # contract from ``list_orphans``. Without this, a
+                # single corrupted YAML crashes ``beetroot ls`` and
+                # the user has no way to surface the row for cleanup.
+                # (T2 v0.3.1 deferred.)
                 continue
         return out
 
     @staticmethod
     def list_orphans() -> _List[str]:
         """
-        Return names of redroid instances whose on-disk dir is missing.
+        Return names of redroid instances whose on-disk dir is missing OR unparseable.
 
-        An orphan is a redroid-kind registry row pointing at a path with
-        no ``beetroot.yaml`` (typically because the user manually
+        An orphan is a redroid-kind registry row pointing at a path
+        with no ``beetroot.yaml`` (typically because the user manually
         ``rm -rf``'d the directory without running
-        ``beetroot destroy``). Adb-kind rows are not directory-backed
-        so they can never be orphans by this definition. Names are
-        returned sorted; the cleanup verb is
-        ``beetroot destroy <name> -y``.
+        ``beetroot destroy``) OR a ``beetroot.yaml`` that can't be
+        parsed any more (e.g. a half-overwritten file, an
+        api_version mismatch, or hand-edited junk). v0.3 returned only
+        the first kind, so a corrupted YAML left the entry invisible
+        to ``Manager.list`` AND to ``Manager.list_orphans`` — the
+        user had no surface to clean it up from. (T2 v0.3.1 deferred.)
+
+        Adb-kind rows are not directory-backed so they can never be
+        orphans by this definition. Names are returned sorted; the
+        cleanup verb is ``beetroot destroy <name> -y``.
 
         Returns:
             Sorted list of orphan instance names. Empty if every
-            registered redroid entry's directory is present.
+            registered redroid entry's directory is present and its
+            YAML parses.
         """
         orphans: _List[str] = []
         for name, meta in registry.list_instances().items():
@@ -1004,6 +1024,19 @@ class Manager:
                 continue
             yaml_path = paths.instance_yaml(Path(meta.backend.absolute_path))
             if not yaml_path.is_file():
+                orphans.append(name)
+                continue
+            try:
+                config.load_yaml(yaml_path)
+            except Exception:
+                # Any parse / validation failure on the YAML counts as
+                # an orphan — the row needs cleanup-attention, and
+                # ``Manager.list`` already skips it via the
+                # InstanceRootNotFoundError filter (which load() emits
+                # transitively when the YAML is unreachable). Catch
+                # broadly: pydantic ValidationError, yaml.YAMLError,
+                # custom api_version mismatches, and any future
+                # validation backend all flow through here.
                 orphans.append(name)
         return sorted(orphans)
 
