@@ -365,9 +365,13 @@ def restore(
     :func:`ports.lowest_free_index` — the source's index is NOT reused,
     so an instance can be restored alongside its source.
 
-    The manifest's ``path_layout`` is preserved as-is: v0.3 writes ``{}``
-    and the restore path doesn't act on it, but v0.4's stealth-posture
-    work will replay a populated layout into the new instance's env vars.
+    The manifest's ``path_layout`` is replayed into the new instance's
+    :class:`registry.RedroidBackendConfig.stealth_paths` slot via
+    :func:`registry.set_stealth_paths`. A v0.4 snapshot ships
+    ``{}``, so the assignment is a no-op for today's snapshots — but
+    a v0.5 snapshot carrying randomized paths round-trips into a
+    matching slot on the new instance, ready for ``render_env`` to
+    consume on the next ``apply``.
 
     Args:
         archive: Path to a ``.tar.zst`` snapshot archive.
@@ -396,7 +400,7 @@ def restore(
     # with ``--force`` wiped the user's existing directory and THEN
     # discovered the archive was unreadable, leaving no way back.
     # (T2 Agent 3 1.4.)
-    read_manifest(archive)
+    manifest = read_manifest(archive)
     _prepare_destination(target, force=force)
     # ``created_dir`` is True iff Beetroot now owns the directory; the
     # rollback path uses it to decide whether to ``rmtree``.
@@ -409,6 +413,15 @@ def restore(
     # ``from . import api`` would loop.
     from . import api  # noqa: PLC0415
     try:
+        # T4: replay the snapshot's path_layout into the new registry
+        # entry's stealth_paths slot. v0.4 manifests carry ``{}`` so
+        # this is a structural no-op today; a v0.5 snapshot carrying
+        # randomized paths round-trips into a matching slot on the new
+        # instance. Done INSIDE the rollback try/except so a malformed
+        # blob (e.g. an unrecognised key in a future schema bump)
+        # still tears down the half-registered row cleanly.
+        if manifest.path_layout:
+            registry.set_stealth_paths(dest_name, manifest.path_layout)
         _check_restored_port_collision(dest_name, index, target)
         # Stage .env + frida placeholder + dirs now so `beetroot up
         # <name>` works without a follow-up `beetroot apply`. Mirrors
