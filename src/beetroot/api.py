@@ -41,7 +41,9 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Final, Protocol, runtime_checkable
+from typing import Final, Literal, Protocol, runtime_checkable
+
+from pydantic import BaseModel, ConfigDict
 
 from . import compose, config, frida_download, modules_download, paths, ports, registry
 from . import snapshot as _snapshot_mod
@@ -56,6 +58,11 @@ from . import snapshot as _snapshot_mod
 _List = list
 
 _MINIMAL_BEETROOT_YAML = "api_version: 3\nandroid:\n  version: 14\n"
+
+# ``adb devices`` lines are ``<serial>\t<state>`` (two whitespace-separated
+# columns). Anything with fewer columns is a header line or blank —
+# not a device row.
+_MIN_ADB_DEVICES_COLUMNS: Final = 2
 
 # Instance names are used as Docker compose project names (which
 # enforce ``[a-z0-9_-]+``) AND as filesystem-segment defaults for the
@@ -85,6 +92,30 @@ class FridaNotInstalledError(RuntimeError):
 
 class AdbNotInstalledError(RuntimeError):
     """Raised when ``Instance.shell`` is called without the host ``adb`` CLI on PATH."""
+
+
+class CheckResult(BaseModel):
+    """
+    One row of a backend health report.
+
+    Returned from :meth:`Instance.health` and :func:`adb_device_health`
+    keyed by a check name (e.g. ``"compose.status"``, ``"magisk.zygisk"``).
+    ``status`` is a closed three-valued literal so downstream tools
+    (``beetroot doctor``, dashboards) can pattern-match without parsing
+    free-form strings. ``reason`` is a one-line human-readable hint
+    that's surfaced verbatim on the doctor output line for ``fail`` /
+    ``skip`` rows (and elided for ``pass``).
+
+    Attributes:
+        status: Either ``"pass"``, ``"fail"``, or ``"skip"``.
+        reason: Optional one-line explanation. Surfaced on the doctor
+            output line for non-``pass`` rows (and ``pass`` rows that
+            volunteer extra context).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    status: Literal["pass", "fail", "skip"]
+    reason: str | None = None
 
 
 class BackendCapabilityError(RuntimeError):
@@ -840,6 +871,58 @@ class Instance:
             )
         modules_download.stage_for_instance(self._root, self._cfg)
 
+    # ---- health-check ----------------------------------------------------
+
+    def health(self) -> dict[str, CheckResult]:
+        """
+        Aggregate the redroid-backed health checks for this instance.
+
+        Returns a mapping ``check_name → CheckResult``. The check names
+        that overlap with the adb backend (``frida.handshake``,
+        ``magisk.zygisk``, ``magisk.denylist.<pkg>``) use IDENTICAL
+        keys to :func:`adb_device_health` so downstream tools can grep
+        check rows uniformly across backend kinds.
+
+        Notes:
+            ``health()`` is NOT part of the :class:`DeviceBackend`
+            Protocol. It's a capability method that not every backend
+            supports (third-party cloud backends may not have any
+            equivalent), so per the v0.3 device-backend design doc it
+            lives on the concrete class rather than the Protocol.
+            Callers narrow via ``isinstance(b, Instance)`` (or the
+            free-function :func:`adb_device_health` for ADB).
+
+        Returns:
+            Ordered dict of check name → :class:`CheckResult`. Insertion
+            order matches the doctor verb's intended output order
+            (compose first, then connectivity, then Magisk).
+        """
+        adb_port = self.ports["adb"]
+        frida_port = self.ports["frida"]
+        checks: dict[str, CheckResult] = {}
+        # compose.status: pass iff the container is running. The compose
+        # Literal vocabulary is closed (see compose.ComposeStatus); any
+        # non-running state surfaces as fail with the literal name as
+        # the reason so a user grepping for ``compose.status: fail
+        # exited`` can correlate against ``beetroot logs``.
+        live_status = self.status
+        checks["compose.status"] = (
+            CheckResult(status="pass")
+            if live_status == "running"
+            else CheckResult(status="fail", reason=str(live_status))
+        )
+        checks["adb.connect"] = _check_adb_connect(f"localhost:{adb_port}")
+        checks["frida.handshake"] = _check_frida_socket(
+            "localhost", frida_port, enabled=self._cfg.frida is not None,
+        )
+        checks["magisk.zygisk"] = _check_magisk_zygisk_over_adb(f"localhost:{adb_port}")
+        denylist = self._cfg.stealth.denylist
+        gms_pkg = "com.google.android.gms"
+        checks[f"magisk.denylist.{gms_pkg}"] = _check_magisk_denylist_over_adb(
+            f"localhost:{adb_port}", gms_pkg, enrolled=gms_pkg in denylist,
+        )
+        return checks
+
 
 _INSTANCE_LOCK_FILENAME = ".beetroot.lock"
 
@@ -1109,6 +1192,243 @@ class Manager:
                 "process via beetroot.backends.register_backend)."
             ) from e
         return cls.from_meta(name, meta.backend)
+
+
+def _check_adb_connect(target: str) -> CheckResult:
+    """
+    Run ``adb connect <target>`` and report pass/fail.
+
+    Args:
+        target: The ``host:port`` argument for ``adb connect``.
+
+    Returns:
+        ``pass`` iff the subprocess exited 0 and stderr does NOT
+        contain ``failed`` / ``cannot connect`` (adb's ``connect``
+        verb exits 0 even on failure in some versions, so we re-scan
+        stdout/stderr as a safety net).
+    """
+    if shutil.which("adb") is None:
+        return CheckResult(status="skip", reason="adb not on PATH")
+    try:
+        res = subprocess.run(  # noqa: S603  # adb is a host CLI resolved via PATH; target arg validated upstream
+            ["adb", "connect", target],  # noqa: S607
+            check=False, capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return CheckResult(status="fail", reason=str(e))
+    combined = f"{res.stdout}\n{res.stderr}".lower()
+    if res.returncode != 0 or "cannot connect" in combined or "failed" in combined:
+        return CheckResult(
+            status="fail",
+            reason=f"exit {res.returncode}; {res.stdout.strip() or res.stderr.strip()}",
+        )
+    return CheckResult(status="pass")
+
+
+def _check_frida_socket(host: str, port: int, *, enabled: bool) -> CheckResult:
+    """
+    Confirm a TCP listener exists at ``host:port`` without doing the D-Bus handshake.
+
+    Uses ``nc -zw 1`` (zero-I/O scan, 1s connect timeout) to keep the
+    probe socket-only. The D-Bus handshake would require the host
+    ``frida`` CLI; here we only assert that *something* is listening
+    so the doctor verb is fast and minimally-coupled.
+
+    Args:
+        host: Hostname to connect to (usually ``localhost``).
+        port: TCP port.
+        enabled: ``False`` if ``cfg.frida is None`` (Frida is opt-in
+            since v0.3). When ``False`` the check returns ``skip``.
+
+    Returns:
+        ``pass`` if ``nc`` exits 0, ``fail`` otherwise, ``skip`` if
+        Frida isn't configured for this instance.
+    """
+    if not enabled:
+        return CheckResult(status="skip", reason="frida not configured")
+    if shutil.which("nc") is None:
+        return CheckResult(status="skip", reason="nc not on PATH")
+    try:
+        res = subprocess.run(  # noqa: S603  # nc is a host CLI resolved via PATH; argv is constant + integer-typed port
+            ["nc", "-zw", "1", host, str(port)],  # noqa: S607
+            check=False, capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return CheckResult(status="fail", reason=str(e))
+    if res.returncode != 0:
+        return CheckResult(status="fail", reason=f"no listener at {host}:{port}")
+    return CheckResult(status="pass")
+
+
+def _magisk_sqlite_value_over_adb(adb_target: str, sql: str) -> tuple[int, str, str]:
+    """
+    Run ``adb -s <target> shell magisk --sqlite "<sql>"`` and return the result.
+
+    Returns:
+        A ``(returncode, stdout, stderr)`` tuple from the subprocess.
+        Stub-mockable via ``subprocess.run`` patching in tests.
+    """
+    res = subprocess.run(  # noqa: S603  # adb is a host CLI resolved via PATH; sql is composed from constants + validated package names
+        ["adb", "-s", adb_target, "shell", "magisk", "--sqlite", sql],  # noqa: S607
+        check=False, capture_output=True, text=True, timeout=5,
+    )
+    return res.returncode, res.stdout, res.stderr
+
+
+def _check_magisk_zygisk_over_adb(adb_target: str) -> CheckResult:
+    """
+    Confirm Magisk's ``zygisk`` setting is 1 via the adb-mediated SQL channel.
+
+    ``magisk --sqlite`` reports the row as ``value=1`` on stdout. We
+    look for that literal substring rather than parse the full output,
+    because the output shape includes a trailing newline + a possible
+    empty row when the key is missing entirely.
+    """
+    if shutil.which("adb") is None:
+        return CheckResult(status="skip", reason="adb not on PATH")
+    try:
+        rc, stdout, stderr = _magisk_sqlite_value_over_adb(
+            adb_target, "SELECT value FROM settings WHERE key='zygisk'",
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return CheckResult(status="fail", reason=str(e))
+    if rc != 0:
+        return CheckResult(
+            status="fail",
+            reason=f"exit {rc}; {(stderr or stdout).strip()}",
+        )
+    # Empty stdout = key not in settings → fail. ``value=0`` = disabled
+    # → fail with the actual value surfaced so the user can grep.
+    text = stdout.strip()
+    if "value=1" in text:
+        return CheckResult(status="pass")
+    if "value=0" in text:
+        return CheckResult(status="fail", reason="expected 1, got 0")
+    return CheckResult(status="fail", reason=f"unexpected output: {text!r}")
+
+
+def _check_magisk_denylist_over_adb(
+    adb_target: str, pkg: str, *, enrolled: bool,
+) -> CheckResult:
+    """
+    Confirm ``pkg`` is enrolled in Magisk's denylist via the adb SQL channel.
+
+    Args:
+        adb_target: The adb serial/endpoint for ``adb -s <target>``.
+        pkg: Package id (already validated against the Android
+            package-id grammar by :class:`config.Stealth`).
+        enrolled: ``False`` if the package isn't in ``cfg.stealth.denylist``.
+            When ``False`` the check returns ``skip`` (the user
+            explicitly chose not to hide root from this package).
+
+    Returns:
+        ``pass`` if the package appears in the ``denylist`` table,
+        ``fail`` otherwise, ``skip`` if the config doesn't list it.
+    """
+    if not enrolled:
+        return CheckResult(status="skip", reason=f"{pkg} not in stealth.denylist")
+    if shutil.which("adb") is None:
+        return CheckResult(status="skip", reason="adb not on PATH")
+    try:
+        rc, stdout, stderr = _magisk_sqlite_value_over_adb(
+            adb_target,
+            # Package id is grammar-validated upstream by config.Stealth
+            # (only [a-zA-Z0-9._]) so it can't break the SQL quote. The
+            # bandit warning is a false positive on that grammar.
+            f"SELECT package_name FROM denylist WHERE package_name='{pkg}'",  # noqa: S608
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return CheckResult(status="fail", reason=str(e))
+    if rc != 0:
+        return CheckResult(
+            status="fail",
+            reason=f"exit {rc}; {(stderr or stdout).strip()}",
+        )
+    if pkg in stdout:
+        return CheckResult(status="pass")
+    return CheckResult(status="fail", reason=f"{pkg} not enrolled")
+
+
+def _check_adb_serial_listed(serial: str) -> CheckResult:
+    r"""
+    Confirm ``adb devices`` lists ``serial`` in the ``device`` state.
+
+    The output of ``adb devices`` is one device per line, formatted as
+    ``<serial>\t<state>``. We look for the exact ``<serial>\tdevice``
+    pair so a half-attached phone in ``offline`` / ``unauthorized``
+    state surfaces as fail with the actual state in the reason.
+    """
+    if shutil.which("adb") is None:
+        return CheckResult(status="skip", reason="adb not on PATH")
+    try:
+        res = subprocess.run(
+            ["adb", "devices"],  # noqa: S607  # adb is a host CLI resolved via PATH; argv constant
+            check=False, capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return CheckResult(status="fail", reason=str(e))
+    if res.returncode != 0:
+        return CheckResult(status="fail", reason=f"adb devices exit {res.returncode}")
+    # adb devices lines are ``<serial>\t<state>`` — two whitespace-
+    # separated columns. _MIN_ADB_DEVICES_COLUMNS is the threshold
+    # below which we treat the line as not a device row (headers and
+    # blank lines have fewer columns).
+    for line in res.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= _MIN_ADB_DEVICES_COLUMNS and parts[0] == serial:
+            if parts[1] == "device":
+                return CheckResult(status="pass")
+            return CheckResult(status="fail", reason=f"state={parts[1]}")
+    return CheckResult(status="fail", reason=f"{serial} not listed")
+
+
+def adb_device_health(device: DeviceBackend) -> dict[str, CheckResult]:
+    """
+    Health-check the adb-backed equivalent of :meth:`Instance.health`.
+
+    Free function (not a method on :class:`AdbDevice`) because T6 lands
+    BEFORE T5's :class:`AdbDevice` exists. T5 (or a follow-up
+    commit after both T5 and T6 merge into ``dev/v0.4``) wires this in
+    as an actual method — either by aliasing
+    ``AdbDevice.health = lambda self: adb_device_health(self)`` or by
+    migrating the body to a proper method. The shared check NAMES
+    (``frida.handshake``, ``magisk.zygisk``, ``magisk.denylist.<pkg>``)
+    match :meth:`Instance.health` exactly so downstream tools grep
+    uniformly.
+
+    Args:
+        device: A :class:`DeviceBackend` whose ``kind == "adb"``.
+            Uses only the Protocol surface (``adb_address``,
+            ``frida_address``) — no AdbDevice-specific methods, so
+            this works even with the minimal stub backends used in
+            tests before T5 lands.
+
+    Returns:
+        Ordered dict of check name → :class:`CheckResult`. ``compose.status``
+        is intentionally absent — there's no container for the adb backend.
+    """
+    # The adb_address is the serial for the AdbDevice backend (per the
+    # DeviceBackend Protocol docstring: ``adb_address`` returns "the
+    # host:port (or adb serial) that adb connect targets"). The frida
+    # address is ``localhost:<forwarded_port>`` for the ADB-forwarded
+    # local port.
+    serial = device.adb_address
+    frida_host, _, frida_port_str = device.frida_address.partition(":")
+    try:
+        frida_port = int(frida_port_str)
+    except ValueError:
+        frida_port = 0
+    checks: dict[str, CheckResult] = {}
+    checks["adb.serial"] = _check_adb_serial_listed(serial)
+    checks["frida.handshake"] = _check_frida_socket(
+        frida_host or "localhost", frida_port, enabled=frida_port > 0,
+    )
+    checks["magisk.zygisk"] = _check_magisk_zygisk_over_adb(serial)
+    gms_pkg = "com.google.android.gms"
+    checks[f"magisk.denylist.{gms_pkg}"] = _check_magisk_denylist_over_adb(
+        serial, gms_pkg, enrolled=True,
+    )
+    return checks
 
 
 def _allocate_port_index() -> int:

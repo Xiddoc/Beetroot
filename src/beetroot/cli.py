@@ -22,7 +22,7 @@ from typing import Annotated
 
 import typer
 
-from . import api, builder, compose, modules_download, paths, ports, registry
+from . import api, builder, compose, config, modules_download, paths, ports, registry
 from . import snapshot as snapshot_mod
 
 
@@ -322,27 +322,7 @@ def ls(
     instances = api.Manager.list()
     orphans = api.Manager.list_orphans()
     if json_out:
-        out = {}
-        for inst in instances:
-            p = inst.ports
-            meta = registry.get(inst.name)
-            # Manager.list already filtered orphans; this branch is a
-            # defensive net against a registry race and isn't covered.
-            if meta is None:  # pragma: no cover
-                # A None ``meta`` here would be a registry race that's
-                # already caught upstream. Defensive check keeps mypy's
-                # narrowing clean without an ``assert`` (banned by S101).
-                raise registry.RegistryError(
-                    f"instance {inst.name!r} disappeared from the registry",
-                )
-            out[inst.name] = {
-                "path": str(inst.root),
-                "index": inst.index,
-                "adb": f"localhost:{p['adb']}",
-                "frida": f"localhost:{p['frida']}",
-                "status": inst.status,
-                "created_at": meta.created_at.isoformat(),
-            }
+        out = {inst.name: _instance_json_row(inst) for inst in instances}
         typer.echo(json.dumps(out, indent=2, sort_keys=True))
         if orphans:
             _emit_orphan_skip(orphans)
@@ -374,6 +354,86 @@ def _emit_orphan_skip(orphans: list[str]) -> None:
         f"{'entry' if len(orphans) == 1 else 'entries'}: {names}; "
         f"clean up with 'beetroot destroy <name> -y')"
     )
+
+
+def _instance_json_row(inst: api.Instance) -> dict[str, object]:
+    """
+    Build the per-instance JSON row used by ``ls --json`` and ``status``.
+
+    Keeps the v0.3 ``path`` / ``adb`` / ``frida`` keys for back-compat
+    (existing scripts pipe ``ls --json`` through jq with those keys);
+    layers on the v0.4 spec fields (``kind``, ``adb_address``,
+    ``frida_address``, ``stealth_paths``, full ``ports`` dict) so
+    ``beetroot status`` is a one-stop machine-parseable snapshot of
+    everything the registry + live state knows about the instance.
+    """
+    p = inst.ports
+    meta = registry.get(inst.name)
+    # Manager.list already filtered orphans; this branch is a defensive
+    # net against a registry race and isn't covered.
+    if meta is None:  # pragma: no cover
+        raise registry.RegistryError(
+            f"instance {inst.name!r} disappeared from the registry",
+        )
+    backend = meta.backend
+    if not isinstance(backend, registry.RedroidBackendConfig):  # pragma: no cover
+        # ``Instance.load`` only ever returns redroid-kind, so this is
+        # a defensive narrowing aid for mypy. The adb-row path is in
+        # ``_adb_json_row``.
+        raise registry.RegistryError(
+            f"instance {inst.name!r} is not a redroid backend",
+        )
+    return {
+        "name": inst.name,
+        "kind": inst.kind,
+        "index": inst.index,
+        "created_at": meta.created_at.isoformat(),
+        "ports": p,
+        "status": inst.status,
+        "adb_address": inst.adb_address,
+        "frida_address": inst.frida_address,
+        "stealth_paths": dict(backend.stealth_paths),
+        # v0.3 back-compat keys — scripts piping ``ls --json`` through
+        # jq depend on these. Kept alongside the v0.4 richer fields so
+        # the row is a strict superset of the v0.3 shape.
+        "path": str(inst.root),
+        "adb": f"localhost:{p['adb']}",
+        "frida": f"localhost:{p['frida']}",
+    }
+
+
+def _adb_json_row(
+    name: str, meta: registry.InstanceMeta, backend: registry.AdbBackendConfig,
+) -> dict[str, object]:
+    """
+    Build the per-instance JSON row for an adb-kind registry entry.
+
+    Spec'd shape (T6): include ``serial``; OMIT redroid-only fields
+    (``absolute_path``, ``ports.frida2``, container ``status``). Uses
+    ``is_available`` instead of ``status`` because there's no compose
+    project to query.
+    """
+    # T5 owns the actual ``AdbDevice`` class + live ``is_available``
+    # query. T6's status verb is run against the registry meta directly
+    # so we don't take a hard dependency on AdbDevice being importable
+    # yet — we surface the static fields the registry already knows
+    # about. T5 (or a follow-up commit) can swap to
+    # ``api.Manager.resolve(name).is_available`` once AdbDevice lands.
+    return {
+        "name": name,
+        "kind": backend.kind,
+        "index": meta.index,
+        "created_at": meta.created_at.isoformat(),
+        "serial": backend.serial,
+        "adb_address": backend.serial,
+        # ``frida_address`` for the adb backend is owned by T5's
+        # AdbDevice (it picks a forwarded port). Until that lands we
+        # surface the registry serial as-is — the field is present so
+        # the status row shape is uniform across backends.
+        "frida_address": backend.serial,
+        "is_available": False,
+        "stealth_paths": {},
+    }
 
 
 @app.command()
@@ -409,12 +469,127 @@ def shell(
 @app.command()
 def env(
     name: Annotated[str, typer.Argument(help="Instance name.")],
+    all_: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Emit every BEETROOT_* key from the rendered .env "
+                 "(redroid only; adb falls back to ADB_SERIAL + FRIDA_HOST).",
+        ),
+    ] = False,
 ) -> None:
     """Print eval-able ``ANDROID_DEVICE`` / ``FRIDA_DEVICE`` shell exports."""
     _ensure_exists(name)
+    meta = registry.get(name)
+    # ``_ensure_exists`` already raised typer.Exit if meta is None; the
+    # narrowing aid here is purely so mypy can resolve ``meta.backend``
+    # without an ``assert`` (banned by S101).
+    if meta is None:  # pragma: no cover
+        raise _error(f"no instance named {name!r}")
+    if isinstance(meta.backend, registry.AdbBackendConfig):
+        _emit_env_adb(meta.backend, all_=all_)
+        return
     inst = _load(name)
+    if not all_:
+        # Back-compat: bare ``beetroot env <name>`` emits exactly two
+        # lines (the v0.3 shape). Scripts piping the output through
+        # ``eval`` rely on this — the ``--all`` flag is strictly opt-in.
+        typer.echo(f"export ANDROID_DEVICE={inst.adb_address}")
+        typer.echo(f"export FRIDA_DEVICE={inst.frida_address}")
+        return
+    rendered = config.render_env(inst.name, inst.config, inst.ports)
+    for line in rendered.splitlines():
+        # render_env emits ``KEY=value`` lines; surface them as shell
+        # exports so the output is eval-able like the v0.3 shape. The
+        # blank-line guard is defensive — render_env's current shape
+        # never emits an empty line, but a future "comment block"
+        # addition would, and a bare ``export`` line breaks ``eval``.
+        if not line.strip():  # pragma: no cover
+            continue
+        typer.echo(f"export {line}")
     typer.echo(f"export ANDROID_DEVICE={inst.adb_address}")
     typer.echo(f"export FRIDA_DEVICE={inst.frida_address}")
+
+
+def _emit_env_adb(backend: registry.AdbBackendConfig, *, all_: bool) -> None:
+    """Emit shell exports for an adb-backed instance (``--all`` adds nothing for adb)."""
+    # render_env assumes a redroid backend (it produces a compose .env
+    # with MEM_LIMIT/SHM_SIZE/etc.). For adb we expose the minimal
+    # serial + frida-host pair so the same eval-pattern still works.
+    # The ``--all`` flag is accepted but doesn't extend the output:
+    # the registry doesn't know a frida port for adb yet (T5 lands
+    # the AdbDevice with the forwarded-port logic). The host part of
+    # FRIDA_HOST is "localhost" by convention because the adb backend
+    # forwards the device's frida port to a host loopback port.
+    del all_
+    typer.echo(f"export ADB_SERIAL={backend.serial}")
+    typer.echo(f"export FRIDA_HOST=localhost:27042")  # noqa: F541  # default; T5 swaps to AdbDevice.frida_address
+
+
+@app.command()
+def status(
+    name: Annotated[str, typer.Argument(help="Instance name.")],
+) -> None:
+    """
+    Print a single-instance JSON snapshot.
+
+    Default output is JSON to stdout — v0.4 has no human-readable mode
+    because researchers pipe to ``jq``. The row shape is the same as
+    ``ls --json`` for redroid; adb-kind entries get a smaller row with
+    ``serial`` instead of ``absolute_path``.
+
+    Exits 0 on success; exits 1 if ``name`` is not in the registry.
+    """
+    _ensure_exists(name)
+    meta = registry.get(name)
+    if meta is None:  # pragma: no cover
+        # _ensure_exists already raised, this is mypy narrowing.
+        raise _error(f"no instance named {name!r}")
+    if isinstance(meta.backend, registry.AdbBackendConfig):
+        row = _adb_json_row(name, meta, meta.backend)
+    else:
+        row = _instance_json_row(_load(name))
+    typer.echo(json.dumps(row, indent=2, sort_keys=True))
+
+
+@app.command()
+def doctor(
+    name: Annotated[str, typer.Argument(help="Instance name.")],
+) -> None:
+    """
+    Run the aggregated health checks for an instance.
+
+    Output is machine-parseable: one ``<check>: <status> [reason]``
+    line per check. ``pass`` rows elide the reason; ``fail`` and
+    ``skip`` rows include it.
+
+    Exits 0 if every check passes; otherwise the exit code is the count
+    of ``fail`` results (capped at 255 — the POSIX exit-code ceiling).
+    ``skip`` rows do not count toward the exit code.
+    """
+    _ensure_exists(name)
+    meta = registry.get(name)
+    if meta is None:  # pragma: no cover
+        raise _error(f"no instance named {name!r}")
+    if isinstance(meta.backend, registry.AdbBackendConfig):
+        backend_obj = api.Manager.resolve(name)
+        results = api.adb_device_health(backend_obj)
+    else:
+        results = _load(name).health()
+    fail_count = 0
+    for check_name, result in results.items():
+        if result.status == "pass":
+            line = f"{check_name}: pass"
+        else:
+            reason = f" {result.reason}" if result.reason else ""
+            line = f"{check_name}: {result.status}{reason}"
+        if result.status == "fail":
+            fail_count += 1
+        typer.echo(line)
+    if fail_count > 0:
+        # POSIX exit codes top out at 255; clamp so a hypothetical
+        # 300-check fan-out doesn't wrap to 44.
+        raise typer.Exit(code=min(fail_count, 255))
 
 
 @app.command(

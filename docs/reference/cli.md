@@ -270,14 +270,15 @@ Calls `adb connect localhost:<adb_port>` then `adb -s localhost:<adb_port> shell
 Print eval-able environment variable exports for an instance.
 
 ```
-beetroot env <name>
+beetroot env <name> [--all]
 ```
 
-| Argument | Type | Description |
-|----------|------|-------------|
+| Argument / Flag | Type | Description |
+|-----------------|------|-------------|
 | `name` | positional | Instance name |
+| `--all` | flag | Also emit every `BEETROOT_*` key from the rendered `.env` (redroid only; adb falls back to `ADB_SERIAL` + `FRIDA_HOST`). |
 
-Output:
+Default output:
 
 ```bash
 export ANDROID_DEVICE=localhost:5555
@@ -291,6 +292,50 @@ eval $(beetroot env alpha)
 adb -s "$ANDROID_DEVICE" install ./target.apk
 frida -H "$FRIDA_DEVICE" -n com.target.app
 ```
+
+With `--all` Beetroot additionally exports every key from `config.render_env()` (the compose project name, `ADB_PORT`, `FRIDA_PORT`, `BEETROOT_MAGISK_DB`, `BEETROOT_DENYLIST_PACKAGES`, etc.) so downstream scripts that need the full compose-context can `eval` once.
+
+For adb-backed instances `beetroot env <name> --all` emits only `ADB_SERIAL` and `FRIDA_HOST` — the redroid-only compose keys (`MEM_LIMIT`, `SHM_SIZE`, …) don't apply to a physical phone.
+
+---
+
+## `status`
+
+Print a JSON snapshot of a single instance.
+
+```
+beetroot status <name>
+```
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `name` | positional | Instance name |
+
+Output is JSON to stdout (v0.4 has no human-readable mode — pipe to `jq`). Exits `0` on success; exits `1` if `name` is not in the registry.
+
+Redroid-kind rows include `name`, `kind`, `index`, `created_at`, `ports`, `status`, `adb_address`, `frida_address`, `stealth_paths`, plus the v0.3 back-compat keys (`path`, `adb`, `frida`).
+
+Adb-kind rows include `serial` instead of `absolute_path` and omit the redroid-only `ports.frida2` key.
+
+---
+
+## `doctor`
+
+Run aggregated health checks for an instance.
+
+```
+beetroot doctor <name>
+```
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `name` | positional | Instance name |
+
+Output is one `<check>: pass|fail|skip [reason]` line per check. Exits `0` if every check passes; otherwise the exit code is the count of `fail` results (capped at 255). `skip` rows do not count toward the exit code.
+
+Redroid checks: `compose.status`, `adb.connect`, `frida.handshake`, `magisk.zygisk`, `magisk.denylist.com.google.android.gms` (skipped if the package isn't in `stealth.denylist`).
+
+Adb checks: `adb.serial`, `frida.handshake`, `magisk.zygisk`, `magisk.denylist.com.google.android.gms`. `compose.status` is not applicable.
 
 ---
 
