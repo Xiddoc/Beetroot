@@ -19,6 +19,7 @@ from beetroot.config import (
     Module,
     Ports,
     Resources,
+    Stealth,
     base_image_tag,
     load_yaml,
     render_env,
@@ -30,15 +31,15 @@ class TestApiVersion:
     def test_default_api_version_is_supported(self) -> None:
         cfg = InstanceConfig()
         assert cfg.api_version == SUPPORTED_API_VERSION
-        assert cfg.api_version == 2
+        assert cfg.api_version == 3
 
     def test_explicit_supported_version_succeeds(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": 2})
-        assert cfg.api_version == 2
+        cfg = InstanceConfig.model_validate({"api_version": 3})
+        assert cfg.api_version == 3
 
     def test_string_api_version_is_coerced(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": "2"})
-        assert cfg.api_version == 2
+        cfg = InstanceConfig.model_validate({"api_version": "3"})
+        assert cfg.api_version == 3
 
     def test_zero_api_version_raises(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
@@ -47,10 +48,21 @@ class TestApiVersion:
         assert "not supported" in msg
         assert "CHANGELOG" in msg
 
-    def test_v1_api_version_raises(self) -> None:
-        # v0.2 used api_version: 1; T1 bumps the schema to 2.
+    def test_v1_api_version_raises_via_direct_validate(self) -> None:
+        # ``InstanceConfig.model_validate`` doesn't run the auto-bump
+        # path — that lives in ``load_yaml``. A direct validate call
+        # with a legacy api_version still raises so any code that
+        # constructs the model without going through ``load_yaml``
+        # surfaces the error explicitly.
         with pytest.raises(ValidationError) as exc_info:
             InstanceConfig.model_validate({"api_version": 1})
+        msg = str(exc_info.value)
+        assert "not supported" in msg
+        assert "CHANGELOG" in msg
+
+    def test_v2_api_version_raises_via_direct_validate(self) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            InstanceConfig.model_validate({"api_version": 2})
         msg = str(exc_info.value)
         assert "not supported" in msg
         assert "CHANGELOG" in msg
@@ -243,6 +255,45 @@ class TestModule:
     def test_both_url_and_path_raises(self) -> None:
         with pytest.raises(ValidationError, match="sets both"):
             Module(url="https://example.com/mod.zip", path="/tmp/mod.zip")
+
+
+class TestStealthDenylist:
+    """T1: per-package regex validator on ``stealth.denylist``.
+
+    SQL-injection prophylaxis for T2's wire-up of the denylist through
+    ``magisk-config.sh``'s SQLite REPLACE INTO. Refusing the malformed
+    shape at config-load time keeps the helper script free of escaping
+    logic.
+    """
+
+    def test_valid_packages_accepted(self) -> None:
+        cfg = Stealth(
+            denylist=["com.google.android.gms", "com.app_id", "com.x.y.z123"]
+        )
+        assert cfg.denylist[0] == "com.google.android.gms"
+
+    def test_empty_denylist_default(self) -> None:
+        assert Stealth().denylist == []
+
+    def test_package_with_space_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="package id"):
+            Stealth(denylist=["com.bad package"])
+
+    def test_package_with_semicolon_rejected(self) -> None:
+        # SQL-injection probe: a literal "; DROP TABLE settings;" must
+        # be rejected by the validator before T2's helper ever sees it.
+        with pytest.raises(ValidationError, match="package id"):
+            Stealth(denylist=["com.app'; DROP TABLE settings;--"])
+
+    def test_package_with_dash_rejected(self) -> None:
+        # Dashes are not part of the Android package-id grammar; refuse
+        # them so the validator can't drift to a looser shape later.
+        with pytest.raises(ValidationError, match="package id"):
+            Stealth(denylist=["com.bad-package"])
+
+    def test_empty_package_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="package id"):
+            Stealth(denylist=[""])
 
 
 class TestPorts:

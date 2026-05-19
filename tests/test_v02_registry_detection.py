@@ -72,22 +72,25 @@ def test_no_hint_when_only_v03_registry_present(
     assert "v0.2 registry" not in result.stderr
 
 
-def test_no_hint_when_v03_registry_is_populated(
+def test_no_hint_when_current_registry_is_populated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
-    # v0.3 registry already exists and is populated → no hint, even
-    # if the v0.2-shaped file at cwd would otherwise trip it.
+    # A populated current-schema registry exists → no v0.2 hint, even
+    # if a v0.2-shaped file at cwd would otherwise trip it.
     xdg = tmp_path / "config" / "beetroot" / "instances.json"
     xdg.parent.mkdir(parents=True)
     xdg.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 3,
                 "instances": {
                     "alpha": {
-                        "absolute_path": str(tmp_path / "alpha"),
+                        "backend": {
+                            "kind": "redroid",
+                            "absolute_path": str(tmp_path / "alpha"),
+                        },
                         "index": 0,
                         "created_at": "2026-01-01T00:00:00+00:00",
                     }

@@ -40,7 +40,7 @@ class TestCmdCreateCollision:
         assert alpha_meta is not None
         assert bravo_meta is not None
         # Distinct stride indices → distinct port slots.
-        assert alpha_meta["index"] != bravo_meta["index"]
+        assert alpha_meta.index != bravo_meta.index
 
     def test_create_collides_with_neighbour_pinned_to_next_stride_slot(
         self, cli_root: Path
@@ -69,7 +69,7 @@ class TestCmdApplyCollision:
         assert runner.invoke(cli.app, ["apply", "alpha"]).exit_code == 0
         meta = registry.get("alpha")
         assert meta is not None
-        assert meta["index"] == 0
+        assert meta.index == 0
 
     def test_apply_with_pinned_adb_collides(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])

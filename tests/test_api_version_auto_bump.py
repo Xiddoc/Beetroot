@@ -1,11 +1,11 @@
-"""v0.2 YAMLs with ``api_version: 1`` auto-bump to v2 with a warning.
+"""Legacy YAMLs auto-bump ``api_version`` to :data:`SUPPORTED_API_VERSION`.
 
-v0.2 pinned ``api_version: 1``. v0.3 raised :data:`SUPPORTED_API_VERSION`
-to ``2`` — strictly additive, no fields renamed. Hard-failing on a v0.2
-YAML would force every researcher to hand-edit every ``beetroot.yaml``
-before running anything; the CR asked for an auto-bump + one-line
-stderr warning instead. Persistence happens organically on the next
-``beetroot apply``.
+v0.4 (T1) extended the auto-bump to also cover v0.3-pinned
+``api_version: 2``. v0.3 already auto-bumped v0.2's ``api_version: 1``;
+the same code path now covers both. Each bump is strictly additive (no
+fields renamed), so a YAML written by an earlier release stays valid
+once the field is rewritten. Persistence happens organically on the
+next ``beetroot apply``.
 """
 from __future__ import annotations
 
@@ -32,15 +32,35 @@ def test_v02_api_version_auto_bumps(
     assert "apply" in err
 
 
-def test_explicit_v2_api_version_does_not_warn(
+def test_v03_api_version_auto_bumps(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # T1's schema bump: v0.3's `api_version: 2` auto-upgrades to the
+    # v0.4 default. Same dedup, same one-shot warning, same call to
+    # action.
     yaml_path = tmp_path / "beetroot.yaml"
     yaml_path.write_text("api_version: 2\nandroid:\n  version: 14\n")
 
     cfg = config.load_yaml(yaml_path)
 
-    assert cfg.api_version == 2
+    assert cfg.api_version == config.SUPPORTED_API_VERSION
+    err = capsys.readouterr().err
+    assert "auto-upgraded api_version 2" in err
+    assert "apply" in err
+
+
+def test_explicit_current_api_version_does_not_warn(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    yaml_path = tmp_path / "beetroot.yaml"
+    yaml_path.write_text(
+        f"api_version: {config.SUPPORTED_API_VERSION}\n"
+        "android:\n  version: 14\n"
+    )
+
+    cfg = config.load_yaml(yaml_path)
+
+    assert cfg.api_version == config.SUPPORTED_API_VERSION
     err = capsys.readouterr().err
     assert "auto-upgraded" not in err
 
@@ -59,8 +79,9 @@ def test_omitted_api_version_does_not_warn(
 
 
 def test_unsupported_api_version_still_raises(tmp_path: Path) -> None:
-    # Future-versions (99) and other non-1 mismatches still hard-fail,
-    # the auto-bump is targeted at v0.2 → v0.3 only.
+    # Future-versions (99) and other unrecognised mismatches still
+    # hard-fail; the auto-bump is targeted at known-additive legacy
+    # versions only.
     yaml_path = tmp_path / "beetroot.yaml"
     yaml_path.write_text("api_version: 99\nandroid:\n  version: 14\n")
 
@@ -79,7 +100,7 @@ def test_v02_yaml_with_frida_block_round_trips(tmp_path: Path) -> None:
     )
 
     cfg = config.load_yaml(yaml_path)
-    assert cfg.api_version == 2
+    assert cfg.api_version == config.SUPPORTED_API_VERSION
     assert cfg.frida is not None
     assert cfg.frida.version == "16.4.10"
 

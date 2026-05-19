@@ -333,7 +333,7 @@ def ls(
                 "adb": f"localhost:{p['adb']}",
                 "frida": f"localhost:{p['frida']}",
                 "status": inst.status,
-                "created_at": meta["created_at"],
+                "created_at": meta.created_at.isoformat(),
             }
         typer.echo(json.dumps(out, indent=2, sort_keys=True))
         if orphans:

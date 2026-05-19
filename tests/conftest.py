@@ -53,7 +53,7 @@ def isolated_instance(
     """
     root = tmp_path / "instance"
     root.mkdir()
-    (root / "beetroot.yaml").write_text("api_version: 2\nandroid:\n  version: 14\n")
+    (root / "beetroot.yaml").write_text("api_version: 3\nandroid:\n  version: 14\n")
     monkeypatch.chdir(root)
     return root
 

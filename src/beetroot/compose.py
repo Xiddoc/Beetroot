@@ -16,10 +16,45 @@ import shutil
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from . import paths
 from .settings import settings
+
+# Closed enum of the strings ``ps_status`` may return. The compose
+# subcommand reports a free-form ``State`` field; this enum gates every
+# string we ever surface to callers so verbs (``doctor``, ``status``)
+# and snapshot can pattern-match without falling back to ``str``.
+ComposeStatus = Literal[
+    "running",
+    "exited",
+    "starting",
+    "created",
+    "paused",
+    "not-created",
+    "docker-unreachable",
+    "unknown",
+]
+
+
+# ``docker compose ps --format json`` reports State strings from a
+# stable vocabulary (see https://docs.docker.com/engine/reference/commandline/compose_ps/).
+# We map them to our closed ComposeStatus literal so downstream pattern
+# matches don't see free-form strings. Unknown states fall through to
+# ``"unknown"`` so future Docker releases adding states don't crash
+# the CLI; the audit-flagged ``docker-unreachable`` is distinguished
+# from ``not-created`` so ``beetroot doctor`` can give a precise
+# error.
+_STATE_TO_STATUS: dict[str, ComposeStatus] = {
+    "running": "running",
+    "exited": "exited",
+    "starting": "starting",
+    "created": "created",
+    "paused": "paused",
+    "restarting": "starting",
+    "dead": "exited",
+    "removing": "exited",
+}
 
 
 class ComposeError(RuntimeError):
@@ -121,27 +156,46 @@ def logs(name: str, instance_root: Path, follow: bool = False) -> None:
     run(name, instance_root, args)
 
 
-def ps_status(name: str, instance_root: Path) -> str:
+def ps_status(name: str, instance_root: Path) -> ComposeStatus:
     """
-    Return a one-word container status for an instance.
+    Return a closed-enum container status for an instance.
 
-    Queries ``docker compose ps --format json`` live; never reads from cache.
+    Queries ``docker compose ps --format json`` live; never reads from
+    cache. Distinguishes "docker daemon unreachable" from "not-created"
+    so callers (``beetroot doctor``, ``ls --json``) can give a precise
+    diagnostic.
 
     Args:
         name: Instance name.
         instance_root: The instance directory.
 
     Returns:
-        One of ``running``, ``exited``, or ``not-created``.
+        One of the :data:`ComposeStatus` literals. ``"unknown"`` is
+        used when compose reports a state string we don't recognise
+        (e.g. a future Docker release introducing a new state); it
+        never silently maps to ``"running"``.
     """
-    res = run(
-        name,
-        instance_root,
-        ["ps", "--format", "json"],
-        capture_output=True,
-        text=True,
-    )
-    if res.returncode != 0 or not res.stdout.strip():
+    try:
+        res = run(
+            name,
+            instance_root,
+            ["ps", "--format", "json"],
+            capture_output=True,
+            text=True,
+        )
+    except ComposeError:
+        # ``_ensure_docker`` raised — docker binary not on PATH.
+        return "docker-unreachable"
+    if res.returncode != 0:
+        # Non-zero is most commonly "no such project" → not created.
+        # We could distinguish "daemon not running" via stderr scraping,
+        # but that's fragile; map to docker-unreachable only when
+        # compose stderr explicitly reports it.
+        stderr = (res.stderr or "").lower()
+        if "cannot connect to the docker daemon" in stderr:
+            return "docker-unreachable"
+        return "not-created"
+    if not res.stdout.strip():
         return "not-created"
     for line in res.stdout.strip().splitlines():
         try:
@@ -150,7 +204,7 @@ def ps_status(name: str, instance_root: Path) -> str:
             continue
         state = str(entry.get("State", "")).lower()
         if state:
-            return state
+            return _STATE_TO_STATUS.get(state, "unknown")
     return "not-created"
 
 

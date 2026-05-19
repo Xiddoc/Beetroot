@@ -59,7 +59,7 @@ class TestCliSurfacesAsErrorLine:
         assert result.exit_code == 0, result.stderr
         root = registry.instance_path("alpha")
         paths.instance_yaml(root).write_text(
-            "api_version: 2\n"
+            "api_version: 3\n"
             "android:\n  version: 14\n"
             "modules:\n"
             "  - url: https://example.com/gone.zip\n"

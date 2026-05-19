@@ -161,6 +161,75 @@ class TestPsStatus:
         with patch("subprocess.run", return_value=_ok_result(stdout)):
             assert compose.ps_status("alpha", tmp_path) == "running"
 
+    def test_starting_state(self, tmp_path: Path) -> None:
+        stdout = '{"State": "starting"}\n'
+        with patch("subprocess.run", return_value=_ok_result(stdout)):
+            assert compose.ps_status("alpha", tmp_path) == "starting"
+
+    def test_restarting_maps_to_starting(self, tmp_path: Path) -> None:
+        # Docker emits both ``starting`` and ``restarting``; both
+        # map to the same closed-enum value so callers don't need
+        # to handle both.
+        stdout = '{"State": "restarting"}\n'
+        with patch("subprocess.run", return_value=_ok_result(stdout)):
+            assert compose.ps_status("alpha", tmp_path) == "starting"
+
+    def test_created_state(self, tmp_path: Path) -> None:
+        stdout = '{"State": "created"}\n'
+        with patch("subprocess.run", return_value=_ok_result(stdout)):
+            assert compose.ps_status("alpha", tmp_path) == "created"
+
+    def test_paused_state(self, tmp_path: Path) -> None:
+        stdout = '{"State": "paused"}\n'
+        with patch("subprocess.run", return_value=_ok_result(stdout)):
+            assert compose.ps_status("alpha", tmp_path) == "paused"
+
+    def test_dead_maps_to_exited(self, tmp_path: Path) -> None:
+        # Dead / removing both terminal — squash into the
+        # exited bucket so the doctor verb's logic stays simple.
+        stdout = '{"State": "dead"}\n'
+        with patch("subprocess.run", return_value=_ok_result(stdout)):
+            assert compose.ps_status("alpha", tmp_path) == "exited"
+
+    def test_unknown_state_falls_through_to_unknown(
+        self, tmp_path: Path
+    ) -> None:
+        # Future Docker releases may invent new state strings. The
+        # closed-enum maps them to ``"unknown"`` rather than crashing
+        # or silently passing them through as ``"running"``.
+        stdout = '{"State": "warp-drive-engaged"}\n'
+        with patch("subprocess.run", return_value=_ok_result(stdout)):
+            assert compose.ps_status("alpha", tmp_path) == "unknown"
+
+    def test_daemon_unreachable_distinguished_from_not_created(
+        self, tmp_path: Path
+    ) -> None:
+        # Agent 2 B-7: surface a precise error when the daemon itself
+        # is unreachable, vs. the project simply not existing yet.
+        stderr = (
+            "Cannot connect to the Docker daemon at "
+            "unix:///var/run/docker.sock. Is the docker daemon running?"
+        )
+        res = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr=stderr,
+        )
+        with patch("subprocess.run", return_value=res):
+            assert (
+                compose.ps_status("alpha", tmp_path)
+                == "docker-unreachable"
+            )
+
+    def test_docker_binary_missing_returns_docker_unreachable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # If ``docker`` isn't on PATH, ``_ensure_docker`` raises and
+        # we catch + surface that as ``docker-unreachable``.
+        import shutil
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        assert (
+            compose.ps_status("alpha", tmp_path) == "docker-unreachable"
+        )
+
 
 class TestComposeError:
     def test_is_runtime_error(self) -> None:

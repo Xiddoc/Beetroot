@@ -32,6 +32,15 @@ Repository = "https://github.com/Xiddoc/Beetroot"
 [project.scripts]
 beetroot = "beetroot.cli:main"
 
+# Third-party device backends register themselves under this group; the
+# entry-point name is the ``kind`` discriminator (e.g. ``cloud-xyz``)
+# and the value is the dotted path to a class satisfying
+# :class:`beetroot.api.DeviceBackend` with a
+# ``from_meta(name, backend_config)`` classmethod. In-tree backends
+# (``redroid``, future ``adb``) register programmatically and are
+# omitted from this list.
+[project.entry-points."beetroot.backends"]
+
 [dependency-groups]
 dev = [
     "ruff>=0.6",

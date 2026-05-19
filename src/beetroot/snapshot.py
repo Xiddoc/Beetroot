@@ -22,15 +22,14 @@ from __future__ import annotations
 
 import importlib.metadata
 import io
-import json
 import shutil
 import tarfile
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Literal
 
 import zstandard
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import config, paths, ports, registry
 
@@ -49,10 +48,16 @@ class SnapshotError(RuntimeError):
     """Raised on snapshot/restore failures (missing source, bad archive, etc.)."""
 
 
-@dataclass(frozen=True)
-class Manifest:
+class Manifest(BaseModel):
     """
     Per-snapshot metadata embedded as ``.beetroot-snapshot.json`` in the archive.
+
+    Frozen + ``extra="forbid"`` so an archive carrying an unknown
+    future key surfaces a :class:`ValidationError` at restore time
+    rather than silently dropping the field. v0.4 snapshots are
+    redroid-only by design (``kind: Literal["redroid"]``); the field
+    exists so a future cross-backend snapshot story doesn't need a
+    second schema bump.
 
     Attributes:
         schema_version: Manifest schema version. Currently ``1``.
@@ -60,43 +65,22 @@ class Manifest:
         source_index: Source instance's allocated port index.
         created_at: ISO-8601 UTC timestamp of when the snapshot was taken.
         beetroot_version: Beetroot release that produced the snapshot.
-        path_layout: Reserved for v0.4 stealth-posture work. v0.3 always
-            writes ``{}``; restore preserves whatever the manifest carries.
+        kind: Backend kind discriminator. v0.4 snapshots are
+            redroid-only.
+        path_layout: Stealth-posture path mapping carried alongside the
+            instance. Empty in v0.4 (T1 plumbing only); T4 round-trips
+            it through snapshot and restore.
     """
 
-    schema_version: int
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal[1] = 1
     name: str
     source_index: int
     created_at: str
     beetroot_version: str
-    path_layout: dict[str, str]
-
-
-def _coerce_manifest(raw: dict[str, Any]) -> Manifest:
-    """Validate and convert a parsed JSON dict into a ``Manifest``."""
-    required = ("schema_version", "name", "source_index", "created_at",
-                "beetroot_version", "path_layout")
-    missing = [k for k in required if k not in raw]
-    if missing:
-        raise SnapshotError(
-            f"manifest is missing required keys: {', '.join(missing)}"
-        )
-    if raw["schema_version"] != SCHEMA_VERSION:
-        raise SnapshotError(
-            f"manifest schema_version {raw['schema_version']!r} is not supported "
-            f"by this Beetroot release (expects {SCHEMA_VERSION})"
-        )
-    path_layout = raw["path_layout"]
-    if not isinstance(path_layout, dict):
-        raise SnapshotError("manifest.path_layout must be a JSON object")
-    return Manifest(
-        schema_version=int(raw["schema_version"]),
-        name=str(raw["name"]),
-        source_index=int(raw["source_index"]),
-        created_at=str(raw["created_at"]),
-        beetroot_version=str(raw["beetroot_version"]),
-        path_layout={str(k): str(v) for k, v in path_layout.items()},
-    )
+    kind: Literal["redroid"] = "redroid"
+    path_layout: dict[str, str] = Field(default_factory=dict)
 
 
 def _ensure_suffix(dest: Path) -> Path:
@@ -107,28 +91,21 @@ def _ensure_suffix(dest: Path) -> Path:
 
 
 def _build_manifest(name: str, source_index: int) -> Manifest:
-    """Build a fresh v0.3 manifest with an empty ``path_layout``."""
+    """Build a fresh manifest with an empty ``path_layout``."""
     return Manifest(
-        schema_version=SCHEMA_VERSION,
         name=name,
         source_index=source_index,
         created_at=datetime.now(UTC).isoformat(),
         beetroot_version=importlib.metadata.version("beetroot"),
-        path_layout={},
     )
 
 
 def _manifest_to_json(manifest: Manifest) -> bytes:
     """Serialise a ``Manifest`` to UTF-8 JSON bytes (sorted keys, two-space indent)."""
-    payload: dict[str, Any] = {
-        "schema_version": manifest.schema_version,
-        "name": manifest.name,
-        "source_index": manifest.source_index,
-        "created_at": manifest.created_at,
-        "beetroot_version": manifest.beetroot_version,
-        "path_layout": manifest.path_layout,
-    }
-    return json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+    # ``by_alias=False`` is the default; ``sort_keys`` is requested by
+    # the v0.3 contract so two archives produced from identical state
+    # have byte-identical manifest members.
+    return manifest.model_dump_json(indent=2).encode("utf-8")
 
 
 def snapshot(instance_root: Path, dest: Path) -> Path:
@@ -164,7 +141,7 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
     final_dest = _ensure_suffix(dest)
     final_dest.parent.mkdir(parents=True, exist_ok=True)
 
-    manifest = _build_manifest(name=name, source_index=int(meta["index"]))
+    manifest = _build_manifest(name=name, source_index=meta.index)
 
     cctx = zstandard.ZstdCompressor()
     with (
@@ -177,11 +154,15 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
     return final_dest
 
 
-def _find_registry_entry(instance_root: Path) -> tuple[str, dict[str, Any]]:
-    """Look up the registry entry whose ``absolute_path`` matches ``instance_root``."""
+def _find_registry_entry(
+    instance_root: Path,
+) -> tuple[str, registry.InstanceMeta]:
+    """Look up the registry entry whose redroid ``absolute_path`` matches ``instance_root``."""
     target = instance_root.resolve()
     for name, meta in registry.list_instances().items():
-        if Path(meta["absolute_path"]).resolve() == target:
+        if not isinstance(meta.backend, registry.RedroidBackendConfig):
+            continue
+        if Path(meta.backend.absolute_path).resolve() == target:
             return name, meta
     raise SnapshotError(
         f"instance at {instance_root} is not registered; "
@@ -224,12 +205,9 @@ def read_manifest(archive: Path) -> Manifest:
     """
     raw = _extract_manifest_bytes(archive)
     try:
-        parsed = json.loads(raw.decode("utf-8"))
-    except json.JSONDecodeError as e:
-        raise SnapshotError(f"manifest is not valid JSON: {e}") from e
-    if not isinstance(parsed, dict):
-        raise SnapshotError("manifest must be a JSON object")
-    return _coerce_manifest(parsed)
+        return Manifest.model_validate_json(raw.decode("utf-8"))
+    except ValidationError as e:
+        raise SnapshotError(f"manifest validation failed: {e}") from e
 
 
 def _extract_manifest_bytes(archive: Path) -> bytes:
@@ -323,7 +301,9 @@ def restore(
         # ``already registered`` check, so any registry match here
         # is a foreign instance.
         for other_name, meta in registry.list_instances().items():
-            if Path(meta["absolute_path"]).resolve() == target:
+            if not isinstance(meta.backend, registry.RedroidBackendConfig):
+                continue
+            if Path(meta.backend.absolute_path).resolve() == target:
                 raise SnapshotError(
                     f"{target} is the registered directory of instance "
                     f"{other_name!r}; refusing to overwrite (even with "
