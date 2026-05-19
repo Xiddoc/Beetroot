@@ -643,6 +643,13 @@ class Instance:
         """
         Append a Magisk module to ``beetroot.yaml`` and re-stage.
 
+        Stages the module zip FIRST (so a download failure or sha256
+        mismatch is caught before the YAML grows a half-broken entry),
+        then on success mutates the in-memory config + writes the YAML.
+        If staging raises, the YAML and in-memory model are left
+        unchanged — the user can re-run the verb with a corrected URL
+        without manually un-doing a half-applied add.
+
         Args:
             source: Either an ``http(s)://`` URL or an instance-relative
                 path to a ``.zip`` module.
@@ -653,11 +660,22 @@ class Instance:
             :meth:`restart`.
         """
         if source.startswith(("http://", "https://")):
-            self._cfg.modules.append(config.Module(url=source, sha256=sha256))
+            new_module = config.Module(url=source, sha256=sha256)
         else:
-            self._cfg.modules.append(config.Module(path=source, sha256=sha256))
+            new_module = config.Module(path=source, sha256=sha256)
+        # Stage against a transient config that holds the existing
+        # modules PLUS the new entry. ``stage_for_instance`` wipes the
+        # ``modules/`` dir and re-stages every entry, so we can't pass
+        # just the new module — the existing ones would vanish.
+        # Building a one-off InstanceConfig keeps us from mutating
+        # ``self._cfg`` until we know the stage succeeded. (T2 Agent 2
+        # B-6, Agent 3 1.6.)
+        transient = self._cfg.model_copy(
+            update={"modules": [*self._cfg.modules, new_module]}
+        )
+        modules_download.stage_for_instance(self._root, transient)
+        self._cfg = transient
         config.write_yaml(paths.instance_yaml(self._root), self._cfg)
-        modules_download.stage_for_instance(self._root, self._cfg)
 
     def snapshot(self, dest: Path) -> Path:
         """

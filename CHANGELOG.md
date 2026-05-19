@@ -97,6 +97,12 @@
   and exits non-zero if Magisk returned anything other than `1`. v0.3
   silently trusted the REPLACE; this catches schema drift or daemon-race
   regressions loudly. (Agent 1, Agent 2 F-9, Agent 3 1.2.)
+- **`Instance.add_module` is now stage-first.** v0.3 mutated
+  `self._cfg.modules` and wrote `beetroot.yaml` BEFORE downloading the
+  zip — a 404 left the YAML polluted with a module the user couldn't
+  reach. v0.4 stages first against a transient `InstanceConfig` and
+  only commits to the YAML + in-memory model on success. Re-running
+  the verb with a corrected URL is now safe. (Agent 2 B-6, Agent 3 1.6.)
 
 ## v0.3.0 — 2026-05-19
 

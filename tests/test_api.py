@@ -489,6 +489,36 @@ class TestInstanceAddModule:
         cfg = config.load_yaml(paths.instance_yaml(inst.root))
         assert cfg.modules[0].sha256 == sha
 
+    def test_add_module_url_failure_leaves_yaml_unchanged(
+        self, cli_root: Path
+    ) -> None:
+        # T2 Agent 2 B-6 / Agent 3 1.6: a failed stage MUST NOT leave
+        # the YAML mutated. Pre-T2, ``add_module`` appended the model +
+        # wrote YAML THEN tried to stage — a 404 left the user's
+        # beetroot.yaml polluted with a module they couldn't reach.
+        inst = api.Instance.create("alpha")
+        yaml_before = paths.instance_yaml(inst.root).read_text()
+        modules_before = list(inst.config.modules)
+
+        import urllib.error
+
+        def _boom(url: str, **kwargs: object) -> object:
+            raise urllib.error.HTTPError(
+                url=url, code=404, msg="Not Found",
+                hdrs=None, fp=None,  # type: ignore[arg-type]
+            )
+
+        with patch("urllib.request.urlopen", side_effect=_boom):
+            with pytest.raises(Exception):  # noqa: B017, PT011
+                inst.add_module("https://example.com/broken.zip")
+
+        # YAML is byte-identical to before (no stale write).
+        assert paths.instance_yaml(inst.root).read_text() == yaml_before
+        # In-memory model is also untouched.
+        assert list(inst.config.modules) == modules_before
+        cfg = config.load_yaml(paths.instance_yaml(inst.root))
+        assert cfg.modules == modules_before
+
 
 class TestInstanceSnapshot:
     def test_snapshot_creates_archive(self, cli_root: Path) -> None:
