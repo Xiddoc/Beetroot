@@ -1,0 +1,24 @@
+api_version: 2
+android:
+  version: 14
+  gapps: lite
+display:
+  width: 540
+  height: 960
+  fps: 3
+  gpu_mode: host
+resources:
+  mem: 3g
+  cpus: 2.0
+  shared_mem: 256m
+  mem_reservation: null
+  memswap_limit: null
+  pids_limit: 4096
+frida: null
+modules: []
+stealth:
+  denylist: []
+ports:
+  adb: null
+  frida: null
+  frida_control: null

@@ -13,19 +13,19 @@ uv tool install git+https://github.com/Xiddoc/Beetroot.git
 ## Step 2 — Build the base image
 
 ```bash
-beetroot setup
+beetroot build
 ```
 
-This verb (formerly `./scripts/setup.sh`):
+This verb:
 
 1. Clones [`ayasa520/redroid-script`](https://github.com/ayasa520/redroid-script) into `/tmp/redroid`.
 2. Runs the patcher with `uv` to produce a local Docker image tagged `redroid/redroid:14.0.0_litegapps_houdini_magisk`. The patcher bakes Magisk, LiteGapps (minimal GApps), and Houdini (ARM-on-x86\_64 translation) into the base redroid image.
 3. Runs `docker compose build` to layer `entrypoint.sh` and `stealth.rc` on top, producing the final Beetroot image.
 
-Pass a variant to pick a different GMS flavor: `beetroot setup none | lite | full | mindthegapps` (default `lite`).
+Pass a variant to pick a different GMS flavor: `beetroot build none | lite | full | mindthegapps` (default `lite`).
 
 !!! warning "This takes a while"
-    The patcher downloads several large artifacts (Magisk, GApps, Houdini). Budget 10–20 minutes depending on your connection. Re-running `beetroot setup` is safe — it only rebuilds what changed.
+    The patcher downloads several large artifacts (Magisk, GApps, Houdini). Budget 10–20 minutes depending on your connection. Re-running `beetroot build` is safe — it only rebuilds what changed.
 
 Verify:
 
@@ -33,7 +33,32 @@ Verify:
 beetroot --help
 ```
 
-You should see the top-level help listing all verbs.
+You should see the top-level help listing all verbs. The help screen is
+rendered with Typer's Rich-powered formatter (boxed sections, color when
+the terminal supports it).
+
+### Shell completion
+
+Beetroot's CLI is built on [Typer](https://typer.tiangolo.com/), which
+ships shell-completion hooks for `bash`, `zsh`, `fish`, and PowerShell.
+Run once per shell:
+
+```bash
+beetroot --install-completion
+```
+
+The command auto-detects your current shell (via
+[`shellingham`](https://github.com/sarugaku/shellingham)) and writes the
+hook into the right rc file. Open a new terminal and `beetroot <TAB>`
+completes verbs; `beetroot create --<TAB>` completes flags.
+
+To inspect the script before installing — useful for sandboxed or
+ephemeral environments where you'd rather paste the hook into a managed
+rc file by hand — use:
+
+```bash
+beetroot --show-completion
+```
 
 ### With Frida CLI
 
@@ -61,7 +86,7 @@ uv tool upgrade beetroot
 To rebuild the Docker image after upstream changes:
 
 ```bash
-beetroot setup
+beetroot build
 ```
 
 ## Contributor workflow

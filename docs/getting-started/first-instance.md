@@ -8,17 +8,27 @@ This page walks you through the full lifecycle of a Beetroot instance: create �
 beetroot create alpha
 ```
 
-This allocates port index 0 (ADB `5555`, Frida `27042`), writes `instances/alpha/beetroot.yaml` from the default preset, downloads the correct Frida server binary, and renders `instances/alpha/.env` for Docker Compose.
+This:
+
+1. Picks the lowest free port index (`0` → ADB `5555`, Frida `27042` on a fresh host).
+2. Creates the instance directory at `./alpha/` (override with `--path /some/where`).
+3. Writes a minimal `./alpha/beetroot.yaml` — just `api_version` plus `android.version`; every other field falls back to schema defaults.
+4. Stages a 0-byte placeholder at `./alpha/frida-server`. Frida is opt-in starting in v0.3 — copy [`examples/with-frida.yaml`](../guides/examples.md) over `./alpha/beetroot.yaml` (or add a `frida:` block yourself) and run `beetroot apply alpha` to actually download and stage `frida-server`. See [Frida](../guides/frida.md).
+5. Renders `./alpha/.env` for Docker Compose.
+6. Registers the instance under `~/.config/beetroot/instances.json` (the cross-instance registry).
 
 The output looks like:
 
 ```
-[beetroot] created alpha (index 0, ADB localhost:5555, Frida localhost:27042)
+[beetroot] created alpha at /home/you/alpha (index 0, ADB localhost:5555, Frida localhost:27042)
 [beetroot] next: beetroot up alpha
 ```
 
-!!! tip "Use a preset"
-    Pass `--preset stealth` to start with Shamiko and a wider Magisk denylist — useful when the target app checks for root. See [Presets](../guides/presets.md) for details.
+!!! tip "Start from a richer baseline"
+    Copy one of the [`examples/`](../guides/examples.md) YAMLs over `./alpha/beetroot.yaml` after creating the instance — e.g. `cp examples/stealth.yaml alpha/beetroot.yaml && beetroot apply alpha` to start with Shamiko and a wider Magisk denylist when the target app checks for root.
+
+!!! tip "Adopt an existing instance dir"
+    If you already have an instance dir (e.g. cloned from a teammate), use `beetroot register <path>` to add it to the registry without touching its files.
 
 ## Boot
 
@@ -26,7 +36,7 @@ The output looks like:
 beetroot up alpha
 ```
 
-This runs `docker compose -p alpha -f compose.yaml --env-file instances/alpha/.env up -d` under the hood. The first boot takes 30–60 seconds while Android initializes and `entrypoint.sh` configures Magisk.
+Under the hood: `docker compose -p alpha -f <bundled-template> --project-directory /path/to/alpha --env-file /path/to/alpha/.env up -d`. The first boot takes 30–60 seconds while Android initialises and `entrypoint.sh` configures Magisk.
 
 Watch the logs to know when the device is ready:
 
@@ -37,12 +47,11 @@ beetroot logs alpha -f
 Look for:
 
 ```
-[*] Android boot detected. Applying Stealth Configuration...
-[*] Enabling Zygisk and Denylist...
-[*] Launching Frida server...
+[*] Android boot detected. Applying Beetroot configuration...
+[*] Enabling Zygisk + denylist
 ```
 
-Once you see the Frida line, the device is ready to use.
+Once you see Zygisk + denylist applied, the device is ready to use. If you opted into Frida — by adding a `frida:` block to `beetroot.yaml`, or by copying `examples/with-frida.yaml` over the generated file before running `beetroot apply` — you'll also see `[*] Launching Frida from /data/local/tmp/frida-server`. A bare `beetroot create` skips the Frida launch.
 
 ## Connect
 
@@ -79,8 +88,8 @@ beetroot ls
 ```
 
 ```
-NAME          IDX  ADB                   FRIDA                 STATUS
-alpha         0    localhost:5555        localhost:27042       running
+NAME    IDX  ADB             FRIDA            STATUS    PATH
+alpha   0    localhost:5555  localhost:27042  running   /home/you/alpha
 ```
 
 ## Stop (data preserved)
@@ -89,11 +98,9 @@ alpha         0    localhost:5555        localhost:27042       running
 beetroot down alpha
 ```
 
-Android is shut down cleanly; `instances/alpha/data/` stays intact. `beetroot up alpha` restarts from exactly where you left off.
+Android is shut down cleanly; the instance's `data/` stays intact. `beetroot up alpha` restarts from exactly where you left off.
 
 ## Wipe and start fresh
-
-If you want a clean slate:
 
 ```bash
 beetroot destroy -y alpha
@@ -101,11 +108,11 @@ beetroot create alpha
 beetroot up alpha
 ```
 
-`destroy` deletes `instances/alpha/` entirely, including `/data`. The `-y` flag skips the confirmation prompt.
+`destroy` deletes the instance directory entirely, including `/data`, and removes the registry entry. The `-y` flag skips the confirmation prompt.
 
 ## What's next
 
 - [Multiple Instances](../guides/multi-instance.md) — run several phones in parallel.
-- [Presets](../guides/presets.md) — start from `stealth` for anti-detection research.
+- [Examples](../guides/examples.md) — start from `stealth.yaml` for anti-detection research.
 - [Magisk Modules](../guides/modules.md) — flash Shamiko, LSPosed, or your own hooks.
 - [Frida](../guides/frida.md) — attach scripts and use the `beetroot frida` wrapper.

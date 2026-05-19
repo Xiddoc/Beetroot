@@ -8,7 +8,7 @@ Beetroot is a thin orchestration layer on top of several excellent open-source p
 
 ## ayasa520/redroid-script
 
-[`ayasa520/redroid-script`](https://github.com/ayasa520/redroid-script) — the patcher that Beetroot's `beetroot setup` verb uses to bake Magisk, LiteGapps, and Houdini into a redroid base image. Without this patcher, getting root + GApps + ARM translation into the image would require significant manual work.
+[`ayasa520/redroid-script`](https://github.com/ayasa520/redroid-script) — the patcher that Beetroot's `beetroot build` verb uses to bake Magisk, LiteGapps, and Houdini into a redroid base image. Without this patcher, getting root + GApps + ARM translation into the image would require significant manual work.
 
 ## Magisk
 
@@ -25,7 +25,7 @@ Beetroot is a thin orchestration layer on top of several excellent open-source p
 
 ## Shamiko / LSPosed
 
-[LSPosed/Shamiko](https://github.com/LSPosed/LSPosed.github.io) — a Magisk module that upgrades the denylist from "deny root access" to "hide Magisk's existence entirely" for denylisted processes. The `stealth` preset includes Shamiko by default.
+[LSPosed/Shamiko](https://github.com/LSPosed/LSPosed.github.io) — a Magisk module that upgrades the denylist from "deny root access" to "hide Magisk's existence entirely" for denylisted processes. The [`examples/stealth.yaml`](../guides/examples.md) starter config includes Shamiko by default.
 
 ## LiteGapps
 

@@ -38,4 +38,4 @@ The dependencies Beetroot packages or orchestrates carry their own licenses:
 | [Shamiko](https://github.com/LSPosed/LSPosed.github.io) | — (closed-source release) |
 | [LiteGapps](https://litegapps.github.io/) | Various (Google proprietary) |
 
-Beetroot's own code (the `beetroot` CLI and the scripts in `docker/`) is MIT-licensed. The Docker image you build with `beetroot setup` bundles third-party components under their respective licenses.
+Beetroot's own code (the `beetroot` CLI and the scripts in `docker/`) is MIT-licensed. The Docker image you build with `beetroot build` bundles third-party components under their respective licenses.

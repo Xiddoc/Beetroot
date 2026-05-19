@@ -1,22 +1,22 @@
 [project]
 name = "beetroot"
-version = "0.1.0"
+version = "0.3.0"
 description = "Beetroot CLI — the best Android research setup to beat root"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Xiddoc" }]
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 dependencies = [
     "pyyaml>=6.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.14.1",
+    "typer>=0.12",
+    "zstandard>=0.22",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Operating System :: POSIX :: Linux",
     "Intended Audience :: Developers",
     "Topic :: Security",
@@ -56,7 +56,7 @@ build-backend = "hatchling.build"
 packages = ["src/beetroot"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py313"
 line-length = 100
 
 [tool.ruff.lint]
@@ -95,9 +95,9 @@ convention = "google"
 [tool.ruff.lint.per-file-ignores]
 # Tests read better with patch + raises as nested withs and tolerate longer
 # lines on monkeypatch.setattr calls. Tests don't need full docstring coverage.
-# ARG00x — fixtures are often declared for their side-effects (isolated_root)
-#           and lambda stubs can't rename arguments, so unused-arg warnings
-#           are endemic and unhelpful in test files.
+# ARG00x — fixtures are often declared for their side-effects (isolated_registry,
+#           isolated_instance, cli_root) and lambda stubs can't rename
+#           arguments, so unused-arg warnings are endemic in test files.
 # PLR2004 — magic numbers in assertions are fine; extracting them to constants
 #            makes tests harder to read.
 # PLC0415 — some tests do deliberate mid-function imports for monkeypatching.
@@ -107,7 +107,7 @@ convention = "google"
 max-statements = 60  # build_parser() wires 12+ subparsers — 50 is too tight
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.13"
 plugins = ["pydantic.mypy"]
 strict = true
 warn_unreachable = true

@@ -1,9 +1,0 @@
-# presets/no-gapps.yaml — Android without Google Mobile Services. Useful when
-# researching APKs that don't talk to GMS, or to minimize the moving parts.
-# Note: beetroot setup none must have been run to produce the base image.
-
-api_version: 1
-
-android:
-  version: 14
-  gapps: none

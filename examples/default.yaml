@@ -1,0 +1,18 @@
+# Documentation only — not loaded by the CLI. Copy this over your fresh beetroot.yaml if you want this configuration.
+# Beetroot baseline research phone — GMS denylisted from Magisk root.
+# Every field except android.version is optional; schema defaults apply when omitted.
+# Edit beetroot.yaml in your instance dir and run `beetroot apply` to re-stage.
+#
+# Frida is opt-in: this example deliberately omits the `frida:` block, so no
+# frida-server binary is downloaded or launched. Copy examples/with-frida.yaml
+# (or add `frida: {version: "16.4.10"}` here) to enable it.
+
+api_version: 2
+
+android:
+  version: 14
+
+stealth:
+  denylist:
+    - com.google.android.gms
+    - com.google.android.gms.unstable

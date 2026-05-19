@@ -26,44 +26,52 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+@pytest.fixture
+def instance_root(isolated_registry: Path, tmp_path: Path) -> Path:
+    """An empty instance directory under the isolated XDG tree."""
+    root = tmp_path / "alpha"
+    root.mkdir()
+    return root
+
+
 class TestStageForInstanceUrlModule:
-    def test_happy_path_url_module(self, isolated_root: Path) -> None:
+    def test_happy_path_url_module(self, instance_root: Path) -> None:
         cfg = InstanceConfig(
             modules=[Module(url="https://example.com/magisk-mod.zip")]
         )
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
-            staged = modules_dl.stage_for_instance("alpha", cfg)
+            staged = modules_dl.stage_for_instance(instance_root, cfg)
         assert len(staged) == 1
         assert staged[0].exists()
         assert staged[0].read_bytes() == FAKE_ZIP_CONTENT
 
-    def test_staged_file_lands_in_instance_modules(self, isolated_root: Path) -> None:
+    def test_staged_file_lands_in_instance_modules(self, instance_root: Path) -> None:
         cfg = InstanceConfig(
             modules=[Module(url="https://example.com/magisk-mod.zip")]
         )
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
-            staged = modules_dl.stage_for_instance("alpha", cfg)
-        assert staged[0].parent == paths.instance_modules("alpha")
+            staged = modules_dl.stage_for_instance(instance_root, cfg)
+        assert staged[0].parent == paths.instance_modules(instance_root)
 
-    def test_url_module_with_correct_sha256(self, isolated_root: Path) -> None:
+    def test_url_module_with_correct_sha256(self, instance_root: Path) -> None:
         sha = _sha256(FAKE_ZIP_CONTENT)
         cfg = InstanceConfig(
             modules=[Module(url="https://example.com/mod.zip", sha256=sha)]
         )
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
-            staged = modules_dl.stage_for_instance("alpha", cfg)
+            staged = modules_dl.stage_for_instance(instance_root, cfg)
         assert len(staged) == 1
         assert staged[0].exists()
 
-    def test_sha256_mismatch_raises_value_error(self, isolated_root: Path) -> None:
+    def test_sha256_mismatch_raises_value_error(self, instance_root: Path) -> None:
         cfg = InstanceConfig(
             modules=[Module(url="https://example.com/mod.zip", sha256="deadbeef")]
         )
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
             with pytest.raises(ValueError, match="sha256 mismatch"):
-                modules_dl.stage_for_instance("alpha", cfg)
+                modules_dl.stage_for_instance(instance_root, cfg)
 
-    def test_sha256_mismatch_error_contains_both_hashes(self, isolated_root: Path) -> None:
+    def test_sha256_mismatch_error_contains_both_hashes(self, instance_root: Path) -> None:
         expected = "deadbeef"
         actual = _sha256(FAKE_ZIP_CONTENT)
         cfg = InstanceConfig(
@@ -71,92 +79,116 @@ class TestStageForInstanceUrlModule:
         )
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
             with pytest.raises(ValueError, match="sha256 mismatch") as exc_info:
-                modules_dl.stage_for_instance("alpha", cfg)
+                modules_dl.stage_for_instance(instance_root, cfg)
         msg = str(exc_info.value)
         assert expected in msg
         assert actual in msg
 
 
 class TestUrlModuleCache:
-    def test_second_call_reuses_cached_zip(self, isolated_root: Path) -> None:
+    def test_second_call_reuses_cached_zip(self, instance_root: Path) -> None:
         cfg = InstanceConfig(
             modules=[Module(url="https://example.com/magisk-mod.zip")]
         )
         with patch("urllib.request.urlopen", return_value=_make_url_resp()) as mock_open:
-            modules_dl.stage_for_instance("alpha", cfg)
-            # Second stage wipes the instance dir but the .cache/ copy remains
-            modules_dl.stage_for_instance("alpha", cfg)
+            modules_dl.stage_for_instance(instance_root, cfg)
+            modules_dl.stage_for_instance(instance_root, cfg)
         assert mock_open.call_count == 1
+
+    def test_cache_under_user_cache_dir(self, instance_root: Path) -> None:
+        cfg = InstanceConfig(
+            modules=[Module(url="https://example.com/magisk-mod.zip")]
+        )
+        with patch("urllib.request.urlopen", return_value=_make_url_resp()):
+            modules_dl.stage_for_instance(instance_root, cfg)
+        cached = paths.user_cache_dir("modules") / "magisk-mod.zip"
+        assert cached.exists()
 
 
 class TestFetchUrlErrors:
-    def test_http_error_raises_runtime_error(self, isolated_root: Path) -> None:
+    def test_http_error_raises_module_fetch_error(self, instance_root: Path) -> None:
         cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip")])
 
         def _raise(url: str, **kwargs: object) -> MagicMock:
             raise urllib.error.HTTPError(url, 500, "Server Error", {}, None)  # type: ignore[arg-type]
 
         with patch("urllib.request.urlopen", side_effect=_raise):
-            with pytest.raises(RuntimeError, match="HTTP 500"):
-                modules_dl.stage_for_instance("alpha", cfg)
+            with pytest.raises(modules_dl.ModuleFetchError, match="HTTP 500"):
+                modules_dl.stage_for_instance(instance_root, cfg)
 
-    def test_timeout_raises_runtime_error(self, isolated_root: Path) -> None:
+    def test_timeout_raises_module_fetch_error(self, instance_root: Path) -> None:
         cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip")])
 
         def _raise(url: str, **kwargs: object) -> MagicMock:
             raise TimeoutError("timed out")
 
         with patch("urllib.request.urlopen", side_effect=_raise):
-            with pytest.raises(RuntimeError, match="timed out"):
-                modules_dl.stage_for_instance("alpha", cfg)
+            with pytest.raises(modules_dl.ModuleFetchError, match="timed out"):
+                modules_dl.stage_for_instance(instance_root, cfg)
 
-    def test_url_error_raises_runtime_error(self, isolated_root: Path) -> None:
+    def test_url_error_raises_module_fetch_error(self, instance_root: Path) -> None:
         cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip")])
 
         def _raise(url: str, **kwargs: object) -> MagicMock:
             raise urllib.error.URLError("no route to host")
 
         with patch("urllib.request.urlopen", side_effect=_raise):
-            with pytest.raises(RuntimeError, match="cannot reach"):
-                modules_dl.stage_for_instance("alpha", cfg)
+            with pytest.raises(modules_dl.ModuleFetchError, match="cannot reach"):
+                modules_dl.stage_for_instance(instance_root, cfg)
 
-    def test_filename_from_empty_url_defaults_to_module_zip(self, isolated_root: Path) -> None:
-        # URL path ending in `/` has no basename, so _filename_from_url falls
-        # back to module.zip. We exercise this through the public surface.
+    def test_module_fetch_error_is_runtime_error_subclass(self) -> None:
+        # Existing callers that catch `RuntimeError` continue to work.
+        assert issubclass(modules_dl.ModuleFetchError, RuntimeError)
+
+    def test_filename_from_empty_url_defaults_to_module_zip(self, instance_root: Path) -> None:
         cfg = InstanceConfig(modules=[Module(url="https://example.com/")])
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
-            staged = modules_dl.stage_for_instance("alpha", cfg)
+            staged = modules_dl.stage_for_instance(instance_root, cfg)
         assert staged[0].name == "module.zip"
 
 
 class TestStageForInstancePathModule:
-    def test_path_module_copies_file(self, isolated_root: Path, tmp_path: Path) -> None:
-        src = tmp_path / "local-mod.zip"
+    def test_absolute_path_module_copies_file(
+        self, instance_root: Path, tmp_path: Path
+    ) -> None:
+        src = tmp_path / "external" / "local-mod.zip"
+        src.parent.mkdir()
         src.write_bytes(FAKE_ZIP_CONTENT)
         cfg = InstanceConfig(modules=[Module(path=str(src))])
-        staged = modules_dl.stage_for_instance("alpha", cfg)
+        staged = modules_dl.stage_for_instance(instance_root, cfg)
         assert len(staged) == 1
         assert staged[0].read_bytes() == FAKE_ZIP_CONTENT
 
-    def test_path_module_missing_raises(self, isolated_root: Path) -> None:
+    def test_relative_path_resolves_against_instance_root(
+        self, instance_root: Path
+    ) -> None:
+        # A relative ``path:`` entry must resolve to <instance_root>/<path>.
+        local = instance_root / "local-mod.zip"
+        local.write_bytes(FAKE_ZIP_CONTENT)
+        cfg = InstanceConfig(modules=[Module(path="local-mod.zip")])
+        staged = modules_dl.stage_for_instance(instance_root, cfg)
+        assert len(staged) == 1
+        assert staged[0].read_bytes() == FAKE_ZIP_CONTENT
+
+    def test_path_module_missing_raises(self, instance_root: Path) -> None:
         cfg = InstanceConfig(modules=[Module(path="/nonexistent/mod.zip")])
         with pytest.raises(FileNotFoundError):
-            modules_dl.stage_for_instance("alpha", cfg)
+            modules_dl.stage_for_instance(instance_root, cfg)
 
 
 class TestStaleZipWiping:
-    def test_stale_zips_are_removed_on_re_stage(self, isolated_root: Path) -> None:
-        modules_dir = paths.instance_modules("alpha")
+    def test_stale_zips_are_removed_on_re_stage(self, instance_root: Path) -> None:
+        modules_dir = paths.instance_modules(instance_root)
         modules_dir.mkdir(parents=True)
         stale = modules_dir / "old-module.zip"
         stale.write_bytes(b"stale")
 
         cfg = InstanceConfig(modules=[])
-        modules_dl.stage_for_instance("alpha", cfg)
+        modules_dl.stage_for_instance(instance_root, cfg)
         assert not stale.exists()
 
-    def test_only_stale_zips_are_wiped_not_all_files(self, isolated_root: Path) -> None:
-        modules_dir = paths.instance_modules("alpha")
+    def test_only_stale_zips_are_wiped_not_all_files(self, instance_root: Path) -> None:
+        modules_dir = paths.instance_modules(instance_root)
         modules_dir.mkdir(parents=True)
         stale_zip = modules_dir / "old.zip"
         stale_zip.write_bytes(b"stale zip")
@@ -164,18 +196,18 @@ class TestStaleZipWiping:
         other_file.write_bytes(b"readme")
 
         cfg = InstanceConfig(modules=[])
-        modules_dl.stage_for_instance("alpha", cfg)
+        modules_dl.stage_for_instance(instance_root, cfg)
         assert not stale_zip.exists()
         assert other_file.exists()
 
 
 class TestEmptyModuleList:
-    def test_empty_modules_list_creates_dir(self, isolated_root: Path) -> None:
+    def test_empty_modules_list_creates_dir(self, instance_root: Path) -> None:
         cfg = InstanceConfig(modules=[])
-        modules_dl.stage_for_instance("alpha", cfg)
-        assert paths.instance_modules("alpha").exists()
+        modules_dl.stage_for_instance(instance_root, cfg)
+        assert paths.instance_modules(instance_root).exists()
 
-    def test_empty_modules_list_returns_empty_staged(self, isolated_root: Path) -> None:
+    def test_empty_modules_list_returns_empty_staged(self, instance_root: Path) -> None:
         cfg = InstanceConfig(modules=[])
-        staged = modules_dl.stage_for_instance("alpha", cfg)
+        staged = modules_dl.stage_for_instance(instance_root, cfg)
         assert staged == []

@@ -6,28 +6,30 @@
 [![Docs](https://github.com/Xiddoc/Beetroot/actions/workflows/docs.yml/badge.svg)](https://xiddoc.github.io/Beetroot/)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/Xiddoc/Beetroot/actions/workflows/ci.yml)
 
-Beetroot is a Docker-packaged rooted Android 14 environment — Magisk, LiteGapps, Houdini ARM translation, and Frida — wrapped with a Python CLI that runs as many persistent research "phones" as your host can afford, side by side. Each phone has its own `/data`, its own ADB and Frida ports, its own resource caps, and a single `beetroot.yaml` config you can commit for a reproducible build.
+Beetroot is a Docker-packaged rooted Android 14 environment — Magisk, LiteGapps, Houdini ARM translation, and Frida — wrapped with a Python CLI that runs as many persistent research "phones" as your host can afford, side by side. Each phone is a self-contained directory anywhere on disk: its own `beetroot.yaml`, its own `/data`, its own ADB and Frida ports, its own resource caps. A cross-instance registry at `~/.config/beetroot/instances.json` tracks them all by name.
 
 ```
-$ beetroot create alpha --preset stealth
+$ beetroot create alpha
 $ beetroot up alpha
 [beetroot] alpha up — ADB localhost:5555, Frida localhost:27042
 $ beetroot ls
-NAME   IDX  ADB             FRIDA            STATUS
-alpha  0    localhost:5555  localhost:27042  running
+NAME   IDX  ADB             FRIDA            STATUS    PATH
+alpha  0    localhost:5555  localhost:27042  running   ./alpha
 ```
 
 ## Quick start
 
 ```bash
 uv tool install git+https://github.com/Xiddoc/Beetroot.git
-beetroot setup            # one-time: build the redroid base image
-beetroot create alpha
+beetroot build                              # one-time: build the redroid base image
+beetroot create alpha                       # creates ./alpha/ with beetroot.yaml
+beetroot create beta --path ~/work/beta     # or wherever you want it
+beetroot register ~/already-built-instance  # adopt an existing dir
 beetroot up alpha
 beetroot shell alpha
 ```
 
-Variants for `beetroot setup`: `none`, `lite` (default), `full`, `mindthegapps`.
+Variants for `beetroot build`: `none`, `lite` (default), `full`, `mindthegapps`.
 
 Hacking on Beetroot itself? `uv tool install .` from a checkout, or `uv sync` + `uv run beetroot <verb>`.
 
@@ -40,9 +42,9 @@ The host-side `frida` CLI is exposed via a `[frida]` extra. Install with `uv too
 - **Android 14** (redroid base, headless, low-FPS by default)
 - **Magisk root** with Zygisk + denylist; GMS auto-denylisted
 - **LiteGapps** + **Houdini** ARM-on-x86_64 translation
-- **Frida server, version-pinned per instance** — bind-mounted, not baked in
+- **Frida server (opt-in, version-pinned per instance)** — declare a `frida:` block in `beetroot.yaml` (or copy [`examples/with-frida.yaml`](examples/with-frida.yaml) over the freshly-created file) and the CLI downloads, caches, and bind-mounts the matching `frida-server` into the container
 - **Drop-in Magisk module flashing** via `beetroot.yaml`
-- **`beetroot` CLI** — lifecycle (`create` / `up` / `down` / `destroy`), shell + module management, and a `setup` bootstrap. See the [CLI reference](https://xiddoc.github.io/Beetroot/reference/cli/) for every verb.
+- **`beetroot` CLI** — lifecycle (`create` / `register` / `up` / `down` / `destroy`), shell + module management, and a `build` bootstrap. See the [CLI reference](https://xiddoc.github.io/Beetroot/reference/cli/) for every verb.
 
 ## Read the docs
 
@@ -52,10 +54,11 @@ Full documentation lives at <https://xiddoc.github.io/Beetroot/>.
 |------|--------------|
 | [Installation](https://xiddoc.github.io/Beetroot/getting-started/installation/) | Prerequisites, install paths, the `[frida]` extra |
 | [CLI reference](https://xiddoc.github.io/Beetroot/reference/cli/) | Every verb, every flag |
-| [Configuration](https://xiddoc.github.io/Beetroot/reference/config/) | `beetroot.yaml` schema, presets, resource defaults |
+| [Configuration](https://xiddoc.github.io/Beetroot/reference/config/) | `beetroot.yaml` schema, starter examples, resource defaults |
 | [Port allocation](https://xiddoc.github.io/Beetroot/reference/ports/) | Stride-of-10 mapping, overrides |
 | [Architecture](https://xiddoc.github.io/Beetroot/how-it-works/architecture/) | Image build, orchestration, boot flow |
 | [Filesystem layout](https://xiddoc.github.io/Beetroot/how-it-works/filesystem/) | Per-instance state, what's gitignored |
+| [Python API](https://xiddoc.github.io/Beetroot/reference/api/) | `from beetroot import Instance, Manager` — drive Beetroot programmatically |
 | [Troubleshooting](https://xiddoc.github.io/Beetroot/troubleshooting/) | Common breakages and how to unstick them |
 
 Contributors should read [CLAUDE.md](CLAUDE.md) for the development workflow (uv, ruff, mypy, pytest, 100% coverage gate).

@@ -1,7 +1,6 @@
 """Tests guarding README.md against drift from the actual CLI verb set."""
 from __future__ import annotations
 
-import argparse
 import re
 from pathlib import Path
 
@@ -13,15 +12,19 @@ README = Path(__file__).resolve().parents[1] / "README.md"
 # existed as CLI commands. Keep this list in sync with the README; the test
 # both asserts that none of these are real verbs *and* that the README does
 # not introduce them as plain English words that look like verb names.
-GHOST_VERBS = ("snapshot", "attach", "list")
+GHOST_VERBS = ("attach", "list")
 
 
 def _registered_verbs() -> set[str]:
-    parser = cli.build_parser()
-    for action in parser._actions:
-        if isinstance(action, argparse._SubParsersAction):
-            return set(action.choices.keys())
-    raise AssertionError("build_parser() did not register any subparsers")
+    """Return every verb name registered on the Typer app."""
+    out: set[str] = set()
+    for command in cli.app.registered_commands:
+        # Typer's CommandInfo.name is None when no explicit name was set; in
+        # that case the verb name comes from the function's own __name__.
+        name = command.name or (command.callback.__name__ if command.callback else None)
+        assert name is not None, f"unnamed Typer command: {command!r}"
+        out.add(name)
+    return out
 
 
 def test_ghost_verbs_are_not_registered() -> None:

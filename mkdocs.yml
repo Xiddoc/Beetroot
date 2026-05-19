@@ -100,10 +100,11 @@ nav:
   - Guides:
     - guides/index.md
     - Multiple Instances: guides/multi-instance.md
-    - Presets: guides/presets.md
+    - Examples: guides/examples.md
     - Magisk Modules: guides/modules.md
     - Frida: guides/frida.md
     - Snapshots: guides/snapshots.md
+    - Migrating from v0.2 to v0.3: guides/migration-v0.2-to-v0.3.md
   - Reference:
     - reference/index.md
     - CLI Reference: reference/cli.md
@@ -114,7 +115,12 @@ nav:
     - how-it-works/index.md
     - Architecture: how-it-works/architecture.md
     - Boot Flow: how-it-works/boot-flow.md
+    - Boot Scripts: how-it-works/boot-scripts.md
     - Filesystem Layout: how-it-works/filesystem.md
+  - Design notes:
+    - design/index.md
+    - Stealth posture: design/stealth-posture.md
+    - Device backends: design/device-backends.md
   - Troubleshooting: troubleshooting.md
   - About:
     - Credits: about/credits.md

@@ -11,9 +11,9 @@ There is no application code here — the deliverable is the container image, th
 ## Commands
 
 - `uv sync` — install the CLI's Python deps (PyYAML + Pydantic) into a project-local `.venv`. See [Development workflow](#development-workflow) for lint, type-check, and dev deps. *Contributors only.* End users should install with `uv tool install git+https://github.com/Xiddoc/Beetroot.git`, which exposes `beetroot` on `PATH` without the `uv run` prefix. The host-side `frida` CLI used by `beetroot frida` is **optional** and exposed via a `[frida]` extra (`uv sync --extra frida` in-tree, or `uv tool install 'beetroot[frida]'` for end users); plain installs omit `frida-tools` and `beetroot frida` errors out with an install hint.
-- `uv run beetroot <verb>` — invoke any CLI verb during development. Verbs: `create`, `up`, `down`, `restart`, `destroy`, `ls`, `logs`, `shell`, `env`, `frida`, `module`, `apply`, `setup`. Run `beetroot <verb> --help` for flags. (With a `uv tool install`-based setup, drop the `uv run` prefix entirely.)
-- `beetroot setup [variant]` (or `uv run beetroot setup [variant]` in-tree) — one-time bootstrap. Clones `ayasa520/redroid-script` into `/tmp/redroid`, runs its patcher via `uv` to produce a local base image (e.g. `redroid/redroid:14.0.0_litegapps_houdini_magisk`), then `docker compose build`s the research layer on top of it via the `BASE_IMAGE` build arg. The optional argument selects the GMS variant: `none`, `lite` (default), `full`, or `mindthegapps`. Re-run once per variant whenever the base image needs to be regenerated. The implementation lives in `src/beetroot/setup_runner.py` (named `setup_runner` because `setup.py` would collide with the historical Python build-system filename).
-- `docker compose -p <name> -f compose.yaml --env-file instances/<name>/.env <subcommand>` — the raw escape hatch. The CLI just wraps this; if the CLI breaks, you can still drive instances directly.
+- `uv run beetroot <verb>` — invoke any CLI verb during development. Verbs: `create`, `register`, `apply`, `up`, `down`, `restart`, `destroy`, `ls`, `logs`, `shell`, `env`, `frida`, `module`, `build`, `snapshot`, `restore`. Run `beetroot <verb> --help` for flags. (With a `uv tool install`-based setup, drop the `uv run` prefix entirely.)
+- `beetroot build [variant]` (or `uv run beetroot build [variant]` in-tree) — one-time bootstrap. Clones `ayasa520/redroid-script` into `/tmp/redroid`, runs its patcher via `uv` to produce a local base image (e.g. `redroid/redroid:14.0.0_litegapps_houdini_magisk`), then `docker compose build`s the research layer on top of it via the `BASE_IMAGE` build arg. The optional argument selects the GMS variant: `none`, `lite` (default), `full`, or `mindthegapps`. Re-run once per variant whenever the base image needs to be regenerated. `beetroot up` does **not** auto-rebuild — run `beetroot build` first if you want a fresh image. The implementation lives in `src/beetroot/builder.py`.
+- `docker compose -p <name> -f <bundled-compose> --project-directory <instance-dir> --env-file <instance-dir>/.env <subcommand>` — the raw escape hatch. The CLI just wraps this; if the CLI breaks, you can still drive instances directly. The bundled compose template lives at `src/beetroot/templates/compose.yaml` (resolve at runtime via `paths.bundled_compose_file()`).
 
 A typical flow: `beetroot create alpha` → `beetroot up alpha` → `beetroot shell alpha`.
 
@@ -38,22 +38,22 @@ The build output goes to `site/` (gitignored). The GitHub Actions workflow at `.
 
 ## Architecture
 
-**One templated `compose.yaml`, many projects.** Every instance shares the same `compose.yaml`. The CLI invokes compose with `-p <instance-name>` (separate Docker project per instance) and `--env-file instances/<name>/.env` (per-instance ports, resources, display knobs). Project-per-instance gives true isolation — `docker compose -p alpha down` doesn't touch `bravo`.
+**One bundled compose template, many projects.** Every instance shares the same compose template (shipped inside the wheel at `src/beetroot/templates/compose.yaml`). The CLI invokes compose with `-p <instance-name>` (separate Docker project per instance), `-f <bundled-template>`, `--project-directory <instance-dir>` (so the template's relative bind-mounts resolve correctly), and `--env-file <instance-dir>/.env` (per-instance ports, resources, display knobs). Project-per-instance gives true isolation — `docker compose -p alpha down` doesn't touch `bravo`.
 
-**Single-stage Dockerfile** (`docker/Dockerfile`). Only `entrypoint.sh` and `stealth.rc` are `COPY`'d into the redroid base — there is nothing else baked in. SQL queries against the Magisk DB use `magisk --sqlite` (Magisk ships with its own sqlite, so we don't need to ship a separate Bionic-built static binary). Frida is **not** in the image — it's bind-mounted per-instance (see below) so each phone can pin its own Frida version without rebuilding.
+**Single-stage Dockerfile** (`docker/Dockerfile`). Only the `docker/*.sh` helpers (`entrypoint.sh`, `magisk-config.sh`, `flash-modules.sh`, `launch-frida.sh`) and `stealth.rc` are `COPY`'d into the redroid base — there is nothing else baked in. SQL queries against the Magisk DB use `magisk --sqlite` (Magisk ships with its own sqlite, so we don't need to ship a separate Bionic-built static binary). Frida is **not** in the image — it's bind-mounted per-instance (see below) so each phone can pin its own Frida version without rebuilding.
 
 **Boot-time wiring is via Android init, not Docker.** There is no `ENTRYPOINT` — the container uses redroid's default boot. Android `init` parses `stealth.rc` (placed at `/system/etc/init/stealth.rc` at build time) and triggers `entrypoint.sh` on `sys.boot_completed=1` under the `u:r:magisk:s0` SELinux context. `entrypoint.sh` runs with `/system/bin/sh` (Android's toybox-derived shell) and waits for `/data/adb/magisk.db` to exist before doing anything.
 
-**`entrypoint.sh` configures Magisk by writing directly to its sqlite DB** (`/data/adb/magisk.db`) — enables Zygisk + denylist, adds `com.google.android.gms` / `com.google.android.gms.unstable` to the denylist so GMS processes don't see root. Then `magisk --install-module`s every zip in `/flash_dir`. Finally launches `/data/local/tmp/frida-server &` if it's executable. The trailing `wait` keeps the script alive so logs stream to `docker compose logs`.
+**`entrypoint.sh` is glue that sources three helpers** — `magisk-config.sh` (waits for the Magisk daemon, then writes directly to its sqlite DB at `/data/adb/magisk.db` to enable Zygisk + denylist and enroll `com.google.android.gms` / `com.google.android.gms.unstable`), `flash-modules.sh` (iterates every zip in `/flash_dir` and calls `magisk --install-module`), and `launch-frida.sh` (starts `/data/local/tmp/frida-server &` if it's executable). Every container-side path is read from a `BEETROOT_*` env var with a safe default, so the bundled compose template can override paths without editing helper code. The trailing `wait` keeps the entrypoint alive so logs stream to `docker compose logs`. See `docs/how-it-works/boot-scripts.md` for per-helper contracts.
 
-**Per-instance state lives at `instances/<name>/`** (gitignored except for `beetroot.yaml`):
+**Per-instance state lives in the instance directory itself** (any path on disk that contains a `beetroot.yaml`):
 - `beetroot.yaml` — the source of truth for this instance (display, resources, Frida version, modules, denylist). Commit it if you want a reproducible config.
 - `.env` — generated from `beetroot.yaml`; consumed by compose. Re-rendered on `beetroot apply`.
 - `data/` — bind-mounted to `/data` inside the container. Persists across restarts.
 - `modules/` — bind-mounted read-only to `/flash_dir`. The CLI mirrors `beetroot.yaml`'s `modules:` list into here on `apply`.
 - `frida-server` — bind-mounted to `/data/local/tmp/frida-server`. Downloaded by the CLI from `github.com/frida/frida/releases` and decompressed on the host.
 
-**Port allocation** (`src/beetroot/ports.py`): stride-of-10 by index. Index 0 → ADB 5555, Frida 27042/27043. Index 1 → ADB 5565, Frida 27052/27053. Etc. Index is stored in `instances.json` (the registry, gitignored) and freed on `destroy`. Allocation reuses freed slots — `lowest_free_index`.
+**Port allocation** (`src/beetroot/ports.py`): stride-of-10 by index. Index 0 → ADB 5555, Frida 27042/27043. Index 1 → ADB 5565, Frida 27052/27053. Etc. Index is stored in the cross-instance registry at `~/.config/beetroot/instances.json` (respects `$XDG_CONFIG_HOME`) and freed on `destroy`. Allocation reuses freed slots — `lowest_free_index`.
 
 **Container status is queried live from `docker compose ps`**, never cached in the registry. The registry can't lie about runtime state.
 
@@ -61,7 +61,8 @@ The build output goes to `site/` (gitignored). The GitHub Actions workflow at `.
 
 ```
 src/beetroot/
-├── cli.py         # argparse dispatch, all verb implementations
+├── api.py         # OOP layer (Instance, Manager, DeviceBackend Protocol) — public surface
+├── cli.py         # Typer verbs; bodies delegate to api.Instance/Manager
 ├── config.py      # beetroot.yaml schema (pydantic) + .env render
 ├── settings.py    # env-driven overrides (BEETROOT_* vars) via pydantic-settings
 ├── ports.py       # stride-10 allocator
@@ -69,25 +70,28 @@ src/beetroot/
 ├── compose.py     # subprocess wrappers around `docker compose`
 ├── frida_dl.py    # download frida-server.xz, decompress (lzma), cache
 ├── modules_dl.py  # fetch + sha256-verify Magisk module zips
-├── setup_runner.py # one-time base-image bootstrap (`beetroot setup`)
+├── snapshot.py    # pack/unpack instances as .tar.zst with manifest
+├── builder.py     # one-time base-image build (`beetroot build`)
 └── paths.py       # single source of truth for filesystem layout
 ```
 
-`paths.repo_root()` resolves to the directory containing `compose.yaml` via upward search from the current working directory (the `compose.yaml` is the marker — same model as git's `.git` and uv/pip's `pyproject.toml`). Running the CLI from a directory with no `compose.yaml` in any ancestor raises `paths.ProjectRootNotFoundError`, which `cli.main()` converts to a friendly `error: ...` and `exit 1`. This decouples discovery from `__file__`, so `beetroot` works identically whether installed editable (`uv sync`) or as a tool (`uv tool install .`).
+`api.py` composes the procedural modules — it doesn't replace them. The CLI verbs in `cli.py` stay as module-level `@app.command()` functions (Typer captures the function reference at import time, so wrapping verbs in a class would break dispatch), but each verb body is a 1-15 line shell that constructs an `api.Instance` or calls an `api.Manager` staticmethod. Programmatic users should `from beetroot import Instance, Manager, DeviceBackend`; contributors editing the CLI need the procedural modules too. The forward-looking design of the `DeviceBackend` Protocol (and how v0.4's `AdbDeviceBackend` will satisfy it) lives at `docs/design/device-backends.md`.
+
+`paths.instance_root()` resolves to the directory containing `beetroot.yaml` via upward search from the current working directory (the `beetroot.yaml` is the marker — same model as git's `.git` and uv/pip's `pyproject.toml`). Running the CLI from a directory with no `beetroot.yaml` in any ancestor raises `paths.InstanceRootNotFoundError`, which `cli.main()` converts to a friendly `error: ...` and `exit 1`. The bundled compose template is resolved via `paths.bundled_compose_file()` (which uses `importlib.resources`), so the CLI works identically whether installed editable (`uv sync`) or as a tool (`uv tool install .`). The cross-instance registry lives at `paths.user_registry_file()`.
 
 ## Things to know when editing
 
 - **`docker/entrypoint.sh` runs inside Android.** Android's userland is toybox-derived — no GNU coreutils, no bash. Stick to POSIX sh and toybox-compatible flags. Magisk's sqlite schema is load-bearing; do not refactor the DB writes.
 - **`docker/stealth.rc` is Android init syntax**, not arbitrary text. `exec_background u:r:magisk:s0` is a SELinux context. If you don't know what that means, don't touch this file.
-- **The base image tag** is derived at runtime from `android.version` and `android.gapps` in `beetroot.yaml` by `config.base_image_tag()` (e.g. `version: 14, gapps: lite` → `redroid/redroid:14.0.0_litegapps_houdini_magisk`). The tag is injected into the build via the `BASE_IMAGE` ARG in `docker/Dockerfile` and the `${BASE_IMAGE}` substitution in `compose.yaml`. The patcher that produces the base image is `beetroot setup <variant>` (wrapping `ayasa520/redroid-script`); run it once per GMS variant. Bumping Android version, gapps flavor, or translation layer means re-running the patcher with the appropriate flags.
-- **`compose.yaml` is templated** — every `${VAR}` must have a corresponding line in `render_env()` in `src/beetroot/config.py`. If you add a new substitution, update both.
-- **`api_version` gates the schema.** `InstanceConfig` carries a top-level `api_version: int` (currently `1`, tracked by `SUPPORTED_API_VERSION` in `src/beetroot/config.py`). The default lets old YAMLs that omit the field keep working; pinning a non-matching value raises a `ValidationError` pointing at `CHANGELOG.md`. When a future change breaks the schema, bump `SUPPORTED_API_VERSION` and add a migration entry to `CHANGELOG.md`.
-- **`mem_limit` and `cpus` are top-level keys, not under `deploy:`.** The `deploy:` form is Swarm-only and silently ignored by `docker compose up`. This also applies to `mem_reservation`, `memswap_limit`, and `pids_limit` — all top-level keys in `compose.yaml`.
+- **The base image tag** is derived at runtime from `android.version` and `android.gapps` in `beetroot.yaml` by `config.base_image_tag()` (e.g. `version: 14, gapps: lite` → `redroid/redroid:14.0.0_litegapps_houdini_magisk`). The tag is injected into the build via the `BASE_IMAGE` ARG in `docker/Dockerfile` and the `${BASE_IMAGE}` substitution in `src/beetroot/templates/compose.yaml`. The patcher that produces the base image is `beetroot build <variant>` (wrapping `ayasa520/redroid-script`); run it once per GMS variant. Bumping Android version, gapps flavor, or translation layer means re-running the patcher with the appropriate flags.
+- **The bundled `compose.yaml` is templated** — every `${VAR}` must have a corresponding line in `render_env()` in `src/beetroot/config.py`. If you add a new substitution, update both.
+- **`api_version` gates the schema.** `InstanceConfig` carries a top-level `api_version: int` (currently `2`, tracked by `SUPPORTED_API_VERSION` in `src/beetroot/config.py`). The default lets old YAMLs that omit the field keep working; pinning a non-matching value raises a `ValidationError` pointing at `CHANGELOG.md`. When a future change breaks the schema, bump `SUPPORTED_API_VERSION` and add a migration entry to `CHANGELOG.md`.
+- **`mem_limit` and `cpus` are top-level keys, not under `deploy:`.** The `deploy:` form is Swarm-only and silently ignored by `docker compose up`. This also applies to `mem_reservation`, `memswap_limit`, and `pids_limit` — all top-level keys in the bundled compose template.
 - **Environment-driven overrides** are provided by `src/beetroot/settings.py` (`Settings(BaseSettings)`). The following `BEETROOT_*` environment variables are recognised: `BEETROOT_DOCKER_BIN` (default: `docker`), `BEETROOT_FRIDA_ARCH` (default: `android-x86_64`), `BEETROOT_HTTP_TIMEOUT` (default: `30`). These are read at import time; override them before launching the CLI.
 - **Docs are part of every feature.** Touching a CLI verb, install path, schema field, or any user-facing string means grepping `docs/` and `README.md` for old spellings and updating every hit — not just the obvious page. v0.2 shipped multiple features (`uv tool install`, the `[frida]` extra) with README + one docs page updated while three other pages still showed the old guidance; see retros on `fix/uv-tool-install-docs` and `fix/frida-extra-docs` in `CHANGELOG.md`. Before commit, grep the surface that changed:
   - CLI verb rename: `grep -rn '<old-verb>' docs/ README.md`
   - Install path (`alias`, `pip install`, `uv run`, `uv tool install`): `grep -rn 'alias beetroot\|pip install frida-tools\|uv run beetroot ' docs/ README.md`, then prune contributor-aside callouts from the hits.
-  - Schema rename: `grep -rn '<old-field>' docs/ presets/ README.md`.
+  - Schema rename: `grep -rn '<old-field>' docs/ examples/ README.md`.
 
 ## Development workflow
 
@@ -138,13 +142,13 @@ uv run pytest                                         # full suite (coverage gat
 uv run pytest --cov=beetroot --cov-report=term-missing  # equivalent — explicit cov flags
 ```
 
-Tests live under `tests/` and use pytest's built-in mocking (`unittest.mock`) — no real network or docker calls. `conftest.py` monkeypatches `paths.repo_root` to a tmp dir so tests never touch the real repo.
+Tests live under `tests/` and use pytest's built-in mocking (`unittest.mock`) — no real network or docker calls. `conftest.py` provides two composable fixtures: `isolated_registry` (points `$XDG_CONFIG_HOME` and `$XDG_CACHE_HOME` at a per-test tmp dir) and `isolated_instance` (creates a minimal instance dir and `chdir`s into it). Most CLI/registry tests use the `cli_root` composite fixture, which layers `isolated_registry` with stubbed `shutil.which` + a no-op `frida_dl.download`.
 
 **Coverage**
 
 100% line + branch coverage on `src/beetroot/` is mandatory. `[tool.pytest.ini_options]` invokes `--cov=beetroot --cov-report=term-missing` automatically and `[tool.coverage.report].fail_under = 100` makes `uv run pytest` exit non-zero if the threshold isn't met. New code must come with new tests. CI runs the same gate; the pre-push hook (`.pre-commit-config.yaml`) catches it locally before the push hits the remote.
 
-**Behavior tests, not just line coverage.** Line + branch coverage is necessary but not sufficient. When a user-facing behavior emerges from the *composition* of two or more pieces of code (config-model → resolver → `.env` render; `cmd_create` → port allocator → registry write → compose start), ship at least one test that drives the full **user input → final artifact** path and asserts on the artifact. `feat/configurable-ports` hit 100% line + branch on `ports.py` and still shipped a silent port self-collision after a partial override, because no test asserted on the resolved `.env` dict given the model input; see `fix/ports-resolver-self-collision` in `CHANGELOG.md` for the fix and the corrective test pattern.
+**Behavior tests, not just line coverage.** Line + branch coverage is necessary but not sufficient. When a user-facing behavior emerges from the *composition* of two or more pieces of code (config-model → resolver → `.env` render; the `create` verb → port allocator → registry write → compose start), ship at least one test that drives the full **user input → final artifact** path and asserts on the artifact. `feat/configurable-ports` hit 100% line + branch on `ports.py` and still shipped a silent port self-collision after a partial override, because no test asserted on the resolved `.env` dict given the model input; see `fix/ports-resolver-self-collision` in `CHANGELOG.md` for the fix and the corrective test pattern.
 
 One-time setup of the pre-push hook:
 
@@ -169,4 +173,4 @@ GitHub Actions runs ruff, mypy, and pytest on every push to `main` and on every 
 
 ## What stays gitignored
 
-`instances/*/data/`, `instances/*/modules/`, `instances/*/frida-server`, `instances/*/.env`, `instances.json`, `.cache/`. `instances/*/beetroot.yaml` is **not** ignored — it's a config the researcher may want to commit.
+Instance directories live anywhere on disk and are gitignored at the user's discretion. Within any instance dir: `data/`, `modules/`, `frida-server`, `.env` should be gitignored. `beetroot.yaml` is **not** ignored — it's a config the researcher may want to commit. The cross-instance registry (`~/.config/beetroot/instances.json`) is per-host and never tracked.

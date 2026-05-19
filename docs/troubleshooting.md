@@ -45,10 +45,10 @@ beetroot logs alpha -f
 Wait for:
 
 ```
-[*] Android boot detected. Applying Stealth Configuration...
+[*] Android boot detected. Applying Beetroot configuration...
 ```
 
-Once you see that line, `adb shell` will work.
+Once you see that line (and the following Magisk + Zygisk steps), `adb shell` will work.
 
 ---
 
@@ -62,7 +62,9 @@ Once you see that line, `adb shell` will work.
 
 ```bash
 beetroot destroy -y alpha
-beetroot create alpha --preset stealth
+beetroot create alpha
+cp examples/stealth.yaml alpha/beetroot.yaml
+beetroot apply alpha
 beetroot up alpha
 ```
 
@@ -70,11 +72,14 @@ beetroot up alpha
 
 ## Frida can't see processes
 
-**Step 1:** Confirm the binary is staged:
+**Step 0:** Confirm Frida is enabled for this instance. Frida is opt-in starting in v0.3 — if `beetroot.yaml` has no `frida:` block, the staged binary is a 0-byte placeholder and `entrypoint.sh` skips the launch. Add a `frida: {version: "16.4.10"}` block (or copy `examples/with-frida.yaml` over the file) and re-`apply`.
+
+**Step 1:** Confirm the binary is staged (use `beetroot ls --json` to get the path):
 
 ```bash
-ls -lh instances/alpha/frida-server
-# Should be ~10 MB and executable (mode 755 or similar)
+ls -lh "$(beetroot ls --json | jq -r .alpha.path)/frida-server"
+# Should be ~10 MB and executable (mode 755 or similar) when Frida is enabled;
+# 0 bytes / not-executable when the `frida:` block is omitted.
 ```
 
 **Step 2:** Confirm it's running inside the container:
@@ -130,27 +135,6 @@ beetroot down alpha && beetroot up alpha
 
 ---
 
-## `beetroot create` fails with "preset not found"
-
-**Symptom:**
-
-```
-FileNotFoundError: preset 'stealth' not found at /some/path/presets/stealth.yaml
-```
-
-**Cause:** The CLI resolves `presets/` relative to the directory containing `compose.yaml` (the project root). If you're running from a different directory, it can't find the preset.
-
-**Fix:** Run from the project root:
-
-```bash
-cd /path/to/android-emulator
-beetroot create alpha --preset stealth
-```
-
-Or install the package editably (`uv sync`) so the path resolution via `paths.py` points to the right location.
-
----
-
 ## Instance stuck in "exited" state after host reboot
 
 **Cause:** Docker containers don't automatically restart unless configured with `restart: always`. Beetroot doesn't set a restart policy by design — instances should be started explicitly.
@@ -161,7 +145,7 @@ Or install the package editably (`uv sync`) so the path resolution via `paths.py
 beetroot up alpha
 ```
 
-Your data is intact in `instances/alpha/data/`.
+Your data is intact in the instance directory's `data/`.
 
 ---
 
@@ -186,10 +170,10 @@ error: module sha256 mismatch for Module.zip
 
 ## Docker out of disk space
 
-Android `/data` grows over time. Check:
+Android `/data` grows over time. Check (replace `<path>` with the value from `beetroot ls`):
 
 ```bash
-du -sh instances/*/data/
+beetroot ls --json | jq -r '.[].path' | xargs -I{} du -sh {}/data
 ```
 
 To reclaim space from a destroyed instance (Docker might still hold volume space):

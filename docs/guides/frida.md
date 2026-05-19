@@ -1,20 +1,41 @@
 # Frida
 
-Beetroot manages the Frida server binary per-instance: it downloads the correct architecture build from GitHub, caches it locally, and bind-mounts it into the container at `/data/local/tmp/frida-server`. At boot, `entrypoint.sh` launches it automatically.
+Frida is **opt-in** starting in Beetroot v0.3. When you declare a `frida:` block in `beetroot.yaml`, the CLI downloads the correct architecture build from GitHub, caches it locally, and bind-mounts it into the container at `/data/local/tmp/frida-server`. At boot, `entrypoint.sh` launches it automatically.
 
-!!! note "Host-side `frida-tools` is optional"
-    The Frida server inside the container is always managed for you. The host-side `frida` CLI used by `beetroot frida` is a separate package and ships behind the `[frida]` extra — install it with `uv tool install 'beetroot[frida]'`. See [Installation › With Frida CLI](../getting-started/installation.md#with-frida-cli) for details.
+If you omit the `frida:` block (the new default), the bind-mount is a 0-byte non-executable placeholder and `entrypoint.sh` skips the launch entirely — no `frida-server` process inside the container.
 
-## Version pinning
+!!! note "Host-side `frida-tools` is also optional"
+    The Frida server inside the container is managed for you when you opt in. The host-side `frida` CLI used by `beetroot frida` is a separate package and ships behind the `[frida]` extra — install it with `uv tool install 'beetroot[frida]'`. See [Installation › With Frida CLI](../getting-started/installation.md#with-frida-cli) for details.
 
-Each instance pins its own Frida version in `beetroot.yaml`:
+## Enabling Frida
+
+The fastest way is to copy [`examples/with-frida.yaml`](examples.md) over a freshly-created instance's `beetroot.yaml`:
+
+```bash
+beetroot create alpha
+cp examples/with-frida.yaml alpha/beetroot.yaml
+beetroot apply alpha
+```
+
+`examples/with-frida.yaml` declares the version-pin idiom for you. To enable Frida on an already-existing instance, edit its `beetroot.yaml` directly and add the block:
 
 ```yaml
 frida:
   version: "16.4.10"
 ```
 
-Changing the version and running `beetroot apply <name>` re-downloads the binary into `instances/<name>/frida-server`. The old binary is overwritten. Restart the instance to pick up the new server.
+Then run `beetroot apply <name>` to download and stage the binary, and restart the instance.
+
+## Version pinning
+
+Each instance pins its own Frida version in `beetroot.yaml` (once you've opted in):
+
+```yaml
+frida:
+  version: "16.4.10"
+```
+
+Changing the version and running `beetroot apply <name>` re-downloads the binary into the instance directory at `frida-server`. The old binary is overwritten. Restart the instance to pick up the new server.
 
 !!! tip "Keep versions in sync"
     The Frida server version and your host-side `frida-tools` version must match (major + minor). A mismatch causes connection errors. Pin both explicitly in your research environment.
@@ -75,7 +96,7 @@ script.load()
 
 ## Disabling Frida
 
-Set `frida: null` in `beetroot.yaml` and apply:
+Frida is off by default — `beetroot create` writes a minimal `beetroot.yaml` that doesn't ship a `frida:` block at all. If you turned it on and want to turn it back off, either delete the `frida:` block entirely or set it explicitly to null:
 
 ```yaml
 frida: ~   # null in YAML
@@ -86,7 +107,7 @@ beetroot apply alpha
 beetroot down alpha && beetroot up alpha
 ```
 
-The `frida-server` bind-mount becomes an empty placeholder, and `entrypoint.sh` skips the launch step (it checks `if it's executable` before starting).
+The `frida-server` bind-mount becomes a 0-byte non-executable placeholder, and `entrypoint.sh` skips the launch step (it checks `if it's executable` before starting).
 
 ## Troubleshooting
 

@@ -1,15 +1,10 @@
 """
-One-time base-image bootstrap.
+One-time base-image builder.
 
 Rewrite of the legacy ``scripts/setup.sh`` as testable Python. Clones the
 external ``ayasa520/redroid-script`` patcher, runs it to bake Magisk +
 optional GApps + Houdini into a redroid base image, then layers Beetroot's
 own ``entrypoint.sh`` / ``stealth.rc`` on top via ``docker compose build``.
-
-The module name is ``setup_runner`` rather than ``setup`` because the
-filename ``setup.py`` is historically reserved for the Python build system
-and tooling (setuptools, distutils, etc.) may special-case it even in
-non-package locations.
 
 Public surface:
 
@@ -20,17 +15,18 @@ Public surface:
   fails.
 * :data:`GAPPS_FLAGS` — mapping from gapps variant to the patcher CLI flags
   it needs.
-* :func:`bootstrap_base_image` — entry point that orchestrates the three
-  steps and returns the resulting image tag.
+* :func:`build_image` — entry point that orchestrates the three steps and
+  returns the resulting image tag.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Final, Literal, Protocol
 
-from . import config
+from . import config, paths
 from .settings import settings
 
 GappsVariant = Literal["none", "lite", "full", "mindthegapps"]
@@ -104,13 +100,21 @@ class DefaultRunner:
             cmd: The argv to execute.
             cwd: Working directory; ``None`` inherits the parent's.
             check: If ``True``, raise :class:`BootstrapError` on non-zero exit.
-            env: Full environment to pass; ``None`` inherits the parent's.
+            env: Extra environment to overlay on the parent's. ``None``
+                inherits the parent's environment unmodified. A non-None
+                dict is merged on top of ``os.environ`` rather than
+                replacing it, so the child still sees ``PATH``,
+                ``HOME``, ``DOCKER_CONFIG``, etc. — without this merge a
+                bare ``{"BASE_IMAGE": tag}`` would launch ``docker``
+                with no ``PATH`` and the build would fail with
+                ``FileNotFoundError`` on a fresh shell.
 
         Raises:
             BootstrapError: If ``check`` is ``True`` and the command exits non-zero.
         """
+        merged_env = {**os.environ, **env} if env is not None else None
         try:
-            subprocess.run(list(cmd), cwd=cwd, check=check, env=env)
+            subprocess.run(list(cmd), cwd=cwd, check=check, env=merged_env)
         except subprocess.CalledProcessError as exc:
             raise BootstrapError(
                 f"command failed (exit {exc.returncode}): {' '.join(cmd)}"
@@ -123,7 +127,7 @@ def _image_tag(android_version: int, gapps: GappsVariant) -> str:
     return config.base_image_tag(android)
 
 
-def bootstrap_base_image(
+def build_image(
     *,
     gapps: GappsVariant = "lite",
     android_version: int = 14,
@@ -193,11 +197,23 @@ def bootstrap_base_image(
     ]
     run.run(patcher_cmd, cwd=work)
 
-    # Step 3: build the Beetroot layer on top, passing the freshly produced
-    # base tag via the BASE_IMAGE env var (consumed by docker/Dockerfile).
+    # Step 3: build the Beetroot layer on top via the bundled compose template,
+    # passing the freshly produced base tag via the BASE_IMAGE env var (consumed
+    # by docker/Dockerfile) and the cwd via BEETROOT_BUILD_CONTEXT (so the
+    # template's ${BEETROOT_BUILD_CONTEXT} substitution finds the local
+    # docker/ dir).
+    cwd = Path.cwd()
     run.run(
-        [settings.docker_bin, "compose", "build"],
-        env={"BASE_IMAGE": tag},
+        [
+            settings.docker_bin,
+            "compose",
+            "-f",
+            str(paths.bundled_compose_file()),
+            "--project-directory",
+            str(cwd),
+            "build",
+        ],
+        env={"BASE_IMAGE": tag, "BEETROOT_BUILD_CONTEXT": str(cwd)},
     )
 
     return tag

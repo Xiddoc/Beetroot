@@ -1,8 +1,8 @@
 """
 beetroot.yaml schema, loading, and .env rendering.
 
-Only ``android.version`` is required; every other field has a sensible default
-and can be omitted entirely from an instance YAML or preset.  Optional
+Only ``android.version`` is required; every other field has a sensible
+default and can be omitted entirely from an instance YAML. Optional
 top-level sections: ``display``, ``resources``, ``frida``, ``modules``,
 ``stealth``.
 """
@@ -10,29 +10,24 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, Self, override
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-if sys.version_info >= (3, 11):  # pragma: no cover - version-conditional import
-    from typing import Self
-else:  # pragma: no cover - version-conditional import
-    from typing_extensions import Self
-
-if sys.version_info >= (3, 12):  # pragma: no cover - version-conditional import
-    from typing import override
-else:  # pragma: no cover - version-conditional import
-    from typing_extensions import override
-
-from . import paths
-
-SUPPORTED_API_VERSION: Final = 1
+SUPPORTED_API_VERSION: Final = 2
 
 _VALID_ANDROID_VERSIONS = {11, 12, 13, 14}
 
 _MIN_PORT: Final = 1
 _MAX_PORT: Final = 65535
+
+# Module-level set of YAML paths we've already printed the "auto-bumped
+# api_version 1 → 2" warning for in this process. Without the dedup,
+# ``beetroot ls`` over 5 v0.2 instances prints 5+ warning lines; a
+# single ``register bravo`` triple-prints because ``all_resolved_ports``
+# cascades into the same load twice. CR #2 finding A2.
+_API_VERSION_BUMP_WARNED: set[Path] = set()
 
 
 class Display(BaseModel):
@@ -103,7 +98,8 @@ class Module(BaseModel):
 
     Attributes:
         url: HTTPS URL to download the module zip from.
-        path: Repo-relative path to a local zip file.
+        path: Path to a local zip file, resolved relative to the instance
+            directory (the directory containing this beetroot.yaml).
         sha256: Expected hex digest for integrity verification.
     """
 
@@ -117,6 +113,17 @@ class Module(BaseModel):
             raise ValueError("module entry must set either `url` or `path`")
         if self.url and self.path:
             raise ValueError("module entry sets both `url` and `path` — pick one")
+        # Defence-in-depth: refuse non-http(s) module URLs at validation
+        # time. Without this, a malicious beetroot.yaml with
+        # ``url: file:///etc/passwd`` would silently exfiltrate that
+        # file into the module cache and stage it as a module zip.
+        # ``modules_dl._fetch_url`` re-checks the same prefix at the
+        # call site so a third-party script can't bypass it either.
+        if self.url and not self.url.startswith(("http://", "https://")):
+            raise ValueError(
+                f"module url {self.url!r} uses an unsupported scheme; "
+                "only http:// and https:// are allowed"
+            )
 
 
 class Stealth(BaseModel):
@@ -229,10 +236,10 @@ class Ports(BaseModel):
 
 class InstanceConfig(BaseModel):
     """
-    The schema of ``instances/<name>/beetroot.yaml``.
+    The schema of an instance directory's ``beetroot.yaml``.
 
-    ``name`` is omitted from the schema because it lives in the directory
-    name itself — single source of truth, can't drift.
+    Instance ``name`` is not part of the schema — it's the registry key
+    that maps a name to this directory's absolute path.
 
     Each Beetroot release supports exactly one ``api_version``; mismatched
     values fail loud with a pointer to the migration story in
@@ -244,7 +251,8 @@ class InstanceConfig(BaseModel):
         android: Android version and GApps flavour.
         display: Virtual screen geometry and frame rate.
         resources: Docker resource caps.
-        frida: Frida-server version pin; ``None`` disables frida entirely.
+        frida: Frida-server version pin; ``None`` (the default) disables
+            frida entirely. Declare an explicit ``frida:`` block to opt in.
         modules: Magisk modules to flash at boot.
         stealth: Denylist / root-hiding settings.
         ports: Optional per-instance port overrides. Absent fields fall
@@ -255,7 +263,7 @@ class InstanceConfig(BaseModel):
     android: Android = Field(default_factory=Android)
     display: Display = Field(default_factory=Display)
     resources: Resources = Field(default_factory=Resources)
-    frida: Frida | None = Field(default_factory=Frida)
+    frida: Frida | None = None
     modules: list[Module] = Field(default_factory=list)
     stealth: Stealth = Field(default_factory=Stealth)
     ports: Ports = Field(default_factory=Ports)
@@ -275,7 +283,12 @@ def load_yaml(path: Path) -> InstanceConfig:
     """
     Load and validate an InstanceConfig from a YAML file.
 
-    An empty file is treated as an all-defaults config.
+    An empty file is treated as an all-defaults config. A v0.2 YAML
+    that pinned ``api_version: 1`` is auto-bumped to the current
+    :data:`SUPPORTED_API_VERSION` with a one-line stderr warning,
+    because v0.2 → v2 is strictly additive (no fields renamed). The
+    bump is persisted organically on the next ``beetroot apply``
+    (which calls :func:`write_yaml`).
 
     Args:
         path: Absolute path to the YAML file.
@@ -286,44 +299,21 @@ def load_yaml(path: Path) -> InstanceConfig:
     raw = yaml.safe_load(path.read_text())
     if raw is None:
         raw = {}
+    if isinstance(raw, dict) and raw.get("api_version") == 1:
+        # Dedup the warning by absolute path. ``beetroot ls`` over N
+        # v0.2 instances would otherwise print N copies of the line,
+        # and a single ``register bravo`` triple-prints because
+        # ``all_resolved_ports`` cascades into the same load twice.
+        resolved = path.resolve()
+        if resolved not in _API_VERSION_BUMP_WARNED:
+            print(
+                f"[beetroot] auto-upgraded api_version 1 → {SUPPORTED_API_VERSION} "
+                f"in {path}; run 'beetroot apply' to rewrite the YAML.",
+                file=sys.stderr,
+            )
+            _API_VERSION_BUMP_WARNED.add(resolved)
+        raw["api_version"] = SUPPORTED_API_VERSION
     return InstanceConfig.model_validate(raw)
-
-
-def load_instance(name: str) -> InstanceConfig:
-    """
-    Load the config for a named instance from its beetroot.yaml.
-
-    Args:
-        name: Instance name (directory under ``instances/``).
-
-    Returns:
-        The validated InstanceConfig for that instance.
-    """
-    return load_yaml(paths.instance_yaml(name))
-
-
-def load_preset(preset_name: str) -> InstanceConfig:
-    """
-    Load a named preset from the ``presets/`` directory.
-
-    Args:
-        preset_name: Basename of the preset file without the ``.yaml``
-            extension (e.g. ``default``).
-
-    Returns:
-        The validated InstanceConfig for the preset.
-
-    Raises:
-        FileNotFoundError: If no matching ``.yaml`` file exists in
-            ``presets/``.
-    """
-    p = paths.presets_dir() / f"{preset_name}.yaml"
-    if not p.exists():
-        raise FileNotFoundError(
-            f"preset {preset_name!r} not found at {p} — "
-            f"available: {sorted(p.stem for p in paths.presets_dir().glob('*.yaml'))}"
-        )
-    return load_yaml(p)
 
 
 def write_yaml(path: Path, cfg: InstanceConfig) -> None:
@@ -367,6 +357,15 @@ def render_env(name: str, cfg: InstanceConfig, ports: dict[str, int]) -> str:
         f"DISPLAY_HEIGHT={cfg.display.height}",
         f"DISPLAY_FPS={cfg.display.fps}",
         f"DISPLAY_GPU={cfg.display.gpu_mode}",
+        # v0.4 stealth-posture overrides — emitted empty by default
+        # so the bundled compose template's ${VAR:-} fallback is
+        # the source of truth. v0.4 sets these from the manifest
+        # path_layout. Keeping them in render_env keeps the
+        # compose-template / render_env contract symmetric (see
+        # tests/test_compose_template_envs.py).
+        "BEETROOT_MAGISK_DB=",
+        "BEETROOT_MODULES_DIR=",
+        "BEETROOT_FRIDA_BIN=",
     ]
     if cfg.resources.mem_reservation is not None:
         lines.append(f"MEM_RESERVATION={cfg.resources.mem_reservation}")
