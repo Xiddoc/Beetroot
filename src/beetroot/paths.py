@@ -76,7 +76,7 @@ def instance_data(root: Path) -> Path:
 
 
 def instance_modules(root: Path) -> Path:
-    """Return ``<root>/modules/`` — bind-mounted read-only to ``/flash_dir``."""
+    """Return ``<root>/modules/`` — bind-mounted read-only to ``/data/adb/modules_update``."""
     return root / "modules"
 
 
