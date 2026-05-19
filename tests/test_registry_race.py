@@ -45,7 +45,9 @@ def _spawn_worker(
         # Stub frida_download.download so the worker doesn't hit the network.
         from beetroot import frida_download
 
-        def _fake_download(version: str) -> Path:
+        def _fake_download(
+            version: str, *, expected_sha256: str | None = None,
+        ) -> Path:
             out = frida_download.cached_binary(version)
             out.parent.mkdir(parents=True, exist_ok=True)
             if not out.exists():

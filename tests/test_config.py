@@ -149,6 +149,51 @@ class TestFridaOptional:
         assert "FRIDA_PORT2=" in result
 
 
+class TestFridaVersionRegex:
+    """T2 Agent 1: ``Frida.version`` is gated by a major.minor.patch regex."""
+
+    def test_valid_version_accepted(self) -> None:
+        assert Frida(version="16.4.10").version == "16.4.10"
+        assert Frida(version="100.0.0").version == "100.0.0"
+        assert Frida(version="1.0.0").version == "1.0.0"
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "16.4",           # missing patch
+            "16.4.10-rc1",    # pre-release suffix
+            "16.4.10.dev",    # extra component
+            "v16.4.10",       # leading v
+            "16.4.10 ",       # trailing whitespace
+            "",               # empty
+            "abc",            # non-numeric
+        ],
+    )
+    def test_invalid_version_rejected(self, bad: str) -> None:
+        with pytest.raises(ValidationError, match=r"major\.minor\.patch"):
+            Frida(version=bad)
+
+
+class TestFridaSha256:
+    """T2 Agent 1: optional ``Frida.sha256`` is round-tripped via YAML."""
+
+    def test_default_sha256_is_none(self) -> None:
+        assert Frida().sha256 is None
+
+    def test_explicit_sha256_preserved(self) -> None:
+        digest = "a" * 64
+        assert Frida(sha256=digest).sha256 == digest
+
+    def test_yaml_roundtrip_with_sha256(self, tmp_path: Path) -> None:
+        p = tmp_path / "cfg.yaml"
+        digest = "b" * 64
+        p.write_text(
+            yaml.safe_dump({"frida": {"version": "16.4.10", "sha256": digest}})
+        )
+        cfg = load_yaml(p)
+        assert cfg.frida is not None
+        assert cfg.frida.sha256 == digest
+
 
 class TestAndroidGapps:
     def test_default_gapps_is_lite(self) -> None:

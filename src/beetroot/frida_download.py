@@ -55,24 +55,32 @@ def cached_binary(version: str) -> Path:
     return frida_cache_dir() / f"frida-server-{version}-{settings.frida_arch}"
 
 
-def download(version: str) -> Path:
+def download(version: str, *, expected_sha256: str | None = None) -> Path:
     """
     Fetch and decompress frida-server into the host cache. Idempotent.
 
     If the binary already exists in the cache with non-zero size, the
-    download is skipped.
+    download is skipped. If ``expected_sha256`` is set, the cached
+    (or freshly-downloaded) binary's digest is compared against it
+    and a ``ValueError`` is raised on mismatch — guards against a
+    hostile mirror substituting the upstream release.
 
     Args:
         version: The frida release tag to download.
+        expected_sha256: Optional hex digest of the decompressed
+            frida-server binary. Comparison is case-insensitive.
 
     Returns:
         Path to the cached (decompressed, executable) binary.
 
     Raises:
         RuntimeError: On HTTP errors, network timeouts, or URL errors.
+        ValueError: If ``expected_sha256`` is set and doesn't match
+            the binary's actual digest.
     """
     out = cached_binary(version)
     if out.exists() and out.stat().st_size > 0:
+        _check_sha256(out, expected_sha256)
         return out
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -94,10 +102,28 @@ def download(version: str) -> Path:
     tmp.write_bytes(decompressed)
     tmp.chmod(0o755)
     tmp.replace(out)
+    _check_sha256(out, expected_sha256)
     return out
 
 
-def stage_for_instance(instance_root: Path, version: str) -> Path:
+def _check_sha256(path: Path, expected: str | None) -> None:
+    """Raise ``ValueError`` if ``expected`` is set and doesn't match ``path``."""
+    if expected is None:
+        return
+    actual = sha256_of(path)
+    if actual.lower() != expected.lower():
+        raise ValueError(
+            f"sha256 mismatch for frida-server at {path}: "
+            f"expected {expected.lower()}, got {actual.lower()}"
+        )
+
+
+def stage_for_instance(
+    instance_root: Path,
+    version: str,
+    *,
+    expected_sha256: str | None = None,
+) -> Path:
     """
     Copy the cached frida-server binary into the instance's directory.
 
@@ -106,11 +132,14 @@ def stage_for_instance(instance_root: Path, version: str) -> Path:
             ``beetroot.yaml``). The binary is written to
             ``<instance_root>/frida-server``.
         version: Frida release tag.
+        expected_sha256: Optional hex digest forwarded to
+            :func:`download` for integrity verification. Comparison
+            is case-insensitive.
 
     Returns:
         Path to the staged binary inside the instance directory.
     """
-    src = download(version)
+    src = download(version, expected_sha256=expected_sha256)
     dst = paths.instance_frida(instance_root)
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src, dst)

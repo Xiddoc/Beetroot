@@ -184,3 +184,73 @@ class TestStageForInstance:
         assert paths.instance_frida(alpha) != paths.instance_frida(bravo)
         assert paths.instance_frida(alpha).exists()
         assert paths.instance_frida(bravo).exists()
+
+
+class TestDownloadSha256:
+    """T2 Agent 1: optional sha256 verification on the cached binary."""
+
+    def test_matching_sha256_succeeds(
+        self, isolated_registry: Path
+    ) -> None:
+        expected = hashlib.sha256(FAKE_BINARY).hexdigest()
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            result = frida_download.download(
+                VERSION, expected_sha256=expected,
+            )
+        assert result.exists()
+
+    def test_mismatching_sha256_raises(
+        self, isolated_registry: Path
+    ) -> None:
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            with pytest.raises(ValueError, match="sha256 mismatch"):
+                frida_download.download(
+                    VERSION, expected_sha256="0" * 64,
+                )
+
+    def test_sha256_case_insensitive(
+        self, isolated_registry: Path
+    ) -> None:
+        expected = hashlib.sha256(FAKE_BINARY).hexdigest().upper()
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            result = frida_download.download(
+                VERSION, expected_sha256=expected,
+            )
+        assert result.exists()
+
+    def test_none_sha256_skips_check(
+        self, isolated_registry: Path
+    ) -> None:
+        # The default ``expected_sha256=None`` must NOT do any
+        # digest comparison — preserves the v0.3 no-sha behaviour.
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            result = frida_download.download(VERSION)
+        assert result.exists()
+
+    def test_cached_binary_sha256_verified_too(
+        self, isolated_registry: Path
+    ) -> None:
+        # Prime the cache with a non-matching binary, then call
+        # download() with an expected_sha256 — verification must
+        # fire on the cached file, NOT skip-because-cached.
+        cache = frida_download.cached_binary(VERSION)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(b"some other content")
+        with pytest.raises(ValueError, match="sha256 mismatch"):
+            frida_download.download(
+                VERSION,
+                expected_sha256=hashlib.sha256(FAKE_BINARY).hexdigest(),
+            )
+
+    def test_stage_for_instance_forwards_sha256(
+        self, instance_root: Path
+    ) -> None:
+        # T2 Agent 1: ``stage_for_instance`` must forward the digest
+        # to ``download`` so a Frida(version=..., sha256=...) block
+        # in beetroot.yaml fires the verification at apply time.
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            with pytest.raises(ValueError, match="sha256 mismatch"):
+                frida_download.stage_for_instance(
+                    instance_root, VERSION,
+                    expected_sha256="b" * 64,
+                )

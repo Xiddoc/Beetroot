@@ -81,12 +81,25 @@ def cli_root(
 
     from beetroot import frida_download
 
-    def _fake_download(version: str) -> Path:
+    def _fake_download(
+        version: str, *, expected_sha256: str | None = None,
+    ) -> Path:
         out = frida_download.cached_binary(version)
         out.parent.mkdir(parents=True, exist_ok=True)
         if not out.exists():
             out.write_bytes(b"fake-frida")
             out.chmod(0o755)
+        # Honour the digest contract — tests that pass an
+        # ``expected_sha256`` mismatched against ``b"fake-frida"``
+        # must see the same ValueError they would in production.
+        if expected_sha256 is not None:
+            import hashlib
+            actual = hashlib.sha256(out.read_bytes()).hexdigest()
+            if actual.lower() != expected_sha256.lower():
+                raise ValueError(
+                    f"sha256 mismatch for frida-server at {out}: "
+                    f"expected {expected_sha256.lower()}, got {actual.lower()}"
+                )
         return out
 
     monkeypatch.setattr(frida_download, "download", _fake_download)

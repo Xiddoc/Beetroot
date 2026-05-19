@@ -142,6 +142,15 @@
   (parallel snapshots are fine) and `Instance.destroy()` takes
   `LOCK_EX` (blocks every reader and waits for in-flight readers
   to release). (Agent 2 B-12.)
+- **`Frida.version` regex validator + optional `sha256`.**
+  `Frida.version` now matches `^[0-9]+\.[0-9]+\.[0-9]+$` so typos
+  surface at config-load time instead of as a 404 from
+  `github.com/frida/frida/releases` at `frida_download.download`
+  time. A new optional `Frida.sha256` field is forwarded to
+  `download(..., expected_sha256=...)`; if set, the cached binary's
+  digest is verified case-insensitively and a mismatch raises
+  `ValueError` (defends against a hostile mirror substituting the
+  release). (Agent 1.)
 
 ## v0.3.0 — 2026-05-19
 

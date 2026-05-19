@@ -797,7 +797,11 @@ class Instance:
         rollback. (T2 Agent 2 B-2.)
         """
         if self._cfg.frida is not None:
-            frida_download.stage_for_instance(self._root, self._cfg.frida.version)
+            frida_download.stage_for_instance(
+                self._root,
+                self._cfg.frida.version,
+                expected_sha256=self._cfg.frida.sha256,
+            )
         modules_download.stage_for_instance(self._root, self._cfg)
 
 

@@ -38,6 +38,12 @@ _MAX_PORT: Final = 65535
 # the denylist through ``magisk-config.sh``'s sqlite REPLACE INTO.
 _DENYLIST_PKG_RE: Final = re.compile(r"^[a-zA-Z0-9._]+$")
 
+# Frida release tags follow the major.minor.patch shape upstream.
+# Pre-validated so a typo in ``frida.version`` (e.g. ``"16.4"`` or
+# ``"16.4.10-rc1"``) surfaces at config-load time rather than as a
+# 404 from the cdn at download time. (T2 Agent 1.)
+_FRIDA_VERSION_RE: Final = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+
 # Module-level set of YAML paths we've already printed the "auto-bumped
 # api_version 1 → 2" warning for in this process. Without the dedup,
 # ``beetroot ls`` over 5 v0.2 instances prints 5+ warning lines; a
@@ -100,9 +106,33 @@ class Frida(BaseModel):
 
     Attributes:
         version: The frida release tag to download (e.g. ``16.4.10``).
+            Must match ``major.minor.patch`` (the upstream Frida tag
+            grammar); typos like ``"16.4"`` or ``"16.4.10-rc1"`` raise
+            a ValidationError at load time rather than 404-ing on the
+            CDN at ``frida_download.download`` time.
+        sha256: Optional expected hex digest of the decompressed
+            frida-server binary. ``frida_download.download`` verifies
+            the digest against the cached binary when set and raises
+            ``ValueError`` on mismatch (defends against a hostile
+            mirror replacing the upstream release). Lowercase or
+            mixed-case hex are both accepted; comparison is
+            case-insensitive.
     """
 
     version: str = "16.4.10"
+    sha256: str | None = None
+
+    @field_validator("version")
+    @classmethod
+    def _check_version_shape(cls, v: str) -> str:
+        if not _FRIDA_VERSION_RE.match(v):
+            raise ValueError(
+                f"frida.version {v!r} is not a major.minor.patch tag "
+                "(e.g. '16.4.10'). Frida releases at "
+                "https://github.com/frida/frida/releases follow this "
+                "shape; typos surface 404s at download time otherwise."
+            )
+        return v
 
 
 class Module(BaseModel):

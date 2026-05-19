@@ -60,7 +60,9 @@ def test_v02_to_v03_walkthrough(
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
 
     # Stub frida-server download so we don't hit the network.
-    def _fake_download(version: str) -> Path:
+    def _fake_download(
+        version: str, *, expected_sha256: str | None = None,
+    ) -> Path:
         out = frida_download.cached_binary(version)
         out.parent.mkdir(parents=True, exist_ok=True)
         if not out.exists():
