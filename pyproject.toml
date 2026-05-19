@@ -50,6 +50,13 @@ dev = [
     "pytest>=8",
     "pytest-cov",
     "pre-commit>=3.5",
+    "pyright>=1.1",
+    "hypothesis>=6.100",
+    "interrogate>=1.7",
+    "radon>=6.0",
+    "vulture>=2.10",
+    "pip-audit>=2.7",
+    "mutmut>=2.4",
 ]
 docs = [
     "mkdocs-material>=9.5",
@@ -181,3 +188,89 @@ exclude_also = [
     "if TYPE_CHECKING:",
     "@overload",
 ]
+
+[tool.interrogate]
+# Docstring coverage gate. The ``D`` ruff family already enforces
+# Google-style docstrings on public APIs at lint time; ``interrogate``
+# is the percentage gate that asserts we don't slowly drift below the
+# threshold. Private functions (leading ``_``) are excluded per ruff's
+# convention (D100/D103 don't fire on them either). Tests are
+# excluded because the per-file ignore in [tool.ruff.lint] drops the
+# ``D`` family there too.
+fail-under = 95
+ignore-init-module = true
+ignore-init-method = true
+ignore-private = true
+ignore-property-decorators = true
+ignore-magic = true
+ignore-semiprivate = true
+exclude = ["tests", "scripts"]
+verbose = 0
+quiet = false
+color = true
+
+[tool.vulture]
+# Vulture finds dead code but is famously prone to false positives
+# around pydantic ``default_factory`` fields and the
+# ``register_backend`` entry-point registry. ``--min-confidence 80``
+# already filters the worst of it; the inline allowlist below covers
+# the remaining cases. Run via ``uv run vulture src/beetroot/
+# --min-confidence 80``.
+paths = ["src/beetroot"]
+min_confidence = 80
+ignore_names = [
+    # pydantic model_post_init contract — _ctx arg is required even when unused.
+    "_ctx",
+    # pydantic field validators are method-decorator-targeted (renames break the framework).
+    "_*_factory",
+    "_reject_*",
+    "_check_*",
+    "model_config",
+    # backends are registered lazily; vulture can't see the entry-point path.
+    "register_backend",
+    "_register_builtin_backends",
+    "_load_entry_point_backends",
+]
+
+[tool.pyright]
+# Pyright's role here is "second opinion to mypy's strict pass": catch
+# anything mypy missed at standard-strictness without re-litigating
+# the per-rule choices mypy already enforces. Tests deliberately reach
+# into ``_private`` SUT members (registry._read, etc.) — pyright's
+# default ``reportPrivateUsage`` complaints there aren't actionable
+# and are already gated by ruff's ``SLF001`` (tests/* exempt). The
+# remaining reports stay at pyright's "strict" defaults.
+include = ["src", "tests"]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = "warning"
+reportUnusedCallResult = "none"
+reportPrivateUsage = "none"
+# Pydantic-mypy gives mypy ``init_typed`` visibility into BaseModel
+# constructors; pyright doesn't have a matching plugin, so it warns
+# on field-default-factory shapes that mypy clears. Down-rate to
+# avoid duplicating mypy's coverage.
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownVariableType = "none"
+reportUnknownLambdaType = "none"
+reportUnknownParameterType = "none"
+reportMissingParameterType = "none"
+reportUntypedFunctionDecorator = "none"
+reportArgumentType = "warning"
+reportGeneralTypeIssues = "warning"
+# UPPER_CASE module-level state (``_ENTRY_POINTS_LOADED``,
+# ``_LEGACY_HINT_PRINTED``, ``_V02_HINT_PRINTED``) is intentionally
+# reassigned in helper functions via ``global`` — pyright's
+# ``reportConstantRedefinition`` heuristic doesn't accommodate that
+# pattern.
+reportConstantRedefinition = "none"
+# pytest fixtures that start with ``_`` and the legacy holdover
+# ``api._allocate_port_index`` are accessed indirectly (fixtures
+# via pytest's collector; the private holdover via its public
+# wrappers + the deprecation hint in T1). Pyright can't see those
+# paths.
+reportUnusedFunction = "none"
+# ``@contextlib.contextmanager`` → ``-> Iterator[T]`` is the stdlib
+# pattern; pyright now wants ``Generator[T]``. Both work at runtime.
+reportDeprecated = "none"
