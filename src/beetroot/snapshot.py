@@ -10,10 +10,13 @@ base image plus the persisted ``/data`` bind mount, so re-running
 ``beetroot up`` after a restore produces an equivalent container.
 
 The archive carries a ``.beetroot-snapshot.json`` manifest at its root.
-The manifest's ``path_layout`` field is reserved for the v0.4
-stealth-posture work: it will record the source instance's randomized
-container-path mapping so the restored instance can replay it. v0.3
-always writes ``{}``; restore preserves whatever the manifest carries.
+The manifest's ``path_layout`` field carries the source instance's
+``RedroidBackendConfig.stealth_paths`` blob (T4) so a randomized
+v0.5 layout round-trips through ``snapshot → restore`` into the new
+instance's registry entry. v0.4 itself defaults the slot to the empty
+dict, so v0.4 → v0.4 round-trips preserve ``{}``; v0.5's PR1 will
+populate the slot in ``Instance.create``'s generator and the same
+round-trip will preserve those randomized paths.
 
 The ``.env`` file is deliberately excluded — it's regenerated from
 ``beetroot.yaml`` on the next ``beetroot apply``.
@@ -73,8 +76,11 @@ class Manifest(BaseModel):
         kind: Backend kind discriminator. v0.4 snapshots are
             redroid-only.
         path_layout: Stealth-posture path mapping carried alongside the
-            instance. Empty in v0.4 (T1 plumbing only); T4 round-trips
-            it through snapshot and restore.
+            instance. Populated from the source's
+            ``RedroidBackendConfig.stealth_paths`` at snapshot time
+            (T4) and replayed into the destination's slot on restore.
+            Default ``{}`` in v0.4; v0.5's ``Instance.create`` generator
+            will populate the slot per-instance.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -95,13 +101,18 @@ def _ensure_suffix(dest: Path) -> Path:
     return dest.with_name(dest.name + _ARCHIVE_SUFFIX)
 
 
-def _build_manifest(name: str, source_index: int) -> Manifest:
-    """Build a fresh manifest with an empty ``path_layout``."""
+def _build_manifest(
+    name: str,
+    source_index: int,
+    path_layout: dict[str, str],
+) -> Manifest:
+    """Build a fresh manifest carrying the source's ``stealth_paths`` blob (T4)."""
     return Manifest(
         name=name,
         source_index=source_index,
         created_at=datetime.now(UTC).isoformat(),
         beetroot_version=importlib.metadata.version("beetroot"),
+        path_layout=path_layout,
     )
 
 
@@ -149,11 +160,19 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
         raise SnapshotError(
             f"no beetroot.yaml at {yaml_path}; not a Beetroot instance directory"
         )
-    name, meta = _find_registry_entry(instance_root)
+    name, meta, backend = _find_registry_entry(instance_root)
     final_dest = _ensure_suffix(dest)
     final_dest.parent.mkdir(parents=True, exist_ok=True)
 
-    manifest = _build_manifest(name=name, source_index=meta.index)
+    # Take a copy of the dict so the manifest model holds an
+    # independent snapshot of the source's path layout — a later
+    # mutation of the registry entry must not retroactively change
+    # an already-written manifest.
+    manifest = _build_manifest(
+        name=name,
+        source_index=meta.index,
+        path_layout=dict(backend.stealth_paths),
+    )
 
     # Local import — api imports snapshot at module load, so a
     # top-level ``from .api import instance_lock`` would loop.
@@ -173,14 +192,25 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
 
 def _find_registry_entry(
     instance_root: Path,
-) -> tuple[str, registry.InstanceMeta]:
-    """Look up the registry entry whose redroid ``absolute_path`` matches ``instance_root``."""
+) -> tuple[str, registry.InstanceMeta, registry.RedroidBackendConfig]:
+    """
+    Look up the registry entry matching ``instance_root``.
+
+    Returns the matched name, the full meta row, AND the narrowed
+    :class:`registry.RedroidBackendConfig` — callers need the backend
+    type-narrowed so they can reach ``backend.stealth_paths`` without
+    re-asserting the kind (S101 forbids ``assert isinstance(...)``
+    bridges in src). Adb-backed entries are skipped because snapshots
+    are redroid-only (the ``kind: Literal["redroid"]`` discriminator
+    on :class:`Manifest`).
+    """
     target = instance_root.resolve()
     for name, meta in registry.list_instances().items():
-        if not isinstance(meta.backend, registry.RedroidBackendConfig):
+        backend = meta.backend
+        if not isinstance(backend, registry.RedroidBackendConfig):
             continue
-        if Path(meta.backend.absolute_path).resolve() == target:
-            return name, meta
+        if Path(backend.absolute_path).resolve() == target:
+            return name, meta, backend
     raise SnapshotError(
         f"instance at {instance_root} is not registered; "
         "run `beetroot register <path>` first"
@@ -336,9 +366,13 @@ def restore(
     :func:`ports.lowest_free_index` — the source's index is NOT reused,
     so an instance can be restored alongside its source.
 
-    The manifest's ``path_layout`` is preserved as-is: v0.3 writes ``{}``
-    and the restore path doesn't act on it, but v0.4's stealth-posture
-    work will replay a populated layout into the new instance's env vars.
+    The manifest's ``path_layout`` is replayed into the new instance's
+    :class:`registry.RedroidBackendConfig.stealth_paths` slot via
+    :func:`registry.set_stealth_paths`. A v0.4 snapshot ships
+    ``{}``, so the assignment is a no-op for today's snapshots — but
+    a v0.5 snapshot carrying randomized paths round-trips into a
+    matching slot on the new instance, ready for ``render_env`` to
+    consume on the next ``apply``.
 
     Args:
         archive: Path to a ``.tar.zst`` snapshot archive.
@@ -367,7 +401,7 @@ def restore(
     # with ``--force`` wiped the user's existing directory and THEN
     # discovered the archive was unreadable, leaving no way back.
     # (T2 Agent 3 1.4.)
-    read_manifest(archive)
+    manifest = read_manifest(archive)
     _prepare_destination(target, force=force)
     # ``created_dir`` is True iff Beetroot now owns the directory; the
     # rollback path uses it to decide whether to ``rmtree``.
@@ -380,6 +414,15 @@ def restore(
     # ``from . import api`` would loop.
     from . import api  # noqa: PLC0415
     try:
+        # T4: replay the snapshot's path_layout into the new registry
+        # entry's stealth_paths slot. v0.4 manifests carry ``{}`` so
+        # this is a structural no-op today; a v0.5 snapshot carrying
+        # randomized paths round-trips into a matching slot on the new
+        # instance. Done INSIDE the rollback try/except so a malformed
+        # blob (e.g. an unrecognised key in a future schema bump)
+        # still tears down the half-registered row cleanly.
+        if manifest.path_layout:
+            registry.set_stealth_paths(dest_name, manifest.path_layout)
         _check_restored_port_collision(dest_name, index, target)
         # Stage .env + frida placeholder + dirs now so `beetroot up
         # <name>` works without a follow-up `beetroot apply`. Mirrors

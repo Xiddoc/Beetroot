@@ -393,6 +393,46 @@ def remove(name: str) -> None:
         _write(path, data)
 
 
+def set_stealth_paths(name: str, stealth_paths: dict[str, str]) -> None:
+    """
+    Replace the stealth-path blob on an existing redroid instance row.
+
+    Used by :func:`snapshot.restore` (T4) to replay a v0.5-shaped
+    ``path_layout`` from the snapshot manifest into the freshly-allocated
+    registry entry. Keeping the mutation on its own helper (rather
+    than threading the blob through ``add_allocating``) keeps the hot
+    create-path's signature stable and avoids coupling T4's
+    snapshot/restore plumbing to T5's ``AdbBackendConfig`` work.
+
+    Args:
+        name: Instance name to update.
+        stealth_paths: New stealth-path mapping. A copy is taken so the
+            caller can mutate the dict afterwards without retroactively
+            changing the registry row.
+
+    Raises:
+        RegistryError: If ``name`` is not registered, or if the
+            registered backend is not directory-backed (the
+            ``stealth_paths`` slot lives on
+            :class:`RedroidBackendConfig` only — adb-backed devices
+            don't have container paths to randomize).
+    """
+    path = paths.user_registry_file()
+    with _locked(path):
+        data = _read(path)
+        meta = data.instances.get(name)
+        if meta is None:
+            raise RegistryError(f"unknown instance {name!r}; not in registry")
+        backend = meta.backend
+        if not isinstance(backend, RedroidBackendConfig):
+            raise RegistryError(
+                f"instance {name!r} is a {backend.kind!r} backend; "
+                "stealth_paths is a redroid-only slot"
+            )
+        backend.stealth_paths = dict(stealth_paths)
+        _write(path, data)
+
+
 def instance_path(name: str) -> Path:
     """
     Return the absolute path to an instance's directory, from the registry.

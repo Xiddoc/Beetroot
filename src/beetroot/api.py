@@ -792,12 +792,28 @@ class Instance:
         network), so if any step raises the constructor's
         ``_rollback_partial_create`` can ``rmtree`` the dir without
         risking a half-consumed downloaded artefact. (T2 Agent 2 B-2.)
+
+        T4: the ``.env`` render forwards the per-instance
+        ``RedroidBackendConfig.stealth_paths`` blob into ``render_env``
+        so a v0.5 snapshot restored against a v0.4 host (where
+        :func:`snapshot.restore` already wrote the manifest's
+        ``path_layout`` into the registry slot) emits the right
+        ``BEETROOT_*`` overrides on the very first ``apply``.
         """
-        new_ports = ports.resolve_ports(self.index, self._cfg.ports)
+        meta = self._meta()
+        backend = meta.backend
+        stealth_paths = (
+            backend.stealth_paths
+            if isinstance(backend, registry.RedroidBackendConfig)
+            else None
+        )
+        new_ports = ports.resolve_ports(meta.index, self._cfg.ports)
         paths.instance_data(self._root).mkdir(parents=True, exist_ok=True)
         paths.instance_modules(self._root).mkdir(parents=True, exist_ok=True)
         paths.instance_env(self._root).write_text(
-            config.render_env(self._name, self._cfg, new_ports)
+            config.render_env(
+                self._name, self._cfg, new_ports, stealth_paths=stealth_paths,
+            )
         )
         # Always place the placeholder, even when frida is configured.
         # ``_stage_network`` overwrites it with the real binary on

@@ -4,7 +4,9 @@ Beetroot supports flashing Magisk modules into instances declaratively — decla
 
 ## How module flashing works
 
-At boot, `entrypoint.sh` (running inside the Android container under the `u:r:magisk:s0` SELinux context) iterates every `.zip` in `/flash_dir` and calls `magisk --install-module <zip>` for each one. The `/flash_dir` directory is a bind-mount of the instance directory's `modules/` subdirectory on the host.
+At boot, `entrypoint.sh` (running inside the Android container under the `u:r:magisk:s0` SELinux context) iterates every `.zip` in `/data/adb/modules_update/` and calls `magisk --install-module <zip>` for each one. That container path is a read-only bind-mount of the instance directory's `modules/` subdirectory on the host — Magisk's well-known staging directory, so the modules are visible to the daemon the way a manually-side-loaded one would be.
+
+(v0.3 used the Beetroot-invented `/flash_dir` mount target; v0.4 T4 moved the default to `/data/adb/modules_update` to drop the indicator from `/proc/mounts`. The `BEETROOT_MODULES_DIR` env var overrides the path if you need a different one.)
 
 Beetroot's CLI mirrors the `modules:` list from `beetroot.yaml` into the instance directory's `modules/` when you run `beetroot create` or `beetroot apply`. URL-sourced modules are downloaded and verified; path-sourced modules are copied from the local filesystem.
 
@@ -92,7 +94,7 @@ beetroot down alpha && beetroot up alpha
 
 ## Modules only flash once per boot
 
-`entrypoint.sh` only iterates `/flash_dir` **once**, at boot time. If you add a module after a boot, you must restart:
+`entrypoint.sh` only iterates the modules-staging directory **once**, at boot time. If you add a module after a boot, you must restart:
 
 ```bash
 beetroot down alpha && beetroot up alpha

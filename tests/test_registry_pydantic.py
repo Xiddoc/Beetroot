@@ -294,10 +294,14 @@ class TestAdbRowsSkippedByConsumers:
 
         redroid_root = _write_mixed_registry(tmp_path)
         # ``snapshot`` operates on the redroid row; the adb-kind row
-        # must be skipped silently rather than raising.
-        name, meta = snapshot._find_registry_entry(redroid_root)
+        # must be skipped silently rather than raising. T4 widened the
+        # return tuple to ``(name, meta, backend)`` — the third element
+        # is the narrowed ``RedroidBackendConfig`` so callers can reach
+        # ``stealth_paths`` without re-isinstance-ing.
+        name, meta, backend = snapshot._find_registry_entry(redroid_root)
         assert name == "alpha"
         assert isinstance(meta.backend, RedroidBackendConfig)
+        assert isinstance(backend, RedroidBackendConfig)
 
     def test_manager_list_orphans_skips_adb(
         self, isolated_registry: Path, tmp_path: Path
