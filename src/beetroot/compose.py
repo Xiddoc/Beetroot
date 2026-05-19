@@ -113,7 +113,7 @@ def run(
     # ``CompletedProcess[str]`` at the call boundary; the two suppressions
     # are the cost of expressing "callers pass whatever subprocess.run
     # accepts" under ``disallow_any_explicit``.
-    result: subprocess.CompletedProcess[str] = subprocess.run(  # type: ignore[call-overload]  # **kwargs is object-typed for strictness
+    result: subprocess.CompletedProcess[str] = subprocess.run(  # type: ignore[call-overload] # noqa: S603  # docker is resolved via PATH; argv from _base_cmd
         cmd, cwd=instance_root, check=False, **kwargs,
     )
     return result

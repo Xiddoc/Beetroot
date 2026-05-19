@@ -42,7 +42,8 @@ _DEFAULT_REDROID_URL: Final[str] = "https://github.com/ayasa520/redroid-script.g
 
 
 def _default_work_dir() -> Path:
-    """Return the default redroid-script clone directory under the user cache.
+    """
+    Return the default redroid-script clone directory under the user cache.
 
     Computed lazily so tests can monkeypatch ``platformdirs`` before the
     first call. v0.3 used ``/tmp/redroid``; v0.4 moves it under the
@@ -124,7 +125,7 @@ class DefaultRunner:
         """
         merged_env = {**os.environ, **env} if env is not None else None
         try:
-            subprocess.run(list(cmd), cwd=cwd, check=check, env=merged_env)
+            subprocess.run(list(cmd), cwd=cwd, check=check, env=merged_env)  # noqa: S603  # argv passed through from build_image; resolved via PATH
         except subprocess.CalledProcessError as exc:
             raise BootstrapError(
                 f"command failed (exit {exc.returncode}): {' '.join(cmd)}"

@@ -21,8 +21,8 @@ def _source_and_post(helper_name: str, env: dict[str, str]) -> str:
     """Source ``HELPERS_DIR/helper_name`` from sh and echo POST after."""
     helper = HELPERS_DIR / helper_name
     assert helper.is_file(), f"{helper} missing"
-    res = subprocess.run(
-        ["sh", "-c", f". {helper}; echo POST"],
+    res = subprocess.run(  # noqa: S603  # ``helper`` is a known repo-local fixture path
+        ["sh", "-c", f". {helper}; echo POST"],  # noqa: S607  # sh resolved via PATH; test helper runs against a fixture
         check=False,
         capture_output=True,
         text=True,

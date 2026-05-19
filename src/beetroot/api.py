@@ -582,8 +582,8 @@ class Instance:
                 "adb not found on PATH (install android-tools)"
             )
         target = self.adb_address
-        subprocess.run(["adb", "connect", target], check=False)
-        res = subprocess.run(["adb", "-s", target, "shell"], check=False)
+        subprocess.run(["adb", "connect", target], check=False)  # noqa: S603, S607  # adb is a research CLI we deliberately resolve via PATH
+        res = subprocess.run(["adb", "-s", target, "shell"], check=False)  # noqa: S603, S607  # same as above
         return int(res.returncode)
 
     def install_frida(self, version: str) -> None:
@@ -626,7 +626,7 @@ class Instance:
                 "or `uv tool install frida-tools`."
             )
         cmd = ["frida", "-H", self.frida_address, *args]
-        res = subprocess.run(cmd, check=False)
+        res = subprocess.run(cmd, check=False)  # noqa: S603  # frida is a host CLI resolved via PATH; argv validated upstream
         return int(res.returncode)
 
     def logs(self, *, follow: bool = False) -> None:

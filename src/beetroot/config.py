@@ -341,7 +341,7 @@ def load_yaml(path: Path) -> InstanceConfig:
         resolved = path.resolve()
         old_version = raw["api_version"]
         if resolved not in _API_VERSION_BUMP_WARNED:
-            print(
+            print(  # noqa: T201  # stderr migration hint — typer.echo is unavailable from non-CLI callers
                 f"[beetroot] auto-upgraded api_version {old_version} → "
                 f"{SUPPORTED_API_VERSION} in {path}; run 'beetroot apply' "
                 f"to rewrite the YAML.",

@@ -1,4 +1,5 @@
-"""Lint fenced bash examples inside CHANGELOG.md's ``## Unreleased`` block.
+"""
+Lint fenced bash examples inside CHANGELOG.md's ``## Unreleased`` block.
 
 Why this exists
 ---------------
@@ -48,7 +49,8 @@ def _slurp(path: Path) -> list[str]:
 
 
 def _extract_unreleased_fences(lines: list[str]) -> list[tuple[int, str]]:
-    """Return ``(1-based line number, line text)`` pairs inside Unreleased shell fences.
+    """
+    Return ``(1-based line number, line text)`` pairs inside Unreleased shell fences.
 
     Only lines inside shell-flavoured fenced code blocks (no language
     specifier, or ``bash`` / ``sh`` / ``shell`` / ``console``) inside the
@@ -85,8 +87,8 @@ def _extract_unreleased_fences(lines: list[str]) -> list[tuple[int, str]]:
 
 def _registered_verbs() -> set[str]:
     """Parse ``beetroot --help`` and return the set of registered verb names."""
-    proc = subprocess.run(  # noqa: S603 — beetroot is a project-internal CLI
-        ["uv", "run", "beetroot", "--help"],
+    proc = subprocess.run(
+        ["uv", "run", "beetroot", "--help"],  # noqa: S607  # uv resolved via PATH; argv hard-coded; beetroot is a project-internal CLI
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -108,8 +110,8 @@ def _registered_verbs() -> set[str]:
 
 def _verb_long_flags(verb: str) -> set[str]:
     """Parse ``beetroot <verb> --help`` and return the set of long-flag names."""
-    proc = subprocess.run(  # noqa: S603 — beetroot is a project-internal CLI
-        ["uv", "run", "beetroot", verb, "--help"],
+    proc = subprocess.run(  # noqa: S603  # ``verb`` is a verb name parsed from beetroot's own --help; not user input
+        ["uv", "run", "beetroot", verb, "--help"],  # noqa: S607  # uv resolved via PATH; beetroot is a project-internal CLI
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -171,6 +173,7 @@ def _check_invocations(
 
 
 def main() -> int:
+    """Entry point: lint the CHANGELOG and exit 0 / 1 accordingly."""
     if not CHANGELOG.exists():
         print(f"error: {CHANGELOG} not found", file=sys.stderr)
         return 1

@@ -586,8 +586,8 @@ class TestDockerComposeConfig:
     """
 
     def _run_compose_config(self, instance_root: Path) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [
+        return subprocess.run(  # noqa: S603  # ``instance_root`` is a test-controlled tmp_path
+            [  # noqa: S607  # docker resolved via PATH; test helper invokes docker CLI on the host
                 "docker",
                 "compose",
                 "-p",

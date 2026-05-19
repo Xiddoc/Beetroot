@@ -17,7 +17,6 @@ from beetroot.builder import (
     GappsVariant,
     build_image,
 )
-from beetroot.settings import settings
 
 
 @dataclass

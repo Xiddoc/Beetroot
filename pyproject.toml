@@ -79,6 +79,7 @@ select = [
     "B",    # flake8-bugbear
     "SIM",  # flake8-simplify
     "RUF",  # ruff-specific
+    "RUF100", # unused-noqa (added in T3 — every noqa must be load-bearing)
     "D",    # pydocstyle
     "N",    # pep8-naming
     "C4",   # flake8-comprehensions
@@ -93,6 +94,16 @@ select = [
     "FURB", # refurb-like checks
     "ERA",  # eradicate (no commented-out code)
     "A",    # flake8-builtins
+    "ICN",  # flake8-import-conventions
+    "DTZ",  # flake8-datetimez (timezone-aware datetimes only)
+    "ASYNC", # flake8-async
+    "BLE",  # flake8-blind-except (no bare `except:` or `except Exception`)
+    "S",    # flake8-bandit (security checks)
+    "EXE",  # flake8-executable
+    "Q",    # flake8-quotes
+    "INP",  # flake8-no-pep420 (no implicit-namespace packages)
+    "T20",  # flake8-print (no `print` in src — use logging or typer.echo)
+    "SLF",  # flake8-self (no _-prefixed attribute access from outside)
 ]
 extend-select = ["D213"]  # summary on line after opening """
 ignore = [
@@ -111,10 +122,28 @@ convention = "google"
 # PLR2004 — magic numbers in assertions are fine; extracting them to constants
 #            makes tests harder to read.
 # PLC0415 — some tests do deliberate mid-function imports for monkeypatching.
-"tests/*" = ["SIM117", "E501", "D", "ARG001", "ARG002", "ARG005", "PLR2004", "PLC0415"]
-
-[tool.ruff.lint.pylint]
-max-statements = 60  # build_parser() wires 12+ subparsers — 50 is too tight
+# S101 — ``assert`` is the whole point of a test file.
+# S105/S106/S107 — hardcoded "passwords" in test fixtures are not secrets.
+# S311 — non-cryptographic ``random`` in test scaffolding.
+# T201/T203 — ``print``-based debugging in tests is fine.
+# SLF001 — tests reach into ``_private`` attrs of the SUT on purpose
+#           (e.g. ``_API_VERSION_BUMP_WARNED.clear()`` in conftest).
+# DTZ — test datetime fixtures occasionally use naive datetimes for
+#        simplicity; the production paths already require ``UTC``.
+# BLE001 — broad ``except Exception`` in test-only fakes is sometimes
+#          load-bearing (catch-all rollback assertions).
+"tests/*" = [
+    "SIM117", "E501", "D", "ARG001", "ARG002", "ARG005", "PLR2004", "PLC0415",
+    "S101", "S105", "S106", "S107", "S108", "S311",
+    "T201", "T203",
+    "SLF001",
+    "DTZ001", "DTZ005",
+    "BLE001",
+    "INP001",  # tests/ is collected by pytest, not imported as a package.
+]
+# Scripts print to stdout / stderr as their primary output channel.
+# INP001 — scripts/ is invoked directly, not as a package.
+"scripts/*" = ["T20", "INP001"]
 
 [tool.mypy]
 python_version = "3.13"

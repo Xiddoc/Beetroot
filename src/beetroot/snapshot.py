@@ -356,7 +356,7 @@ def restore(
         # because api imports snapshot at module load — top-level here
         # would loop.
         from . import api  # noqa: PLC0415
-        api.Instance.load(dest_name)._stage()
+        api.Instance.load(dest_name)._stage()  # noqa: SLF001  # snapshot ↔ api are siblings; _stage is the inter-module re-stage hook
     except BaseException:
         # Roll back BOTH the registry row AND the extracted directory
         # (if we created it). Without the rmtree, a failed restore
