@@ -130,6 +130,32 @@ class TestInstanceCreate:
         with pytest.raises(ValueError, match="5565"):
             api.Instance.create("bravo")
 
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "Alpha",              # uppercase
+            "alpha bravo",        # space
+            "alpha.bravo",        # dot
+            "alpha/bravo",        # slash
+            "alpha:bravo",        # colon
+            "",                   # empty
+            "alpha!",             # punctuation
+        ],
+    )
+    def test_create_invalid_name_raises_before_side_effects(
+        self, bad: str, cli_root: Path,
+    ) -> None:
+        # T2 (v0.3.1 deferred): instance names must match the Docker
+        # compose project-name grammar (``[a-z0-9_-]+``). A bad name
+        # MUST raise BEFORE any side effect runs — no mkdir, no
+        # registry write, no port allocation.
+        with pytest.raises(ValueError, match="instance name"):
+            api.Instance.create(bad)
+        assert registry.get(bad) is None
+        # No stray ``<bad>`` dir was created either.
+        if bad:
+            assert not (cli_root / bad).exists()
+
 
 # ---------------------------------------------------------------------------
 # Instance.register
@@ -164,6 +190,30 @@ class TestInstanceRegister:
         config.write_yaml(target / "beetroot.yaml", config.InstanceConfig())
         api.Instance.register(target)
         with pytest.raises(ValueError, match="already in registry"):
+            api.Instance.register(target)
+
+    def test_register_invalid_explicit_name_raises(
+        self, cli_root: Path,
+    ) -> None:
+        # T2 (v0.3.1 deferred): explicit ``name`` to register must
+        # match the same grammar create checks.
+        target = cli_root / "alpha"
+        target.mkdir()
+        config.write_yaml(target / "beetroot.yaml", config.InstanceConfig())
+        with pytest.raises(ValueError, match="instance name"):
+            api.Instance.register(target, name="Bad Name")
+        assert registry.get("Bad Name") is None
+
+    def test_register_invalid_basename_default_raises(
+        self, cli_root: Path,
+    ) -> None:
+        # When ``name=`` is omitted, ``register`` falls back to the
+        # directory's basename. If that basename violates the
+        # grammar, the same validation must fire.
+        target = cli_root / "Bad-Name"  # uppercase
+        target.mkdir()
+        config.write_yaml(target / "beetroot.yaml", config.InstanceConfig())
+        with pytest.raises(ValueError, match="instance name"):
             api.Instance.register(target)
 
 
@@ -360,6 +410,37 @@ class TestInstanceDestroy:
         assert registry.get("alpha") is None
         assert not root.exists()
 
+    def test_destroy_ctrlc_after_registry_remove_leaves_no_orphan(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # T2 Agent 2 B-4: ``Instance.destroy`` used to ``rmtree`` BEFORE
+        # ``registry.remove``. A ``^C`` between the two steps stranded
+        # a registry row pointing at a now-gone directory — an orphan
+        # the user could only fix by re-creating the dir then running
+        # destroy again (``Instance.load`` trips on the missing yaml).
+        # v0.4 reorders to ``compose.down`` → ``registry.remove`` →
+        # ``rmtree`` so a ``^C`` between the last two steps leaves a
+        # tidy registry and the user just rm -rf's the stale dir.
+        inst = api.Instance.create("alpha")
+        root = inst.root
+
+        def _ctrl_c(target: Path) -> None:
+            raise KeyboardInterrupt
+
+        # Patch the ``shutil`` module that ``api.py`` calls — every
+        # module that ``import shutil``s sees the same module object,
+        # so monkeypatching ``shutil.rmtree`` propagates to api.
+        import shutil as _shutil
+        monkeypatch.setattr(_shutil, "rmtree", _ctrl_c)
+        with _patched_subprocess():
+            with pytest.raises(KeyboardInterrupt):
+                inst.destroy(yes=True)
+        # Registry row IS gone — we got past ``registry.remove`` before
+        # the ^C fired. The on-disk dir survives because rmtree raised
+        # before doing any work; the user can wipe it manually.
+        assert registry.get("alpha") is None
+        assert root.exists()
+
 
 # ---------------------------------------------------------------------------
 # Instance operations: shell, frida_cli, logs, add_module, snapshot
@@ -488,6 +569,36 @@ class TestInstanceAddModule:
         inst.add_module("mod.zip", sha256=sha)
         cfg = config.load_yaml(paths.instance_yaml(inst.root))
         assert cfg.modules[0].sha256 == sha
+
+    def test_add_module_url_failure_leaves_yaml_unchanged(
+        self, cli_root: Path
+    ) -> None:
+        # T2 Agent 2 B-6 / Agent 3 1.6: a failed stage MUST NOT leave
+        # the YAML mutated. Pre-T2, ``add_module`` appended the model +
+        # wrote YAML THEN tried to stage — a 404 left the user's
+        # beetroot.yaml polluted with a module they couldn't reach.
+        inst = api.Instance.create("alpha")
+        yaml_before = paths.instance_yaml(inst.root).read_text()
+        modules_before = list(inst.config.modules)
+
+        import urllib.error
+
+        def _boom(url: str, **kwargs: object) -> object:
+            raise urllib.error.HTTPError(
+                url=url, code=404, msg="Not Found",
+                hdrs=None, fp=None,  # type: ignore[arg-type]
+            )
+
+        with patch("urllib.request.urlopen", side_effect=_boom):
+            with pytest.raises(Exception):  # noqa: B017, PT011
+                inst.add_module("https://example.com/broken.zip")
+
+        # YAML is byte-identical to before (no stale write).
+        assert paths.instance_yaml(inst.root).read_text() == yaml_before
+        # In-memory model is also untouched.
+        assert list(inst.config.modules) == modules_before
+        cfg = config.load_yaml(paths.instance_yaml(inst.root))
+        assert cfg.modules == modules_before
 
 
 class TestInstanceSnapshot:

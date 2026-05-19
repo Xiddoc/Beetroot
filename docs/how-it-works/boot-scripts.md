@@ -67,15 +67,24 @@ the Magisk daemon (`magisk --sqlite "SELECT 1"`) before any writes;
 without this wait, the writes race the daemon's own DB initialisation
 and silently no-op.
 
-Three actions:
+Four actions (v0.4 T2):
 
 1. `REPLACE INTO settings VALUES ('zygisk', 1)` — enable Zygisk.
 2. `REPLACE INTO settings VALUES ('denylist', 1)` — enable denylist.
-3. `INSERT OR IGNORE INTO denylist` — enrol GMS packages.
+3. `SELECT value FROM settings WHERE key='zygisk'` — verify the write
+   landed and exit non-zero if Magisk returned anything other than `1`
+   (post-write verification added in v0.4 to catch silent regressions
+   when Magisk's schema or daemon-race timing changes).
+4. `INSERT OR IGNORE INTO denylist` — enrol each package in
+   `BEETROOT_DENYLIST_PACKAGES` (comma-separated). The list is the
+   string form of `stealth.denylist` from `beetroot.yaml`; per-package
+   shape is validated by the pydantic regex in `Stealth._check_packages`,
+   so the helper joins on `,` without escaping.
 
-| Env var              | Default                  | Notes                                                                                                                  |
-|----------------------|--------------------------|------------------------------------------------------------------------------------------------------------------------|
-| `BEETROOT_MAGISK_DB` | `/data/adb/magisk.db`    | Informational only — `magisk --sqlite` always targets this path internally. Reserved for v0.4 if Magisk grows a flag.  |
+| Env var                       | Default                                                 | Notes                                                                                                                          |
+|-------------------------------|---------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|
+| `BEETROOT_MAGISK_DB`          | `/data/adb/magisk.db`                                   | Informational only — `magisk --sqlite` always targets this path internally. Echoed in the waiting-log line.                    |
+| `BEETROOT_DENYLIST_PACKAGES`  | `com.google.android.gms,com.google.android.gms.unstable` | Comma-separated package ids. Empty list → helper skips the INSERT entirely (no SQL'inject of an empty `('', '')` row).         |
 
 **Idempotency:** `REPLACE INTO` and `INSERT OR IGNORE` both no-op on
 re-run.

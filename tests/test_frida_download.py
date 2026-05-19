@@ -1,4 +1,4 @@
-"""Tests for frida_dl.py — download, cache, stage frida-server."""
+"""Tests for frida_download.py — download, cache, stage frida-server."""
 from __future__ import annotations
 
 import hashlib
@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from beetroot import frida_dl, paths
+from beetroot import frida_download, paths
 from beetroot.settings import settings
 
 FAKE_BINARY = b"ELF\x7f fake frida binary content"
@@ -36,60 +36,60 @@ def instance_root(isolated_registry: Path, tmp_path: Path) -> Path:
 
 class TestReleaseUrl:
     def test_contains_version(self) -> None:
-        url = frida_dl.release_url(VERSION)
+        url = frida_download.release_url(VERSION)
         assert VERSION in url
 
     def test_contains_arch(self) -> None:
-        url = frida_dl.release_url(VERSION)
+        url = frida_download.release_url(VERSION)
         assert settings.frida_arch in url
 
     def test_is_https(self) -> None:
-        url = frida_dl.release_url(VERSION)
+        url = frida_download.release_url(VERSION)
         assert url.startswith("https://")
 
 
 class TestCachedBinary:
     def test_path_under_frida_cache(self, isolated_registry: Path) -> None:
-        p = frida_dl.cached_binary(VERSION)
-        assert p.is_relative_to(frida_dl.frida_cache_dir())
+        p = frida_download.cached_binary(VERSION)
+        assert p.is_relative_to(frida_download.frida_cache_dir())
 
     def test_path_contains_version(self, isolated_registry: Path) -> None:
-        p = frida_dl.cached_binary(VERSION)
+        p = frida_download.cached_binary(VERSION)
         assert VERSION in p.name
 
     def test_cache_dir_under_user_cache(self, isolated_registry: Path) -> None:
-        assert frida_dl.frida_cache_dir() == paths.user_cache_dir("frida")
+        assert frida_download.frida_cache_dir() == paths.user_cache_dir("frida")
 
 
 class TestDownload:
     def test_downloads_and_decompresses(self, isolated_registry: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            result = frida_dl.download(VERSION)
+            result = frida_download.download(VERSION)
         assert result.exists()
         assert result.read_bytes() == FAKE_BINARY
 
     def test_cached_file_is_executable(self, isolated_registry: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            result = frida_dl.download(VERSION)
+            result = frida_download.download(VERSION)
         mode = result.stat().st_mode
         assert mode & stat.S_IXUSR
 
     def test_idempotent_second_call_skips_fetch(self, isolated_registry: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen) as mock_open:
-            frida_dl.download(VERSION)
-            frida_dl.download(VERSION)
+            frida_download.download(VERSION)
+            frida_download.download(VERSION)
         assert mock_open.call_count == 1
 
     def test_returns_path_to_cached_binary(self, isolated_registry: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            result = frida_dl.download(VERSION)
-        assert result == frida_dl.cached_binary(VERSION)
+            result = frida_download.download(VERSION)
+        assert result == frida_download.cached_binary(VERSION)
 
     def test_cache_dir_created_automatically(self, isolated_registry: Path) -> None:
-        assert not frida_dl.frida_cache_dir().exists()
+        assert not frida_download.frida_cache_dir().exists()
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            frida_dl.download(VERSION)
-        assert frida_dl.frida_cache_dir().exists()
+            frida_download.download(VERSION)
+        assert frida_download.frida_cache_dir().exists()
 
 
 class TestDownloadErrors:
@@ -99,7 +99,7 @@ class TestDownloadErrors:
 
         with patch("urllib.request.urlopen", side_effect=_raise):
             with pytest.raises(RuntimeError, match="HTTP 404"):
-                frida_dl.download(VERSION)
+                frida_download.download(VERSION)
 
     def test_timeout_raises_runtime_error(self, isolated_registry: Path) -> None:
         def _raise(url: str, **kwargs: object) -> MagicMock:
@@ -107,7 +107,7 @@ class TestDownloadErrors:
 
         with patch("urllib.request.urlopen", side_effect=_raise):
             with pytest.raises(RuntimeError, match="timed out"):
-                frida_dl.download(VERSION)
+                frida_download.download(VERSION)
 
     def test_url_error_raises_runtime_error(self, isolated_registry: Path) -> None:
         def _raise(url: str, **kwargs: object) -> MagicMock:
@@ -115,7 +115,7 @@ class TestDownloadErrors:
 
         with patch("urllib.request.urlopen", side_effect=_raise):
             with pytest.raises(RuntimeError, match="cannot reach"):
-                frida_dl.download(VERSION)
+                frida_download.download(VERSION)
 
 
 class TestSha256Of:
@@ -124,51 +124,51 @@ class TestSha256Of:
         p = tmp_path / "file.bin"
         p.write_bytes(data)
         expected = hashlib.sha256(data).hexdigest()
-        assert frida_dl.sha256_of(p) == expected
+        assert frida_download.sha256_of(p) == expected
 
     def test_empty_file(self, tmp_path: Path) -> None:
         p = tmp_path / "empty.bin"
         p.write_bytes(b"")
-        assert frida_dl.sha256_of(p) == hashlib.sha256(b"").hexdigest()
+        assert frida_download.sha256_of(p) == hashlib.sha256(b"").hexdigest()
 
 
 class TestStageEmpty:
     def test_creates_zero_byte_file(self, instance_root: Path) -> None:
-        result = frida_dl.stage_empty(instance_root)
+        result = frida_download.stage_empty(instance_root)
         assert result.exists()
         assert result.stat().st_size == 0
 
     def test_not_executable(self, instance_root: Path) -> None:
-        result = frida_dl.stage_empty(instance_root)
+        result = frida_download.stage_empty(instance_root)
         mode = result.stat().st_mode
         assert not (mode & stat.S_IXUSR)
 
     def test_path_matches_instance_frida(self, instance_root: Path) -> None:
-        result = frida_dl.stage_empty(instance_root)
+        result = frida_download.stage_empty(instance_root)
         assert result == paths.instance_frida(instance_root)
 
     def test_creates_parent_dirs(self, isolated_registry: Path, tmp_path: Path) -> None:
         root = tmp_path / "deep" / "path" / "alpha"
         assert not root.exists()
-        frida_dl.stage_empty(root)
+        frida_download.stage_empty(root)
         assert root.exists()
 
 
 class TestStageForInstance:
     def test_copies_binary_to_instance(self, instance_root: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            result = frida_dl.stage_for_instance(instance_root, VERSION)
+            result = frida_download.stage_for_instance(instance_root, VERSION)
         assert result.read_bytes() == FAKE_BINARY
 
     def test_staged_file_is_executable(self, instance_root: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            result = frida_dl.stage_for_instance(instance_root, VERSION)
+            result = frida_download.stage_for_instance(instance_root, VERSION)
         mode = result.stat().st_mode
         assert mode & stat.S_IXUSR
 
     def test_staged_path_matches_instance_frida(self, instance_root: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            result = frida_dl.stage_for_instance(instance_root, VERSION)
+            result = frida_download.stage_for_instance(instance_root, VERSION)
         assert result == paths.instance_frida(instance_root)
 
     def test_different_instances_get_own_copy(
@@ -179,8 +179,78 @@ class TestStageForInstance:
         alpha.mkdir()
         bravo.mkdir()
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-            frida_dl.stage_for_instance(alpha, VERSION)
-            frida_dl.stage_for_instance(bravo, VERSION)
+            frida_download.stage_for_instance(alpha, VERSION)
+            frida_download.stage_for_instance(bravo, VERSION)
         assert paths.instance_frida(alpha) != paths.instance_frida(bravo)
         assert paths.instance_frida(alpha).exists()
         assert paths.instance_frida(bravo).exists()
+
+
+class TestDownloadSha256:
+    """T2 Agent 1: optional sha256 verification on the cached binary."""
+
+    def test_matching_sha256_succeeds(
+        self, isolated_registry: Path
+    ) -> None:
+        expected = hashlib.sha256(FAKE_BINARY).hexdigest()
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            result = frida_download.download(
+                VERSION, expected_sha256=expected,
+            )
+        assert result.exists()
+
+    def test_mismatching_sha256_raises(
+        self, isolated_registry: Path
+    ) -> None:
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            with pytest.raises(ValueError, match="sha256 mismatch"):
+                frida_download.download(
+                    VERSION, expected_sha256="0" * 64,
+                )
+
+    def test_sha256_case_insensitive(
+        self, isolated_registry: Path
+    ) -> None:
+        expected = hashlib.sha256(FAKE_BINARY).hexdigest().upper()
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            result = frida_download.download(
+                VERSION, expected_sha256=expected,
+            )
+        assert result.exists()
+
+    def test_none_sha256_skips_check(
+        self, isolated_registry: Path
+    ) -> None:
+        # The default ``expected_sha256=None`` must NOT do any
+        # digest comparison — preserves the v0.3 no-sha behaviour.
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            result = frida_download.download(VERSION)
+        assert result.exists()
+
+    def test_cached_binary_sha256_verified_too(
+        self, isolated_registry: Path
+    ) -> None:
+        # Prime the cache with a non-matching binary, then call
+        # download() with an expected_sha256 — verification must
+        # fire on the cached file, NOT skip-because-cached.
+        cache = frida_download.cached_binary(VERSION)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(b"some other content")
+        with pytest.raises(ValueError, match="sha256 mismatch"):
+            frida_download.download(
+                VERSION,
+                expected_sha256=hashlib.sha256(FAKE_BINARY).hexdigest(),
+            )
+
+    def test_stage_for_instance_forwards_sha256(
+        self, instance_root: Path
+    ) -> None:
+        # T2 Agent 1: ``stage_for_instance`` must forward the digest
+        # to ``download`` so a Frida(version=..., sha256=...) block
+        # in beetroot.yaml fires the verification at apply time.
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            with pytest.raises(ValueError, match="sha256 mismatch"):
+                frida_download.stage_for_instance(
+                    instance_root, VERSION,
+                    expected_sha256="b" * 64,
+                )

@@ -34,14 +34,19 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from . import config, paths, ports, registry
 
 MANIFEST_FILENAME = ".beetroot-snapshot.json"
+INSTANCE_LOCK_FILENAME = ".beetroot.lock"
 SCHEMA_VERSION = 1
 _ARCHIVE_SUFFIX = ".tar.zst"
 # .env is regenerated from beetroot.yaml on the next apply. The
 # manifest itself is excluded because the archive's *root*-level
 # manifest is the authoritative one; if a previous restore left a
 # stale copy on disk we'd otherwise re-pack it and confuse
-# basename-based readers.
-_EXCLUDED_TOP_LEVEL = frozenset({".env", MANIFEST_FILENAME})
+# basename-based readers. The lock file is a per-host artefact;
+# carrying it through a snapshot would also export a now-broken
+# kernel flock state to a different host.
+_EXCLUDED_TOP_LEVEL = frozenset({
+    ".env", MANIFEST_FILENAME, INSTANCE_LOCK_FILENAME,
+})
 
 
 class SnapshotError(RuntimeError):
@@ -119,6 +124,13 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
     ``beetroot apply``. The manifest is written as the archive's last
     member.
 
+    Holds a SHARED ``fcntl.flock`` on ``<instance_root>/.beetroot.lock``
+    for the duration of the archive write — multiple snapshots can run
+    in parallel, but a concurrent :meth:`Instance.destroy` (which
+    takes the exclusive lock) blocks until snapshotting finishes.
+    Without this, a destroy race would rmtree the directory mid-read
+    and produce a torn archive. (T2 Agent 2 B-12.)
+
     Args:
         instance_root: The source instance directory (the one containing
             ``beetroot.yaml``). The instance must be registered.
@@ -143,8 +155,13 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
 
     manifest = _build_manifest(name=name, source_index=meta.index)
 
+    # Local import — api imports snapshot at module load, so a
+    # top-level ``from .api import instance_lock`` would loop.
+    from .api import instance_lock  # noqa: PLC0415
+
     cctx = zstandard.ZstdCompressor()
     with (
+        instance_lock(instance_root, exclusive=False),
         final_dest.open("wb") as raw_out,
         cctx.stream_writer(raw_out) as zst,
         tarfile.open(fileobj=zst, mode="w|") as tar,
@@ -344,10 +361,14 @@ def restore(
             "pick a different --as <name>"
         )
     target = dest_path.resolve()
-    _prepare_destination(target, force=force)
-    # Validate the manifest first so a malformed archive bails out
-    # before we touch the destination directory or the registry.
+    # Validate the archive's manifest BEFORE any destructive action on
+    # the target directory. v0.3 ordered ``rmtree(target)`` first and
+    # ``read_manifest(archive)`` second — a corrupted archive paired
+    # with ``--force`` wiped the user's existing directory and THEN
+    # discovered the archive was unreadable, leaving no way back.
+    # (T2 Agent 3 1.4.)
     read_manifest(archive)
+    _prepare_destination(target, force=force)
     # ``created_dir`` is True iff Beetroot now owns the directory; the
     # rollback path uses it to decide whether to ``rmtree``.
     created_dir = not target.exists()
@@ -355,13 +376,19 @@ def restore(
     _extract_archive_into(archive, target)
     # Atomic allocation + registration under one file lock.
     index = registry.add_allocating(dest_name, target)
+    # Local import — api imports snapshot at module load, so a top-level
+    # ``from . import api`` would loop.
+    from . import api  # noqa: PLC0415
     try:
         _check_restored_port_collision(dest_name, index, target)
-        # Stage .env + frida-server + modules now so `beetroot up <name>`
-        # works without a follow-up `beetroot apply`. The import is
-        # local because api imports snapshot at module load.
-        from . import api  # noqa: PLC0415
-        api.Instance.load(dest_name)._stage()  # noqa: SLF001  # snapshot ↔ api are siblings; _stage is the inter-module re-stage hook
+        # Stage .env + frida placeholder + dirs now so `beetroot up
+        # <name>` works without a follow-up `beetroot apply`. Mirrors
+        # what Instance.create / Instance.register do. Only the LOCAL
+        # stage step is rollback-fatal (T2 Agent 2 B-2); the network
+        # step runs post-commit via the soft-fail helper outside this
+        # try block.
+        restored_inst = api.Instance.load(dest_name)
+        restored_inst._stage_local()  # noqa: SLF001  # snapshot ↔ api are siblings; _stage_local is the inter-module re-stage hook
     except BaseException:
         # Roll back BOTH the registry row AND the extracted directory
         # (if we created it). Without the rmtree, a failed restore
@@ -371,6 +398,10 @@ def restore(
         if created_dir and target.exists():
             shutil.rmtree(target)
         raise
+    # Soft-fail network stage runs AFTER the rollback try/except so a
+    # Frida 404 doesn't destroy a freshly-extracted instance the user
+    # can recover via ``beetroot apply``.
+    api._stage_network_soft(restored_inst)  # noqa: SLF001  # snapshot ↔ api are siblings
     return target
 
 

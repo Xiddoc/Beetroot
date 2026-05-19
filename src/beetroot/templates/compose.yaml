@@ -19,16 +19,22 @@ services:
 
     volumes:
       - ./data:/data
-      - ./modules:/flash_dir:ro
-      - ./frida-server:/data/local/tmp/frida-server:ro
+      - ./modules:${BEETROOT_MODULES_DIR:-/data/adb/modules_update}:ro
+      - ./frida-server:${BEETROOT_FRIDA_BIN:-/data/local/tmp/frida-server}:ro
 
-    # Host overrides for the T7 helper scripts' container paths. Empty by
-    # default (helpers fall back to their bake-in defaults); v0.4's
-    # stealth-posture work (docs/design/stealth-posture.md) sets these.
+    # Host overrides for the boot-time helper scripts' container paths.
+    # Defaults shown here mirror the helper's own shell-default fallback
+    # so a missing value in the rendered .env (e.g. a hand-driven
+    # ``docker compose`` invocation without a Beetroot-rendered .env file)
+    # still boots the container the same way as ``render_env`` would.
+    # BEETROOT_DENYLIST_PACKAGES is a comma-separated list consumed by
+    # magisk-config.sh via ``IFS=,``; empty by default (Stealth.denylist
+    # defaults to []), so the helper SQL'es nothing extra.
     environment:
-      BEETROOT_MAGISK_DB: ${BEETROOT_MAGISK_DB:-}
-      BEETROOT_MODULES_DIR: ${BEETROOT_MODULES_DIR:-}
-      BEETROOT_FRIDA_BIN: ${BEETROOT_FRIDA_BIN:-}
+      BEETROOT_MAGISK_DB: ${BEETROOT_MAGISK_DB:-/data/adb/magisk.db}
+      BEETROOT_MODULES_DIR: ${BEETROOT_MODULES_DIR:-/data/adb/modules_update}
+      BEETROOT_FRIDA_BIN: ${BEETROOT_FRIDA_BIN:-/data/local/tmp/frida-server}
+      BEETROOT_DENYLIST_PACKAGES: ${BEETROOT_DENYLIST_PACKAGES:-}
 
     ports:
       - "${ADB_PORT}:5555"

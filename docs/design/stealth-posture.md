@@ -167,7 +167,7 @@ Living under `/data/adb/modules/` has three benefits:
 - The path includes the executable's containing module ID, so killing
   the module also removes Frida — no orphaned binary across resets.
 
-The host bind-mount target moves accordingly; `frida_dl.py` is
+The host bind-mount target moves accordingly; `frida_download.py` is
 unchanged because it never knew the container-side path (the CLI
 reads it from settings, not from a constant).
 

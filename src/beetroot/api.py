@@ -2,9 +2,10 @@
 High-level OOP wrapper around Beetroot's procedural modules.
 
 The procedural modules (:mod:`beetroot.compose`, :mod:`beetroot.config`,
-:mod:`beetroot.frida_dl`, :mod:`beetroot.modules_dl`, :mod:`beetroot.paths`,
-:mod:`beetroot.ports`, :mod:`beetroot.registry`, :mod:`beetroot.snapshot`,
-:mod:`beetroot.builder`) remain the load-bearing implementation. This
+:mod:`beetroot.frida_download`, :mod:`beetroot.modules_download`,
+:mod:`beetroot.paths`, :mod:`beetroot.ports`, :mod:`beetroot.registry`,
+:mod:`beetroot.snapshot`, :mod:`beetroot.builder`) remain the load-bearing
+implementation. This
 module composes them behind a small object-oriented surface so researchers
 can drive Beetroot from Python with ``from beetroot import Instance``
 without learning the cross-module function vocabulary.
@@ -32,12 +33,17 @@ the function reference at import time.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import re
 import shutil
 import subprocess
+import sys
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Final, Protocol, runtime_checkable
 
-from . import compose, config, frida_dl, modules_dl, paths, ports, registry
+from . import compose, config, frida_download, modules_download, paths, ports, registry
 from . import snapshot as _snapshot_mod
 
 # Module-level alias for the builtin ``list`` so the two ``list*``
@@ -50,6 +56,23 @@ from . import snapshot as _snapshot_mod
 _List = list
 
 _MINIMAL_BEETROOT_YAML = "api_version: 3\nandroid:\n  version: 14\n"
+
+# Instance names are used as Docker compose project names (which
+# enforce ``[a-z0-9_-]+``) AND as filesystem-segment defaults for the
+# instance directory. Pre-validate at the OOP boundary so a typo like
+# ``Foo`` or ``alpha bravo`` surfaces with a clear message before any
+# side effect runs. (T2 v0.3.1 deferred.)
+_INSTANCE_NAME_RE: Final = re.compile(r"^[a-z0-9_-]+$")
+
+
+def _validate_instance_name(name: str) -> None:
+    """Raise ``ValueError`` if ``name`` doesn't match the instance-name grammar."""
+    if not _INSTANCE_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"instance name {name!r} is invalid — must match "
+            r"[a-z0-9_-]+ (Docker compose project-name grammar). "
+            "Lowercase alphanumerics, underscores, and hyphens only."
+        )
 
 
 class InstanceNotFoundError(LookupError):
@@ -247,6 +270,7 @@ class Instance:
             FileExistsError: If ``path`` already contains a
                 ``beetroot.yaml`` (use :meth:`register` to adopt it).
         """
+        _validate_instance_name(name)
         if registry.get(name) is not None:
             raise ValueError(f"instance {name!r} already exists in registry")
         target_root = (path if path is not None else Path(name)).resolve()
@@ -282,10 +306,16 @@ class Instance:
         inst = cls(name=name, root=target_root, cfg=effective_cfg)
         try:
             _check_port_collisions(name, new_ports)
-            inst._stage()
+            inst._stage_local()
         except BaseException:
             _rollback_partial_create(name, target_root, created_dir=created_dir)
             raise
+        # Network-touching stage runs OUTSIDE the rollback try/except —
+        # a Frida 404 or module HTTP error should not destroy the
+        # already-registered local artefacts. The user re-runs
+        # ``beetroot apply <name>`` once the network heals. (T2 Agent
+        # 2 B-2.)
+        _stage_network_soft(inst)
         return inst
 
     @classmethod
@@ -310,6 +340,7 @@ class Instance:
         if not yaml_path.is_file():
             raise FileNotFoundError(f"no beetroot.yaml at {yaml_path}")
         resolved_name = name if name is not None else target_root.name
+        _validate_instance_name(resolved_name)
         if registry.get(resolved_name) is not None:
             raise ValueError(f"instance {resolved_name!r} already in registry")
         cfg = config.load_yaml(yaml_path)
@@ -319,10 +350,12 @@ class Instance:
         inst = cls(name=resolved_name, root=target_root, cfg=cfg)
         try:
             _check_port_collisions(resolved_name, new_ports)
-            # Stage .env + frida-server + modules now so a follow-up
+            # Stage .env + dirs + frida placeholder so a follow-up
             # `beetroot up <name>` works without an intermediate
-            # `beetroot apply`. Mirrors what Instance.create does.
-            inst._stage()
+            # `beetroot apply`. Network artefacts (real Frida binary
+            # + module zips) stage outside this try/except — see
+            # _stage_network_soft below.
+            inst._stage_local()
         except BaseException:
             # ``register`` adopts an existing directory — never delete
             # it on rollback. The user's beetroot.yaml + data/ + any
@@ -332,6 +365,10 @@ class Instance:
                 resolved_name, target_root, created_dir=False,
             )
             raise
+        # Network step runs post-commit; soft failure leaves a usable
+        # registered instance behind for the user to retry via
+        # ``beetroot apply``. (T2 Agent 2 B-2.)
+        _stage_network_soft(inst)
         return inst
 
     @classmethod
@@ -552,14 +589,43 @@ class Instance:
             ).strip().lower()
             if ans != "y":
                 raise RuntimeError("destroy aborted by user")
+        # Hold an exclusive lock on the instance for the entire
+        # teardown — blocks any concurrent ``snapshot()`` from reading
+        # the directory while we're rmtree'ing it. ``snapshot`` takes
+        # a shared lock so two parallel snapshots are fine, but a
+        # snapshot + destroy race would otherwise tear the archive.
+        # The lock file lives inside the instance root, so this only
+        # works while the root still exists; that's fine because the
+        # rmtree happens INSIDE the lock context. (T2 Agent 2 B-12.)
+        if self._root.exists():
+            with instance_lock(self._root, exclusive=True):
+                self._teardown_under_lock()
+        else:
+            # Root already gone — no need for the lock; just clear the
+            # registry row so ``Manager.list_orphans`` stops surfacing
+            # this name.
+            self._teardown_under_lock()
+
+    def _teardown_under_lock(self) -> None:
+        """Run ``destroy``'s steps under the assumption the lock is held."""
+        # Order matters: compose.down → registry.remove → shutil.rmtree.
+        # The CLI verb already enforces this order; the OOP path used
+        # to do rmtree BEFORE registry.remove, which left a window
+        # where a ``^C`` between the two steps stranded a registry row
+        # pointing at a now-gone directory (an "orphan" the user could
+        # only fix by re-creating the dir then running destroy again,
+        # because ``Instance.load`` trips on the missing yaml).
+        # Removing the registry row first means a ^C between
+        # ``registry.remove`` and the rmtree leaves a tidy registry +
+        # stale directory the user can wipe by hand. (T2 Agent 2 B-4.)
         compose_error: compose.ComposeError | None = None
         try:
             compose.down(self._name, self._root, volumes=True)
         except compose.ComposeError as e:
             compose_error = e
+        registry.remove(self._name)
         if self._root.exists():
             shutil.rmtree(self._root)
-        registry.remove(self._name)
         if compose_error is not None:
             raise compose_error
 
@@ -599,7 +665,7 @@ class Instance:
         Args:
             version: The frida release tag (e.g. ``16.4.10``).
         """
-        frida_dl.stage_for_instance(self._root, version)
+        frida_download.stage_for_instance(self._root, version)
 
     def frida_cli(self, args: list[str]) -> int:
         """
@@ -642,6 +708,13 @@ class Instance:
         """
         Append a Magisk module to ``beetroot.yaml`` and re-stage.
 
+        Stages the module zip FIRST (so a download failure or sha256
+        mismatch is caught before the YAML grows a half-broken entry),
+        then on success mutates the in-memory config + writes the YAML.
+        If staging raises, the YAML and in-memory model are left
+        unchanged — the user can re-run the verb with a corrected URL
+        without manually un-doing a half-applied add.
+
         Args:
             source: Either an ``http(s)://`` URL or an instance-relative
                 path to a ``.zip`` module.
@@ -652,11 +725,22 @@ class Instance:
             :meth:`restart`.
         """
         if source.startswith(("http://", "https://")):
-            self._cfg.modules.append(config.Module(url=source, sha256=sha256))
+            new_module = config.Module(url=source, sha256=sha256)
         else:
-            self._cfg.modules.append(config.Module(path=source, sha256=sha256))
+            new_module = config.Module(path=source, sha256=sha256)
+        # Stage against a transient config that holds the existing
+        # modules PLUS the new entry. ``stage_for_instance`` wipes the
+        # ``modules/`` dir and re-stages every entry, so we can't pass
+        # just the new module — the existing ones would vanish.
+        # Building a one-off InstanceConfig keeps us from mutating
+        # ``self._cfg`` until we know the stage succeeded. (T2 Agent 2
+        # B-6, Agent 3 1.6.)
+        transient = self._cfg.model_copy(
+            update={"modules": [*self._cfg.modules, new_module]}
+        )
+        modules_download.stage_for_instance(self._root, transient)
+        self._cfg = transient
         config.write_yaml(paths.instance_yaml(self._root), self._cfg)
-        modules_dl.stage_for_instance(self._root, self._cfg)
 
     def snapshot(self, dest: Path) -> Path:
         """
@@ -686,18 +770,128 @@ class Instance:
         return meta
 
     def _stage(self) -> None:
-        """Render .env, stage frida-server, stage modules. Idempotent."""
+        """
+        Stage everything: local artefacts first, then network artefacts.
+
+        Convenience wrapper used by :meth:`apply` (where a single
+        try/except over the whole batch is what the user wants — apply
+        is interactive, and a network failure should surface).
+        :meth:`create` / :meth:`register` / :func:`snapshot.restore`
+        call the two halves explicitly so the network half runs
+        AFTER the registry commits — a Frida 404 there leaves a usable
+        instance behind that the user can retry with ``beetroot apply``.
+        """
+        self._stage_local()
+        self._stage_network()
+
+    def _stage_local(self) -> None:
+        """
+        Render .env + create empty dirs + place the Frida placeholder.
+
+        Rollback-safe by design: every action is local-only (no
+        network), so if any step raises the constructor's
+        ``_rollback_partial_create`` can ``rmtree`` the dir without
+        risking a half-consumed downloaded artefact. (T2 Agent 2 B-2.)
+        """
         new_ports = ports.resolve_ports(self.index, self._cfg.ports)
         paths.instance_data(self._root).mkdir(parents=True, exist_ok=True)
         paths.instance_modules(self._root).mkdir(parents=True, exist_ok=True)
         paths.instance_env(self._root).write_text(
             config.render_env(self._name, self._cfg, new_ports)
         )
+        # Always place the placeholder, even when frida is configured.
+        # ``_stage_network`` overwrites it with the real binary on
+        # success; on a network failure the placeholder survives so
+        # the bind-mount target exists and the compose ``up`` doesn't
+        # fail at mount-resolution time.
+        frida_download.stage_empty(self._root)
+
+    def _stage_network(self) -> None:
+        """
+        Download + stage Frida and modules. May hit the network.
+
+        Runs AFTER the registry write commits — a soft failure here
+        (Frida 404, module HTTP error) leaves a usable instance
+        behind that the user can retry with ``beetroot apply``
+        instead of losing the directory + registry slot to a hard
+        rollback. (T2 Agent 2 B-2.)
+        """
         if self._cfg.frida is not None:
-            frida_dl.stage_for_instance(self._root, self._cfg.frida.version)
-        else:
-            frida_dl.stage_empty(self._root)
-        modules_dl.stage_for_instance(self._root, self._cfg)
+            frida_download.stage_for_instance(
+                self._root,
+                self._cfg.frida.version,
+                expected_sha256=self._cfg.frida.sha256,
+            )
+        modules_download.stage_for_instance(self._root, self._cfg)
+
+
+_INSTANCE_LOCK_FILENAME = ".beetroot.lock"
+
+
+@contextlib.contextmanager
+def instance_lock(
+    instance_root: Path, *, exclusive: bool
+) -> Iterator[Path]:
+    """
+    Acquire an advisory ``fcntl.flock`` on ``<instance_root>/.beetroot.lock``.
+
+    Snapshot acquires a SHARED lock (``LOCK_SH``) — multiple snapshots
+    can run in parallel, but a concurrent destroy must wait. Destroy
+    acquires an EXCLUSIVE lock (``LOCK_EX``) — blocks every other
+    snapshot/destroy on the same instance until the destructive
+    operation completes. Without the lock, a destroy that races a
+    long-running snapshot could rmtree the directory while the
+    snapshot is reading from it, producing a torn archive. (T2 Agent
+    2 B-12.)
+
+    The lock file lives inside the instance root so it's naturally
+    scoped per-instance — two instances don't share a lock. The lock
+    file is created on first acquisition and never deleted; future
+    operations re-attach to the same inode. Sibling processes that
+    crash holding the lock release it automatically (the kernel drops
+    the flock on fd close at process exit).
+
+    Args:
+        instance_root: The instance directory.
+        exclusive: True for ``LOCK_EX``; False for ``LOCK_SH``.
+
+    Yields:
+        The lock-file path (for debugging — callers don't usually
+        need it).
+    """
+    instance_root.mkdir(parents=True, exist_ok=True)
+    lock_path = instance_root / _INSTANCE_LOCK_FILENAME
+    with lock_path.open("a+") as f:
+        flag = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(f.fileno(), flag)
+        try:
+            yield lock_path
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def _stage_network_soft(inst: Instance) -> None:
+    """
+    Run the network-touching stage step, swallowing failures with a hint.
+
+    Frida 404s and module HTTP errors after a successful local-stage
+    leave the instance registered + the .env rendered + the frida
+    placeholder in place — usable in every respect except that the
+    Frida binary / module zips aren't there yet. Surfacing the
+    failure as a soft "[beetroot] ..." line + a hint to re-run
+    ``beetroot apply`` once the network heals is friendlier than
+    blowing the instance away on a transient outage. (T2 Agent 2 B-2.)
+    """
+    try:
+        inst._stage_network()  # noqa: SLF001  # module-internal hook; snapshot.restore + Instance.create call the same private surface
+    except Exception as e:  # noqa: BLE001  # soft-fail: Frida 404, urllib timeout, sha256 mismatch, etc. all converge here; the *whole point* is to swallow them and surface a hint
+        print(  # noqa: T201  # user-visible CLI feedback (the soft-fail hint), not debug output; goes to stderr like every other beetroot[*] line
+            f"[beetroot] note: network-stage step failed for "
+            f"{inst.name!r} ({e!s}). The instance is registered and "
+            f"its .env is rendered; rerun `beetroot apply {inst.name}` "
+            f"once the network recovers.",
+            file=sys.stderr,
+        )
 
 
 def _rollback_partial_create(
@@ -765,11 +959,11 @@ class Manager:
         Adb-kind rows are skipped because :class:`Instance` only
         represents redroid backends — use :meth:`resolve` to walk every
         backend uniformly via the Protocol. Orphan entries (redroid
-        rows whose on-disk directory has been ``rm -rf``'d) are also
-        silently skipped — without this, a single orphan would crash
-        ``beetroot ls`` with a bare ``FileNotFoundError`` and prevent
-        the user from cleaning up. Use :meth:`list_orphans` to surface
-        them for cleanup.
+        rows whose on-disk directory has been ``rm -rf``'d, or whose
+        ``beetroot.yaml`` is now unparseable) are silently skipped —
+        without this, a single orphan would crash ``beetroot ls`` and
+        prevent the user from cleaning up. Use :meth:`list_orphans`
+        to surface them for cleanup.
 
         Returns:
             A list of :class:`Instance` objects, one per healthy
@@ -779,30 +973,50 @@ class Manager:
         for name, meta in sorted(registry.list_instances().items()):
             if not isinstance(meta.backend, registry.RedroidBackendConfig):
                 continue
+            # Filter orphans by the yaml-exists pre-check rather than
+            # ``except FileNotFoundError`` around ``Instance.load``.
+            # The bare except used to swallow ANY FileNotFoundError —
+            # including permission errors on a parent directory and
+            # the unrelated cache-miss FileNotFoundError that arose
+            # during T2's pivot to ``platformdirs``. (T2 Agent 2 F-12 /
+            # Agent 3 1.7.)
+            yaml_path = paths.instance_yaml(Path(meta.backend.absolute_path))
+            if not yaml_path.is_file():
+                continue
             try:
                 out.append(Instance.load(name))
-            except FileNotFoundError:
-                # Orphan: registry entry exists, on-disk dir is gone.
-                # list_orphans() is the channel for cleanup discovery.
+            except Exception:  # noqa: BLE001, S112  # super-set of list_orphans: yaml.YAMLError + pydantic ValidationError + api-version mismatch all converge here; continue is the orphan-skip contract documented in list_orphans
+                # YAML present but unparseable — mirrors the orphan
+                # contract from ``list_orphans``. Without this, a
+                # single corrupted YAML crashes ``beetroot ls`` and
+                # the user has no way to surface the row for cleanup.
+                # (T2 v0.3.1 deferred.)
                 continue
         return out
 
     @staticmethod
     def list_orphans() -> _List[str]:
         """
-        Return names of redroid instances whose on-disk dir is missing.
+        Return names of redroid instances whose on-disk dir is missing OR unparseable.
 
-        An orphan is a redroid-kind registry row pointing at a path with
-        no ``beetroot.yaml`` (typically because the user manually
+        An orphan is a redroid-kind registry row pointing at a path
+        with no ``beetroot.yaml`` (typically because the user manually
         ``rm -rf``'d the directory without running
-        ``beetroot destroy``). Adb-kind rows are not directory-backed
-        so they can never be orphans by this definition. Names are
-        returned sorted; the cleanup verb is
-        ``beetroot destroy <name> -y``.
+        ``beetroot destroy``) OR a ``beetroot.yaml`` that can't be
+        parsed any more (e.g. a half-overwritten file, an
+        api_version mismatch, or hand-edited junk). v0.3 returned only
+        the first kind, so a corrupted YAML left the entry invisible
+        to ``Manager.list`` AND to ``Manager.list_orphans`` — the
+        user had no surface to clean it up from. (T2 v0.3.1 deferred.)
+
+        Adb-kind rows are not directory-backed so they can never be
+        orphans by this definition. Names are returned sorted; the
+        cleanup verb is ``beetroot destroy <name> -y``.
 
         Returns:
             Sorted list of orphan instance names. Empty if every
-            registered redroid entry's directory is present.
+            registered redroid entry's directory is present and its
+            YAML parses.
         """
         orphans: _List[str] = []
         for name, meta in registry.list_instances().items():
@@ -810,6 +1024,19 @@ class Manager:
                 continue
             yaml_path = paths.instance_yaml(Path(meta.backend.absolute_path))
             if not yaml_path.is_file():
+                orphans.append(name)
+                continue
+            try:
+                config.load_yaml(yaml_path)
+            except Exception:  # noqa: BLE001  # parse / validation / api_version mismatch all count as orphans; the broad catch is the contract
+                # Any parse / validation failure on the YAML counts as
+                # an orphan — the row needs cleanup-attention, and
+                # ``Manager.list`` already skips it via the
+                # InstanceRootNotFoundError filter (which load() emits
+                # transitively when the YAML is unreachable). Catch
+                # broadly: pydantic ValidationError, yaml.YAMLError,
+                # custom api_version mismatches, and any future
+                # validation backend all flow through here.
                 orphans.append(name)
         return sorted(orphans)
 

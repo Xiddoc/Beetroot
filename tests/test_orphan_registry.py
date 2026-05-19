@@ -55,6 +55,41 @@ class TestManagerListSkipsOrphans:
         shutil.rmtree(registry.instance_path("alpha"))
         assert api.Manager.list_orphans() == ["alpha", "charlie"]
 
+    def test_unparseable_yaml_treated_as_orphan(
+        self, cli_root: Path,
+    ) -> None:
+        # T2 (v0.3.1 deferred): a beetroot.yaml that can't be parsed
+        # (corrupted bytes, api_version mismatch, hand-edited junk)
+        # used to be invisible to both ``list`` and ``list_orphans``.
+        # The user had no way to surface it for cleanup. v0.4 treats
+        # parse failures as orphans alongside missing-directory rows.
+        api.Instance.create("alpha")
+        api.Instance.create("bravo")
+        # Corrupt alpha's beetroot.yaml so load_yaml raises.
+        from beetroot import paths
+        paths.instance_yaml(registry.instance_path("alpha")).write_text(
+            "this: is: not: valid: yaml: at: all: }}}}\n"
+        )
+        # ``Manager.list`` skips it (would have crashed otherwise).
+        names = [inst.name for inst in api.Manager.list()]
+        assert names == ["bravo"]
+        # ``list_orphans`` surfaces it for cleanup.
+        assert "alpha" in api.Manager.list_orphans()
+
+    def test_api_version_mismatch_treated_as_orphan(
+        self, cli_root: Path,
+    ) -> None:
+        # Same orphan-surfacing contract for a beetroot.yaml that
+        # parses as YAML but fails pydantic validation (e.g. an
+        # api_version we don't support any more).
+        api.Instance.create("alpha")
+        from beetroot import paths
+        # Future api_version that pydantic will reject.
+        paths.instance_yaml(registry.instance_path("alpha")).write_text(
+            "api_version: 999\nandroid:\n  version: 14\n"
+        )
+        assert "alpha" in api.Manager.list_orphans()
+
 
 class TestCliLsSurfacesOrphans:
     def test_ls_exits_zero_when_only_orphans(self, cli_root: Path) -> None:

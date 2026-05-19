@@ -9,7 +9,7 @@ audiences are served here:
   `from beetroot import Instance` Just Works. The Protocol is the same
   one fleshed out in the [Device backends design doc](../design/device-backends.md).
 * **Contributors editing the CLI.** The procedural modules (`compose`,
-  `config`, `ports`, `registry`, `frida_dl`, `modules_dl`, `paths`,
+  `config`, `ports`, `registry`, `frida_download`, `modules_download`, `paths`,
   `snapshot`, `builder`) remain the load-bearing implementation —
   `api.py` composes them, doesn't replace them. The CLI's Typer verbs
   delegate to `Instance` / `Manager`; the procedural modules stay
@@ -54,13 +54,13 @@ for the full recipe.
 
 ::: beetroot.compose
 
-## `beetroot.frida_dl`
+## `beetroot.frida_download`
 
-::: beetroot.frida_dl
+::: beetroot.frida_download
 
-## `beetroot.modules_dl`
+## `beetroot.modules_download`
 
-::: beetroot.modules_dl
+::: beetroot.modules_download
 
 ## `beetroot.snapshot`
 

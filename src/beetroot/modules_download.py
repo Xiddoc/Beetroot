@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import frida_dl, paths
+from . import frida_download, paths
 from .config import InstanceConfig, Module
 from .settings import settings
 
@@ -88,7 +88,7 @@ def _resolve(module: Module, instance_root: Path) -> Path:
         if not local.exists():
             raise FileNotFoundError(f"module path not found: {local}")
     if module.sha256:
-        actual = frida_dl.sha256_of(local)
+        actual = frida_download.sha256_of(local)
         if actual.lower() != module.sha256.lower():
             raise ValueError(
                 f"sha256 mismatch for {local.name}: "

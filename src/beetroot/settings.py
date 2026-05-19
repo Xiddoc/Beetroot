@@ -1,8 +1,8 @@
 """
 Environment-driven overrides for beetroot.
 
-Settings are read from the process environment. All variables are
-prefixed with ``BEETROOT_``.
+Settings are read **strictly from the process environment** (no
+``.env`` auto-load). All variables are prefixed with ``BEETROOT_``.
 
 Examples::
 
@@ -17,6 +17,16 @@ module-level :data:`settings` object via ``monkeypatch.setattr(<module>,
 "settings", Settings(...))``. Direct attribute assignment raises
 ``ValidationError`` (the frozen flag exists precisely to make
 "settings is the source of truth" load-bearing).
+
+v0.3 carried ``env_file=".env"`` in ``SettingsConfigDict``, which
+auto-loaded the *current working directory's* .env file at every
+``Settings()`` instantiation. Inside an instance directory the
+per-instance .env (which is consumed by Docker compose, not Beetroot)
+carries keys like ``INSTANCE_NAME``, ``ADB_PORT`` etc. — none of which
+match ``BEETROOT_*`` — but the discovery walk + extra-key warnings
+tripped on the missing match. v0.4 dropped ``env_file`` entirely
+(T2 — Agent 3 §1.5, Agent 4 §4 Issue 1) so Beetroot's CLI overrides
+are decoupled from the instance .env contract.
 """
 from __future__ import annotations
 

@@ -173,6 +173,134 @@ surface to all of `src/beetroot/` is on the v0.5 deferred list.
   `"docker-unreachable"` / `"starting"` / `"created"` / `"paused"`
   / `"unknown"` mapping. Agent 2 B-7.
 
+### v0.4 — Theme T2: audit-pass bug fixes + rename pass
+
+**Breaking changes**
+
+- **`beetroot.frida_dl` → `beetroot.frida_download`** and
+  **`beetroot.modules_dl` → `beetroot.modules_download`.** Python is
+  explicit-by-design — `_dl` was the only ambiguity in the public
+  module surface. Update `from beetroot import frida_dl` imports to
+  `from beetroot import frida_download`. The module-level public
+  surface (`download`, `stage_for_instance`, `stage_empty`,
+  `sha256_of`, `release_url`, `cached_binary`, `frida_cache_dir`,
+  `ModuleFetchError`) is otherwise unchanged.
+- **`/flash_dir` → `/data/adb/modules_update` bind-mount target.** v0.3
+  bind-mounted `<instance-dir>/modules` to `/flash_dir`; v0.4 moves
+  the target to Magisk's standard module-staging directory
+  (`/data/adb/modules_update`), driven by `BEETROOT_MODULES_DIR`. The
+  default applies to every new `down + up` cycle — existing running
+  v0.3 containers see the change at next restart.
+
+**Bug fixes (audit-flagged)**
+
+- **`Stealth.denylist` wired through to `magisk-config.sh`.** v0.3 read
+  the YAML field and threw it away — the helper enrolled a hard-coded
+  GMS pair regardless. v0.4 pipes `cfg.stealth.denylist` through
+  `render_env` as `BEETROOT_DENYLIST_PACKAGES` (comma-separated; toybox
+  sh has no array support), and the helper iterates the list via
+  `IFS=,`. The pydantic regex from T1 still gates per-package shape so
+  the SQL is safe to compose without escaping. `Stealth.denylist`'s
+  default now ships the GMS pair so a bare `beetroot create` keeps the
+  v0.3 enrolment behaviour intact. (Agent 2 B-1, Agent 3 1.3.)
+- **Compose mount targets parameterised.** The bundled compose template
+  now reads `${BEETROOT_FRIDA_BIN}` / `${BEETROOT_MODULES_DIR}` on
+  **both sides** of the bind-mount entry (v0.3 hardcoded the container
+  side). `render_env` emits both with the known-safe v0.3 paths
+  (`/data/local/tmp/frida-server`, `/data/adb/modules_update`). v0.5's
+  PR1 will replace these defaults with randomised values once stealth
+  research validates a path. (Agent 1 1.1, Agent 3 1.1.)
+- **Magisk Zygisk write is verified.** After the `REPLACE INTO settings
+  VALUES ('zygisk', 1)`, `magisk-config.sh` now `SELECT`s the row back
+  and exits non-zero if Magisk returned anything other than `1`. v0.3
+  silently trusted the REPLACE; this catches schema drift or daemon-race
+  regressions loudly. (Agent 1, Agent 2 F-9, Agent 3 1.2.)
+- **`Instance.add_module` is now stage-first.** v0.3 mutated
+  `self._cfg.modules` and wrote `beetroot.yaml` BEFORE downloading the
+  zip — a 404 left the YAML polluted with a module the user couldn't
+  reach. v0.4 stages first against a transient `InstanceConfig` and
+  only commits to the YAML + in-memory model on success. Re-running
+  the verb with a corrected URL is now safe. (Agent 2 B-6, Agent 3 1.6.)
+- **`Instance._stage` split into `_stage_local` + `_stage_network`.**
+  Local artefacts (`.env`, data/modules dirs, Frida placeholder) are
+  rollback-fatal — a failure there destroys the partial install. The
+  network step (real Frida binary, module zips) runs AFTER the
+  registry commits and is soft-fail: a Frida 404 prints a hint and
+  leaves the instance registered for the user to recover via
+  `beetroot apply <name>`. (Agent 2 B-2.)
+- **`snapshot.restore --force` validates the archive before wiping
+  the target.** v0.3 ordered `shutil.rmtree(target)` before
+  `read_manifest(archive)` — a corrupted archive paired with `--force`
+  destroyed the user's existing directory AND then bailed out with
+  no way back. v0.4 swaps the order so the manifest read is the gate.
+  (Agent 3 1.4.)
+- **`Instance.destroy` reorders cleanup steps.** v0.3 ran
+  `compose.down` → `shutil.rmtree` → `registry.remove`. A ^C between
+  the rmtree and `registry.remove` stranded a registry row pointing
+  at a now-gone directory — an orphan the user could only fix by
+  re-creating the dir then running destroy again. v0.4 reorders to
+  `compose.down` → `registry.remove` → `shutil.rmtree` so a ^C
+  between the last two steps leaves a tidy registry + a stale dir
+  the user wipes manually. The CLI verb's order already matched;
+  this aligns the OOP path. (Agent 2 B-4.)
+- **`paths.bundled_compose_file` uses `importlib.resources.as_file`.**
+  v0.3 stringified the `Traversable` returned by `files()` and
+  wrapped it in `Path()` — fine for editable installs (where the
+  resource lives on disk) but breaks wheel installs where the
+  resource lives inside a zip. v0.4 uses `as_file()` to materialise
+  a stable on-disk copy under `user_cache_dir("templates")` (which
+  T3 will migrate to `platformdirs.user_cache_path`); the path is
+  cached at module level so subsequent `docker compose -f` calls
+  resolve identically. (Agent 2 B-8.)
+- **`fcntl.flock` on snapshot + destroy.** v0.3 had no inter-process
+  coordination — a `beetroot snapshot foo` racing a `beetroot
+  destroy foo` could rmtree the source directory mid-archive read,
+  producing a torn `.tar.zst`. v0.4 adds an advisory lock at
+  `<instance_root>/.beetroot.lock`: `snapshot()` takes `LOCK_SH`
+  (parallel snapshots are fine) and `Instance.destroy()` takes
+  `LOCK_EX` (blocks every reader and waits for in-flight readers
+  to release). (Agent 2 B-12.)
+- **`Frida.version` regex validator + optional `sha256`.**
+  `Frida.version` now matches `^[0-9]+\.[0-9]+\.[0-9]+$` so typos
+  surface at config-load time instead of as a 404 from
+  `github.com/frida/frida/releases` at `frida_download.download`
+  time. A new optional `Frida.sha256` field is forwarded to
+  `download(..., expected_sha256=...)`; if set, the cached binary's
+  digest is verified case-insensitively and a mismatch raises
+  `ValueError` (defends against a hostile mirror substituting the
+  release). (Agent 1.)
+- **`Settings` no longer auto-loads `.env`.** v0.3's
+  `SettingsConfigDict(env_file=".env", ...)` made every
+  `Settings()` instantiation walk the *current working directory's*
+  `.env` file. Inside an instance directory that's the
+  Docker-compose env file (`INSTANCE_NAME=…`, `ADB_PORT=…`, etc.) —
+  values Beetroot must not pick up. v0.4 drops `env_file`; settings
+  read strictly from `os.environ`. (Agent 3 1.5, Agent 4.)
+- **Instance-name regex on `Instance.create` / `Instance.register`.**
+  Names must match `[a-z0-9_-]+` (the Docker compose project-name
+  grammar). v0.3 silently accepted `Alpha` / `alpha bravo` /
+  `alpha.bravo`, then compose blew up with a cryptic error at the
+  first `up`. v0.4 validates at the OOP boundary before any side
+  effect runs — no mkdir, no registry write, no port allocation
+  for a bad name. The default basename used by `register` (when
+  `name=` is omitted) goes through the same gate. (v0.3.1 deferred.)
+- **`Manager.list` + `Manager.list_orphans` now surface unparseable
+  YAML.** v0.3's `list_orphans` only surfaced rows whose
+  `beetroot.yaml` was *missing*; a corrupted or
+  api_version-mismatched YAML was invisible to both `list` and
+  `list_orphans`, so the user had no way to surface the row for
+  cleanup. v0.4 treats "can't parse" identically to "doesn't
+  exist". `Manager.list` also stops swallowing every
+  `FileNotFoundError` from `Instance.load` — only the
+  yaml-missing pre-check filters orphans now; any unexpected
+  OSError bubbles. (v0.3.1 deferred, Agent 2 F-12, Agent 3 1.7.)
+- **`cli.main` catches `registry.RegistryError`.** v0.3 let
+  `RegistryError` ("unknown instance X", "X is an adb backend, no
+  on-disk dir") propagate as a Rich-rendered traceback. v0.4
+  catches it alongside `ComposeError` / `BootstrapError` /
+  `ModuleFetchError` for the same friendly `error: ...` line.
+  (Agent 3 1.9.)
+
 ## v0.3.0 — 2026-05-19
 
 ### Breaking changes (upgrading from v0.2)

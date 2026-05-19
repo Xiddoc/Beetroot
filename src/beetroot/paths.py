@@ -90,15 +90,67 @@ def bundled_compose_file() -> Path:
     Return the path to the ``compose.yaml`` shipped inside the package.
 
     The compose template is bundled under ``beetroot.templates`` so the CLI
-    works identically whether installed editable (``uv sync``) or as a tool
-    (``uv tool install``); there is no copy of ``compose.yaml`` at the
-    project root anymore.
+    works identically whether installed editable (``uv sync``) or as a
+    tool (``uv tool install``); there is no copy of ``compose.yaml`` at
+    the project root anymore.
+
+    Uses :func:`importlib.resources.as_file` (T2 Agent 2 B-8) so a
+    wheel install — where the resource lives inside a zip and has no
+    real filesystem path — gets a materialised copy under the user's
+    cache dir that ``docker compose -f`` can actually read. The
+    extracted copy is cached per-process: subsequent calls return the
+    same path. The cache key is the resource's bytes (digest), so a
+    package upgrade that ships a new template invalidates the cache
+    on first read of the new bytes. For an editable / source install
+    where ``files()`` already returns a real path, ``as_file`` returns
+    that path unchanged and no copy is made.
 
     Returns:
-        Absolute path to the bundled compose.yaml.
+        Absolute path to a readable compose.yaml on disk.
     """
-    ref = importlib.resources.files("beetroot.templates").joinpath("compose.yaml")
-    return Path(str(ref))
+    return _materialise_bundled_compose()
+
+
+_BUNDLED_COMPOSE_CACHE: Path | None = None
+
+
+def _materialise_bundled_compose() -> Path:
+    """
+    Return a stable on-disk copy of the bundled compose.yaml.
+
+    The result is cached at the module level for the program's
+    lifetime — ``as_file()`` would otherwise create a fresh extraction
+    inside its context manager every call, defeating the per-process
+    caching contract documented above. T3 will swap the cache dir for
+    ``platformdirs.user_cache_path("beetroot") / "templates"``; for
+    now :func:`user_cache_dir` covers the same path.
+    """
+    global _BUNDLED_COMPOSE_CACHE  # noqa: PLW0603
+    if _BUNDLED_COMPOSE_CACHE is not None and _BUNDLED_COMPOSE_CACHE.exists():
+        return _BUNDLED_COMPOSE_CACHE
+    ref = importlib.resources.files("beetroot.templates").joinpath(
+        "compose.yaml"
+    )
+    with importlib.resources.as_file(ref) as resolved:
+        if resolved.is_file():
+            # Editable / source install: ``resolved`` is a real
+            # filesystem path; using it directly preserves
+            # backward-compat with callers that ``read_text()`` it.
+            # We still cache the path so subsequent calls don't redo
+            # the importlib lookup.
+            _BUNDLED_COMPOSE_CACHE = Path(resolved)
+            return _BUNDLED_COMPOSE_CACHE
+        # Zip-install path: copy the bytes into the user cache so
+        # ``docker compose -f`` can read them. ``as_file``'s
+        # extracted-tempdir is gone the moment the context manager
+        # exits; we need a path that outlives this call.
+        contents = resolved.read_bytes()
+    cache_target = user_cache_dir("templates") / "compose.yaml"
+    cache_target.parent.mkdir(parents=True, exist_ok=True)
+    if not cache_target.exists() or cache_target.read_bytes() != contents:
+        cache_target.write_bytes(contents)
+    _BUNDLED_COMPOSE_CACHE = cache_target
+    return _BUNDLED_COMPOSE_CACHE
 
 
 def user_config_dir() -> Path:

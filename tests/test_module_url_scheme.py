@@ -1,6 +1,6 @@
 """Module URL schemes are restricted to http(s).
 
-CR #2 finding G1: ``modules_dl._fetch_url`` used to call
+CR #2 finding G1: ``modules_download._fetch_url`` used to call
 ``urllib.request.urlopen`` against any URL, so a beetroot.yaml with
 ``url: file:///etc/passwd`` would silently exfiltrate that host file
 into the module cache. The fix is twofold:
@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from beetroot import modules_dl
+from beetroot import modules_download
 from beetroot.config import Module
 
 
@@ -48,9 +48,9 @@ class TestFetchUrlBeltAndSuspenders:
         # Even if a caller bypasses the pydantic validator (e.g. a
         # third-party script that calls _fetch_url with a hand-built
         # URL), the function-level guard still refuses.
-        with pytest.raises(modules_dl.ModuleFetchError, match="unsupported scheme"):
-            modules_dl._fetch_url("file:///etc/passwd")
+        with pytest.raises(modules_download.ModuleFetchError, match="unsupported scheme"):
+            modules_download._fetch_url("file:///etc/passwd")
 
     def test_fetch_url_rejects_arbitrary_scheme_directly(self) -> None:
-        with pytest.raises(modules_dl.ModuleFetchError, match="unsupported scheme"):
-            modules_dl._fetch_url("gopher://example.com/x")
+        with pytest.raises(modules_download.ModuleFetchError, match="unsupported scheme"):
+            modules_download._fetch_url("gopher://example.com/x")
