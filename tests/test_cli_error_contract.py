@@ -101,8 +101,8 @@ class TestComposeErrorSurfacing:
     def test_apply_compose_error_not_raised_by_apply_itself(
         self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # apply doesn't talk to compose, but does load frida_dl which
-        # can fail. Simulate by making frida_dl.stage_for_instance
+        # apply doesn't talk to compose, but does load frida_download which
+        # can fail. Simulate by making frida_download.stage_for_instance
         # raise RuntimeError — verify it's caught by cli.main(). The
         # spec says BootstrapError too, but the apply path raises
         # bare RuntimeError if e.g. frida download fails. So this

@@ -100,7 +100,7 @@ existing implementation:
 | `adb_address`           | `f"localhost:{self.ports['adb']}"`                                         |
 | `frida_address`         | `f"localhost:{self.ports['frida']}"`                                       |
 | `is_available`          | `self.status == "running"` (live `docker compose ps`)                      |
-| `install_frida(version)`| `frida_dl.stage_for_instance(self.root, version)` (bind-mount path)        |
+| `install_frida(version)`| `frida_download.stage_for_instance(self.root, version)` (bind-mount path)        |
 
 All four Protocol members are supported on `RedroidBackend`. The
 Magisk-DB writes that gate stealth (`stealth.rc` plus the `denylist`
@@ -140,7 +140,7 @@ host" from colliding.
 
 The cached binary in `install_frida` is the same
 `$XDG_CACHE_HOME/beetroot/frida/<filename>` blob that
-`frida_dl.download()` already produces; no duplicate cache.
+`frida_download.download()` already produces; no duplicate cache.
 
 ## 4. Capability methods that aren't universal
 
@@ -227,7 +227,7 @@ its own tests; later PRs depend on the surface earlier ones expose.
   `BackendCapabilityError` exception type lands here too. Tests stub
   out `subprocess.run` so the suite stays offline.
 * **PR2: `install_frida()` via `adb push`.** Reuses
-  `frida_dl.download()` to fetch the binary into the existing host
+  `frida_download.download()` to fetch the binary into the existing host
   cache, then `adb -s <serial> push <cached> /data/local/tmp/`,
   `adb shell chmod 755`, and `adb shell su -c
   '/data/local/tmp/frida-server &'`. Sets up the

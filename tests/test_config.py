@@ -138,7 +138,7 @@ class TestFridaOptional:
         cfg = InstanceConfig()
         rendered_ports = {"adb": 5555, "frida": 27042, "frida2": 27043}
         result = render_env("alpha", cfg, rendered_ports)
-        # FRIDA_VERSION never appears — the version is consumed by frida_dl,
+        # FRIDA_VERSION never appears — the version is consumed by frida_download,
         # not rendered into .env.
         assert "FRIDA_VERSION" not in result
         # The bind-mount port substitutions DO remain — disabled-frida

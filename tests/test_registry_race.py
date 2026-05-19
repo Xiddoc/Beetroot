@@ -42,18 +42,18 @@ def _spawn_worker(
     os.environ["XDG_CONFIG_HOME"] = xdg_config
     os.environ["XDG_CACHE_HOME"] = xdg_cache
     try:
-        # Stub frida_dl.download so the worker doesn't hit the network.
-        from beetroot import frida_dl
+        # Stub frida_download.download so the worker doesn't hit the network.
+        from beetroot import frida_download
 
         def _fake_download(version: str) -> Path:
-            out = frida_dl.cached_binary(version)
+            out = frida_download.cached_binary(version)
             out.parent.mkdir(parents=True, exist_ok=True)
             if not out.exists():
                 out.write_bytes(b"fake-frida")
                 out.chmod(0o755)
             return out
 
-        frida_dl.download = _fake_download
+        frida_download.download = _fake_download
         inst = api.Instance.create(name, path=Path(target_root) / name)
         return name, inst.index, None
     except Exception:

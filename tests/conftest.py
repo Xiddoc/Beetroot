@@ -66,7 +66,7 @@ def cli_root(
 
     Every subprocess invocation is short-circuited at the test level, so
     ``shutil.which`` returns synthetic paths for the binaries Beetroot
-    looks up (``docker``, ``adb``, ``frida``). ``frida_dl.download`` is
+    looks up (``docker``, ``adb``, ``frida``). ``frida_download.download`` is
     no-op'd so tests don't hit the network. Tests chdir into ``tmp_path``
     so a default ``--path`` resolves under it.
     """
@@ -79,16 +79,16 @@ def cli_root(
 
     monkeypatch.setattr(shutil, "which", _which)
 
-    from beetroot import frida_dl
+    from beetroot import frida_download
 
     def _fake_download(version: str) -> Path:
-        out = frida_dl.cached_binary(version)
+        out = frida_download.cached_binary(version)
         out.parent.mkdir(parents=True, exist_ok=True)
         if not out.exists():
             out.write_bytes(b"fake-frida")
             out.chmod(0o755)
         return out
 
-    monkeypatch.setattr(frida_dl, "download", _fake_download)
+    monkeypatch.setattr(frida_download, "download", _fake_download)
     monkeypatch.chdir(tmp_path)
     return tmp_path

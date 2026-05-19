@@ -22,7 +22,7 @@ from typing import Annotated
 
 import typer
 
-from . import api, builder, compose, modules_dl, paths, ports, registry
+from . import api, builder, compose, modules_download, paths, ports, registry
 from . import snapshot as snapshot_mod
 
 
@@ -582,7 +582,7 @@ def main() -> None:
     except builder.BootstrapError as e:
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
-    except modules_dl.ModuleFetchError as e:
+    except modules_download.ModuleFetchError as e:
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
     except FileNotFoundError as e:

@@ -2,9 +2,10 @@
 High-level OOP wrapper around Beetroot's procedural modules.
 
 The procedural modules (:mod:`beetroot.compose`, :mod:`beetroot.config`,
-:mod:`beetroot.frida_dl`, :mod:`beetroot.modules_dl`, :mod:`beetroot.paths`,
-:mod:`beetroot.ports`, :mod:`beetroot.registry`, :mod:`beetroot.snapshot`,
-:mod:`beetroot.builder`) remain the load-bearing implementation. This
+:mod:`beetroot.frida_download`, :mod:`beetroot.modules_download`,
+:mod:`beetroot.paths`, :mod:`beetroot.ports`, :mod:`beetroot.registry`,
+:mod:`beetroot.snapshot`, :mod:`beetroot.builder`) remain the load-bearing
+implementation. This
 module composes them behind a small object-oriented surface so researchers
 can drive Beetroot from Python with ``from beetroot import Instance``
 without learning the cross-module function vocabulary.
@@ -37,7 +38,7 @@ import subprocess
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from . import compose, config, frida_dl, modules_dl, paths, ports, registry
+from . import compose, config, frida_download, modules_download, paths, ports, registry
 from . import snapshot as _snapshot_mod
 
 # Module-level alias for the builtin ``list`` so the two ``list*``
@@ -599,7 +600,7 @@ class Instance:
         Args:
             version: The frida release tag (e.g. ``16.4.10``).
         """
-        frida_dl.stage_for_instance(self._root, version)
+        frida_download.stage_for_instance(self._root, version)
 
     def frida_cli(self, args: list[str]) -> int:
         """
@@ -656,7 +657,7 @@ class Instance:
         else:
             self._cfg.modules.append(config.Module(path=source, sha256=sha256))
         config.write_yaml(paths.instance_yaml(self._root), self._cfg)
-        modules_dl.stage_for_instance(self._root, self._cfg)
+        modules_download.stage_for_instance(self._root, self._cfg)
 
     def snapshot(self, dest: Path) -> Path:
         """
@@ -694,10 +695,10 @@ class Instance:
             config.render_env(self._name, self._cfg, new_ports)
         )
         if self._cfg.frida is not None:
-            frida_dl.stage_for_instance(self._root, self._cfg.frida.version)
+            frida_download.stage_for_instance(self._root, self._cfg.frida.version)
         else:
-            frida_dl.stage_empty(self._root)
-        modules_dl.stage_for_instance(self._root, self._cfg)
+            frida_download.stage_empty(self._root)
+        modules_download.stage_for_instance(self._root, self._cfg)
 
 
 def _rollback_partial_create(

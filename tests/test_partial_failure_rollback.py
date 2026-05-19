@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from beetroot import api, config, modules_dl, paths, registry, snapshot
+from beetroot import api, config, modules_download, paths, registry, snapshot
 
 
 def _poison_stage(
@@ -61,11 +61,11 @@ class TestCreateRollback:
     ) -> None:
         state = _poison_stage(
             monkeypatch,
-            modules_dl.ModuleFetchError("download failed: HTTP 404"),
+            modules_download.ModuleFetchError("download failed: HTTP 404"),
         )
 
         target = cli_root / "alpha"
-        with pytest.raises(modules_dl.ModuleFetchError):
+        with pytest.raises(modules_download.ModuleFetchError):
             api.Instance.create("alpha", path=target)
 
         # Registry row is gone.
@@ -168,11 +168,11 @@ class TestRestoreRollback:
         # row AND the freshly-extracted directory.
         _poison_stage(
             monkeypatch,
-            modules_dl.ModuleFetchError("HTTP 404 fetching module"),
+            modules_download.ModuleFetchError("HTTP 404 fetching module"),
         )
         target = cli_root / "alpha-restored"
 
-        with pytest.raises(modules_dl.ModuleFetchError):
+        with pytest.raises(modules_download.ModuleFetchError):
             snapshot.restore(
                 archive,
                 dest_name="alpha-restored",

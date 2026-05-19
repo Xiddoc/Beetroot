@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from beetroot import cli, frida_dl, paths, registry
+from beetroot import cli, frida_download, paths, registry
 
 runner = CliRunner()
 
@@ -61,14 +61,14 @@ def test_v02_to_v03_walkthrough(
 
     # Stub frida-server download so we don't hit the network.
     def _fake_download(version: str) -> Path:
-        out = frida_dl.cached_binary(version)
+        out = frida_download.cached_binary(version)
         out.parent.mkdir(parents=True, exist_ok=True)
         if not out.exists():
             out.write_bytes(b"fake-frida")
             out.chmod(0o755)
         return out
 
-    monkeypatch.setattr(frida_dl, "download", _fake_download)
+    monkeypatch.setattr(frida_download, "download", _fake_download)
     monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}"
                         if name in {"docker", "adb", "frida"} else None)
     # Use the real shutil for the rest of the suite — only `which` is faked.

@@ -55,6 +55,19 @@
   `"docker-unreachable"` / `"starting"` / `"created"` / `"paused"`
   / `"unknown"` mapping. Agent 2 B-7.
 
+### v0.4 — Theme T2: audit-pass bug fixes + rename pass
+
+**Breaking changes**
+
+- **`beetroot.frida_dl` → `beetroot.frida_download`** and
+  **`beetroot.modules_dl` → `beetroot.modules_download`.** Python is
+  explicit-by-design — `_dl` was the only ambiguity in the public
+  module surface. Update `from beetroot import frida_dl` imports to
+  `from beetroot import frida_download`. The module-level public
+  surface (`download`, `stage_for_instance`, `stage_empty`,
+  `sha256_of`, `release_url`, `cached_binary`, `frida_cache_dir`,
+  `ModuleFetchError`) is otherwise unchanged.
+
 ## v0.3.0 — 2026-05-19
 
 ### Breaking changes (upgrading from v0.2)
