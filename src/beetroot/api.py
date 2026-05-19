@@ -1386,22 +1386,27 @@ def adb_device_health(device: DeviceBackend) -> dict[str, CheckResult]:
     """
     Health-check the adb-backed equivalent of :meth:`Instance.health`.
 
-    Free function (not a method on :class:`AdbDevice`) because T6 lands
-    BEFORE T5's :class:`AdbDevice` exists. T5 (or a follow-up
-    commit after both T5 and T6 merge into ``dev/v0.4``) wires this in
-    as an actual method — either by aliasing
-    ``AdbDevice.health = lambda self: adb_device_health(self)`` or by
-    migrating the body to a proper method. The shared check NAMES
-    (``frida.handshake``, ``magisk.zygisk``, ``magisk.denylist.<pkg>``)
-    match :meth:`Instance.health` exactly so downstream tools grep
-    uniformly.
+    Originally landed as a free function (not a method on
+    :class:`AdbDevice`) because T6 landed BEFORE T5's
+    :class:`AdbDevice` existed. T7 added :meth:`AdbDevice.health`
+    as a real method that delegates back to this function. The free
+    function is preserved as the canonical implementation (so the body
+    only lives in one place) AND as a back-compat shim for
+    pre-T7 programmatic callers that imported
+    :func:`adb_device_health` directly. New code on or after T7
+    should call ``backend.health()`` — :meth:`AdbDevice.health` is the
+    spelling that satisfies the "backends own their own health surface"
+    intuition.
+
+    The shared check NAMES (``frida.handshake``, ``magisk.zygisk``,
+    ``magisk.denylist.<pkg>``) match :meth:`Instance.health` exactly so
+    downstream tools grep uniformly. ``device`` only needs the Protocol
+    surface (``adb_address``, ``frida_address``) — no
+    AdbDevice-specific methods — so this still works against minimal
+    stub backends in tests that don't import :class:`AdbDevice`.
 
     Args:
         device: A :class:`DeviceBackend` whose ``kind == "adb"``.
-            Uses only the Protocol surface (``adb_address``,
-            ``frida_address``) — no AdbDevice-specific methods, so
-            this works even with the minimal stub backends used in
-            tests before T5 lands.
 
     Returns:
         Ordered dict of check name → :class:`CheckResult`. ``compose.status``
