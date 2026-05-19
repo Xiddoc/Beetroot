@@ -8,6 +8,34 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _snapshot_backend_registry() -> Iterator[None]:
+    """Snapshot and restore the in-process backend registry between tests.
+
+    T5 registers ``AdbDevice`` at import time via
+    ``beetroot.backends.adb``'s module-level ``register_backend`` call.
+    Existing tests in ``tests/test_backend_registry.py`` ``pop("adb",
+    None)`` to remove that entry as part of their setup — without
+    restoration, the entry would be permanently gone for every
+    subsequent test in the same process (test order dependent), and
+    the synthetic third-backend test would see a different starting
+    state than a fresh import.
+
+    The autouse fixture is the simplest fix: snapshot the dict before
+    each test, restore it after. ``register_backend`` raises on
+    duplicate, so this is also defensively safer than the
+    ``pop`` + ``register_backend`` pattern in the legacy tests.
+    """
+    from beetroot import backends
+
+    snapshot = dict(backends._BACKEND_REGISTRY)
+    try:
+        yield
+    finally:
+        backends._BACKEND_REGISTRY.clear()
+        backends._BACKEND_REGISTRY.update(snapshot)
+
+
+@pytest.fixture(autouse=True)
 def _reset_api_version_warning_dedup() -> Iterator[None]:
     """Reset the api_version-auto-bump dedup set between tests.
 

@@ -314,33 +314,66 @@ def used_indices() -> set[int]:
     return {meta.index for meta in list_instances().values()}
 
 
-def add(name: str, absolute_path: Path, index: int) -> None:
+def add(
+    name: str,
+    absolute_path: Path | None = None,
+    index: int = 0,
+    *,
+    backend: BackendConfig | None = None,
+) -> None:
     """
     Register a new instance in the registry under an exclusive file lock.
 
+    Two calling conventions are supported for v0.3 → v0.4 source compat:
+
+    * **v0.3 form** (positional): ``add(name, absolute_path, index)``
+      registers a redroid-kind backend pointing at ``absolute_path``.
+    * **v0.4 form** (keyword): ``add(name, index=N, backend=<config>)``
+      registers any pre-built :class:`BackendConfig` discriminated-union
+      arm — adb, redroid, or third-party.
+
     Args:
         name: Instance name to register.
-        absolute_path: Absolute path to the instance directory (the one
-            containing ``beetroot.yaml``).
+        absolute_path: Absolute path to the instance directory (the
+            one containing ``beetroot.yaml``). Required when ``backend``
+            is None; ignored otherwise.
         index: Port index to assign to this instance.
+        backend: Pre-built backend config (any
+            :class:`BackendConfig` union arm). When omitted, the
+            v0.3-form redroid shape is synthesised from
+            ``absolute_path``.
 
     Raises:
-        ValueError: If ``name`` is already in the registry.
+        ValueError: If ``name`` is already in the registry or if neither
+            ``absolute_path`` nor ``backend`` is supplied.
     """
+    if backend is None:
+        if absolute_path is None:
+            raise ValueError(
+                "registry.add requires either ``absolute_path`` (for the "
+                "v0.3 redroid-only form) or ``backend`` (for the v0.4 "
+                "discriminated-union form).",
+            )
+        backend = RedroidBackendConfig(absolute_path=str(absolute_path))
     path = paths.user_registry_file()
     with _locked(path):
         data = _read(path)
         if name in data.instances:
             raise ValueError(f"instance {name!r} already in registry")
         data.instances[name] = InstanceMeta(
-            backend=RedroidBackendConfig(absolute_path=str(absolute_path)),
+            backend=backend,
             index=index,
             created_at=datetime.now(UTC),
         )
         _write(path, data)
 
 
-def add_allocating(name: str, absolute_path: Path) -> int:
+def add_allocating(
+    name: str,
+    absolute_path: Path | None = None,
+    *,
+    backend: BackendConfig | None = None,
+) -> int:
     """
     Atomically allocate the lowest free port index AND register ``name``.
 
@@ -351,16 +384,39 @@ def add_allocating(name: str, absolute_path: Path) -> int:
     the failure at ``docker compose up`` time, when the second
     instance's bind fails.
 
+    Two calling conventions are supported for v0.3 → v0.4 source compat:
+
+    * **v0.3 form** (positional): ``add_allocating(name, absolute_path)``
+      registers a redroid-kind backend pointing at ``absolute_path``.
+    * **v0.4 form** (keyword): ``add_allocating(name, backend=<config>)``
+      registers any pre-built :class:`BackendConfig` arm — used by the
+      ``beetroot adopt`` verb for adb-kind rows that have no
+      ``absolute_path``.
+
     Args:
         name: Instance name to register.
         absolute_path: Absolute path to the instance directory.
+            Required when ``backend`` is None; ignored otherwise.
+        backend: Pre-built backend config (any
+            :class:`BackendConfig` union arm). When omitted, the
+            v0.3-form redroid shape is synthesised from
+            ``absolute_path``.
 
     Returns:
         The port index that was allocated.
 
     Raises:
-        ValueError: If ``name`` is already in the registry.
+        ValueError: If ``name`` is already in the registry or if neither
+            ``absolute_path`` nor ``backend`` is supplied.
     """
+    if backend is None:
+        if absolute_path is None:
+            raise ValueError(
+                "registry.add_allocating requires either ``absolute_path`` "
+                "(for the v0.3 redroid-only form) or ``backend`` (for the "
+                "v0.4 discriminated-union form).",
+            )
+        backend = RedroidBackendConfig(absolute_path=str(absolute_path))
     path = paths.user_registry_file()
     with _locked(path):
         data = _read(path)
@@ -369,7 +425,7 @@ def add_allocating(name: str, absolute_path: Path) -> int:
         used = {meta.index for meta in data.instances.values()}
         index = ports.lowest_free_index(used)
         data.instances[name] = InstanceMeta(
-            backend=RedroidBackendConfig(absolute_path=str(absolute_path)),
+            backend=backend,
             index=index,
             created_at=datetime.now(UTC),
         )
