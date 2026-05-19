@@ -35,12 +35,13 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import re
 import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Final, Protocol, runtime_checkable
 
 from . import compose, config, frida_download, modules_download, paths, ports, registry
 from . import snapshot as _snapshot_mod
@@ -55,6 +56,23 @@ from . import snapshot as _snapshot_mod
 _List = list
 
 _MINIMAL_BEETROOT_YAML = "api_version: 3\nandroid:\n  version: 14\n"
+
+# Instance names are used as Docker compose project names (which
+# enforce ``[a-z0-9_-]+``) AND as filesystem-segment defaults for the
+# instance directory. Pre-validate at the OOP boundary so a typo like
+# ``Foo`` or ``alpha bravo`` surfaces with a clear message before any
+# side effect runs. (T2 v0.3.1 deferred.)
+_INSTANCE_NAME_RE: Final = re.compile(r"^[a-z0-9_-]+$")
+
+
+def _validate_instance_name(name: str) -> None:
+    """Raise ``ValueError`` if ``name`` doesn't match the instance-name grammar."""
+    if not _INSTANCE_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"instance name {name!r} is invalid — must match "
+            r"[a-z0-9_-]+ (Docker compose project-name grammar). "
+            "Lowercase alphanumerics, underscores, and hyphens only."
+        )
 
 
 class InstanceNotFoundError(LookupError):
@@ -252,6 +270,7 @@ class Instance:
             FileExistsError: If ``path`` already contains a
                 ``beetroot.yaml`` (use :meth:`register` to adopt it).
         """
+        _validate_instance_name(name)
         if registry.get(name) is not None:
             raise ValueError(f"instance {name!r} already exists in registry")
         target_root = (path if path is not None else Path(name)).resolve()
@@ -321,6 +340,7 @@ class Instance:
         if not yaml_path.is_file():
             raise FileNotFoundError(f"no beetroot.yaml at {yaml_path}")
         resolved_name = name if name is not None else target_root.name
+        _validate_instance_name(resolved_name)
         if registry.get(resolved_name) is not None:
             raise ValueError(f"instance {resolved_name!r} already in registry")
         cfg = config.load_yaml(yaml_path)

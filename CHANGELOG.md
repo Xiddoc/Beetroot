@@ -158,6 +158,14 @@
   Docker-compose env file (`INSTANCE_NAME=…`, `ADB_PORT=…`, etc.) —
   values Beetroot must not pick up. v0.4 drops `env_file`; settings
   read strictly from `os.environ`. (Agent 3 1.5, Agent 4.)
+- **Instance-name regex on `Instance.create` / `Instance.register`.**
+  Names must match `[a-z0-9_-]+` (the Docker compose project-name
+  grammar). v0.3 silently accepted `Alpha` / `alpha bravo` /
+  `alpha.bravo`, then compose blew up with a cryptic error at the
+  first `up`. v0.4 validates at the OOP boundary before any side
+  effect runs — no mkdir, no registry write, no port allocation
+  for a bad name. The default basename used by `register` (when
+  `name=` is omitted) goes through the same gate. (v0.3.1 deferred.)
 
 ## v0.3.0 — 2026-05-19
 

@@ -130,6 +130,32 @@ class TestInstanceCreate:
         with pytest.raises(ValueError, match="5565"):
             api.Instance.create("bravo")
 
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "Alpha",              # uppercase
+            "alpha bravo",        # space
+            "alpha.bravo",        # dot
+            "alpha/bravo",        # slash
+            "alpha:bravo",        # colon
+            "",                   # empty
+            "alpha!",             # punctuation
+        ],
+    )
+    def test_create_invalid_name_raises_before_side_effects(
+        self, bad: str, cli_root: Path,
+    ) -> None:
+        # T2 (v0.3.1 deferred): instance names must match the Docker
+        # compose project-name grammar (``[a-z0-9_-]+``). A bad name
+        # MUST raise BEFORE any side effect runs — no mkdir, no
+        # registry write, no port allocation.
+        with pytest.raises(ValueError, match="instance name"):
+            api.Instance.create(bad)
+        assert registry.get(bad) is None
+        # No stray ``<bad>`` dir was created either.
+        if bad:
+            assert not (cli_root / bad).exists()
+
 
 # ---------------------------------------------------------------------------
 # Instance.register
@@ -164,6 +190,30 @@ class TestInstanceRegister:
         config.write_yaml(target / "beetroot.yaml", config.InstanceConfig())
         api.Instance.register(target)
         with pytest.raises(ValueError, match="already in registry"):
+            api.Instance.register(target)
+
+    def test_register_invalid_explicit_name_raises(
+        self, cli_root: Path,
+    ) -> None:
+        # T2 (v0.3.1 deferred): explicit ``name`` to register must
+        # match the same grammar create checks.
+        target = cli_root / "alpha"
+        target.mkdir()
+        config.write_yaml(target / "beetroot.yaml", config.InstanceConfig())
+        with pytest.raises(ValueError, match="instance name"):
+            api.Instance.register(target, name="Bad Name")
+        assert registry.get("Bad Name") is None
+
+    def test_register_invalid_basename_default_raises(
+        self, cli_root: Path,
+    ) -> None:
+        # When ``name=`` is omitted, ``register`` falls back to the
+        # directory's basename. If that basename violates the
+        # grammar, the same validation must fire.
+        target = cli_root / "Bad-Name"  # uppercase
+        target.mkdir()
+        config.write_yaml(target / "beetroot.yaml", config.InstanceConfig())
+        with pytest.raises(ValueError, match="instance name"):
             api.Instance.register(target)
 
 
