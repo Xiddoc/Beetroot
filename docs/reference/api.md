@@ -76,7 +76,7 @@ The v0.3 OOP surface (`Instance`, `Manager`, `DeviceBackend`,
   their own `BackendConfig` subclass with a unique `kind: Literal[...]`
   discriminator — see the [Adding a backend guide](../guides/adding-a-backend.md)
   for the in-process / entry-point registration split and the v0.4 →
-  v0.5 JSON-discriminator round-trip limitation.
+  v0.6 JSON-discriminator round-trip limitation.
 * **`CheckResult`** — frozen pydantic model with `status: Literal["pass",
   "fail", "skip"]` and optional `reason: str | None`. Returned from
   `Instance.health()` / `AdbDevice.health()` keyed by check name.
@@ -93,7 +93,7 @@ The v0.3 OOP surface (`Instance`, `Manager`, `DeviceBackend`,
   back-compat shim for pre-T7 programmatic callers.
 * **`registry.set_stealth_paths(name, blob)`** — write a `dict[str,
   str]` into the named instance's `RedroidBackendConfig.stealth_paths`
-  slot (T4 plumbing for v0.5's stealth-path PR1). Locked + atomic-
+  slot (T4 plumbing for v0.6's stealth-path PR1). Locked + atomic-
   replaced via the same `_write` pattern the rest of `registry.py`
   uses. Rejects unknown names and adb-kind rows.
 

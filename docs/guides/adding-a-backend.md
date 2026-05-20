@@ -284,7 +284,7 @@ backends.register_backend("cloud-xyz", CloudBackend)
 The two paths are equivalent at runtime — they both populate the
 same `_BACKEND_REGISTRY` dict that `Manager.resolve` looks up.
 
-## 6. What works in v0.4 vs deferred to v0.5
+## 6. What works in v0.4 vs deferred to v0.6
 
 This split matters for anyone planning to ship a third-party backend
 against v0.4.
@@ -304,7 +304,7 @@ against v0.4.
   plain `model_dump_json` / `model_validate_json` (the third-party
   class owns the schema).
 
-**Deferred to v0.5: third-party `kind` values round-tripping through
+**Deferred to v0.6: third-party `kind` values round-tripping through
 `RegistryFile` JSON validation.**
 
 v0.4's `RegistryFile` validates the full registry document through
@@ -324,7 +324,7 @@ Concrete workarounds for v0.4:
   read its own per-instance state from its own config file and only
   use Beetroot's registry as a name-to-port-index allocator.
 
-**v0.5 plan:** add a registry-side extension hook so third-party
+**v0.6 plan:** add a registry-side extension hook so third-party
 `BackendConfig` subclasses can be registered for JSON discrimination.
 The expected shape is something like:
 
@@ -336,7 +336,7 @@ registry.register_backend_config(CloudBackendConfig)
 # rows and validates them against CloudBackendConfig.
 ```
 
-— but the exact API will be settled when v0.5 ships. Until then,
+— but the exact API will be settled when v0.6 ships. Until then,
 the v0.4 recipe is "in-process Protocol dispatch works, on-disk
 round-trip needs to wait or be worked around".
 
@@ -420,5 +420,5 @@ subprocess-mocking pattern).
   `DeviceBackend` Protocol definition + the v0.4 backend-registry
   surface.
 * [Migrating from v0.3 to v0.4](migration-v0.3-to-v0.4.md) — covers
-  the schema bump, the new discriminator shape, and the v0.5
+  the schema bump, the new discriminator shape, and the v0.6
   known-limitations list.

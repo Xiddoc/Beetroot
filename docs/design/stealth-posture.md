@@ -1,14 +1,14 @@
 # Stealth Posture: Threat Model and Design Doc
 
-!!! info "Status: partial v0.4, balance deferred to v0.5"
+!!! info "Status: partial v0.4, balance deferred to v0.6"
     v0.4 shipped **PR5 + PR6 (plumbing only)** — the `/flash_dir` →
     `/data/adb/modules_update/` mount-target swap and the
     `stealth_paths: dict[str, str]` registry slot + snapshot/restore
     round-trip. **PR1** (the actual `/data/adb/modules/<random>/...`
-    Frida-path move) is explicitly **deferred to v0.5 pending stealth
+    Frida-path move) is explicitly **deferred to v0.6 pending stealth
     research** — see the prerequisite documented inline in
     [§3.1](#31-move-frida-off-datalocaltmp). **PR2 / PR3 / PR4 / PR7**
-    remain in the v0.5 backlog (no change). The
+    remain in the v0.6 backlog (no change). The
     [v0.4 implementation roadmap](#7-v04-implementation-roadmap) has
     per-PR status.
 
@@ -159,7 +159,7 @@ land after.
 
 ### 3.1 Move Frida off `/data/local/tmp/`
 
-!!! warning "v0.4 plumbing-only; default-flip deferred to v0.5"
+!!! warning "v0.4 plumbing-only; default-flip deferred to v0.6"
     v0.4 lands the wiring — `BEETROOT_FRIDA_BIN` is plumbed end-to-end
     through `render_env`, the bundled compose template, and the helper
     shells, and `RedroidBackendConfig.stealth_paths` plus
@@ -167,16 +167,16 @@ land after.
     `path_layout` round-trip are all in place — but the default
     container-side Frida path is still `/data/local/tmp/frida-server`.
     The actual default-flip to `/data/adb/modules/<random>/bin/<random>`
-    is **deferred to v0.5 pending stealth research**:
+    is **deferred to v0.6 pending stealth research**:
     **user concern: GMS may scan the entirety of `/data/adb/modules/`
     regardless of Shamiko's namespace switch**, so the naïve
     `/data/adb/modules/<random>/...` choice may not actually buy us
-    anything. v0.5's PR1 is gated on a written decision in this
+    anything. v0.6's PR1 is gated on a written decision in this
     section's "research prerequisite" callout below; once the chosen
     path is validated, the default flip is a one-line change in
     `Instance.create`'s `stealth_paths` generator.
 
-!!! note "Research prerequisite (v0.5)"
+!!! note "Research prerequisite (v0.6)"
     Output: a written decision in this section with the validated
     path. Candidates: (a) another installed Magisk module's tree
     (piggy-back on a legitimate module's directory), (b) an
@@ -404,7 +404,7 @@ On `beetroot restore`, the CLI:
    the snapshotted environment expects.
 
 This makes snapshots **portable across hosts and across Beetroot
-versions** as long as the schema doesn't change. A v0.4 → v0.5
+versions** as long as the schema doesn't change. A v0.4 → v0.6
 snapshot migration would bump a `path_layout_version` field.
 
 ## 6. Interaction with T9 (device backends)
@@ -438,14 +438,14 @@ executes against. Complexity tags: **S** (≤1 day), **M** (2–3 days),
 
 ### PR1 — Frida path randomization
 
-- **Status: DEFERRED to v0.5 pending stealth research.** v0.4 lands
+- **Status: DEFERRED to v0.6 pending stealth research.** v0.4 lands
   the plumbing only (the `BEETROOT_FRIDA_BIN` substitution is
   end-to-end through the bundled compose template, `render_env`, and
   the helper shells; the `stealth_paths` registry slot is in place).
   The default-path-flip is gated on the research prerequisite in
   [§3.1](#31-move-frida-off-datalocaltmp). Once chosen, this becomes a
   one-line change in `Instance.create`'s `stealth_paths` generator.
-- **Scope (v0.5):** Implement §3.1. Generate randomized
+- **Scope (v0.6):** Implement §3.1. Generate randomized
   `/data/adb/modules/<random>/bin/<random>` (or whatever the research
   validates) at `beetroot create`, persist in registry, wire into
   compose template via `BEETROOT_FRIDA_BIN`. T7's `launch-frida.sh`
@@ -514,7 +514,7 @@ executes against. Complexity tags: **S** (≤1 day), **M** (2–3 days),
   back into the destination's registry slot via the new
   `registry.set_stealth_paths(name, blob)` helper; `_stage_local`
   forwards the slot through `config.render_env(..., stealth_paths=...)`.
-  v0.4 leaves the slot empty by default — v0.5's PR1 generator
+  v0.4 leaves the slot empty by default — v0.6's PR1 generator
   populates it once §3.1's research validates a path.
 - **Scope:** Implement §3.6. Add `stealth_paths: dict[str, str]` to
   the registry entry. Generated at `create`, read by `apply`, `up`,
@@ -575,7 +575,7 @@ but they are **not Beetroot's to fix**:
   CLI and the container can see the Frida D-Bus handshake. This
   doesn't matter inside the container itself (the kernel is ours;
   loopback traffic isn't inspectable from a malicious app), but it
-  matters for cross-host setups. v0.4 won't address it; v0.5 might
+  matters for cross-host setups. v0.4 won't address it; v0.6 might
   via TLS-wrapped transport.
 - **Compromised host kernels.** If the host running Docker is
   compromised, the container's stealth posture is moot — the
