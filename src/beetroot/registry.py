@@ -66,10 +66,10 @@ class RedroidBackendConfig(BaseModel):
         absolute_path: Absolute path to the instance directory (the
             directory containing ``beetroot.yaml``).
         stealth_paths: Reserved slot for the v0.4 stealth-posture
-            plumbing. Empty in v0.4; v0.5's PR1 populates it with the
+            plumbing. Empty in v0.4; v0.6's PR1 populates it with the
             randomized container-path layout produced by
             ``Instance.create``. Snapshot / restore round-trips the
-            blob so a v0.5 snapshot lands cleanly on a v0.4 host.
+            blob so a v0.6 snapshot lands cleanly on a v0.4 host.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=False)
@@ -453,7 +453,7 @@ def set_stealth_paths(name: str, stealth_paths: dict[str, str]) -> None:
     """
     Replace the stealth-path blob on an existing redroid instance row.
 
-    Used by :func:`snapshot.restore` (T4) to replay a v0.5-shaped
+    Used by :func:`snapshot.restore` (T4) to replay a v0.6-shaped
     ``path_layout`` from the snapshot manifest into the freshly-allocated
     registry entry. Keeping the mutation on its own helper (rather
     than threading the blob through ``add_allocating``) keeps the hot

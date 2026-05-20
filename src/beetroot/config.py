@@ -424,7 +424,7 @@ _STEALTH_PATH_DEFAULTS: Final = {
 # Map ``stealth_paths`` keys to the ``BEETROOT_*`` env-var names the
 # bundled compose template + boot helpers consume. The key vocabulary
 # (``magisk_db`` / ``modules_dir`` / ``frida_bin``) matches the
-# snapshot manifest's ``path_layout`` field naming so a v0.5 snapshot
+# snapshot manifest's ``path_layout`` field naming so a v0.6 snapshot
 # round-trips through restore without any per-key renaming.
 _STEALTH_PATH_ENV_KEYS: Final = {
     "magisk_db": "BEETROOT_MAGISK_DB",
@@ -459,7 +459,7 @@ def render_env(
             both mean "use defaults" — the helper merges either form
             against ``_STEALTH_PATH_DEFAULTS`` so callers can pass the
             ``RedroidBackendConfig.stealth_paths`` blob verbatim.
-            Unknown keys are silently ignored (so a v0.5-shaped blob
+            Unknown keys are silently ignored (so a v0.6-shaped blob
             carrying a future ``stealth_module_id`` key restores
             cleanly against a v0.4 ``render_env``).
 
@@ -493,7 +493,7 @@ def render_env(
         # parameterises mount targets too, so render_env is the single
         # source of truth instead of the YAML's ${VAR:-default}
         # fallback). T4 reads from ``stealth_paths`` if populated;
-        # v0.5's PR1 flips the default in ``Instance.create``'s
+        # v0.6's PR1 flips the default in ``Instance.create``'s
         # generator once stealth research validates a safe layout.
         f"BEETROOT_MAGISK_DB={resolved_paths['magisk_db']}",
         f"BEETROOT_MODULES_DIR={resolved_paths['modules_dir']}",

@@ -313,7 +313,7 @@ class AdbDevice:
         ``/sdcard/Download/<basename>`` and the user is told to install
         it via the Magisk app's Modules tab. The auto-install variant
         (push directly to ``/data/adb/modules_update/`` via ``su -c``)
-        is deferred to v0.5 because it requires extra UX to surface
+        is deferred to v0.6 because it requires extra UX to surface
         per-module success/failure without booting the device into a
         bad state.
 
@@ -323,11 +323,11 @@ class AdbDevice:
                 user can ``curl`` the zip into ``./modules/`` first if
                 they want the same UX as :class:`beetroot.api.Instance`.
             sha256: Optional expected hex digest for integrity checking.
-                Currently advisory only — the v0.5 auto-install variant
+                Currently advisory only — the v0.6 auto-install variant
                 will enforce it; for v0.4 the host-side hash is the
                 user's responsibility before invoking ``beetroot module``.
         """
-        del sha256  # Reserved for the v0.5 auto-install variant.
+        del sha256  # Reserved for the v0.6 auto-install variant.
         src = Path(source)
         if not src.exists():
             raise ValueError(

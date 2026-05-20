@@ -826,7 +826,7 @@ class Instance:
 
         T4: the ``.env`` render forwards the per-instance
         ``RedroidBackendConfig.stealth_paths`` blob into ``render_env``
-        so a v0.5 snapshot restored against a v0.4 host (where
+        so a v0.6 snapshot restored against a v0.4 host (where
         :func:`snapshot.restore` already wrote the manifest's
         ``path_layout`` into the registry slot) emits the right
         ``BEETROOT_*`` overrides on the very first ``apply``.

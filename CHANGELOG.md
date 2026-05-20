@@ -1,5 +1,78 @@
 # Changelog
 
+## v0.5.0 — 2026-05-20
+
+A tech-debt and completeness release. **No schema change** (`api_version`
+stays `3`) and **no breaking changes** — v0.4 instances and registries
+work unchanged. The sprint closed the shippable-without-research items
+from v0.4's deferred list, hardened the quality gates, and added the
+first container-level CI coverage. The stealth track (randomized Frida
+paths, Gadget mode) and the remaining backend-completeness items move to
+v0.6.
+
+### Theme T1: AdbDevice bug fixes + input validation
+
+- **`AdbDevice.install_frida` now guards against a missing `adb`.** It
+  raises `AdbNotInstalledError` with an install hint up front instead of
+  failing mid-`adb push` with a cryptic subprocess error — matching the
+  guard `shell()` and `frida_cli()` already had.
+- **`AdbDevice.add_module` validates its source before pushing.** The
+  host path must exist, be a regular file, and end in `.zip`; bad input
+  raises `ValueError` with no partial `adb push` side effect.
+- **Fixed a literal `{name}` in adb capability errors.** The `down` /
+  `destroy` "use `beetroot forget`" hints were plain (non-f) strings, so
+  `{name}` printed verbatim; they now interpolate the instance name.
+
+### Theme T2: `adopt --verify` + the `forget` verb
+
+- **`beetroot adopt --verify` / `-V`.** Opt-in flag that runs
+  `adb devices` and refuses to register a serial that isn't a connected
+  `device`, so a typo no longer creates a dead registry row. The default
+  stays pre-registration-friendly (adopt a device before plugging it in).
+- **`beetroot forget <name>`.** New verb that deregisters an instance —
+  removing its registry row and freeing its port index — **without** the
+  destroy side effects (no host-directory teardown, no `docker compose`
+  call). It's the clean way to drop an adopted device and works for both
+  redroid and adb backends. (This is the verb the adb capability errors
+  already pointed users to.)
+
+### Theme T3: quality gates
+
+- **Mutation testing covers the whole package.** The nightly `mutmut`
+  scope went from 4 modules to all 14 under `src/beetroot/`. The
+  `--paths-to-mutate` CLI flag (removed in mutmut 3.x) was dropped in
+  favour of `[tool.mutmut].paths_to_mutate` as the single source of
+  truth, and the nightly timeout was raised for the larger surface.
+- **Docstring-coverage gate raised 95% → 100%** (`interrogate`), to
+  match the project's max-strictness posture.
+
+### Theme T4: container-level CI
+
+- **`docker-build-smoke` job.** Builds the `docker/Dockerfile` COPY
+  layers on a `busybox` stand-in base to catch Dockerfile drift that
+  hadolint can't. The real redroid base can't be pulled on GitHub
+  runners, so this validates structure only (no boot).
+- **Dockerized boot test.** `tests/test_container_boot.py` runs
+  `docker/*.sh` end-to-end in a real `busybox` container with fake
+  `magisk` / `frida-server` shims, asserting the Zygisk + denylist SQL
+  writes, the module install, and the frida launch all fire. It's the
+  first test that executes the boot scripts as a real shell would.
+
+### Deferred to v0.6
+
+- **Stealth PR1** — flipping the default Frida path off
+  `/data/local/tmp/` to a randomized layout. Still gated on a written
+  research decision (does GMS scan all of `/data/adb/modules/`
+  regardless of Shamiko's namespace switch?). The v0.4 plumbing
+  (`stealth_paths`, `BEETROOT_FRIDA_BIN`, the snapshot `path_layout`
+  round-trip) remains in place and unused.
+- **AdbDevice module auto-install** (the `sha256`-enforcing
+  push-to-`modules_update` variant). The safe-default push-to-Downloads
+  is what ships today.
+- **Third-party backend JSON round-trip** through the registry, and
+  marking the dual-form `registry.add` positional signature
+  `@deprecated`.
+
 ## v0.4.0 — 2026-05-19
 
 ### Breaking changes (upgrading from v0.3)

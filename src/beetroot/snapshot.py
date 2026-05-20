@@ -12,9 +12,9 @@ base image plus the persisted ``/data`` bind mount, so re-running
 The archive carries a ``.beetroot-snapshot.json`` manifest at its root.
 The manifest's ``path_layout`` field carries the source instance's
 ``RedroidBackendConfig.stealth_paths`` blob (T4) so a randomized
-v0.5 layout round-trips through ``snapshot → restore`` into the new
+v0.6 layout round-trips through ``snapshot → restore`` into the new
 instance's registry entry. v0.4 itself defaults the slot to the empty
-dict, so v0.4 → v0.4 round-trips preserve ``{}``; v0.5's PR1 will
+dict, so v0.4 → v0.4 round-trips preserve ``{}``; v0.6's PR1 will
 populate the slot in ``Instance.create``'s generator and the same
 round-trip will preserve those randomized paths.
 
@@ -79,7 +79,7 @@ class Manifest(BaseModel):
             instance. Populated from the source's
             ``RedroidBackendConfig.stealth_paths`` at snapshot time
             (T4) and replayed into the destination's slot on restore.
-            Default ``{}`` in v0.4; v0.5's ``Instance.create`` generator
+            Default ``{}`` in v0.4; v0.6's ``Instance.create`` generator
             will populate the slot per-instance.
     """
 
@@ -370,7 +370,7 @@ def restore(
     :class:`registry.RedroidBackendConfig.stealth_paths` slot via
     :func:`registry.set_stealth_paths`. A v0.4 snapshot ships
     ``{}``, so the assignment is a no-op for today's snapshots — but
-    a v0.5 snapshot carrying randomized paths round-trips into a
+    a v0.6 snapshot carrying randomized paths round-trips into a
     matching slot on the new instance, ready for ``render_env`` to
     consume on the next ``apply``.
 
@@ -416,7 +416,7 @@ def restore(
     try:
         # T4: replay the snapshot's path_layout into the new registry
         # entry's stealth_paths slot. v0.4 manifests carry ``{}`` so
-        # this is a structural no-op today; a v0.5 snapshot carrying
+        # this is a structural no-op today; a v0.6 snapshot carrying
         # randomized paths round-trips into a matching slot on the new
         # instance. Done INSIDE the rollback try/except so a malformed
         # blob (e.g. an unrecognised key in a future schema bump)
