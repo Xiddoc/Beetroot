@@ -170,6 +170,20 @@ class TestInstallFrida:
             "forward", "tcp:27052", "tcp:27042",
         ]
 
+    def test_raises_when_adb_not_on_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        fake_cached = tmp_path / "frida-server-16.4.10"
+        fake_cached.write_bytes(b"fake-binary")
+        monkeypatch.setattr(
+            frida_download, "download", lambda version: fake_cached,
+        )
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        with pytest.raises(api.AdbNotInstalledError, match="adb not found on PATH"):
+            _make_device().install_frida("16.4.10")
+
     def test_raises_when_adb_returns_nonzero(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -263,6 +277,37 @@ class TestAddModule:
         assert "Magisk app" in err
         assert "Modules tab" in err
 
+    def test_rejects_nonexistent_path(
+        self,
+        captured_adb: list[list[str]],
+        tmp_path: Path,
+    ) -> None:
+        with pytest.raises(ValueError, match="does not exist"):
+            _make_device().add_module(str(tmp_path / "missing.zip"))
+        assert captured_adb == []
+
+    def test_rejects_directory_instead_of_file(
+        self,
+        captured_adb: list[list[str]],
+        tmp_path: Path,
+    ) -> None:
+        dir_path = tmp_path / "a_dir.zip"
+        dir_path.mkdir()
+        with pytest.raises(ValueError, match="directory"):
+            _make_device().add_module(str(dir_path))
+        assert captured_adb == []
+
+    def test_rejects_non_zip_extension(
+        self,
+        captured_adb: list[list[str]],
+        tmp_path: Path,
+    ) -> None:
+        not_zip = tmp_path / "module.apk"
+        not_zip.write_bytes(b"PK\x03\x04fake")
+        with pytest.raises(ValueError, match=r"\.zip"):
+            _make_device().add_module(str(not_zip))
+        assert captured_adb == []
+
     def test_sha256_is_currently_advisory(
         self,
         captured_adb: list[list[str]],
@@ -293,6 +338,30 @@ class TestLifecycleStubs:
     def test_snapshot_raises(self, tmp_path: Path) -> None:
         with pytest.raises(api.BackendCapabilityError, match="adb-backed"):
             _make_device().snapshot(tmp_path / "out.tar.zst")
+
+    def test_down_error_contains_real_name_not_literal_brace(self) -> None:
+        dev = _make_device(serial="emulator-5554")
+        with pytest.raises(api.BackendCapabilityError, match="phone"):
+            dev.down()
+
+    def test_down_error_does_not_contain_v05_parenthetical(self) -> None:
+        dev = _make_device()
+        with pytest.raises(api.BackendCapabilityError) as exc_info:
+            dev.down()
+        assert "(v0.5)" not in str(exc_info.value)
+        assert "{name}" not in str(exc_info.value)
+
+    def test_destroy_error_contains_real_name_not_literal_brace(self) -> None:
+        dev = _make_device(serial="emulator-5554")
+        with pytest.raises(api.BackendCapabilityError, match="phone"):
+            dev.destroy(yes=True)
+
+    def test_destroy_error_does_not_contain_v05_parenthetical(self) -> None:
+        dev = _make_device()
+        with pytest.raises(api.BackendCapabilityError) as exc_info:
+            dev.destroy(yes=True)
+        assert "(v0.5)" not in str(exc_info.value)
+        assert "{name}" not in str(exc_info.value)
 
 
 class TestFromMeta:

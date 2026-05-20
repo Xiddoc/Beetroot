@@ -56,6 +56,42 @@ _MAGISK_MODULE_DROP = "/sdcard/Download"
 _ADB_DEVICES_COLUMNS = 2
 
 
+def serial_is_available(serial: str) -> bool:
+    """
+    Return True iff ``adb devices`` lists ``serial`` in state ``"device"``.
+
+    Shared between :attr:`AdbDevice.is_available` and the ``--verify``
+    flag on ``beetroot adopt`` so both call sites use identical parsing
+    logic. Serials in ``offline`` / ``unauthorized`` / ``no permissions``
+    state return False — the user needs to re-plug, accept the RSA prompt,
+    or fix udev rules first.
+
+    Args:
+        serial: The adb serial / endpoint identifier to look up.
+
+    Returns:
+        True if ``adb devices`` exits 0 and the serial is listed as
+        ``device``; False otherwise.
+    """
+    res = subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv is constant
+        [_ADB, "devices"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0:
+        return False
+    for line in res.stdout.splitlines():
+        parts = line.split()
+        if (
+            len(parts) >= _ADB_DEVICES_COLUMNS
+            and parts[0] == serial
+            and parts[1] == "device"
+        ):
+            return True
+    return False
+
+
 class AdbDevice:
     """
     Backend that drives a rooted Android device via the host ``adb`` CLI.
@@ -168,23 +204,7 @@ class AdbDevice:
         ``no permissions`` count as unavailable — the user needs to
         re-plug, accept the RSA prompt, or fix udev rules first.
         """
-        res = subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv is constant
-            [_ADB, "devices"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if res.returncode != 0:
-            return False
-        for line in res.stdout.splitlines():
-            parts = line.split()
-            if (
-                len(parts) >= _ADB_DEVICES_COLUMNS
-                and parts[0] == self._config.serial
-                and parts[1] == "device"
-            ):
-                return True
-        return False
+        return serial_is_available(self._config.serial)
 
     def install_frida(self, version: str) -> None:
         """
@@ -203,7 +223,16 @@ class AdbDevice:
 
         Args:
             version: The frida release tag (e.g. ``16.4.10``).
+
+        Raises:
+            AdbNotInstalledError: If the ``adb`` binary is not on PATH.
         """
+        import shutil  # noqa: PLC0415  # local to avoid pulling shutil at module import
+
+        if shutil.which(_ADB) is None:
+            raise AdbNotInstalledError(
+                "adb not found on PATH (install android-tools)",
+            )
         cached = frida_download.download(version)
         self._adb("push", str(cached), _REMOTE_FRIDA_SERVER)
         self._adb_shell(["chmod", "755", _REMOTE_FRIDA_SERVER])
@@ -300,6 +329,21 @@ class AdbDevice:
         """
         del sha256  # Reserved for the v0.5 auto-install variant.
         src = Path(source)
+        if not src.exists():
+            raise ValueError(
+                f"module source {source!r} does not exist on the host filesystem; "
+                "download the zip first and pass its local path.",
+            )
+        if not src.is_file():
+            raise ValueError(
+                f"module source {source!r} is a directory, not a zip file; "
+                "pass the path to the .zip itself.",
+            )
+        if src.suffix.lower() != ".zip":
+            raise ValueError(
+                f"module source {source!r} does not end in .zip; "
+                "Magisk modules must be packaged as zip archives.",
+            )
         basename = src.name
         remote = f"{_MAGISK_MODULE_DROP}/{basename}"
         self._adb("push", str(src), remote)
@@ -326,8 +370,8 @@ class AdbDevice:
         """Raise :class:`BackendCapabilityError` — adb devices are always-on."""
         raise BackendCapabilityError(
             f"down is not supported for adb-backed instance {self._name!r}; "
-            "the device is managed outside Beetroot. "
-            "Use `beetroot forget {name}` (v0.5) to deregister.",
+            f"the device is managed outside Beetroot. "
+            f"Use `beetroot forget {self._name}` to deregister.",
         )
 
     def restart(self) -> None:
@@ -349,7 +393,7 @@ class AdbDevice:
         raise BackendCapabilityError(
             f"destroy is not supported for adb-backed instance "
             f"{self._name!r}; the device is managed outside Beetroot. "
-            "Use `beetroot forget {name}` (v0.5) to deregister.",
+            f"Use `beetroot forget {self._name}` to deregister.",
         )
 
     def snapshot(self, dest: Path) -> Path:  # noqa: ARG002  # ``dest`` mirrors Instance.snapshot for verb parity

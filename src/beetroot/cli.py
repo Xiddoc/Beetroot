@@ -77,7 +77,7 @@ def _refuse_destroy_for_adb_kind(name: str) -> None:
     Uses the registry meta directly rather than ``Manager.resolve`` so
     orphan rows (redroid kind, missing on-disk yaml) still flow through
     the v0.3 orphan-destroy path. Adb-kind rows surface a friendly
-    error pointing at the v0.5 ``beetroot forget`` verb.
+    error pointing at the ``beetroot forget`` verb.
     """
     meta = registry.get(name)
     if meta is None:  # pragma: no cover  # ``_ensure_exists`` ran upstream; defensive net only
@@ -86,7 +86,7 @@ def _refuse_destroy_for_adb_kind(name: str) -> None:
         return
     raise api.BackendCapabilityError(
         f"destroy is not supported for {meta.backend.kind!r}-backed "
-        f"instance {name!r}; use the v0.5 ``beetroot forget`` verb to "
+        f"instance {name!r}; use the ``beetroot forget`` verb to "
         "deregister an adopted device.",
     )
 
@@ -302,6 +302,13 @@ def adopt(
         str | None,
         typer.Option("--name", help="Registry name (default: adb-<serial>)."),
     ] = None,
+    verify: Annotated[
+        bool,
+        typer.Option(
+            "--verify", "-V",
+            help="Refuse to register if the serial is not listed as 'device' in `adb devices`.",
+        ),
+    ] = False,
 ) -> None:
     """
     Adopt a rooted Android device that's already reachable via ``adb``.
@@ -313,7 +320,12 @@ def adopt(
     Unlike ``beetroot create``, no on-disk instance directory is made;
     the device is managed by whatever installed it (real phone, third-
     party emulator, ``adb connect`` from a network device).
+
+    Pass ``--verify`` to require the serial to be reachable via
+    ``adb devices`` before the registry row is written.
     """
+    import shutil  # noqa: PLC0415  # local import — avoids shutil in every CLI startup path
+
     resolved_name = name if name is not None else _adopt_default_name(serial)
     if not _INSTANCE_NAME_RE.fullmatch(resolved_name):
         raise _error(
@@ -325,6 +337,14 @@ def adopt(
             f"instance {resolved_name!r} already registered. Use a different "
             f"--name, or `beetroot destroy {resolved_name}` first.",
         )
+    if verify:
+        if shutil.which(adb_backend._ADB) is None:  # noqa: SLF001  # needed to call the guard at verify-time before registration
+            raise _error("adb not found on PATH (install android-tools)")
+        if not adb_backend.serial_is_available(serial):
+            raise _error(
+                f"serial {serial!r} is not listed as 'device' in `adb devices`; "
+                "connect the device and retry, or omit --verify to register without checking.",
+            )
     backend_config = registry.AdbBackendConfig(serial=serial)
     index = registry.add_allocating(resolved_name, backend=backend_config)
     typer.echo(
@@ -469,6 +489,24 @@ def destroy(
         )
     registry.remove(name)
     typer.echo(f"[beetroot] destroyed {name}")
+
+
+@app.command()
+def forget(
+    name: Annotated[str, typer.Argument(help="Instance name to deregister.")],
+) -> None:
+    """
+    Deregister an instance from the registry without touching its host directory.
+
+    Removes the registry row and frees its port index. No host-directory
+    teardown, no ``docker compose down``, no data deletion — it is the
+    inverse of ``beetroot adopt`` (and the safe cleanup path for adb-backed
+    instances that ``beetroot destroy`` refuses to handle). Works for
+    both redroid and adb instances.
+    """
+    _ensure_exists(name)
+    registry.remove(name)
+    typer.echo(f"[beetroot] forgot {name} (registry row removed; host directory untouched)")
 
 
 @app.command(name="ls")
