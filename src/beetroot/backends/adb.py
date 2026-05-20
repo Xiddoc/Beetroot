@@ -309,6 +309,21 @@ class AdbDevice:
         """
         del sha256  # Reserved for the v0.5 auto-install variant.
         src = Path(source)
+        if not src.exists():
+            raise ValueError(
+                f"module source {source!r} does not exist on the host filesystem; "
+                "download the zip first and pass its local path.",
+            )
+        if not src.is_file():
+            raise ValueError(
+                f"module source {source!r} is a directory, not a zip file; "
+                "pass the path to the .zip itself.",
+            )
+        if src.suffix.lower() != ".zip":
+            raise ValueError(
+                f"module source {source!r} does not end in .zip; "
+                "Magisk modules must be packaged as zip archives.",
+            )
         basename = src.name
         remote = f"{_MAGISK_MODULE_DROP}/{basename}"
         self._adb("push", str(src), remote)

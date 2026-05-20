@@ -277,6 +277,37 @@ class TestAddModule:
         assert "Magisk app" in err
         assert "Modules tab" in err
 
+    def test_rejects_nonexistent_path(
+        self,
+        captured_adb: list[list[str]],
+        tmp_path: Path,
+    ) -> None:
+        with pytest.raises(ValueError, match="does not exist"):
+            _make_device().add_module(str(tmp_path / "missing.zip"))
+        assert captured_adb == []
+
+    def test_rejects_directory_instead_of_file(
+        self,
+        captured_adb: list[list[str]],
+        tmp_path: Path,
+    ) -> None:
+        dir_path = tmp_path / "a_dir.zip"
+        dir_path.mkdir()
+        with pytest.raises(ValueError, match="directory"):
+            _make_device().add_module(str(dir_path))
+        assert captured_adb == []
+
+    def test_rejects_non_zip_extension(
+        self,
+        captured_adb: list[list[str]],
+        tmp_path: Path,
+    ) -> None:
+        not_zip = tmp_path / "module.apk"
+        not_zip.write_bytes(b"PK\x03\x04fake")
+        with pytest.raises(ValueError, match=r"\.zip"):
+            _make_device().add_module(str(not_zip))
+        assert captured_adb == []
+
     def test_sha256_is_currently_advisory(
         self,
         captured_adb: list[list[str]],
