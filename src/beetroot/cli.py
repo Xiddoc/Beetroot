@@ -16,13 +16,15 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, cast
 
 import typer
+from rich.console import Console as _RichConsole
 
-from . import api, builder, compose, config, modules_download, paths, ports, registry
+from . import api, builder, compose, console, modules_download, paths, ports, registry
 from . import snapshot as snapshot_mod
 from .backends import adb as adb_backend
 
@@ -100,10 +102,10 @@ def _require(backend: api.DeviceBackend, cap: type, verb: str) -> object:
 
 def _resolve_names(names: list[str], all_flag: bool) -> list[str]:
     """
-    Return the list of instance names from ``--all`` or positional names.
+    Return the list of instance names from --all or positional names.
 
-    Raises ``typer.Exit`` on conflicting or missing arguments. The
-    ``all_flag`` + empty-registry path exits with code 0 (informational
+    Raises typer.Exit on conflicting or missing arguments. The
+    all_flag + empty-registry path exits with code 0 (informational
     "(no instances)" line on stdout), matching the v0.2 argparse behavior.
     """
     if all_flag and names:
@@ -117,6 +119,40 @@ def _resolve_names(names: list[str], all_flag: bool) -> list[str]:
     if not names:
         raise _error("provide at least one instance name, or use --all.")
     return list(names)
+
+
+def _resolve_lifecycle_names(names: list[str], all_flag: bool, verb: str) -> list[str]:
+    """
+    Like _resolve_names but when --all is used, skip non-Lifecycle backends.
+
+    Single-name invocations still raise BackendCapabilityError as before —
+    only the --all fan-out silently skips rows that don't support Lifecycle
+    (printing one "skipped <name> (<kind>)" line to stderr per skip).
+
+    Args:
+        names: Explicit instance names from positional args.
+        all_flag: Whether --all was passed.
+        verb: Verb name, used in the BackendCapabilityError message.
+
+    Returns:
+        List of names that should be acted on (all Lifecycle-capable).
+    """
+    raw = _resolve_names(names, all_flag)
+    if not all_flag:
+        return raw
+    # Filter out non-Lifecycle backends; warn and skip them.
+    filtered: list[str] = []
+    for instance_name in raw:
+        backend = api.Manager.resolve(instance_name)
+        if isinstance(backend, api.Lifecycle):
+            filtered.append(instance_name)
+        else:
+            typer.echo(
+                f"skipped {instance_name} ({backend.kind}): "
+                f"{verb!r} not supported by this backend",
+                err=True,
+            )
+    return filtered
 
 
 # ---- verbs -----------------------------------------------------------------
@@ -344,15 +380,15 @@ def up(
 ) -> None:
     """Start one or more instances."""
     if build:
-        # T5 removed ``--build`` from ``up`` (build vs. start are two
-        # concerns), but Typer rejected the v0.2-shape invocation with
-        # a Rich "No such option: --build" box. The hidden alias is
-        # purely for the friendlier migration hint.
+        # T5 removed --build from up (build vs. start are two concerns),
+        # but Typer rejected the v0.2-shape invocation with a Rich
+        # "No such option: --build" box. The hidden alias is purely for
+        # the friendlier migration hint.
         raise _error(
             "'beetroot up --build' was removed in v0.3 — "
             "run 'beetroot build' separately first to rebuild the image."
         )
-    for instance_name in _resolve_names(list(names or []), all_):
+    for instance_name in _resolve_lifecycle_names(list(names or []), all_, "up"):
         _ensure_exists(instance_name)
         backend = api.Manager.resolve(instance_name)
         lc = cast(api.Lifecycle, _require(backend, api.Lifecycle, "up"))
@@ -379,7 +415,7 @@ def down(
     ] = False,
 ) -> None:
     """Stop one or more instances, preserving data."""
-    for instance_name in _resolve_names(list(names or []), all_):
+    for instance_name in _resolve_lifecycle_names(list(names or []), all_, "down"):
         _ensure_exists(instance_name)
         backend = api.Manager.resolve(instance_name)
         cast(api.Lifecycle, _require(backend, api.Lifecycle, "down")).down()
@@ -398,7 +434,7 @@ def restart(
     ] = False,
 ) -> None:
     """Stop then start one or more instances."""
-    for instance_name in _resolve_names(list(names or []), all_):
+    for instance_name in _resolve_lifecycle_names(list(names or []), all_, "restart"):
         _ensure_exists(instance_name)
         backend = api.Manager.resolve(instance_name)
         cast(api.Lifecycle, _require(backend, api.Lifecycle, "restart")).restart()
@@ -415,6 +451,17 @@ def destroy(
 ) -> None:
     """Stop and permanently delete an instance including its data directory."""
     _ensure_exists(name)
+    # Prompt for confirmation here in the CLI, not in the library.
+    # Instance.destroy(yes=True) is always passed once the user has
+    # confirmed here — the library API must not prompt on stdin.
+    if not yes:
+        confirmed = typer.confirm(
+            f"Destroy {name} and all its data? This cannot be undone.",
+            default=False,
+        )
+        if not confirmed:
+            typer.echo("[beetroot] aborted")
+            return
     # Try resolving the backend first so we can gate on the Lifecycle
     # sub-protocol. If resolution fails with InstanceNotFoundError AND
     # the registry row is redroid-kind (orphan: yaml gone), fall through
@@ -425,24 +472,18 @@ def destroy(
         backend = api.Manager.resolve(name)
         lc = cast(api.Lifecycle, _require(backend, api.Lifecycle, "destroy"))
         try:
-            lc.destroy(yes=yes)
+            lc.destroy(yes=True)
         except compose.ComposeError as e:
             # compose.down failed but host-side teardown (registry row +
             # directory) already ran inside Instance.destroy. Surface as
             # advisory so the user knows cleanup still happened.
             typer.echo(f"[beetroot] (compose down failed: {e}; continuing)")
-        except RuntimeError as e:
-            # User declined the interactive confirmation — friendly abort,
-            # not an error. Instance.destroy raises RuntimeError("destroy
-            # aborted by user") when the user types anything other than "y".
-            typer.echo(f"[beetroot] {e}")
-            return
         typer.echo(f"[beetroot] destroyed {name}")
         return
     except api.InstanceNotFoundError:
         pass  # fall through to orphan-cleanup path below
 
-    # Orphan path: redroid row whose beetroot.yaml is gone. ``Manager.resolve``
+    # Orphan path: redroid row whose beetroot.yaml is gone. Manager.resolve
     # raises InstanceNotFoundError for these because Instance.load() trips
     # on the missing yaml. We check the registry kind here: non-redroid
     # orphans (shouldn't exist, but be safe) just get the registry row
@@ -458,11 +499,6 @@ def destroy(
             f"for instance {name!r}."
         )
     root = registry.instance_path(name)
-    if not yes:
-        ans = input(f"Destroy {name} and delete {root}? [y/N] ").strip().lower()
-        if ans != "y":
-            typer.echo("[beetroot] aborted")
-            return
     if root.exists():
         try:
             compose.down(name, root, volumes=True)
@@ -473,7 +509,7 @@ def destroy(
         shutil.rmtree(root)
     else:
         # Orphan registry entry — the on-disk dir is already gone, so
-        # compose.down would FileNotFoundError on its ``cwd=`` arg.
+        # compose.down would FileNotFoundError on its cwd= arg.
         # Skip it and just clean the registry row.
         typer.echo(
             f"[beetroot] (instance dir {root} already gone; "
@@ -512,37 +548,55 @@ def ls(
     instances = api.Manager.list_instances()
     orphans = api.Manager.list_orphans()
     if json_out:
+        # JSON must go to plain stdout (not through rich) so downstream
+        # parsers never see ANSI markup. Orphan advisories go to stderr
+        # so they don't pollute the JSON stream.
         out = {inst.name: _instance_json_row(inst) for inst in instances}
-        typer.echo(json.dumps(out, indent=2, sort_keys=True))
+        print(json.dumps(out, indent=2, sort_keys=True))  # noqa: T201  # plain JSON stdout — must not go through rich
         if orphans:
             _emit_orphan_skip(orphans)
         return
 
     if not instances and not orphans:
-        typer.echo("(no instances — try `beetroot create alpha`)")
+        typer.echo("(no instances — try 'beetroot create alpha')")
         return
     if instances:
-        typer.echo(f"{'NAME':<14}{'IDX':<5}{'ADB':<22}{'FRIDA':<22}{'STATUS':<14}{'PATH'}")
-        for inst in instances:
-            p = inst.ports
-            typer.echo(
-                f"{inst.name:<14}{inst.index:<5}"
-                f"{'localhost:' + str(p['adb']):<22}"
-                f"{'localhost:' + str(p['frida']):<22}"
-                f"{inst.status:<14}"
-                f"{inst.root}"
+        # Inject a runtime-bound Console so the table writes to the
+        # current sys.stdout (e.g. CliRunner's StringIO in tests, or the
+        # real terminal in production). The module-level singleton is
+        # bound at import time and doesn't pick up CliRunner redirections.
+        _runtime_console = _RichConsole(file=sys.stdout, highlight=False)
+        old_stdout_console = console._stdout_console  # noqa: SLF001  # intentional injection for runtime sys.stdout binding
+        console.set_consoles(stdout=_runtime_console)
+        try:
+            console.table(
+                columns=["NAME", "IDX", "ADB", "FRIDA", "STATUS", "PATH"],
+                rows=[
+                    [
+                        inst.name,
+                        str(inst.index),
+                        f"localhost:{inst.ports['adb']}",
+                        f"localhost:{inst.ports['frida']}",
+                        str(inst.status),
+                        str(inst.root),
+                    ]
+                    for inst in instances
+                ],
             )
+        finally:
+            console.set_consoles(stdout=old_stdout_console)
     if orphans:
         _emit_orphan_skip(orphans)
 
 
 def _emit_orphan_skip(orphans: list[str]) -> None:
-    """Print the trailing 'skipping N orphan entries' advisory line."""
+    """Print the trailing orphan advisory to stderr so it never pollutes JSON output."""
     names = ", ".join(orphans)
     typer.echo(
         f"(skipping {len(orphans)} orphan "
         f"{'entry' if len(orphans) == 1 else 'entries'}: {names}; "
-        f"clean up with 'beetroot destroy <name> -y')"
+        f"clean up with 'beetroot destroy <name> -y')",
+        err=True,
     )
 
 
@@ -593,37 +647,32 @@ def _instance_json_row(inst: api.Instance) -> dict[str, object]:
 
 
 def _adb_json_row(
-    name: str, meta: registry.InstanceMeta, backend: registry.AdbBackendConfig,
+    name: str, meta: registry.InstanceMeta, backend: api.DeviceBackend,
 ) -> dict[str, object]:
     """
-    Build the per-instance JSON row for an adb-kind registry entry.
+    Build the per-instance JSON row for a non-redroid backend.
 
-    Spec'd shape (T6): include ``serial``; OMIT redroid-only fields
-    (``absolute_path``, container ``status``). Uses
-    ``is_available`` instead of ``status`` because there's no compose
-    project to query.
+    Uses the resolved backend (not the raw registry config) so
+    frida_address and adb_address come from the backend's Protocol
+    surface — meaning an adb device at index 1 reports the correct
+    index-1 frida port rather than a hardcoded 27042.
     """
-    # T5 owns the actual ``AdbDevice`` class + live ``is_available``
-    # query. T6's status verb is run against the registry meta directly
-    # so we don't take a hard dependency on AdbDevice being importable
-    # yet — we surface the static fields the registry already knows
-    # about. T5 (or a follow-up commit) can swap to
-    # ``api.Manager.resolve(name).is_available`` once AdbDevice lands.
-    return {
+    row: dict[str, object] = {
         "name": name,
         "kind": backend.kind,
         "index": meta.index,
         "created_at": meta.created_at.isoformat(),
-        "serial": backend.serial,
-        "adb_address": backend.serial,
-        # ``frida_address`` for the adb backend is owned by T5's
-        # AdbDevice (it picks a forwarded port). Until that lands we
-        # surface the registry serial as-is — the field is present so
-        # the status row shape is uniform across backends.
-        "frida_address": backend.serial,
-        "is_available": False,
+        "adb_address": backend.adb_address,
+        "frida_address": backend.frida_address,
+        "is_available": backend.is_available,
         "stealth_paths": {},
     }
+    # For adb-kind backends, include the serial so scripts that check
+    # row["serial"] can distinguish this row from a redroid instance.
+    serial = getattr(meta.backend, "serial", None)
+    if serial is not None:  # pragma: no branch  # only AdbBackendConfig reaches here today
+        row["serial"] = serial
+    return row
 
 
 @app.command()
@@ -641,82 +690,74 @@ def logs(
     inst.logs(follow=follow)
 
 
-@app.command()
+@app.command(
+    name="shell",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
 def shell(
+    ctx: typer.Context,
     name: Annotated[str, typer.Argument(help="Instance name.")],
 ) -> None:
-    """Open an interactive ADB shell into an instance."""
+    """
+    Open an interactive ADB shell, optionally running a one-shot command.
+
+    Extra arguments after the instance name are forwarded to the underlying
+    adb shell. Use -c 'cmd' to run a non-interactive command:
+
+        beetroot shell alpha -c 'id'
+        beetroot shell alpha -c 'ls /data/local/tmp'
+    """
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
+    extra: Sequence[str] = list(ctx.args)
     try:
-        rc = backend.shell()
+        rc = backend.shell(extra or None)
     except api.AdbNotInstalledError as e:
         raise _error(str(e)) from e
     if rc != 0:
         # Propagate the subprocess exit code so research scripts that
-        # check ``$?`` after ``beetroot shell <name> -c '<cmd>'`` see
-        # the underlying ``adb shell`` status.
+        # check $? after beetroot shell <name> -c '<cmd>' see the
+        # underlying adb shell status.
         raise typer.Exit(code=rc)
 
 
-@app.command()
-def env(
-    name: Annotated[str, typer.Argument(help="Instance name.")],
+@app.command(name="env", hidden=True)
+def env_deprecated(
+    name: Annotated[str, typer.Argument(help="(removed — use 'beetroot status --json')")],
     all_: Annotated[
         bool,
-        typer.Option(
-            "--all",
-            help="Emit every BEETROOT_* key from the rendered .env "
-                 "(redroid only; adb falls back to ADB_SERIAL + FRIDA_HOST).",
-        ),
+        typer.Option("--all", hidden=True),
     ] = False,
 ) -> None:
-    """Print eval-able ``ANDROID_DEVICE`` / ``FRIDA_DEVICE`` shell exports."""
+    """(removed in v0.6 — use 'beetroot status --json' for machine-readable output)."""
+    # Emit a one-line deprecation hint on stderr and proxy to status so
+    # common eval-patterns break gracefully. The verb is hidden from
+    # help; scripts that piped through jq on the old shape should
+    # switch to `beetroot status <name>` (identical JSON row).
+    del all_
+    typer.echo(
+        "warn: 'beetroot env' was removed in v0.6 — "
+        "use 'beetroot status --json' for machine-readable output.",
+        err=True,
+    )
     _ensure_exists(name)
     meta = registry.get(name)
-    # ``_ensure_exists`` already raised typer.Exit if meta is None; the
-    # narrowing aid here is purely so mypy can resolve ``meta.backend``
-    # without an ``assert`` (banned by S101).
-    if meta is None:  # pragma: no cover
+    if meta is None:  # pragma: no cover  # _ensure_exists ran upstream
         raise _error(f"no instance named {name!r}")
     if isinstance(meta.backend, registry.AdbBackendConfig):
-        _emit_env_adb(meta.backend, all_=all_)
+        resolved = api.Manager.resolve(name)
+        print(json.dumps(  # noqa: T201  # plain JSON stdout
+            {
+                "name": resolved.name,
+                "kind": resolved.kind,
+                "adb_address": resolved.adb_address,
+                "frida_address": resolved.frida_address,
+            },
+            indent=2,
+        ))
         return
     inst = _load(name)
-    if not all_:
-        # Back-compat: bare ``beetroot env <name>`` emits exactly two
-        # lines (the v0.3 shape). Scripts piping the output through
-        # ``eval`` rely on this — the ``--all`` flag is strictly opt-in.
-        typer.echo(f"export ANDROID_DEVICE={inst.adb_address}")
-        typer.echo(f"export FRIDA_DEVICE={inst.frida_address}")
-        return
-    rendered = config.render_env(inst.name, inst.config, inst.ports)
-    for line in rendered.splitlines():
-        # render_env emits ``KEY=value`` lines; surface them as shell
-        # exports so the output is eval-able like the v0.3 shape. The
-        # blank-line guard is defensive — render_env's current shape
-        # never emits an empty line, but a future "comment block"
-        # addition would, and a bare ``export`` line breaks ``eval``.
-        if not line.strip():  # pragma: no cover
-            continue
-        typer.echo(f"export {line}")
-    typer.echo(f"export ANDROID_DEVICE={inst.adb_address}")
-    typer.echo(f"export FRIDA_DEVICE={inst.frida_address}")
-
-
-def _emit_env_adb(backend: registry.AdbBackendConfig, *, all_: bool) -> None:
-    """Emit shell exports for an adb-backed instance (``--all`` adds nothing for adb)."""
-    # render_env assumes a redroid backend (it produces a compose .env
-    # with MEM_LIMIT/SHM_SIZE/etc.). For adb we expose the minimal
-    # serial + frida-host pair so the same eval-pattern still works.
-    # The ``--all`` flag is accepted but doesn't extend the output:
-    # the registry doesn't know a frida port for adb yet (T5 lands
-    # the AdbDevice with the forwarded-port logic). The host part of
-    # FRIDA_HOST is "localhost" by convention because the adb backend
-    # forwards the device's frida port to a host loopback port.
-    del all_
-    typer.echo(f"export ADB_SERIAL={backend.serial}")
-    typer.echo(f"export FRIDA_HOST=localhost:27042")  # noqa: F541  # default; T5 swaps to AdbDevice.frida_address
+    print(json.dumps(_instance_json_row(inst), indent=2, sort_keys=True))  # noqa: T201  # plain JSON stdout
 
 
 @app.command()
@@ -726,23 +767,27 @@ def status(
     """
     Print a single-instance JSON snapshot.
 
-    Default output is JSON to stdout — v0.4 has no human-readable mode
-    because researchers pipe to ``jq``. The row shape is the same as
-    ``ls --json`` for redroid; adb-kind entries get a smaller row with
-    ``serial`` instead of ``absolute_path``.
+    Output is JSON to stdout — pipe to jq for selective fields. The row
+    shape is the same as ls --json for redroid; adb-kind entries get a
+    smaller row with serial and the correct allocated frida_address
+    instead of absolute_path.
 
-    Exits 0 on success; exits 1 if ``name`` is not in the registry.
+    Exit codes: 0 on success, 1 if name is not in the registry.
     """
     _ensure_exists(name)
-    meta = registry.get(name)
-    if meta is None:  # pragma: no cover
-        # _ensure_exists already raised, this is mypy narrowing.
-        raise _error(f"no instance named {name!r}")
-    if isinstance(meta.backend, registry.AdbBackendConfig):
-        row = _adb_json_row(name, meta, meta.backend)
+    backend = api.Manager.resolve(name)
+    if isinstance(backend, api.Instance):
+        row = _instance_json_row(backend)
     else:
-        row = _instance_json_row(_load(name))
-    typer.echo(json.dumps(row, indent=2, sort_keys=True))
+        # Generic backend path — build the status row from Protocol surface
+        # so adb and third-party backends report real addresses (the old
+        # _adb_json_row hardcoded frida_address as the serial; AdbDevice
+        # now returns the correctly-allocated forwarded port).
+        meta = registry.get(name)
+        if meta is None:  # pragma: no cover  # _ensure_exists ran upstream
+            raise _error(f"no instance named {name!r}")
+        row = _adb_json_row(name, meta, backend)
+    print(json.dumps(row, indent=2, sort_keys=True))  # noqa: T201  # plain JSON stdout — must not go through rich
 
 
 @app.command()
@@ -898,9 +943,17 @@ def restore(
         Path,
         typer.Argument(help="Path to a .tar.zst snapshot archive."),
     ],
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="Registry name for the restored instance."),
+    ] = None,
     as_: Annotated[
         str | None,
-        typer.Option("--as", help="Registry name for the restored instance."),
+        typer.Option(
+            "--as",
+            hidden=True,
+            help="(deprecated alias for --name; removed in v0.7)",
+        ),
     ] = None,
     path: Annotated[
         Path | None,
@@ -912,11 +965,14 @@ def restore(
     ] = False,
 ) -> None:
     """Unpack a snapshot archive into a new instance and register it."""
+    # --as is a one-release hidden back-compat alias for --name.
+    # If both are given, --name wins (--as is for migration only).
+    effective_name = name if name is not None else as_
     try:
         manifest = snapshot_mod.read_manifest(archive)
     except snapshot_mod.SnapshotError as e:
         raise _error(str(e)) from e
-    dest_name = as_ if as_ is not None else manifest.name
+    dest_name = effective_name if effective_name is not None else manifest.name
     dest_path = (path if path is not None else Path(dest_name)).resolve()
     try:
         restored = snapshot_mod.restore(

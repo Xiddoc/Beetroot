@@ -19,6 +19,16 @@ Beetroot's path model is Docker-inspired: an instance is any directory on disk c
 
 See [Installation → Shell completion](../getting-started/installation.md#shell-completion) for the recommended setup.
 
+## Exit codes
+
+This is the stable v1.0 contract. Scripts wrapping the CLI can rely on these codes:
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Success |
+| `1`  | Not found / domain error (instance not in registry, file missing, network error, etc.) |
+| `2`  | Capability error — the backend does not support the requested verb (e.g. `up` against an adb-adopted device) |
+
 ---
 
 ## `create`
@@ -144,11 +154,14 @@ Stop one or more instances. Data is preserved.
 beetroot down <name> [<name> ...]
 ```
 
-| Argument | Type | Description |
-|----------|------|-------------|
+| Argument / Flag | Type | Description |
+|----------------|------|-------------|
 | `names` | positional (one or more) | Instance names to stop |
+| `--all` | flag | Act on every registered instance. |
 
 Runs `docker compose down`. The instance's `data/` directory is untouched.
+
+When using `--all`, instances backed by non-Lifecycle backends (e.g. adb-adopted devices) are skipped with a one-line advisory to stderr — only redroid instances are stopped.
 
 **Output:**
 
@@ -293,51 +306,25 @@ beetroot logs alpha -f
 
 ## `shell`
 
-Open an interactive ADB shell into an instance.
+Open an interactive ADB shell into an instance, or run a one-shot command.
 
 ```
-beetroot shell <name>
+beetroot shell <name> [-- <args>...]
 ```
 
 | Argument | Type | Description |
 |----------|------|-------------|
 | `name` | positional | Instance name |
+| `args` | remainder | Optional extra args forwarded to `adb shell`. Use `-c 'cmd'` for non-interactive invocation. |
 
-Calls `adb connect localhost:<adb_port>` then `adb -s localhost:<adb_port> shell`. Requires `adb` on your PATH.
+Calls `adb connect localhost:<adb_port>` then `adb -s localhost:<adb_port> shell [args...]`. Requires `adb` on your PATH.
 
----
-
-## `env`
-
-Print eval-able environment variable exports for an instance.
-
-```
-beetroot env <name> [--all]
-```
-
-| Argument / Flag | Type | Description |
-|-----------------|------|-------------|
-| `name` | positional | Instance name |
-| `--all` | flag | Also emit every `BEETROOT_*` key from the rendered `.env` (redroid only; adb falls back to `ADB_SERIAL` + `FRIDA_HOST`). |
-
-Default output:
+Examples:
 
 ```bash
-export ANDROID_DEVICE=localhost:5555
-export FRIDA_DEVICE=localhost:27042
+beetroot shell alpha            # interactive shell
+beetroot shell alpha -c 'id'   # one-shot command
 ```
-
-Use with `eval`:
-
-```bash
-eval $(beetroot env alpha)
-adb -s "$ANDROID_DEVICE" install ./target.apk
-frida -H "$FRIDA_DEVICE" -n com.target.app
-```
-
-With `--all` Beetroot additionally exports every key from `config.render_env()` (the compose project name, `ADB_PORT`, `FRIDA_PORT`, `BEETROOT_MAGISK_DB`, `BEETROOT_DENYLIST_PACKAGES`, etc.) so downstream scripts that need the full compose-context can `eval` once.
-
-For adb-backed instances `beetroot env <name> --all` emits only `ADB_SERIAL` and `FRIDA_HOST` — the redroid-only compose keys (`MEM_LIMIT`, `SHM_SIZE`, …) don't apply to a physical phone.
 
 ---
 
@@ -477,13 +464,13 @@ Stop the instance first (`beetroot down <name>`) — `tar`-ing live `data/` prod
 Unpack a snapshot archive into a new instance and register it.
 
 ```
-beetroot restore <archive> [--as <name>] [--path <dir>] [--force]
+beetroot restore <archive> [--name <name>] [--path <dir>] [--force]
 ```
 
 | Argument | Type | Description |
 |----------|------|-------------|
 | `archive` | positional | Path to a `.tar.zst` snapshot archive. |
-| `--as` | flag | Registry name for the restored instance (default: the name recorded in the manifest). |
+| `--name` | flag | Registry name for the restored instance (default: the name recorded in the manifest). |
 | `--path` | flag | Directory to extract into (default: `./<name>`). |
 | `--force` | flag | Wipe a non-empty destination directory before extracting. |
 

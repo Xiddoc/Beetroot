@@ -82,10 +82,15 @@ beetroot up research-clean research-stealth
 
 ## Scripting across instances
 
-`beetroot env` emits eval-able shell exports for one instance at a time:
+Use `beetroot status --json` to get machine-readable addresses for one instance:
 
 ```bash
-eval $(beetroot env research-clean)
+eval $(beetroot status --json research-clean | python3 -c "
+import json,sys
+r=json.load(sys.stdin)
+print(f'ANDROID_DEVICE={r[\"adb_address\"]}')
+print(f'FRIDA_DEVICE={r[\"frida_address\"]}')
+")
 # $ANDROID_DEVICE = localhost:5555
 # $FRIDA_DEVICE   = localhost:27042
 

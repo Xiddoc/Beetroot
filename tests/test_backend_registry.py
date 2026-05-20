@@ -60,7 +60,8 @@ class _StubBackend:
     def install_frida(self, version: str | None = None) -> None:
         del version
 
-    def shell(self) -> int:
+    def shell(self, args: Sequence[str] | None = None) -> int:
+        del args
         return 0
 
     def frida_cli(self, args: Sequence[str]) -> int:

@@ -304,7 +304,7 @@ backends.register_backend("cloud-xyz", CloudBackend)
 
 The class is registered, `Manager.resolve(name)` dispatches via the
 lookup table, and every Protocol-driven CLI verb (`shell`, `frida`,
-`env`, `status`, `doctor`) works via `Manager.resolve(name).shell()`.
+`status`, `doctor`) works via `Manager.resolve(name).shell()`.
 
 **Entry-point registration:**
 

@@ -57,7 +57,12 @@ def test_live_header_matches_expected_columns(
     runner = CliRunner()
     result = runner.invoke(cli.app, ["ls"])
     assert result.exit_code == 0, result.stderr
-    header = result.stdout.splitlines()[0]
+    # Rich renders a border row first, then the header row. Find the first
+    # line that contains the leading column name rather than assuming line 0.
+    lines = result.stdout.splitlines()
+    header_candidates = [ln for ln in lines if LS_TABLE_COLUMNS[0] in ln]
+    assert header_candidates, f"No header line found in ls output: {result.stdout!r}"
+    header = header_candidates[0]
     # Every column appears in the header, in declared order.
     cursor = 0
     for col in LS_TABLE_COLUMNS:

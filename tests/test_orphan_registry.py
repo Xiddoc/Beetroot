@@ -102,9 +102,11 @@ class TestCliLsSurfacesOrphans:
 
         result = runner.invoke(cli.app, ["ls"])
         assert result.exit_code == 0, result.stderr
-        assert "skipping 1 orphan" in result.stdout
-        assert "alpha" in result.stdout
-        assert "beetroot destroy" in result.stdout
+        # Orphan advisory goes to stderr (not stdout) so it never
+        # pollutes JSON or table output captured by downstream tools.
+        assert "skipping 1 orphan" in result.stderr
+        assert "alpha" in result.stderr
+        assert "beetroot destroy" in result.stderr
 
     def test_ls_with_mix_shows_both_table_and_orphan_line(
         self, cli_root: Path
@@ -118,8 +120,9 @@ class TestCliLsSurfacesOrphans:
         assert "bravo" in result.stdout
         # Header is only printed once.
         assert result.stdout.count("NAME") == 1
-        assert "skipping 1 orphan entry" in result.stdout
-        assert "alpha" in result.stdout
+        # Orphan advisory goes to stderr.
+        assert "skipping 1 orphan entry" in result.stderr
+        assert "alpha" in result.stderr
 
     def test_ls_multiple_orphans_uses_plural(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
@@ -130,11 +133,12 @@ class TestCliLsSurfacesOrphans:
 
         result = runner.invoke(cli.app, ["ls"])
         assert result.exit_code == 0, result.stderr
-        assert "skipping 2 orphan entries" in result.stdout
-        assert "alpha" in result.stdout
-        assert "bravo" in result.stdout
+        # Orphan advisory goes to stderr.
+        assert "skipping 2 orphan entries" in result.stderr
+        assert "alpha" in result.stderr
+        assert "bravo" in result.stderr
 
-    def test_ls_json_includes_orphan_skip_line_on_stdout(
+    def test_ls_json_includes_orphan_skip_line_on_stderr(
         self, cli_root: Path
     ) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
@@ -143,10 +147,11 @@ class TestCliLsSurfacesOrphans:
 
         result = runner.invoke(cli.app, ["ls", "--json"])
         assert result.exit_code == 0, result.stderr
-        # JSON has only bravo; orphan-skip line follows.
+        # JSON has only bravo; orphan-skip advisory goes to stderr
+        # so it never pollutes the JSON stream.
         assert '"bravo"' in result.stdout
         assert '"alpha"' not in result.stdout
-        assert "skipping 1 orphan" in result.stdout
+        assert "skipping 1 orphan" in result.stderr
 
 
 class TestDestroyOrphan:

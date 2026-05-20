@@ -131,12 +131,9 @@ custom paths before v0.6 ships, but the load-bearing user story is
   of `fail` results (capped at 255). See
   [`doctor` in the CLI reference](../reference/cli.md#doctor).
 
-* **`beetroot env <name> --all`** — extends the existing `env` verb.
-  Without `--all`, `env` keeps its v0.3 shape (exactly two `export`
-  lines: `ANDROID_DEVICE` + `FRIDA_DEVICE`) so `eval $(beetroot env
-  alpha)` scripts keep working. With `--all`, every key from
-  `config.render_env()` is emitted as a shell export. See
-  [`env` in the CLI reference](../reference/cli.md#env).
+* **`beetroot env <name>`** — deprecated in v0.6 and removed.
+  Use `beetroot status --json` for machine-readable instance data.
+  See [`status` in the CLI reference](../reference/cli.md#status).
 
 ## 6. Module renames: `frida_dl` → `frida_download`, `modules_dl` → `modules_download`
 

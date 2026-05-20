@@ -1,4 +1,9 @@
-"""Tests for the ``beetroot env <name> --all`` flag."""
+"""Tests for the deprecated ``beetroot env`` verb (removed in v0.6).
+
+The verb is hidden and now proxies to a JSON status row so existing
+scripts that eval'd the output still get machine-readable data, with a
+deprecation hint on stderr pointing at ``status --json``.
+"""
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -11,49 +16,31 @@ from beetroot import cli, paths, registry
 runner = CliRunner()
 
 
-class TestEnvAllRedroid:
-    def test_no_flag_emits_only_port_exports(self, cli_root: Path) -> None:
-        # Back-compat: bare ``beetroot env <name>`` emits EXACTLY two
-        # lines (ANDROID_DEVICE + FRIDA_DEVICE) — every researcher's
-        # ``eval $(beetroot env ...)`` workflow depends on this.
+class TestEnvDeprecatedRedroid:
+    def test_deprecated_hint_goes_to_stderr(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
         result = runner.invoke(cli.app, ["env", "alpha"])
         assert result.exit_code == 0, result.stderr
-        lines = [ln for ln in result.stdout.splitlines() if ln.strip()]
-        assert lines == [
-            "export ANDROID_DEVICE=localhost:5555",
-            "export FRIDA_DEVICE=localhost:27042",
-        ]
-        # No BEETROOT_* keys must leak into the v0.3 output shape.
-        assert "BEETROOT_" not in result.stdout
+        # Deprecation hint must go to stderr only.
+        assert "removed in v0.6" in result.stderr
+        assert "status --json" in result.stderr
 
-    def test_all_flag_emits_every_beetroot_key(self, cli_root: Path) -> None:
+    def test_json_row_goes_to_stdout(self, cli_root: Path) -> None:
+        runner.invoke(cli.app, ["create", "alpha"])
+        result = runner.invoke(cli.app, ["env", "alpha"])
+        assert result.exit_code == 0, result.stderr
+        # Machine-readable JSON row goes to stdout.
+        assert "adb_address" in result.stdout
+        assert "frida_address" in result.stdout
+
+    def test_all_flag_accepted_without_error(self, cli_root: Path) -> None:
+        # --all was removed with env; the hidden alias accepts but ignores it.
         runner.invoke(cli.app, ["create", "alpha"])
         result = runner.invoke(cli.app, ["env", "alpha", "--all"])
         assert result.exit_code == 0, result.stderr
-        # Every BEETROOT_* key from render_env must appear.
-        for required in (
-            "INSTANCE_NAME=alpha",
-            "ADB_PORT=5555",
-            "FRIDA_PORT=27042",
-            "FRIDA_PORT_CONTROL=27043",
-            "BEETROOT_MAGISK_DB=",
-            "BEETROOT_MODULES_DIR=",
-            "BEETROOT_FRIDA_BIN=",
-            "BEETROOT_DENYLIST_PACKAGES=",
-            "ANDROID_DEVICE=localhost:5555",
-            "FRIDA_DEVICE=localhost:27042",
-        ):
-            assert required in result.stdout, f"missing {required!r} in --all output"
-        # Every emitted line must be eval-able (prefixed with ``export``).
-        for line in result.stdout.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
-            assert stripped.startswith("export "), f"non-eval-able line: {line!r}"
 
 
-class TestEnvAllAdb:
+class TestEnvDeprecatedAdb:
     def _seed_adb_instance(self, cli_root: Path, name: str = "phone") -> None:
         del cli_root  # fixture present only for XDG isolation
         path = paths.user_registry_file()
@@ -66,13 +53,16 @@ class TestEnvAllAdb:
         doc = registry.RegistryFile(instances={name: meta})
         path.write_text(doc.model_dump_json(indent=2))
 
-    def test_adb_all_emits_serial_and_frida_host(self, cli_root: Path) -> None:
+    def test_adb_env_emits_deprecated_hint(self, cli_root: Path) -> None:
         self._seed_adb_instance(cli_root)
-        result = runner.invoke(cli.app, ["env", "phone", "--all"])
+        result = runner.invoke(cli.app, ["env", "phone"])
         assert result.exit_code == 0, result.stderr
-        assert "export ADB_SERIAL=emulator-5554" in result.stdout
-        assert "FRIDA_HOST=localhost:" in result.stdout
-        # render_env's BEETROOT_* keys must NOT leak into the adb path —
-        # render_env assumes a redroid backend and would crash trying
-        # to read ``.config`` from a non-Instance.
-        assert "BEETROOT_MAGISK_DB" not in result.stdout
+        assert "removed in v0.6" in result.stderr
+
+    def test_adb_env_emits_json_row(self, cli_root: Path) -> None:
+        self._seed_adb_instance(cli_root)
+        result = runner.invoke(cli.app, ["env", "phone"])
+        assert result.exit_code == 0, result.stderr
+        # JSON row includes addresses.
+        assert "adb_address" in result.stdout
+        assert "frida_address" in result.stdout

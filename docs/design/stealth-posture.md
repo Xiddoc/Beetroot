@@ -225,7 +225,7 @@ the Python API switch from
 `frida.get_device_manager().add_remote_device("localhost:27042")` to
 `frida.get_usb_device().attach(target)` after running
 `adb forward tcp:27042 localfilesystem:<socket-path>` (the CLI's
-`beetroot env` will print the right forward command).
+`beetroot status --json` will print the right address).
 
 This is **harder than items 3.1 / 3.4** because it changes the
 host-side wire protocol and breaks the

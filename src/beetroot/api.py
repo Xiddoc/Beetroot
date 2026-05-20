@@ -187,8 +187,19 @@ class DeviceBackend(Protocol):
         """
         ...
 
-    def shell(self) -> int:
-        """Open an interactive shell into the device; return the subprocess exit code."""
+    def shell(self, args: Sequence[str] | None = None) -> int:
+        """
+        Open a shell into the device; return the subprocess exit code.
+
+        Args:
+            args: Optional extra argv tokens forwarded to the underlying
+                shell invocation. Pass ``["-c", "id"]`` to run a
+                non-interactive command.  ``None`` (the default) opens
+                an interactive shell.
+
+        Returns:
+            The exit code of the underlying shell subprocess.
+        """
         ...
 
     def frida_cli(self, args: Sequence[str]) -> int:
@@ -250,7 +261,10 @@ class Lifecycle(Protocol):
         Permanently destroy this backend and its host-side state.
 
         Args:
-            yes: Skip the interactive confirmation prompt.
+            yes: Must be True to proceed. Passing False raises
+                ValueError — callers must confirm before destroying.
+                The CLI handles the prompt via typer.confirm then
+                passes yes=True.
         """
         ...
 
@@ -703,25 +717,32 @@ class Instance:
         around the call (the host-side state will have already been
         cleaned up by the time the exception fires).
 
+        The library API does NOT prompt on stdin. Callers must pass
+        ``yes=True`` to confirm the destructive operation. The CLI
+        verb :func:`beetroot.cli.destroy` handles the interactive
+        prompt via ``typer.confirm`` and then calls
+        ``Instance.destroy(yes=True)``.
+
         Args:
-            yes: If False (the default), prompt for confirmation on
-                stdin. CLI callers pass True after their own prompt; the
-                ``yes`` arg here is a safety net for programmatic
-                callers that want the same prompt-before-destroy
-                behaviour without re-implementing it.
+            yes: Must be ``True`` to proceed. Passing ``False`` (the
+                default) raises :class:`ValueError` — the caller is
+                responsible for any confirmation prompt before invoking
+                this method.
 
         Raises:
-            RuntimeError: If the interactive prompt was declined.
+            ValueError: If called with ``yes=False`` (caller must
+                confirm before destroying).
             compose.ComposeError: If ``docker compose down`` fails. The
                 host-side state is removed regardless before the error
                 surfaces.
         """
         if not yes:
-            ans = input(
-                f"Destroy {self._name} and delete {self._root}? [y/N] "
-            ).strip().lower()
-            if ans != "y":
-                raise RuntimeError("destroy aborted by user")
+            raise ValueError(
+                "Instance.destroy() requires yes=True to proceed. "
+                "Confirm the destructive operation in the calling code "
+                "before invoking this method (the CLI does this via "
+                "typer.confirm before calling destroy(yes=True))."
+            )
         # Hold an exclusive lock on the instance for the entire
         # teardown — blocks any concurrent ``snapshot()`` from reading
         # the directory while we're rmtree'ing it. ``snapshot`` takes
@@ -764,9 +785,14 @@ class Instance:
 
     # ---- operations -------------------------------------------------------
 
-    def shell(self) -> int:
+    def shell(self, args: Sequence[str] | None = None) -> int:
         """
-        Open an interactive ADB shell into the instance.
+        Open an ADB shell into the instance.
+
+        Args:
+            args: Optional extra tokens appended after ``adb -s <target>
+                shell``. Pass ``["-c", "id"]`` to run a non-interactive
+                command.  ``None`` (the default) opens an interactive shell.
 
         Returns:
             The exit code of the ``adb shell`` invocation. Beetroot
@@ -782,7 +808,8 @@ class Instance:
             )
         target = self.adb_address
         subprocess.run(["adb", "connect", target], check=False)  # noqa: S603, S607  # adb is a research CLI we deliberately resolve via PATH
-        res = subprocess.run(["adb", "-s", target, "shell"], check=False)  # noqa: S603, S607  # same as above
+        cmd = ["adb", "-s", target, "shell", *(args or [])]
+        res = subprocess.run(cmd, check=False)  # noqa: S603  # same as above
         return int(res.returncode)
 
     def install_frida(self, version: str | None = None) -> None:

@@ -71,10 +71,10 @@ beetroot frida alpha -n com.target.app -l /path/to/script.js
 
 ## Connecting without the wrapper
 
-If you prefer to drive Frida directly, get the port from `beetroot env`:
+If you prefer to drive Frida directly, get the port from `beetroot status --json`:
 
 ```bash
-eval $(beetroot env alpha)
+FRIDA_DEVICE=$(beetroot status --json alpha | python3 -c "import json,sys; print(json.load(sys.stdin)['frida_address'])")
 # $FRIDA_DEVICE = localhost:27042
 
 frida -H "$FRIDA_DEVICE" -n com.target.app

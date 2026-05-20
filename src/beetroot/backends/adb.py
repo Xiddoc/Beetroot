@@ -262,13 +262,19 @@ class AdbDevice:
             f"tcp:{_DEVICE_PORT}",
         )
 
-    def shell(self) -> int:
+    def shell(self, args: Sequence[str] | None = None) -> int:
         """
-        Open an interactive ``adb -s <serial> shell``.
+        Open an ``adb -s <serial> shell``, optionally with extra args.
 
         Unlike :class:`beetroot.api.Instance.shell`, no preliminary
         ``adb connect`` is needed — the user-supplied serial already
         identifies a connected device.
+
+        Args:
+            args: Optional extra tokens appended after ``adb -s <serial>
+                shell``.  Pass ``["-c", "id"]`` for a non-interactive
+                command.  ``None`` (the default) opens an interactive
+                shell.
 
         Returns:
             The exit code of the ``adb shell`` invocation.
@@ -282,10 +288,8 @@ class AdbDevice:
             raise AdbNotInstalledError(
                 "adb not found on PATH (install android-tools)",
             )
-        res = subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv is constant + user-pinned serial
-            [_ADB, "-s", self._config.serial, "shell"],
-            check=False,
-        )
+        cmd = [_ADB, "-s", self._config.serial, "shell", *(args or [])]
+        res = subprocess.run(cmd, check=False)  # noqa: S603  # adb is a host CLI on PATH; argv is constant + user-pinned serial
         return int(res.returncode)
 
     def frida_cli(self, args: Sequence[str]) -> int:

@@ -165,19 +165,19 @@ class TestAdoptedInstanceDispatch:
         # → ``adb -s emulator-5554 shell``.
         assert ["adb", "-s", "emulator-5554", "shell"] in stub_adb
 
-    def test_env_dispatches_to_adb_device(
+    def test_env_deprecated_proxies_to_json_for_adb_device(
         self, isolated_registry: Path,
     ) -> None:
+        # env was removed in v0.6; the hidden shim now emits a JSON
+        # status row (not shell exports) with a deprecation warning.
         runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
         result = runner.invoke(cli.app, ["env", "phone"])
         assert result.exit_code == 0
-        # T6's _emit_env_adb emits ADB_SERIAL + FRIDA_HOST for adb-backed
-        # instances (render_env is redroid-only — emits compose .env
-        # keys that don't apply to a physical phone). T5's adopt verb
-        # registers the row; the env verb dispatches via the registry's
-        # kind discriminator into the adb-specific helper.
-        assert "export ADB_SERIAL=emulator-5554" in result.stdout
-        assert "FRIDA_HOST=localhost:" in result.stdout
+        # Deprecation warning on stderr.
+        assert "removed in v0.6" in result.stderr
+        # JSON row on stdout with addresses (not the old shell-export format).
+        assert "adb_address" in result.stdout
+        assert "frida_address" in result.stdout
 
     def test_up_raises_backend_capability_error_with_exit_code_2(
         self,
