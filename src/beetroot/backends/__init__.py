@@ -2,17 +2,17 @@
 Backend registry: maps a backend ``kind`` discriminator to a concrete class.
 
 A "backend" is any class that satisfies the :class:`beetroot.api.DeviceBackend`
-Protocol AND exposes a ``from_meta(name: str, backend_config) -> DeviceBackend``
+Protocol AND exposes a ``from_meta(name: str, backend_config) -> Self``
 classmethod (used by :meth:`beetroot.api.Manager.resolve` to construct the
-backend from a registry row's :class:`beetroot.registry.BackendConfig`).
+backend from a registry row's :class:`beetroot.registry.BackendConfigBase`).
 
 In-tree backends register themselves programmatically at import time
 (see :func:`_register_builtin_backends`); third-party backends register
 via the ``[project.entry-points."beetroot.backends"]`` group in their
-``pyproject.toml``. The two paths share the same on-disk registry shape
-— a third-party backend's config validates against its own pydantic
-model (separate from the in-tree discriminated union) and the entry
-point only needs to expose the concrete class.
+``pyproject.toml``. Third parties also call
+:func:`beetroot.registry.register_backend_config` to add their
+:class:`~beetroot.registry.BackendConfigBase` subclass to the open registry
+union — that is what makes their rows survive read/write cycles.
 
 T1 ships only the redroid backend; T5 adds ``adb.py`` (the
 :class:`AdbDevice` backend) and registers it as ``"adb"``.
@@ -39,16 +39,17 @@ def register_backend(kind: str, cls: type[DeviceBackend]) -> None:
     Register a backend class under a ``kind`` discriminator.
 
     The class is expected to satisfy :class:`beetroot.api.DeviceBackend`
-    AND expose a ``from_meta(name, backend_config) -> DeviceBackend``
-    classmethod (used by :meth:`beetroot.api.Manager.resolve`). The
-    ``from_meta`` requirement is checked via ``hasattr`` at registration
-    time so a silently-broken third-party backend surfaces the error at
-    registration time rather than at dispatch time. The Protocol
-    surface itself is **not** runtime-checked — ``isinstance(cls,
-    type[DeviceBackend])`` isn't a meaningful operation (Protocols
-    aren't ABCs at the class level), so the contract is duck-typed and
-    relies on static type-checking + the per-backend unit tests
-    asserting ``isinstance(backend_instance, DeviceBackend)``.
+    AND expose a ``from_meta(name, backend_config) -> Self`` classmethod
+    (used by :meth:`beetroot.api.Manager.resolve`). The ``from_meta``
+    requirement is checked via ``hasattr`` at registration time so a
+    silently-broken third-party backend surfaces the error at registration
+    time rather than at dispatch time.
+
+    Entry-point kind collisions (two installed packages both declaring
+    ``kind="foo"``) raise :class:`BackendRegistrationError` loudly instead
+    of silently discarding the second registration — a silent discard would
+    leave the user with a non-obvious "wrong backend loaded" bug that only
+    manifests at runtime dispatch.
 
     Args:
         kind: The discriminator value (e.g. ``"redroid"``, ``"adb"``,
@@ -97,6 +98,20 @@ def registered_kinds() -> list[str]:
     return sorted(_BACKEND_REGISTRY)
 
 
+def reset_for_testing() -> None:
+    """
+    Clear the backend registry and reset the entry-point-loaded flag.
+
+    **Test-only seam.** Allows a test to start from a clean registry
+    state and re-register exactly the backends it needs, without relying
+    on the autouse ``_snapshot_backend_registry`` fixture's timing.  Do
+    NOT call this in production code.
+    """
+    global _ENTRY_POINTS_LOADED  # noqa: PLW0603
+    _BACKEND_REGISTRY.clear()
+    _ENTRY_POINTS_LOADED = False
+
+
 def _load_entry_point_backends() -> None:
     """
     Discover and register third-party backends via the entry-point group.
@@ -105,18 +120,25 @@ def _load_entry_point_backends() -> None:
     pointed-at object becomes the class. Loaded exactly once per
     process; subsequent calls are no-ops.
 
-    Entry-point errors are surfaced as :class:`BackendRegistrationError`
-    so a broken third-party package doesn't silently swallow its
-    backend.
+    Entry-point KIND collisions raise :class:`BackendRegistrationError`
+    so a broken third-party package doesn't silently take over a
+    built-in backend kind.
     """
     global _ENTRY_POINTS_LOADED  # noqa: PLW0603
     if _ENTRY_POINTS_LOADED:
         return
     _ENTRY_POINTS_LOADED = True
     for ep in entry_points(group="beetroot.backends"):
-        if ep.name in _BACKEND_REGISTRY:
-            continue
         cls = ep.load()
+        if ep.name in _BACKEND_REGISTRY:
+            if _BACKEND_REGISTRY[ep.name] is cls:
+                continue  # Same class already registered — idempotent, skip.
+            # Different class for same kind: loud collision, not silent skip.
+            raise BackendRegistrationError(
+                f"entry-point kind {ep.name!r} is already registered to "
+                f"{_BACKEND_REGISTRY[ep.name].__name__}; "
+                f"cannot overwrite with {cls.__name__} from entry-point"
+            )
         register_backend(ep.name, cls)
 
 

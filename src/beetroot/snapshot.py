@@ -434,7 +434,10 @@ def restore(
     # ``from . import api`` would loop.
     from . import api  # noqa: PLC0415
     # Atomic allocation + registration under one file lock.
-    index = registry.add_allocating(dest_name, target)
+    index = registry.add_allocating(
+        dest_name,
+        backend=registry.RedroidBackendConfig(absolute_path=str(target)),
+    )
     try:
         # B7a: extraction is INSIDE the rollback try/except so a malformed
         # archive member (tarfile FilterError / TarError, zstd error)
