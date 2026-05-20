@@ -1,5 +1,64 @@
 # Changelog
 
+## v0.6.0 — 2026-05-20
+
+A stability + cleanup release on the road to v1.0 — bug-fixing, OOP/CLI
+API cleanliness, and making the CLI + Python API stable enough to freeze.
+**Several breaking changes** (all pre-1.0, intentional). Stealth/anti-root
+work is deprioritized to a future release.
+
+### Breaking changes
+- **`env` verb removed.** Use `beetroot status --json` for machine-readable
+  endpoints; `beetroot frida` / `beetroot shell` for interactive use.
+- **`stealth.denylist` → `magisk.denylist`** in `beetroot.yaml` (api_version
+  3 → 4). A `stealth:` key now raises a migration error.
+- **Second Frida port renamed to `frida_control`** (YAML field + env var
+  `FRIDA_PORT_CONTROL`).
+- **`restore --as` → `--name`** (hidden `--as` alias kept for one release).
+- **`DeviceBackend` Protocol redesigned** — third-party backends are now a
+  first-class, stable contract. `frida_cli` takes a `Sequence`;
+  `install_frida(version=None)`; `shell(args=...)`; `from_meta` takes
+  `BackendConfigBase`. Capabilities are opt-in sub-protocols
+  (`Lifecycle` / `ModuleInstaller` / `HealthCheckable` / `Snapshottable`).
+- **`Manager.list` → `list_instances`**; added `Manager.all()`;
+  `Manager.get` returns a resolved backend.
+- **`registry.add` removed** — use `add_allocating(name, backend=...)`.
+- **`Instance.destroy(yes=False)` raises** instead of prompting (the prompt
+  moved to the CLI).
+
+### Bug fixes
+- Download cache poisoning: a sha256 mismatch no longer leaves a bad cached
+  file that re-fails forever (frida-server + module zips); the module cache
+  key now incorporates the full URL so same-basename URLs can't collide.
+- The registry no longer wipes itself on an unknown backend `kind` — unknown
+  rows are preserved opaquely and round-trip byte-for-byte.
+- Cross-backend port collision: adopted adb devices' Frida ports are now
+  counted in collision detection.
+- `status` reports an adb device's real allocated Frida endpoint (was
+  hardcoded `localhost:27042`).
+- `snapshot restore` rolls back a partially-extracted directory on a
+  mid-extraction failure, rejects a file destination cleanly, and writes
+  byte-deterministic manifests.
+- The port index is bounded so an allocation can't overflow 65535.
+- `builder` skips re-cloning when the work dir already matches the repo URL,
+  and derives its build context from the package location, not `cwd`.
+- `up`/`down`/`restart --all` skip non-container backends instead of aborting.
+- `beetroot shell <name> -c '<cmd>'` now passes the command through.
+- `ls --json` no longer prints advisories to stdout.
+
+### Quality / UX
+- New `rich`-based output layer: `ls`/`status` tables, styled errors, and
+  progress bars for downloads / snapshot pack-unpack / build (TTY-aware;
+  `--json` stays plain and stable).
+- Mutation testing (`mutmut`) now covers the whole package; the docstring
+  gate is raised to 100%; new container-level CI (image build smoke +
+  a dockerized boot test of `docker/*.sh`).
+- `Display` / `Resources` fields are validated at config-load time.
+
+### Deferred to a future release
+Stealth / anti-root path randomization and the related `stealth_paths`
+plumbing (kept provisional).
+
 ## v0.5.0 — 2026-05-20
 
 A tech-debt and completeness release. **No schema change** (`api_version`
