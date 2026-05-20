@@ -100,7 +100,7 @@ beetroot restore archive.tar.zst --as beta --path ./existing-data --force
 
 The manifest carries a `path_layout: dict[str, str]` field. `snapshot` reads the source instance's [`RedroidBackendConfig.stealth_paths`](../design/stealth-posture.md) blob and writes it verbatim into this field; `restore` reads the field and replays it into the new instance's slot via the registry. The recognised keys today are `magisk_db`, `modules_dir`, and `frida_bin`, each overriding the corresponding `BEETROOT_*` line in the rendered `.env`.
 
-In v0.4 the slot defaults to `{}` — `Instance.create` does not yet generate a randomized layout — so today's snapshots carry `path_layout: {}` and `restore` is a structural no-op. v0.6's PR1 will populate the slot in `Instance.create` once stealth research validates a safe path; from that point on, snapshot → restore will carry the per-instance randomized paths through to the destination's `.env` on the very first `beetroot apply`.
+In v0.4 the slot defaults to `{}` — `Instance.create` does not yet generate a randomized layout — so today's snapshots carry `path_layout: {}` and `restore` is a structural no-op. A future release will populate the slot in `Instance.create` once stealth research validates a safe path; from that point on, snapshot → restore will carry the per-instance randomized paths through to the destination's `.env` on the very first `beetroot apply`.
 
 Unknown keys in `path_layout` are silently ignored by `render_env`, so a v0.6 snapshot carrying a future key (e.g. `stealth_module_id`) restores cleanly against a v0.4 host without faulting — the recognised keys still take effect, and the unknown one is preserved in the registry slot for a later upgrade to consume.
 

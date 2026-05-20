@@ -563,9 +563,9 @@ def render_env(
         f"BEETROOT_DENYLIST_PACKAGES={','.join(cfg.magisk.denylist)}",
         # v0.4 stealth-posture overrides — emitted with the known-safe
         # defaults. render_env is the single source of truth instead of the
-        # YAML's ${VAR:-default} fallback. v0.6's PR1 flips the default in
-        # ``Instance.create``'s generator once stealth research validates a
-        # safe layout.
+        # YAML's ${VAR:-default} fallback. A future release's stealth work
+        # flips the default in ``Instance.create``'s generator once stealth
+        # research validates a safe layout.
         f"BEETROOT_MAGISK_DB={resolved_paths['magisk_db']}",
         f"BEETROOT_MODULES_DIR={resolved_paths['modules_dir']}",
         f"BEETROOT_FRIDA_BIN={resolved_paths['frida_bin']}",
