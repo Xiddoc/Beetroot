@@ -9,6 +9,7 @@ corruption or supply-chain substitution.
 """
 from __future__ import annotations
 
+import hashlib
 import shutil
 import urllib.error
 import urllib.request
@@ -38,6 +39,25 @@ def _filename_from_url(url: str) -> str:
     return url.rsplit("/", 1)[-1] or "module.zip"
 
 
+def _cache_path_for_url(url: str) -> Path:
+    """Return the cache path for a module URL.
+
+    Two modules from different domains with the same filename would collide
+    if the cache key were the basename alone. To prevent silent wrong-file
+    returns, the cache file is placed inside a subdirectory named after the
+    first 12 hex characters of the SHA-256 of the full URL, making the key
+    unique per URL while keeping the filename human-readable.
+
+    Args:
+        url: The full module download URL.
+
+    Returns:
+        ``<module_cache_dir>/<url_hash_prefix>/<basename>``
+    """
+    url_prefix = hashlib.sha256(url.encode()).hexdigest()[:12]
+    return _module_cache_dir() / url_prefix / _filename_from_url(url)
+
+
 def _fetch_url(url: str) -> Path:
     if not url.startswith(_ALLOWED_URL_SCHEMES):
         # Belt-and-suspenders: the Module pydantic validator already
@@ -48,7 +68,7 @@ def _fetch_url(url: str) -> Path:
             f"module url {url!r} uses an unsupported scheme; "
             "only http:// and https:// are allowed"
         )
-    cache = _module_cache_dir() / _filename_from_url(url)
+    cache = _cache_path_for_url(url)
     if cache.exists() and cache.stat().st_size > 0:
         return cache
     cache.parent.mkdir(parents=True, exist_ok=True)
@@ -90,6 +110,9 @@ def _resolve(module: Module, instance_root: Path) -> Path:
     if module.sha256:
         actual = frida_download.sha256_of(local)
         if actual.lower() != module.sha256.lower():
+            # Delete the bad cached file before raising so the next call
+            # re-downloads rather than re-failing forever on a poisoned entry.
+            local.unlink(missing_ok=True)
             raise ValueError(
                 f"sha256 mismatch for {local.name}: "
                 f"expected {module.sha256}, got {actual}"
