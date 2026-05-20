@@ -17,8 +17,21 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import paths
+from . import console, paths
 from .settings import settings
+
+_CHUNK_SIZE = 1 << 16  # 64 KiB per read; balances memory and progress granularity
+
+
+class FridaFetchError(RuntimeError):
+    """
+    Raised when frida-server cannot be downloaded or decompressed.
+
+    Mirrors :class:`~beetroot.modules_download.ModuleFetchError` so callers
+    can catch a single, named domain exception rather than the raw
+    :class:`lzma.LZMAError` or :class:`urllib.error.URLError` that
+    surfaced before this class existed.
+    """
 
 
 def release_url(version: str) -> str:
@@ -74,7 +87,8 @@ def download(version: str, *, expected_sha256: str | None = None) -> Path:
         Path to the cached (decompressed, executable) binary.
 
     Raises:
-        RuntimeError: On HTTP errors, network timeouts, or URL errors.
+        FridaFetchError: On HTTP errors, network timeouts, URL errors, or
+            a corrupt/truncated ``.xz`` payload that cannot be decompressed.
         ValueError: If ``expected_sha256`` is set and doesn't match
             the binary's actual digest.
     """
@@ -85,19 +99,34 @@ def download(version: str, *, expected_sha256: str | None = None) -> Path:
 
     out.parent.mkdir(parents=True, exist_ok=True)
     url = release_url(version)
-    print(f"[beetroot] fetching {url}")  # noqa: T201  # researcher-facing stdout; replacing with logging would change UX
     try:
         with urllib.request.urlopen(url, timeout=settings.http_timeout) as resp:  # noqa: S310  # URL built from a pinned GitHub release path; scheme is https
-            compressed = resp.read()
+            raw_length = resp.headers.get("Content-Length")
+            total: float | None = float(raw_length) if raw_length else None
+            chunks: list[bytes] = []
+            with console.progress(f"Fetching frida-server {version}", total=total) as bar:
+                while True:
+                    chunk = resp.read(_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    bar.advance(len(chunk))
+        compressed = b"".join(chunks)
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"download failed: HTTP {e.code} fetching {url}") from e
+        raise FridaFetchError(f"download failed: HTTP {e.code} fetching {url}") from e
     except TimeoutError as e:
-        raise RuntimeError(
+        raise FridaFetchError(
             f"download timed out after {settings.http_timeout}s: {url}"
         ) from e
     except urllib.error.URLError as e:
-        raise RuntimeError(f"download failed: cannot reach {url}: {e.reason}") from e
-    decompressed = lzma.decompress(compressed)
+        raise FridaFetchError(f"download failed: cannot reach {url}: {e.reason}") from e
+    try:
+        decompressed = lzma.decompress(compressed)
+    except lzma.LZMAError as e:
+        raise FridaFetchError(
+            f"decompression failed for frida-server {url}: the download may be "
+            "corrupt or truncated — delete the partial cache and retry"
+        ) from e
     tmp = out.with_suffix(".tmp")
     tmp.write_bytes(decompressed)
     tmp.chmod(0o755)
@@ -107,11 +136,17 @@ def download(version: str, *, expected_sha256: str | None = None) -> Path:
 
 
 def _check_sha256(path: Path, expected: str | None) -> None:
-    """Raise ``ValueError`` if ``expected`` is set and doesn't match ``path``."""
+    """
+    Raise ``ValueError`` if ``expected`` is set and doesn't match ``path``.
+
+    The bad file is deleted before raising so the next call re-downloads
+    rather than treating the corrupt artifact as a warm cache hit.
+    """
     if expected is None:
         return
     actual = sha256_of(path)
     if actual.lower() != expected.lower():
+        path.unlink(missing_ok=True)
         raise ValueError(
             f"sha256 mismatch for frida-server at {path}: "
             f"expected {expected.lower()}, got {actual.lower()}"
