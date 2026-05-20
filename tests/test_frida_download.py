@@ -18,12 +18,26 @@ FAKE_COMPRESSED = lzma.compress(FAKE_BINARY)
 VERSION = "16.4.10"
 
 
-def _fake_urlopen(url: str, **kwargs: object) -> MagicMock:
+def _make_resp(data: bytes, *, content_length: int | None = None) -> MagicMock:
+    """Return a mock HTTP response that yields ``data`` in a single chunk then EOF.
+
+    ``resp.read(n)`` returns ``data`` on the first call, then ``b""`` on all
+    subsequent calls — matching the chunked-read loop in ``download()``.
+    ``resp.headers.get("Content-Length")`` returns a string value when
+    ``content_length`` is set, or ``None`` when it is not.
+    """
     resp = MagicMock()
-    resp.read.return_value = FAKE_COMPRESSED
+    resp.read.side_effect = [data, b""]
+    resp.headers.get.side_effect = lambda key, *args: (
+        str(content_length) if key == "Content-Length" and content_length is not None else None
+    )
     resp.__enter__ = lambda s: s
     resp.__exit__ = MagicMock(return_value=False)
     return resp
+
+
+def _fake_urlopen(url: str, **kwargs: object) -> MagicMock:
+    return _make_resp(FAKE_COMPRESSED, content_length=len(FAKE_COMPRESSED))
 
 
 @pytest.fixture
@@ -126,11 +140,7 @@ class TestDownloadErrors:
         # not as a raw lzma.LZMAError that reveals internal implementation
         # details to the caller.
         def _bad_resp(url: str, **kwargs: object) -> MagicMock:
-            resp = MagicMock()
-            resp.read.return_value = b"not valid lzma data"
-            resp.__enter__ = lambda s: s
-            resp.__exit__ = MagicMock(return_value=False)
-            return resp
+            return _make_resp(b"not valid lzma data")
 
         with patch("urllib.request.urlopen", side_effect=_bad_resp):
             with pytest.raises(frida_download.FridaFetchError, match="decompression failed"):
@@ -297,3 +307,78 @@ class TestDownloadSha256:
                     instance_root, VERSION,
                     expected_sha256="b" * 64,
                 )
+
+
+class TestDownloadProgress:
+    """Progress bar behaviour during frida-server downloads."""
+
+    def test_content_length_header_produces_determinate_bar(
+        self, isolated_registry: Path
+    ) -> None:
+        # When the response includes a Content-Length header the progress bar
+        # receives a non-None total so percentage and ETA columns are shown.
+        captured_totals: list[float | None] = []
+
+        from beetroot import console as cons
+
+        class _RecordingProgress(cons.ProgressContext):
+            def __init__(self, description: str, total: float | None = None) -> None:
+                captured_totals.append(total)
+                super().__init__(description, total)
+
+        with patch("beetroot.console.ProgressContext", _RecordingProgress):
+            with patch(
+                "urllib.request.urlopen",
+                side_effect=lambda url, **kw: _make_resp(
+                    FAKE_COMPRESSED, content_length=len(FAKE_COMPRESSED)
+                ),
+            ):
+                frida_download.download(VERSION)
+
+        assert len(captured_totals) == 1
+        assert captured_totals[0] == float(len(FAKE_COMPRESSED))
+
+    def test_missing_content_length_produces_indeterminate_bar(
+        self, isolated_registry: Path
+    ) -> None:
+        # When Content-Length is absent the progress bar total must be None so
+        # an indeterminate / pulse bar is rendered instead of a broken 0%.
+        captured_totals: list[float | None] = []
+
+        from beetroot import console as cons
+
+        class _RecordingProgress(cons.ProgressContext):
+            def __init__(self, description: str, total: float | None = None) -> None:
+                captured_totals.append(total)
+                super().__init__(description, total)
+
+        with patch("beetroot.console.ProgressContext", _RecordingProgress):
+            with patch(
+                "urllib.request.urlopen",
+                # No content_length → headers.get returns None
+                side_effect=lambda url, **kw: _make_resp(FAKE_COMPRESSED),
+            ):
+                frida_download.download(VERSION)
+
+        assert len(captured_totals) == 1
+        assert captured_totals[0] is None
+
+    def test_chunked_read_produces_correct_binary(self, isolated_registry: Path) -> None:
+        # End-to-end: drive download() with a multi-chunk response and assert
+        # that the decompressed binary on disk is byte-for-byte correct.
+        half = len(FAKE_COMPRESSED) // 2
+        chunk_a = FAKE_COMPRESSED[:half]
+        chunk_b = FAKE_COMPRESSED[half:]
+
+        def _multi_chunk_resp(url: str, **kw: object) -> MagicMock:
+            resp = MagicMock()
+            resp.read.side_effect = [chunk_a, chunk_b, b""]
+            resp.headers.get.return_value = None
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=_multi_chunk_resp):
+            result = frida_download.download(VERSION)
+
+        assert result.read_bytes() == FAKE_BINARY

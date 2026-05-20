@@ -17,12 +17,15 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import paths
+from . import console, paths
 from .settings import settings
+
+_CHUNK_SIZE = 1 << 16  # 64 KiB per read; balances memory and progress granularity
 
 
 class FridaFetchError(RuntimeError):
-    """Raised when frida-server cannot be downloaded or decompressed.
+    """
+    Raised when frida-server cannot be downloaded or decompressed.
 
     Mirrors :class:`~beetroot.modules_download.ModuleFetchError` so callers
     can catch a single, named domain exception rather than the raw
@@ -96,10 +99,19 @@ def download(version: str, *, expected_sha256: str | None = None) -> Path:
 
     out.parent.mkdir(parents=True, exist_ok=True)
     url = release_url(version)
-    print(f"[beetroot] fetching {url}")  # noqa: T201  # researcher-facing stdout; replacing with logging would change UX
     try:
         with urllib.request.urlopen(url, timeout=settings.http_timeout) as resp:  # noqa: S310  # URL built from a pinned GitHub release path; scheme is https
-            compressed = resp.read()
+            raw_length = resp.headers.get("Content-Length")
+            total: float | None = float(raw_length) if raw_length else None
+            chunks: list[bytes] = []
+            with console.progress(f"Fetching frida-server {version}", total=total) as bar:
+                while True:
+                    chunk = resp.read(_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    bar.advance(len(chunk))
+        compressed = b"".join(chunks)
     except urllib.error.HTTPError as e:
         raise FridaFetchError(f"download failed: HTTP {e.code} fetching {url}") from e
     except TimeoutError as e:
@@ -124,7 +136,8 @@ def download(version: str, *, expected_sha256: str | None = None) -> Path:
 
 
 def _check_sha256(path: Path, expected: str | None) -> None:
-    """Raise ``ValueError`` if ``expected`` is set and doesn't match ``path``.
+    """
+    Raise ``ValueError`` if ``expected`` is set and doesn't match ``path``.
 
     The bad file is deleted before raising so the next call re-downloads
     rather than treating the corrupt artifact as a warm cache hit.

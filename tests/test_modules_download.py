@@ -14,9 +14,21 @@ from beetroot.config import InstanceConfig, Module
 FAKE_ZIP_CONTENT = b"PK\x03\x04 fake zip content"
 
 
-def _make_url_resp(data: bytes = FAKE_ZIP_CONTENT) -> MagicMock:
+def _make_url_resp(
+    data: bytes = FAKE_ZIP_CONTENT, *, content_length: int | None = None
+) -> MagicMock:
+    """Return a mock HTTP response that yields ``data`` in one chunk then EOF.
+
+    ``resp.read(n)`` returns ``data`` on the first call, then ``b""`` on all
+    subsequent calls — matching the chunked-read loop in ``_fetch_url()``.
+    ``resp.headers.get("Content-Length")`` returns a string when
+    ``content_length`` is provided, or ``None`` when it is not.
+    """
     resp = MagicMock()
-    resp.read.return_value = data
+    resp.read.side_effect = [data, b""]
+    resp.headers.get.side_effect = lambda key, *args: (
+        str(content_length) if key == "Content-Length" and content_length is not None else None
+    )
     resp.__enter__ = lambda s: s
     resp.__exit__ = MagicMock(return_value=False)
     return resp
@@ -239,3 +251,80 @@ class TestEmptyModuleList:
         cfg = InstanceConfig(modules=[])
         staged = modules_download.stage_for_instance(instance_root, cfg)
         assert staged == []
+
+
+class TestModuleDownloadProgress:
+    """Progress bar behaviour during module zip downloads."""
+
+    def test_content_length_header_produces_determinate_bar(
+        self, instance_root: Path
+    ) -> None:
+        # When the response includes Content-Length the progress bar receives a
+        # non-None total so percentage + ETA columns are shown.
+        captured_totals: list[float | None] = []
+
+        from beetroot import console as cons
+
+        class _RecordingProgress(cons.ProgressContext):
+            def __init__(self, description: str, total: float | None = None) -> None:
+                captured_totals.append(total)
+                super().__init__(description, total)
+
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip")])
+        with patch("beetroot.console.ProgressContext", _RecordingProgress):
+            with patch(
+                "urllib.request.urlopen",
+                return_value=_make_url_resp(content_length=len(FAKE_ZIP_CONTENT)),
+            ):
+                modules_download.stage_for_instance(instance_root, cfg)
+
+        assert len(captured_totals) == 1
+        assert captured_totals[0] == float(len(FAKE_ZIP_CONTENT))
+
+    def test_missing_content_length_produces_indeterminate_bar(
+        self, instance_root: Path
+    ) -> None:
+        # When Content-Length is absent the progress bar total must be None so
+        # an indeterminate / pulse bar is rendered instead of a broken 0%.
+        captured_totals: list[float | None] = []
+
+        from beetroot import console as cons
+
+        class _RecordingProgress(cons.ProgressContext):
+            def __init__(self, description: str, total: float | None = None) -> None:
+                captured_totals.append(total)
+                super().__init__(description, total)
+
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip")])
+        with patch("beetroot.console.ProgressContext", _RecordingProgress):
+            with patch(
+                "urllib.request.urlopen",
+                # no content_length → indeterminate
+                return_value=_make_url_resp(),
+            ):
+                modules_download.stage_for_instance(instance_root, cfg)
+
+        assert len(captured_totals) == 1
+        assert captured_totals[0] is None
+
+    def test_chunked_read_produces_correct_zip(self, instance_root: Path) -> None:
+        # End-to-end: drive stage_for_instance with a multi-chunk response and
+        # assert that the staged artifact has the correct bytes.
+        half = len(FAKE_ZIP_CONTENT) // 2
+        chunk_a = FAKE_ZIP_CONTENT[:half]
+        chunk_b = FAKE_ZIP_CONTENT[half:]
+
+        def _multi_chunk(url: str, **kw: object) -> MagicMock:
+            resp = MagicMock()
+            resp.read.side_effect = [chunk_a, chunk_b, b""]
+            resp.headers.get.return_value = None
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip")])
+        with patch("urllib.request.urlopen", side_effect=_multi_chunk):
+            staged = modules_download.stage_for_instance(instance_root, cfg)
+
+        assert len(staged) == 1
+        assert staged[0].read_bytes() == FAKE_ZIP_CONTENT

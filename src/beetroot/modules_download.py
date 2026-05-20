@@ -15,9 +15,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import frida_download, paths
+from . import console, frida_download, paths
 from .config import InstanceConfig, Module
 from .settings import settings
+
+_CHUNK_SIZE = 1 << 16  # 64 KiB per read; balances memory and progress granularity
 
 # Only HTTP(S) module URLs are allowed. Allowing ``file://`` would let a
 # malicious ``beetroot.yaml`` exfiltrate arbitrary host files into the
@@ -40,7 +42,8 @@ def _filename_from_url(url: str) -> str:
 
 
 def _cache_path_for_url(url: str) -> Path:
-    """Return the cache path for a module URL.
+    """
+    Return the cache path for a module URL.
 
     Two modules from different domains with the same filename would collide
     if the cache key were the basename alone. To prevent silent wrong-file
@@ -72,10 +75,20 @@ def _fetch_url(url: str) -> Path:
     if cache.exists() and cache.stat().st_size > 0:
         return cache
     cache.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[beetroot] fetching module {url}")  # noqa: T201  # researcher-facing stdout; replacing with logging would change UX
+    filename = _filename_from_url(url)
     try:
         with urllib.request.urlopen(url, timeout=settings.http_timeout) as resp:  # noqa: S310  # scheme validated by Module pydantic model + _fetch_url allowlist
-            data = resp.read()
+            raw_length = resp.headers.get("Content-Length")
+            total: float | None = float(raw_length) if raw_length else None
+            chunks: list[bytes] = []
+            with console.progress(f"Fetching module {filename}", total=total) as bar:
+                while True:
+                    chunk = resp.read(_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    bar.advance(len(chunk))
+        data = b"".join(chunks)
     except urllib.error.HTTPError as e:
         raise ModuleFetchError(
             f"download failed: HTTP {e.code} fetching {url}; "
