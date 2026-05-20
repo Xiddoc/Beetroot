@@ -15,8 +15,9 @@ TTY degradation is handled automatically by rich: when the underlying file is
 not a TTY (e.g. a pipe), ``Console`` strips ANSI codes and renders plain text
 so log files and CI output remain readable. Progress bars still render a single
 summary line in non-TTY mode — they do not spam the log with carriage-return
-sequences because rich uses a ``RichHandler``-style line-based renderer when it
-detects a non-interactive stream.
+sequences because rich's ``Progress``/``Console`` detects a non-interactive
+(non-TTY) console and disables the ``Live`` refresh loop, emitting plain line
+output instead.
 """
 from __future__ import annotations
 
@@ -27,7 +28,14 @@ from collections.abc import Generator, Sequence
 from typing import IO
 
 from rich.console import Console
-from rich.progress import BarColumn, Progress, TaskID, TextColumn, TimeRemainingColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    ProgressColumn,
+    TaskID,
+    TextColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table
 
 # ---------------------------------------------------------------------------
@@ -166,30 +174,46 @@ class ProgressContext:
 
     Use via :func:`progress` rather than constructing directly.
 
+    Pass ``total=None`` for indeterminate ("pulse") mode when the total work
+    units are not known in advance (e.g. a download with no ``Content-Length``
+    header).  In that mode the percentage and time-remaining columns are
+    omitted because they are meaningless without a known total.
+
     Example::
 
         with console.progress("Downloading frida-server", total=1024) as p:
             p.advance(512)
             p.advance(512)
+
+        with console.progress("Downloading frida-server", total=None) as p:
+            p.advance(512)   # just pulses; no percentage shown
     """
 
-    def __init__(self, description: str, total: float) -> None:
+    def __init__(self, description: str, total: float | None = None) -> None:
         """
         Initialise the context with a task description and total work units.
 
+        Pass ``total=None`` for an indeterminate (pulse) bar when the total is
+        not known.  In that case the percentage and time-remaining columns are
+        omitted because they carry no meaning.
+
         Args:
             description: Short label displayed beside the progress bar.
-            total: Total number of work units (passed to ``Progress.add_task``).
+            total: Total number of work units (passed to ``Progress.add_task``),
+                or ``None`` for indeterminate / pulse mode.
         """
         self._description = description
         self._total = total
-        self._progress = Progress(
+        columns: list[ProgressColumn] = [
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TimeRemainingColumn(),
-            console=_stderr_console,
-        )
+        ]
+        if total is not None:
+            columns += [
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                TimeRemainingColumn(),
+            ]
+        self._progress = Progress(*columns, console=_stderr_console)
         self._task_id: TaskID | None = None
 
     def __enter__(self) -> ProgressContext:
@@ -220,12 +244,17 @@ class ProgressContext:
 
 
 @contextlib.contextmanager
-def progress(description: str, *, total: float) -> Generator[ProgressContext]:
+def progress(description: str, *, total: float | None = None) -> Generator[ProgressContext]:
     """
     Context manager wrapping ``rich.progress.Progress`` for long operations.
 
     Renders to stderr so progress bars never pollute stdout pipes.  Rich
     degrades gracefully on non-TTY streams (no carriage-return spam).
+
+    Pass ``total=None`` (the default) for indeterminate ("pulse") mode when the
+    total is not known in advance — e.g. a download with no ``Content-Length``
+    header.  Pass a positive float when the total is known so percentage and
+    time-remaining columns are shown.
 
     Example::
 
@@ -234,9 +263,15 @@ def progress(description: str, *, total: float) -> Generator[ProgressContext]:
                 process(chunk)
                 p.advance(len(chunk))
 
+        with console.progress("Fetching release") as p:   # indeterminate
+            for chunk in stream:
+                process(chunk)
+                p.advance(len(chunk))
+
     Args:
         description: Short label displayed next to the progress bar.
-        total: Total work units; sets the 100% mark.
+        total: Total work units (sets the 100% mark), or ``None`` (default)
+            for indeterminate pulse mode.
 
     Yields:
         A :class:`ProgressContext` with an :meth:`~ProgressContext.advance`

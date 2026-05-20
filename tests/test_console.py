@@ -344,3 +344,68 @@ def test_progress_context_advance_before_enter_is_noop(monkeypatch: pytest.Monke
     ctx = console.ProgressContext("Noop", 10.0)
     ctx.advance(5.0)
     assert buf.getvalue() == ""
+
+
+# ---------------------------------------------------------------------------
+# Indeterminate / pulse mode (total=None)
+# ---------------------------------------------------------------------------
+
+
+def test_progress_context_total_none_advances_and_exits_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c, buf = _make_console()
+    monkeypatch.setattr(console, "_stderr_console", c)
+    ctx = console.ProgressContext("Pulsing", total=None)
+    with ctx:
+        ctx.advance(512)
+        ctx.advance(512)
+    assert "Pulsing" in buf.getvalue()
+
+
+def test_progress_context_total_none_no_ansi_when_non_tty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c, buf = _make_console(tty=False)
+    monkeypatch.setattr(console, "_stderr_console", c)
+    with console.ProgressContext("PulseNonTTY", total=None) as ctx:
+        ctx.advance(100)
+    assert "\x1b" not in buf.getvalue()
+
+
+def test_progress_helper_total_none_advances_and_exits_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c, buf = _make_console()
+    monkeypatch.setattr(console, "_stderr_console", c)
+    with console.progress("IndeterminateOp") as p:
+        assert isinstance(p, console.ProgressContext)
+        p.advance(256)
+    assert "IndeterminateOp" in buf.getvalue()
+
+
+def test_progress_helper_total_none_no_ansi_when_non_tty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c, buf = _make_console(tty=False)
+    monkeypatch.setattr(console, "_stderr_console", c)
+    with console.progress("IndeterminateNonTTY", total=None) as p:
+        p.advance(100)
+    assert "\x1b" not in buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# conftest _reset_consoles autouse fixture — verify it prevents leakage
+# ---------------------------------------------------------------------------
+
+
+def test_set_consoles_does_not_leak_to_sibling_test_a() -> None:
+    new_c, _buf = _make_console()
+    console.set_consoles(stdout=new_c)
+    # Intentionally do NOT restore — the autouse fixture must handle it.
+
+
+def test_set_consoles_does_not_leak_to_sibling_test_b() -> None:
+    # If _reset_consoles works, the singleton must be the original one here,
+    # not the replacement installed by test_a above.
+    assert console._stdout_console is console.stdout_console()

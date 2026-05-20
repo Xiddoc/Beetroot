@@ -53,6 +53,28 @@ def _reset_api_version_warning_dedup() -> Iterator[None]:
     config._API_VERSION_BUMP_WARNED.clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_consoles() -> Iterator[None]:
+    """Snapshot and restore the console module's stdout/stderr singletons.
+
+    ``console.set_consoles(...)`` mutates two module-level globals.  Without
+    restoration, any test that calls ``set_consoles`` (or any future wave that
+    injects test consoles without a manual teardown) leaks its replacement
+    into every subsequent test in the same process.  The snapshot/restore here
+    mirrors the pattern used by ``_snapshot_backend_registry`` and
+    ``_reset_api_version_warning_dedup`` above.
+    """
+    from beetroot import console
+
+    saved_stdout = console._stdout_console
+    saved_stderr = console._stderr_console
+    try:
+        yield
+    finally:
+        console._stdout_console = saved_stdout
+        console._stderr_console = saved_stderr
+
+
 @pytest.fixture
 def isolated_registry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
