@@ -40,10 +40,11 @@ jobs:
         # ``mutmut run`` exits non-zero only when the runner crashes;
         # surviving mutants exit 2, which we tolerate for the nightly.
         # The survival rate is the artefact, not the exit code.
-        # paths-to-mutate mirrors [tool.mutmut].paths_to_mutate in pyproject.toml.
+        # Scope comes from [tool.mutmut].paths_to_mutate in pyproject.toml
+        # (mutmut 3.x dropped the --paths-to-mutate CLI flag).
         run: |
           set +e
-          uv run mutmut run --paths-to-mutate src/beetroot/registry.py,src/beetroot/snapshot.py,src/beetroot/api.py,src/beetroot/config.py,src/beetroot/backends/adb.py,src/beetroot/backends/__init__.py,src/beetroot/ports.py,src/beetroot/compose.py,src/beetroot/frida_download.py,src/beetroot/modules_download.py,src/beetroot/builder.py,src/beetroot/paths.py,src/beetroot/settings.py,src/beetroot/cli.py
+          uv run mutmut run
           mutmut_exit=$?
           uv run mutmut results > mutmut-results.txt 2>&1 || true
           echo "mutmut exit was $mutmut_exit; results captured to mutmut-results.txt"
