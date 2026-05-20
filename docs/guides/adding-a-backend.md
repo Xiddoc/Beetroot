@@ -50,7 +50,7 @@ looking at a separate tool.
 
 ## 2. The `DeviceBackend` Protocol surface
 
-Every backend must implement these eight members. The Protocol is
+Every backend must implement these nine members. The Protocol is
 `@runtime_checkable`, so `isinstance(your_backend, DeviceBackend)` is
 a meaningful test (and the synthetic third-backend test asserts it).
 
@@ -103,7 +103,7 @@ class DeviceBackend(Protocol):
 
     @classmethod
     def from_meta(
-        cls, name: str, backend: registry.BackendConfig,
+        cls, name: str, backend: registry.BackendConfigBase,
     ) -> "DeviceBackend":
         """Construct a backend from a registry meta's backend config."""
         ...
@@ -116,10 +116,10 @@ Three details that often surprise first-time backend authors:
   Protocol.
 * **`from_meta` is a classmethod ON the Protocol.** The backend
   registry's dispatcher (`Manager.resolve`) calls it. The argument is
-  typed `registry.BackendConfig` (the in-tree discriminated union),
-  but third-party backends typically narrow the parameter to their
-  own pydantic model via `isinstance` + `TypeError` — see the
-  `CloudBackend` example below.
+  typed `registry.BackendConfigBase` (the open-union base class), and
+  third-party backends narrow the parameter to their own pydantic model
+  via `isinstance` inside the body — see the `CloudBackend` example
+  below.
 * **Verbs that don't generalise (lifecycle: `up` / `down` /
   `apply` / `destroy` / `snapshot`) are NOT on the Protocol.** Third-
   party backends don't need to implement them. The CLI narrows via
@@ -168,6 +168,7 @@ import subprocess
 from collections.abc import Sequence
 
 from beetroot import frida_download
+from beetroot.registry import BackendConfigBase
 
 
 class CloudBackend:
@@ -178,13 +179,15 @@ class CloudBackend:
         self._config = config
 
     @classmethod
-    def from_meta(cls, name: str, backend: object) -> "CloudBackend":
-        # ``backend`` is typed ``object`` because the in-tree
-        # discriminated union doesn't include third-party arms — the
-        # third-party model validates against its own pydantic class,
-        # so we duck-type-narrow here. Raise ``TypeError`` (not
-        # ``ValueError``) so the registry dispatcher's error path is
-        # distinguishable from a missing-name error.
+    def from_meta(cls, name: str, backend: BackendConfigBase) -> "CloudBackend":
+        # ``backend`` arrives as ``BackendConfigBase``; narrow to our own
+        # config class so mypy strict is satisfied without resorting to
+        # the ``object`` workaround that was needed before v0.6.  The
+        # registry dispatcher already validated the raw JSON against
+        # CloudBackendConfig (because we called register_backend_config),
+        # so this isinstance is defence-in-depth.  Raise ``TypeError``
+        # (not ``ValueError``) so the error path is distinguishable from
+        # a missing-name error.
         if not isinstance(backend, CloudBackendConfig):
             raise TypeError(
                 f"CloudBackend expected CloudBackendConfig, got "
@@ -249,9 +252,9 @@ docstrings you'll want to add). Three things to notice:
 1. **The class doesn't inherit from anything.** The Protocol is
    structural; satisfying its surface is enough.
 2. **No lifecycle methods.** If you call `beetroot up <cloud-name>`,
-   `cli._resolve_redroid_for_backend` raises
-   `BackendCapabilityError("up not supported by cloud-xyz backend")`
-   and `cli.main` exits with code 2.
+   `cli._require` gates the verb on the `Lifecycle` sub-protocol and
+   raises `BackendCapabilityError("up not supported by cloud-xyz backend")`
+   (exit code 2) because `CloudBackend` doesn't implement `Lifecycle`.
 3. **No registry mutation.** The backend reads its own config and
    talks to the remote service; it never writes to the registry.
    Registry rows are created by `beetroot adopt`-equivalent verbs

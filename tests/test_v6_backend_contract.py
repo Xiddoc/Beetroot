@@ -24,7 +24,6 @@ Covers the surfaces that were added or changed in this branch:
 from __future__ import annotations
 
 import json
-import sys
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -192,7 +191,7 @@ class TestUnresolvedBackendConfig:
         raw: dict[str, object] = {"kind": "future-cloud", "endpoint": "https://example.com"}
         result = registry._parse_backend_config(raw)
         assert isinstance(result, UnresolvedBackendConfig)
-        assert result._raw == raw  # noqa: SLF001
+        assert result._raw == raw
 
     def test_opaque_row_round_trips_byte_for_byte(
         self, isolated_registry: Path, tmp_path: Path
@@ -216,7 +215,7 @@ class TestUnresolvedBackendConfig:
         rebuilt = registry._read(path)
         remote_meta = rebuilt.instances["remote"]
         assert isinstance(remote_meta.backend, UnresolvedBackendConfig)
-        assert remote_meta.backend._raw == raw  # noqa: SLF001
+        assert remote_meta.backend._raw == raw
 
     def test_opaque_row_serialized_backend_equals_raw(self, tmp_path: Path) -> None:
         raw: dict[str, object] = {"kind": "x", "data": "preserved"}
@@ -225,8 +224,65 @@ class TestUnresolvedBackendConfig:
             index=0,
             created_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
-        result = meta._serialize_backend(meta.backend)  # noqa: SLF001
+        result = meta._serialize_backend(meta.backend)
         assert result == raw
+
+    def test_unknown_kind_sibling_preserves_known_rows_and_round_trips(
+        self, tmp_path: Path
+    ) -> None:
+        # Data-loss regression: a registry containing an unknown-kind row
+        # alongside valid redroid and adb rows must NEVER wipe the file.
+        # The known rows must load intact; the unknown row must survive as
+        # UnresolvedBackendConfig; a subsequent write must re-emit the
+        # unknown row's raw dict byte-for-byte.
+        path = tmp_path / "reg.json"
+        unknown_raw: dict[str, object] = {
+            "kind": "future-cloud",
+            "endpoint": "https://cloud.example",
+            "token": "tok-abc",
+        }
+        doc = RegistryFile(
+            instances={
+                "alpha": InstanceMeta(
+                    backend=RedroidBackendConfig(absolute_path="/tmp/alpha"),
+                    index=0,
+                    created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                ),
+                "phone": InstanceMeta(
+                    backend=AdbBackendConfig(serial="emulator-5554"),
+                    index=1,
+                    created_at=datetime(2026, 2, 1, tzinfo=UTC),
+                ),
+                "cloud": InstanceMeta(
+                    backend=UnresolvedBackendConfig(kind="future-cloud", raw=unknown_raw),
+                    index=2,
+                    created_at=datetime(2026, 3, 1, tzinfo=UTC),
+                ),
+            },
+        )
+        registry._write(path, doc)
+
+        # --- (a) + (b): read back; known rows intact, unknown is opaque ---
+        rebuilt = registry._read(path)
+        assert "alpha" in rebuilt.instances
+        assert isinstance(rebuilt.instances["alpha"].backend, RedroidBackendConfig)
+        assert rebuilt.instances["alpha"].backend.absolute_path == "/tmp/alpha"
+        assert "phone" in rebuilt.instances
+        assert isinstance(rebuilt.instances["phone"].backend, AdbBackendConfig)
+        assert rebuilt.instances["phone"].backend.serial == "emulator-5554"
+        assert "cloud" in rebuilt.instances
+        cloud_meta = rebuilt.instances["cloud"]
+        assert isinstance(cloud_meta.backend, UnresolvedBackendConfig)
+        assert cloud_meta.backend.kind == "future-cloud"
+
+        # --- (c): no backup-and-empty (bak file must NOT exist) -----------
+        assert not path.with_suffix(".json.bak").exists()
+
+        # --- (d): re-write and confirm unknown row is byte-for-byte equal --
+        registry._write(path, rebuilt)
+        second_read = registry._read(path)
+        assert isinstance(second_read.instances["cloud"].backend, UnresolvedBackendConfig)
+        assert second_read.instances["cloud"].backend._raw == unknown_raw
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +484,7 @@ class TestEntryPointCollision:
         class _AltBackend:
             @classmethod
             def from_meta(cls, name: str, backend_config: BackendConfigBase) -> _AltBackend:
+                del name, backend_config
                 return cls()
 
         backends._BACKEND_REGISTRY["ep-collision-kind"] = _FakeBackend

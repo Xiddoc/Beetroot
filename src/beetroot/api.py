@@ -1222,7 +1222,7 @@ class Manager:
         for name in sorted(registry.list_instances()):
             try:
                 out.append(Manager.resolve(name))
-            except (InstanceNotFoundError, Exception):  # noqa: BLE001, S112  # resolution can fail for orphans, unknown kinds, etc.; skip silently
+            except Exception:  # noqa: BLE001, S112  # resolution can fail for orphans, unknown kinds, etc. (InstanceNotFoundError, OSError, etc.) — skip silently
                 continue
         return out
 
@@ -1464,8 +1464,8 @@ def _check_magisk_denylist_over_adb(
     Args:
         adb_target: The adb serial/endpoint for ``adb -s <target>``.
         pkg: Package id (already validated against the Android
-            package-id grammar by :class:`config.Stealth`).
-        enrolled: ``False`` if the package isn't in ``cfg.stealth.denylist``.
+            package-id grammar by :class:`config.Magisk`).
+        enrolled: ``False`` if the package isn't in ``cfg.magisk.denylist``.
             When ``False`` the check returns ``skip`` (the user
             explicitly chose not to hide root from this package).
 
@@ -1474,13 +1474,13 @@ def _check_magisk_denylist_over_adb(
         ``fail`` otherwise, ``skip`` if the config doesn't list it.
     """
     if not enrolled:
-        return CheckResult(status="skip", reason=f"{pkg} not in stealth.denylist")
+        return CheckResult(status="skip", reason=f"{pkg} not in magisk.denylist")
     if shutil.which("adb") is None:
         return CheckResult(status="skip", reason="adb not on PATH")
     try:
         rc, stdout, stderr = _magisk_sqlite_value_over_adb(
             adb_target,
-            # Package id is grammar-validated upstream by config.Stealth
+            # Package id is grammar-validated upstream by config.Magisk
             # (only [a-zA-Z0-9._]) so it can't break the SQL quote. The
             # bandit warning is a false positive on that grammar.
             f"SELECT package_name FROM denylist WHERE package_name='{pkg}'",  # noqa: S608

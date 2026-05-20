@@ -33,7 +33,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from . import paths, ports
 from .config import load_yaml
@@ -194,6 +194,28 @@ def register_backend_config(cls: type[BackendConfigBase]) -> None:
     _BACKEND_CONFIG_REGISTRY[kind] = cls
 
 
+def _dump_backend_config(cfg: BackendConfigBase) -> dict[str, object]:
+    """
+    Serialize a backend config to its raw dict representation.
+
+    This is the single authoritative path for opaque-row serialization —
+    both :meth:`InstanceMeta._serialize_backend` (the pydantic
+    field_serializer) and :func:`_registry_to_json` (the live write path)
+    delegate here so data-loss behaviour has exactly one implementation.
+
+    Args:
+        cfg: The backend config to serialize.
+
+    Returns:
+        For :class:`UnresolvedBackendConfig`, the original raw dict
+        preserved verbatim.  For all registered types, the pydantic
+        ``model_dump`` output.
+    """
+    if isinstance(cfg, UnresolvedBackendConfig):
+        return cfg._raw  # noqa: SLF001  # internal slot; the raw dict IS the serialized form
+    return cfg.model_dump()
+
+
 def _parse_backend_config(raw: dict[str, object]) -> BackendConfigBase:
     """
     Parse a raw backend sub-dict into the appropriate config class.
@@ -241,9 +263,7 @@ class InstanceMeta(BaseModel):
     @field_serializer("backend")
     def _serialize_backend(self, v: BackendConfigBase) -> dict[str, object]:
         """Serialize the concrete subclass fields, not just the base class fields."""
-        if isinstance(v, UnresolvedBackendConfig):
-            return v._raw  # noqa: SLF001  # internal slot; same path as _registry_to_json
-        return v.model_dump()
+        return _dump_backend_config(v)
 
 
 class RegistryFile(BaseModel):
@@ -378,7 +398,7 @@ def _read(path: Path) -> RegistryFile:
                 {**meta_dict, "backend": backend}
             )
             instances[name] = meta
-        except (ValidationError, Exception):  # noqa: BLE001, S112  # corrupt row — skip silently; the envelope is valid
+        except Exception:  # noqa: BLE001, S112  # corrupt row (ValidationError, ValueError, etc.) — skip silently; the envelope is valid
             continue
     return RegistryFile(instances=instances)
 
@@ -413,17 +433,15 @@ def _registry_to_json(data: RegistryFile) -> str:
 
     :class:`UnresolvedBackendConfig` rows are re-emitted from their
     raw dict (byte-for-byte round-trip). Registered rows go through
-    pydantic's ``model_dump``.
+    pydantic's ``model_dump``.  Both paths delegate to
+    :func:`_dump_backend_config` — the single authoritative
+    serialization helper — so opaque-row round-tripping has exactly one
+    implementation.
     """
     instances_out: dict[str, dict[str, object]] = {}
     for name, meta in data.instances.items():
-        backend = meta.backend
-        if isinstance(backend, UnresolvedBackendConfig):
-            backend_dict: dict[str, object] = backend._raw  # noqa: SLF001  # internal serialisation; _raw is our own private slot
-        else:
-            backend_dict = backend.model_dump()
         instances_out[name] = {
-            "backend": backend_dict,
+            "backend": _dump_backend_config(meta.backend),
             "index": meta.index,
             "created_at": meta.created_at.isoformat(),
         }

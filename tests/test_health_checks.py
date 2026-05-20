@@ -124,7 +124,7 @@ class TestCheckMagiskDenylist:
             "localhost:5555", "com.example", enrolled=False,
         )
         assert result.status == "skip"
-        assert "not in stealth.denylist" in (result.reason or "")
+        assert "not in magisk.denylist" in (result.reason or "")
 
     def test_skip_when_adb_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(shutil, "which", lambda _: None)

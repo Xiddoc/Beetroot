@@ -6,8 +6,8 @@ entry-point line:
 
 1. A pydantic ``BackendConfig`` subclass with a unique ``kind:
    Literal[...]`` discriminator and the connection params.
-2. A class satisfying :class:`api.DeviceBackend` (eight properties +
-   methods).
+2. A class satisfying :class:`api.DeviceBackend` (nine members:
+   eight properties/methods on the base + ``from_meta``).
 3. One entry-point line in the third-party package's ``pyproject.toml``
    under ``[project.entry-points."beetroot.backends"]``.
 
@@ -27,18 +27,17 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
-from pydantic import BaseModel, ConfigDict
 
-from beetroot import api, backends, cli, paths
+from beetroot import api, backends, cli, paths, registry
+from beetroot.registry import BackendConfigBase
 
 # ---- The synthetic third backend: ~30 LOC total. -------------------------
 
 
-class FakeBackendConfig(BaseModel):
+class FakeBackendConfig(BackendConfigBase):
     """Third-party backend config — owned by the backend package, not beetroot."""
 
-    model_config = ConfigDict(extra="forbid", frozen=False)
-    kind: Literal["fake"] = "fake"
+    kind: Literal["fake"] = "fake"  # type: ignore[mutable-override]  # Literal narrows the base str; required for pydantic discriminated dispatch
     host: str
 
 
@@ -50,11 +49,13 @@ class FakeBackend:
         self._config = config
 
     @classmethod
-    def from_meta(cls, name: str, backend: object) -> FakeBackend:
-        # ``backend`` is typed as ``object`` because the in-tree
-        # discriminated union (``registry.BackendConfig``) doesn't
-        # include third-party arms — the third-party class validates
-        # against its own pydantic model, so we duck-type here.
+    def from_meta(cls, name: str, backend: BackendConfigBase) -> FakeBackend:
+        # ``backend`` arrives as ``BackendConfigBase``; narrow to our own
+        # config via isinstance so mypy strict is satisfied.  The registry
+        # dispatcher calls this only after it has validated the raw JSON
+        # dict against FakeBackendConfig (because we called
+        # ``register_backend_config``), so the isinstance check is a
+        # defence-in-depth guard, not the primary gate.
         if not isinstance(backend, FakeBackendConfig):
             raise TypeError(
                 f"FakeBackend expected FakeBackendConfig, got "
@@ -96,22 +97,37 @@ class FakeBackend:
         return 0
 
 
+# ---- mypy conformance gate -----------------------------------------------
+# This call site is intentionally NOT inside a test function so that mypy
+# checks it at import time under strict mode.  If ``FakeBackend`` ever
+# drops a required ``DeviceBackend`` member, mypy will flag the argument
+# type mismatch here and CI will fail — proving structural conformance
+# beyond the runtime ``isinstance`` check (which only verifies member
+# presence, not signatures).
+
+
+def _assert_conforms(b: api.DeviceBackend) -> None:
+    """Accept any structurally-conformant DeviceBackend for mypy's benefit."""
+
+
+_assert_conforms(FakeBackend("_typecheck", FakeBackendConfig(host="remote.example")))
+
+
 # ---- Fixtures ------------------------------------------------------------
 
 
 @pytest.fixture
 def _fake_registered() -> Iterator[None]:
-    """Register ``FakeBackend`` for the test, then clean up."""
-    # The discriminated-union in ``registry.InstanceMeta`` doesn't
-    # include ``FakeBackendConfig`` (third-party arms can't be added
-    # at runtime to the pydantic union), so the registry round-trip
-    # tests below validate the FakeBackendConfig standalone via
-    # ``model_validate_json``. The ``register_backend`` call is what
-    # makes ``Manager.resolve`` know how to dispatch.
+    """Register ``FakeBackend`` + ``FakeBackendConfig`` for the test, then clean up."""
+    # Register both the config class (so the registry dispatcher can
+    # parse JSON rows with kind:"fake") and the backend class (so
+    # Manager.resolve can construct a FakeBackend from a parsed row).
+    registry.register_backend_config(FakeBackendConfig)
     backends.register_backend("fake", FakeBackend)
     try:
         yield
     finally:
+        registry._BACKEND_CONFIG_REGISTRY.pop("fake", None)
         backends._BACKEND_REGISTRY.pop("fake", None)
 
 
@@ -122,17 +138,12 @@ def _fake_registry_row(
     """
     Hand-write a registry row for a fake-kind instance, return the name.
 
-    The in-tree :class:`registry.RegistryFile` discriminated union
-    doesn't include third-party arms (those validate against the
-    third-party's own pydantic model). To make ``Manager.resolve``
-    succeed for a fake-kind row, the in-tree dispatcher must read the
-    raw json blob, dispatch by ``kind``, and let the third-party class
-    validate its own config. T5's :func:`api.Manager.resolve` does
-    exactly that via ``backends.get_backend(meta.backend.kind)``.
+    The in-tree :class:`registry.RegistryFile` open-union dispatcher
+    resolves ``kind: "fake"`` rows to :class:`FakeBackendConfig` once
+    :func:`registry.register_backend_config` has been called.
+    :func:`api.Manager.resolve` then dispatches via
+    ``backends.get_backend(meta.backend.kind)``.
     """
-    # In-tree shape: stash the fake-kind row via a hand-crafted JSON
-    # blob (the pydantic union refuses to validate ``kind: "fake"``).
-    # The Manager.resolve path must read the raw row and dispatch.
     path = paths.user_registry_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     blob = (
@@ -170,14 +181,6 @@ class TestExtensionEndToEnd:
     def test_manager_resolve_returns_fake_backend(
         self, _fake_registry_row: str,  # noqa: PT019
     ) -> None:
-        # NOTE: in v0.4 the in-tree registry's discriminated union
-        # doesn't accept ``kind: "fake"`` — so Manager.resolve currently
-        # works for the in-tree union arms (redroid + adb) and
-        # third-party arms loaded via entry-points whose pydantic
-        # config is registered in the union. The full third-party
-        # support arrives in T7 with the registry-side extension hook.
-        # For T5 we exercise the in-process register_backend mechanism
-        # and assert the lookup table holds the fake class.
         del _fake_registry_row
         cls = backends.get_backend("fake")
         assert cls is FakeBackend
@@ -228,22 +231,19 @@ class TestExtensionEndToEnd:
 class TestRegistryRoundTrip:
     """The synthetic backend's config round-trips through JSON like the in-tree arms."""
 
+    @pytest.mark.usefixtures("_fake_registered")
     def test_fake_backend_config_in_full_doc_roundtrip(self) -> None:
-        # The FakeBackendConfig isn't in the in-tree union, so the
-        # round-trip is via plain pydantic ``model_validate_json``.
+        # FakeBackendConfig is registered in _BACKEND_CONFIG_REGISTRY via
+        # the _fake_registered fixture, so the registry round-trip now
+        # goes through the open-union dispatcher rather than hand-crafted
+        # JSON blobs.
         cfg = FakeBackendConfig(host="remote.example")
         as_dict = cfg.model_dump()
-        # Wrap in a minimal InstanceMeta-shaped dict (with a foreign
-        # ``kind: "fake"`` backend); third-party packages that want
-        # full registry support extend the union via their own
-        # post-init hook. T7 documents the recipe.
         meta_dict = {
             "backend": as_dict,
             "index": 0,
             "created_at": datetime(2026, 5, 19, tzinfo=UTC).isoformat(),
         }
-        # The third party's pydantic round-trip should hold for their
-        # own model. The combined-doc round-trip is the third party's
-        # responsibility.
+        # The config model validates against its own class via the open union.
         rebuilt = FakeBackendConfig.model_validate(meta_dict["backend"])
         assert rebuilt == cfg
