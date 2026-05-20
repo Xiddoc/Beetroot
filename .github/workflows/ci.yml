@@ -139,6 +139,36 @@ jobs:
           # time; hadolint can't see that, so we whitelist the rule.
           ignore: DL3007
 
+  docker-build-smoke:
+    # Validates that the Dockerfile's structure and COPY instructions are
+    # buildable without pulling the multi-GB redroid base image. GitHub
+    # runners lack KVM/nested-virt, so we cannot boot the real Android
+    # stack in CI — this job passes a lightweight busybox stand-in via
+    # ``--build-arg BASE_IMAGE=busybox`` to prove the COPY layers compile.
+    # The built image is uploaded as a workflow artifact so it can be
+    # inspected when the job is green.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871  # v4.2.1
+
+      - name: Build image (busybox stand-in base)
+        run: |
+          docker build \
+            --build-arg BASE_IMAGE=busybox \
+            -f docker/Dockerfile \
+            -t beetroot-ci-smoke:${{ github.sha }} \
+            .
+
+      - name: Export image as tarball
+        run: docker save beetroot-ci-smoke:${{ github.sha }} | gzip > beetroot-ci-smoke.tar.gz
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+        with:
+          name: beetroot-ci-smoke-${{ github.sha }}
+          path: beetroot-ci-smoke.tar.gz
+          retention-days: 3
+
   docs-strict:
     # CR #4: docs.yml's --strict build only ran on push-to-master, so PRs
     # could land doc drift (broken xrefs, stray nav entries) without failing
