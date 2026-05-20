@@ -75,13 +75,14 @@ Useful for picking up an instance dir cloned from a teammate, or after recoverin
 Adopt a rooted Android device (real phone, third-party emulator, `adb connect`-ed network device) that's already reachable via the host `adb` CLI. Unlike `create`/`register`, no on-disk instance directory is made — the device is managed outside Beetroot. The adopted instance gets its own port index, so a follow-up `beetroot frida <name>` picks the same port a redroid instance with the same index would have got.
 
 ```
-beetroot adopt <serial> [--name NAME]
+beetroot adopt <serial> [--name NAME] [--verify]
 ```
 
 | Argument / Flag | Type | Description |
 |----------------|------|-------------|
 | `serial` | positional | adb serial (e.g. `emulator-5554`, `192.168.1.10:5555`) |
 | `--name` | string | Registry name. Defaults to `adb-<serial>` (lowercased, colons folded to hyphens, truncated to 24 chars). Required for IPv4-shaped serials (the default-name builder leaves dots in place and the registry-name grammar rejects them). |
+| `--verify`, `-V` | flag | Check that the serial is listed in `adb devices` as `device` before writing the registry row. If not found, exits 1 without registering. Default: off (allows registering a device before it connects). |
 
 Verbs that need an on-disk container (`up`, `down`, `restart`, `apply`, `destroy`, `snapshot`) raise `BackendCapabilityError` against an adopted device and exit with code 2 — distinct from the standard "instance not found" exit 1, so wrapping scripts can distinguish. Use `beetroot shell <name>` / `beetroot frida <name>` / `beetroot module <name>` for the universal verbs.
 

@@ -302,6 +302,13 @@ def adopt(
         str | None,
         typer.Option("--name", help="Registry name (default: adb-<serial>)."),
     ] = None,
+    verify: Annotated[
+        bool,
+        typer.Option(
+            "--verify", "-V",
+            help="Refuse to register if the serial is not listed as 'device' in `adb devices`.",
+        ),
+    ] = False,
 ) -> None:
     """
     Adopt a rooted Android device that's already reachable via ``adb``.
@@ -313,7 +320,12 @@ def adopt(
     Unlike ``beetroot create``, no on-disk instance directory is made;
     the device is managed by whatever installed it (real phone, third-
     party emulator, ``adb connect`` from a network device).
+
+    Pass ``--verify`` to require the serial to be reachable via
+    ``adb devices`` before the registry row is written.
     """
+    import shutil  # noqa: PLC0415  # local import — avoids shutil in every CLI startup path
+
     resolved_name = name if name is not None else _adopt_default_name(serial)
     if not _INSTANCE_NAME_RE.fullmatch(resolved_name):
         raise _error(
@@ -325,6 +337,14 @@ def adopt(
             f"instance {resolved_name!r} already registered. Use a different "
             f"--name, or `beetroot destroy {resolved_name}` first.",
         )
+    if verify:
+        if shutil.which(adb_backend._ADB) is None:  # noqa: SLF001  # needed to call the guard at verify-time before registration
+            raise _error("adb not found on PATH (install android-tools)")
+        if not adb_backend.serial_is_available(serial):
+            raise _error(
+                f"serial {serial!r} is not listed as 'device' in `adb devices`; "
+                "connect the device and retry, or omit --verify to register without checking.",
+            )
     backend_config = registry.AdbBackendConfig(serial=serial)
     index = registry.add_allocating(resolved_name, backend=backend_config)
     typer.echo(

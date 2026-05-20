@@ -56,6 +56,42 @@ _MAGISK_MODULE_DROP = "/sdcard/Download"
 _ADB_DEVICES_COLUMNS = 2
 
 
+def serial_is_available(serial: str) -> bool:
+    """
+    Return True iff ``adb devices`` lists ``serial`` in state ``"device"``.
+
+    Shared between :attr:`AdbDevice.is_available` and the ``--verify``
+    flag on ``beetroot adopt`` so both call sites use identical parsing
+    logic. Serials in ``offline`` / ``unauthorized`` / ``no permissions``
+    state return False — the user needs to re-plug, accept the RSA prompt,
+    or fix udev rules first.
+
+    Args:
+        serial: The adb serial / endpoint identifier to look up.
+
+    Returns:
+        True if ``adb devices`` exits 0 and the serial is listed as
+        ``device``; False otherwise.
+    """
+    res = subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv is constant
+        [_ADB, "devices"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0:
+        return False
+    for line in res.stdout.splitlines():
+        parts = line.split()
+        if (
+            len(parts) >= _ADB_DEVICES_COLUMNS
+            and parts[0] == serial
+            and parts[1] == "device"
+        ):
+            return True
+    return False
+
+
 class AdbDevice:
     """
     Backend that drives a rooted Android device via the host ``adb`` CLI.
@@ -168,23 +204,7 @@ class AdbDevice:
         ``no permissions`` count as unavailable — the user needs to
         re-plug, accept the RSA prompt, or fix udev rules first.
         """
-        res = subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv is constant
-            [_ADB, "devices"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if res.returncode != 0:
-            return False
-        for line in res.stdout.splitlines():
-            parts = line.split()
-            if (
-                len(parts) >= _ADB_DEVICES_COLUMNS
-                and parts[0] == self._config.serial
-                and parts[1] == "device"
-            ):
-                return True
-        return False
+        return serial_is_available(self._config.serial)
 
     def install_frida(self, version: str) -> None:
         """

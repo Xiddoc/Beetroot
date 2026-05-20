@@ -313,6 +313,68 @@ class TestModuleVerbThirdParty:
         assert "module" in result.stderr
 
 
+class TestAdoptVerify:
+    """Tests for the ``--verify`` / ``-V`` flag on ``beetroot adopt``."""
+
+    def test_verify_accepts_when_serial_is_device(
+        self,
+        isolated_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        stub_adb: list[list[str]],
+    ) -> None:
+        import shutil
+
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        result = runner.invoke(
+            cli.app, ["adopt", "emulator-5554", "--name", "phone", "--verify"],
+        )
+        assert result.exit_code == 0
+        assert registry.get("phone") is not None
+
+    def test_verify_refuses_when_serial_not_listed(
+        self,
+        isolated_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import shutil
+
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+        def _no_devices(
+            cmd: list[str], *args: object, **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            del args, kwargs
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout="List of devices attached\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _no_devices)
+        result = runner.invoke(
+            cli.app, ["adopt", "ghost-9999", "--name", "phone", "--verify"],
+        )
+        assert result.exit_code != 0
+        assert "not listed" in result.stderr or "device" in result.stderr
+        assert registry.get("phone") is None
+
+    def test_verify_errors_when_adb_not_on_path(
+        self,
+        isolated_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import shutil
+
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        result = runner.invoke(
+            cli.app, ["adopt", "emulator-5554", "--name", "phone", "--verify"],
+        )
+        assert result.exit_code != 0
+        assert "adb not found" in result.stderr
+        assert registry.get("phone") is None
+
+
 class TestDefaultNameBuilder:
     def test_emulator_serial(self) -> None:
         assert cli._adopt_default_name("emulator-5554") == "adb-emulator-5554"
