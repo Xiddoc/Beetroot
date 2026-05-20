@@ -24,9 +24,10 @@ import hypothesis.strategies as st
 from hypothesis import given, settings
 
 from beetroot.ports import (
+    _MAX_PORT_INDEX,
     ADB_BASE,
-    FRIDA_CONTROL_BASE,
     FRIDA_BASE,
+    FRIDA_CONTROL_BASE,
     STRIDE,
     lowest_free_index,
     ports_for_index,
@@ -60,9 +61,6 @@ def test_lowest_free_index_returns_smallest_gap(used: set[int]) -> None:
     # there's a smaller gap the allocator missed.
     for i in range(idx):
         assert i in used, f"missed gap at {i} for used={used}"
-
-
-from beetroot.ports import _MAX_PORT_INDEX
 
 
 @given(index=st.integers(min_value=0, max_value=_MAX_PORT_INDEX))

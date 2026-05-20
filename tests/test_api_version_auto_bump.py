@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from beetroot import config
 
@@ -66,6 +67,7 @@ def test_v04_api_version_without_stealth_auto_bumps(
 
 def test_v04_api_version_with_stealth_raises_migration_error(
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     # D1/D3: a v0.4 YAML that used stealth.denylist must fail with a
     # clear, actionable migration error — the stealth: key was renamed
@@ -80,7 +82,7 @@ def test_v04_api_version_with_stealth_raises_migration_error(
         "    - com.google.android.gms\n"
     )
 
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(ValidationError) as exc_info:
         config.load_yaml(yaml_path)
     msg = str(exc_info.value)
     # Must name the old key and the new key so the user knows what to change.
@@ -88,6 +90,11 @@ def test_v04_api_version_with_stealth_raises_migration_error(
     assert "magisk" in msg.lower()
     # Must mention api_version so the user knows to bump it too.
     assert "api_version" in msg
+    # The auto-bump "auto-upgraded … run apply" line must NOT appear — it
+    # contradicts the migration error that correctly wins. The only message
+    # the user should see is the migration error itself.
+    err = capsys.readouterr().err
+    assert "auto-upgraded" not in err
 
 
 def test_explicit_current_api_version_does_not_warn(

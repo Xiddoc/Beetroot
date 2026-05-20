@@ -5,11 +5,11 @@ import pytest
 
 from beetroot.config import Ports
 from beetroot.ports import (
-    ADB_BASE,
-    FRIDA_CONTROL_BASE,
-    FRIDA_BASE,
-    STRIDE,
     _MAX_PORT_INDEX,
+    ADB_BASE,
+    FRIDA_BASE,
+    FRIDA_CONTROL_BASE,
+    STRIDE,
     PortCollisionError,
     lowest_free_index,
     ports_for_index,
@@ -54,15 +54,28 @@ class TestPortsForIndex:
             p = ports_for_index(i)
             assert p["frida_control"] == p["frida"] + 1
 
+    def test_max_port_index_value(self) -> None:
+        # The cap is anchored on FRIDA_CONTROL_BASE (27043), not ADB_BASE (5555).
+        # (65535 - 27043) // 10 = 3849. At index 3850 frida_control = 65543 — invalid.
+        assert _MAX_PORT_INDEX == 3849
+
     def test_index_at_max_boundary_accepted(self) -> None:
-        # D5: index == _MAX_PORT_INDEX must succeed (just touches the limit).
+        # D5: index == _MAX_PORT_INDEX must succeed — all three ports ≤ 65535.
         p = ports_for_index(_MAX_PORT_INDEX)
         assert p["adb"] <= 65535
+        assert p["frida"] <= 65535
+        assert p["frida_control"] <= 65535
 
     def test_index_above_max_raises(self) -> None:
-        # D5: an index that would push ADB above 65535 must raise early.
+        # D5: an index that would push frida_control above 65535 must raise early.
+        # frida_control is the binding constraint (highest base port).
         with pytest.raises(ValueError, match="65535"):
             ports_for_index(_MAX_PORT_INDEX + 1)
+
+    def test_index_above_max_frida_control_overflows(self) -> None:
+        # Verify the specific overflow: index 3850 → frida_control = 27043 + 38500 = 65543.
+        with pytest.raises(ValueError, match="frida_control"):
+            ports_for_index(3850)
 
     def test_index_far_above_max_raises(self) -> None:
         with pytest.raises(ValueError, match="65535"):

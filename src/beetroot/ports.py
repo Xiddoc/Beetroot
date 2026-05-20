@@ -23,9 +23,13 @@ FRIDA_BASE = 27042
 FRIDA_CONTROL_BASE = 27043
 STRIDE = 10
 
-# Maximum port index before stride-of-10 would push ADB above port 65535.
-# ADB_BASE + _MAX_INDEX * STRIDE <= 65535  →  _MAX_INDEX <= (65535 - 5555) / 10 = 5998
-_MAX_PORT_INDEX: Final = (65535 - ADB_BASE) // STRIDE
+# Maximum port index before stride-of-10 would push any port above 65535.
+# FRIDA_CONTROL_BASE (27043) is the binding constraint — it is the highest of
+# the three base ports. At index 3849 frida_control reaches 65533, still valid.
+# Index 3850 would push frida_control to 65543 — an invalid TCP port. ADB at
+# the same index would be only 44045, well within range, but frida_control
+# determines the cap: floor((65535 - 27043) / 10) = 3849.
+_MAX_PORT_INDEX: Final = (65535 - FRIDA_CONTROL_BASE) // STRIDE
 
 
 class PortCollisionError(ValueError):
@@ -55,14 +59,17 @@ def ports_for_index(index: int) -> dict[str, int]:
         to the host port numbers for this instance.
 
     Raises:
-        ValueError: If ``index`` is negative or would push ADB above port 65535.
+        ValueError: If ``index`` is negative or would push frida_control above
+            port 65535 (frida_control has the highest base port and is the
+            binding constraint on the maximum index).
     """
     if index < 0:
         raise ValueError(f"port index must be >= 0 (got {index})")
     if index > _MAX_PORT_INDEX:
         raise ValueError(
-            f"port index {index} would assign ADB port "
-            f"{ADB_BASE + index * STRIDE} > 65535. "
+            f"port index {index} would assign frida_control port "
+            f"{FRIDA_CONTROL_BASE + index * STRIDE} > 65535 "
+            f"(frida_control is the highest base and bounds the maximum index). "
             f"Maximum supported index is {_MAX_PORT_INDEX}."
         )
     return {

@@ -468,20 +468,25 @@ def load_yaml(path: Path) -> InstanceConfig:
     if raw is None:
         raw = {}
     if isinstance(raw, dict) and raw.get("api_version") in _AUTO_BUMPABLE_API_VERSIONS:
-        # Dedup the warning by absolute path. ``beetroot ls`` over N
-        # legacy instances would otherwise print N copies of the line,
-        # and a single ``register bravo`` triple-prints because
-        # ``all_resolved_ports`` cascades into the same load twice.
-        resolved = path.resolve()
-        old_version = raw["api_version"]
-        if resolved not in _API_VERSION_BUMP_WARNED:
-            print(  # noqa: T201  # stderr migration hint — typer.echo is unavailable from non-CLI callers
-                f"[beetroot] auto-upgraded api_version {old_version} → "
-                f"{SUPPORTED_API_VERSION} in {path}; run 'beetroot apply' "
-                f"to rewrite the YAML.",
-                file=sys.stderr,
-            )
-            _API_VERSION_BUMP_WARNED.add(resolved)
+        # Skip the auto-bump notice when the YAML also contains a ``stealth:``
+        # key — that triggers a non-additive migration error below, and printing
+        # "auto-upgraded, run apply" before the error is contradictory. The
+        # migration error itself is the only message the user should see.
+        if "stealth" not in raw:
+            # Dedup the warning by absolute path. ``beetroot ls`` over N
+            # legacy instances would otherwise print N copies of the line,
+            # and a single ``register bravo`` triple-prints because
+            # ``all_resolved_ports`` cascades into the same load twice.
+            resolved = path.resolve()
+            old_version = raw["api_version"]
+            if resolved not in _API_VERSION_BUMP_WARNED:
+                print(  # noqa: T201  # stderr migration hint — typer.echo is unavailable from non-CLI callers
+                    f"[beetroot] auto-upgraded api_version {old_version} → "
+                    f"{SUPPORTED_API_VERSION} in {path}; run 'beetroot apply' "
+                    f"to rewrite the YAML.",
+                    file=sys.stderr,
+                )
+                _API_VERSION_BUMP_WARNED.add(resolved)
         raw["api_version"] = SUPPORTED_API_VERSION
     return InstanceConfig.model_validate(raw)
 

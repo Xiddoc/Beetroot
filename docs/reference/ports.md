@@ -65,7 +65,7 @@ Frida uses two consecutive ports per instance: the data port (`27042 + N×10`) a
 
 ADB at `5555 + N×10` follows the same stride so all three port families stay aligned by index.
 
-The maximum supported index is `5998` — above that, the ADB port would exceed 65535 and Beetroot raises a clear error at port-allocation time.
+The maximum supported index is `3849` — above that, the Frida control port (`27043 + N×10`) would exceed 65535 and Beetroot raises a clear error at port-allocation time. The Frida control port has the highest base and is therefore the binding constraint; the ADB port at this index (`5555 + 3849×10 = 44045`) is well within range.
 
 ## Overriding the stride
 
