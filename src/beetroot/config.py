@@ -4,7 +4,7 @@ beetroot.yaml schema, loading, and .env rendering.
 Only ``android.version`` is required; every other field has a sensible
 default and can be omitted entirely from an instance YAML. Optional
 top-level sections: ``display``, ``resources``, ``frida``, ``modules``,
-``stealth``.
+``magisk``, ``ports``.
 """
 from __future__ import annotations
 
@@ -16,25 +16,41 @@ from typing import Final, Literal, Self, override
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-SUPPORTED_API_VERSION: Final = 3
+SUPPORTED_API_VERSION: Final = 4
 
-# v0.4 (T1) bumped the schema 2 → 3. Old YAMLs that hard-pinned
-# ``api_version: 2`` auto-bump on load with a one-line stderr warning
-# (the bump is strictly additive — the v3 schema adds the
-# ``stealth.denylist`` per-package regex validator, no fields renamed).
-# v0.3's v0.2 → v0.3 (1 → 2) auto-bump is kept on the same code path so
-# users running ``v0.2 → v0.4`` in a single jump don't have to go
-# through an intermediate release.
-_AUTO_BUMPABLE_API_VERSIONS: Final = frozenset({1, 2})
+# Additive auto-bump: old YAMLs that hard-pinned one of these versions are
+# silently upgraded to SUPPORTED_API_VERSION on load with a one-line stderr
+# warning. The bumps are strictly additive — no fields renamed, only new
+# optional fields / validators added — so these YAMLs remain valid once the
+# field is rewritten. Persistence happens organically on the next
+# ``beetroot apply`` (which calls :func:`write_yaml`).
+#
+# v0.4 → v0.4 (api_version 2 → 3): added ``stealth.denylist`` per-package
+#   regex validator (strictly additive).
+# v0.3 → v0.4 (api_version 1 → 2): added opt-in frida block (strictly
+#   additive; old YAMLs without a frida block default to frida=None).
+_AUTO_BUMPABLE_API_VERSIONS: Final = frozenset({1, 2, 3})
+
+# Non-additive versions that require an explicit migration rather than a
+# silent auto-bump. If a YAML pins one of these and a migration path exists,
+# load_yaml raises a clear, actionable migration error naming the renamed /
+# removed fields.
+#
+# api_version 3 → 4: ``stealth.denylist`` moved to ``magisk.denylist``.
+# The ``stealth:`` key is now rejected with a migration hint pointing at
+# CHANGELOG.md. YAMLs that merely omit ``api_version`` (default=current)
+# are unaffected — only those that explicitly wrote ``api_version: 3`` and
+# also used ``stealth:`` are covered by this path.
+_MIGRATION_REQUIRED_VERSIONS: Final = frozenset[int]()  # none yet beyond auto-bumpable
 
 _VALID_ANDROID_VERSIONS = {11, 12, 13, 14}
 
 _MIN_PORT: Final = 1
 _MAX_PORT: Final = 65535
 
-# Stealth denylist packages must look like a normal Android package
+# Magisk/stealth denylist packages must look like a normal Android package
 # id: alphanumerics, dots, and underscores only. Pre-validated at
-# config-load time as SQL-injection prophylaxis for T2's wire-up of
+# config-load time as SQL-injection prophylaxis for the wire-up of
 # the denylist through ``magisk-config.sh``'s sqlite REPLACE INTO.
 _DENYLIST_PKG_RE: Final = re.compile(r"^[a-zA-Z0-9._]+$")
 
@@ -44,9 +60,15 @@ _DENYLIST_PKG_RE: Final = re.compile(r"^[a-zA-Z0-9._]+$")
 # 404 from the cdn at download time. (T2 Agent 1.)
 _FRIDA_VERSION_RE: Final = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
+# Docker size format: a number (optionally with decimal) followed by an
+# optional SI/binary suffix. Matches "3g", "512m", "1.5G", "256k", "1024"
+# (bare bytes). Rejects free-form strings like "3gb" or "512 mb" that
+# docker compose silently misinterprets or rejects opaquely at runtime.
+_DOCKER_SIZE_RE: Final = re.compile(r"^\d+(\.\d+)?[bkmgtBKMGT]?$")
+
 # Module-level set of YAML paths we've already printed the "auto-bumped
-# api_version 1 → 2" warning for in this process. Without the dedup,
-# ``beetroot ls`` over 5 v0.2 instances prints 5+ warning lines; a
+# api_version" warning for in this process. Without the dedup,
+# ``beetroot ls`` over 5 legacy instances prints 5+ warning lines; a
 # single ``register bravo`` triple-prints because ``all_resolved_ports``
 # cascades into the same load twice. CR #2 finding A2.
 _API_VERSION_BUMP_WARNED: set[Path] = set()
@@ -57,16 +79,28 @@ class Display(BaseModel):
     Display settings for the virtual Android screen.
 
     Attributes:
-        width: Horizontal resolution in pixels.
-        height: Vertical resolution in pixels.
-        fps: Frame rate limit.
+        width: Horizontal resolution in pixels (must be > 0).
+        height: Vertical resolution in pixels (must be > 0).
+        fps: Frame rate limit (must be > 0).
         gpu_mode: GPU rendering mode passed to redroid (e.g. ``host``).
     """
 
-    width: int = 540
-    height: int = 960
-    fps: int = 3
+    width: int = Field(default=540, gt=0)
+    height: int = Field(default=960, gt=0)
+    fps: int = Field(default=3, gt=0)
     gpu_mode: str = "host"
+
+
+def _check_docker_size(field_name: str, v: str) -> str:
+    if not _DOCKER_SIZE_RE.match(v):
+        raise ValueError(
+            f"{field_name} {v!r} is not a valid Docker size format. "
+            "Use a number followed by a suffix: b, k, m, g, t (case-insensitive). "
+            "Examples: '3g', '512m', '1.5G'. "
+            "Typos like '3gb' or '512 mb' fail opaquely at 'docker compose up' — "
+            "catching them at load time keeps the error actionable."
+        )
+    return v
 
 
 class Resources(BaseModel):
@@ -74,11 +108,11 @@ class Resources(BaseModel):
     Docker resource caps for the container.
 
     Attributes:
-        mem: Hard memory limit (e.g. ``3g``).
+        mem: Hard memory limit (e.g. ``3g``). Docker size format.
         cpus: CPU cap as a float.
-        shared_mem: Shared-memory size (Docker ``shm_size``).
-        mem_reservation: Optional soft memory floor.
-        memswap_limit: Optional total memory + swap cap.
+        shared_mem: Shared-memory size (Docker ``shm_size``). Docker size format.
+        mem_reservation: Optional soft memory floor. Docker size format.
+        memswap_limit: Optional total memory + swap cap. Docker size format.
         pids_limit: Maximum number of PIDs the container can spawn.
     """
 
@@ -88,6 +122,20 @@ class Resources(BaseModel):
     mem_reservation: str | None = None
     memswap_limit: str | None = None
     pids_limit: int = 4096
+
+    @field_validator("mem", "shared_mem")
+    @classmethod
+    def _check_size_required(cls, v: str, info: object) -> str:
+        field_name = getattr(info, "field_name", "field")
+        return _check_docker_size(f"resources.{field_name}", v)
+
+    @field_validator("mem_reservation", "memswap_limit")
+    @classmethod
+    def _check_size_optional(cls, v: str | None, info: object) -> str | None:
+        if v is None:
+            return v
+        field_name = getattr(info, "field_name", "field")
+        return _check_docker_size(f"resources.{field_name}", v)
 
     @model_validator(mode="before")
     @classmethod
@@ -188,22 +236,22 @@ _DEFAULT_DENYLIST: Final = (
 )
 
 
-class Stealth(BaseModel):
+class Magisk(BaseModel):
     """
-    Root-hiding (denylist) configuration.
+    Magisk configuration, including the boot-time denylist.
 
     Attributes:
         denylist: Package names added to Magisk's denylist at boot. Each
             entry must match the Android package-id grammar
             (``[a-zA-Z0-9._]+``) — see :data:`_DENYLIST_PKG_RE`. The
-            grammar is enforced at validation time so T2's
-            ``magisk-config.sh`` wire-up can compose the entries into
-            a SQLite REPLACE-INTO statement without escaping; any
-            shape that wouldn't be a valid package name today is
-            assumed to be either a typo or an injection attempt.
+            grammar is enforced at validation time so
+            ``magisk-config.sh`` can compose the entries into a SQLite
+            REPLACE-INTO statement without escaping; any shape that
+            wouldn't be a valid package name today is assumed to be
+            either a typo or an injection attempt.
             Defaults to the GMS package pair (the v0.3 helper enrolled
-            these unconditionally; v0.4 moves the enrolment under
-            user control but keeps the default behaviour identical).
+            these unconditionally; the config move keeps the default
+            behaviour identical while putting the user in control).
     """
 
     denylist: list[str] = Field(
@@ -216,7 +264,7 @@ class Stealth(BaseModel):
         for pkg in value:
             if not _DENYLIST_PKG_RE.match(pkg):
                 raise ValueError(
-                    f"stealth.denylist entry {pkg!r} is not a valid Android "
+                    f"magisk.denylist entry {pkg!r} is not a valid Android "
                     "package id (must match [a-zA-Z0-9._]+)"
                 )
         return value
@@ -283,15 +331,13 @@ class Ports(BaseModel):
 
     Fields are independently optional — set only the ones you want to pin;
     the rest fall back to the stride-of-10 allocator on the instance's
-    index. The ``frida_control`` field overrides the second Frida port
-    (``frida2`` in the resolved port dict, the control channel that sits
-    one above the data port in the default stride).
+    index.
 
     Attributes:
         adb: Host port for ADB. Stride default: ``5555 + index*10``.
         frida: Host port for Frida data. Stride default: ``27042 + index*10``.
-        frida_control: Host port for Frida control. Stride default:
-            ``27043 + index*10``.
+        frida_control: Host port for Frida control (RPC/command channel,
+            one above the data port). Stride default: ``27043 + index*10``.
     """
 
     adb: int | None = None
@@ -339,7 +385,7 @@ class InstanceConfig(BaseModel):
         frida: Frida-server version pin; ``None`` (the default) disables
             frida entirely. Declare an explicit ``frida:`` block to opt in.
         modules: Magisk modules to flash at boot.
-        stealth: Denylist / root-hiding settings.
+        magisk: Magisk denylist / root-hiding settings.
         ports: Optional per-instance port overrides. Absent fields fall
             back to the stride-of-10 allocator on the instance's index.
     """
@@ -350,8 +396,33 @@ class InstanceConfig(BaseModel):
     resources: Resources = Field(default_factory=Resources)
     frida: Frida | None = None
     modules: list[Module] = Field(default_factory=list)
-    stealth: Stealth = Field(default_factory=Stealth)
+    magisk: Magisk = Field(default_factory=Magisk)
     ports: Ports = Field(default_factory=Ports)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_stealth_key(cls, data: object) -> object:
+        if isinstance(data, dict) and "stealth" in data:
+            raise ValueError(
+                "The 'stealth:' key was removed in api_version 4. "
+                "Move 'stealth.denylist' to 'magisk.denylist' and update "
+                "'api_version' to 4. See CHANGELOG.md for the migration."
+            )
+        return data
+
+    @property
+    def stealth(self) -> Magisk:
+        """
+        Compatibility shim: ``cfg.stealth`` returns ``cfg.magisk``.
+
+        ``api.py`` (owned by another branch) accesses ``cfg.stealth.denylist``
+        at runtime. The YAML-level ``stealth:`` key is still rejected at
+        load time by :meth:`_reject_stealth_key`, so users get a clear
+        migration error on bad YAMLs; the property only provides the
+        attribute access path for in-memory callers that were already
+        constructing ``InstanceConfig`` programmatically.
+        """
+        return self.magisk
 
     @model_validator(mode="after")
     def _check_api_version(self) -> Self:
@@ -368,18 +439,30 @@ def load_yaml(path: Path) -> InstanceConfig:
     """
     Load and validate an InstanceConfig from a YAML file.
 
-    An empty file is treated as an all-defaults config. A v0.2 YAML
-    that pinned ``api_version: 1`` is auto-bumped to the current
-    :data:`SUPPORTED_API_VERSION` with a one-line stderr warning,
-    because v0.2 → v2 is strictly additive (no fields renamed). The
-    bump is persisted organically on the next ``beetroot apply``
-    (which calls :func:`write_yaml`).
+    An empty file is treated as an all-defaults config.
+
+    **Auto-bump (additive versions):** YAMLs that pinned one of the
+    versions in :data:`_AUTO_BUMPABLE_API_VERSIONS` are upgraded to
+    :data:`SUPPORTED_API_VERSION` on load with a one-line stderr warning,
+    because those bumps are strictly additive (no fields renamed). The bump
+    is persisted organically on the next ``beetroot apply``.
+
+    **Migration error (non-additive versions):** api_version 3 used
+    ``stealth.denylist``; that key was moved to ``magisk.denylist`` in
+    api_version 4. A YAML that still contains a ``stealth:`` section raises
+    a clear, actionable error naming the renamed field rather than silently
+    mis-parsing.
 
     Args:
         path: Absolute path to the YAML file.
 
     Returns:
         A validated InstanceConfig populated from the file.
+
+    Raises:
+        pydantic.ValidationError: If the YAML is invalid, contains
+            ``stealth:`` (renamed to ``magisk:`` in api_version 4), or
+            carries an unsupported ``api_version``.
     """
     raw = yaml.safe_load(path.read_text())
     if raw is None:
@@ -449,6 +532,7 @@ def render_env(
         name: Instance name used as the compose project name.
         cfg: The instance configuration.
         ports: Resolved port mapping produced by ``ports.resolve_ports``.
+            Must contain keys ``adb``, ``frida``, and ``frida_control``.
         stealth_paths: Optional per-instance override blob (T4) carrying
             the ``magisk_db`` / ``modules_dir`` / ``frida_bin`` keys.
             Each key present here overrides the corresponding
@@ -472,7 +556,7 @@ def render_env(
         f"BASE_IMAGE={base_image_tag(cfg.android)}",
         f"ADB_PORT={ports['adb']}",
         f"FRIDA_PORT={ports['frida']}",
-        f"FRIDA_PORT2={ports['frida2']}",
+        f"FRIDA_PORT_CONTROL={ports['frida_control']}",
         f"MEM_LIMIT={cfg.resources.mem}",
         f"CPUS={cfg.resources.cpus}",
         f"SHM_SIZE={cfg.resources.shared_mem}",
@@ -481,20 +565,16 @@ def render_env(
         f"DISPLAY_HEIGHT={cfg.display.height}",
         f"DISPLAY_FPS={cfg.display.fps}",
         f"DISPLAY_GPU={cfg.display.gpu_mode}",
-        # T2 (Agent 2 B-1): wire Stealth.denylist through to
-        # magisk-config.sh. Encoded as a comma-separated list because
-        # toybox sh has no array support — the helper iterates over
-        # ``IFS=,``. Per-package shape is already validated by the
-        # ``Stealth._check_packages`` regex (T1), so we can safely
-        # join with a delimiter that's not in the package-id grammar.
-        f"BEETROOT_DENYLIST_PACKAGES={','.join(cfg.stealth.denylist)}",
+        # Encoded as a comma-separated list because toybox sh has no array
+        # support — the helper iterates over ``IFS=,``. Per-package shape is
+        # already validated by the ``Magisk._check_packages`` regex, so we
+        # can safely join with a delimiter that's not in the package-id grammar.
+        f"BEETROOT_DENYLIST_PACKAGES={','.join(cfg.magisk.denylist)}",
         # v0.4 stealth-posture overrides — emitted with the known-safe
-        # defaults (T2 Agent 1 1.1 / Agent 3 1.1: the compose template
-        # parameterises mount targets too, so render_env is the single
-        # source of truth instead of the YAML's ${VAR:-default}
-        # fallback). T4 reads from ``stealth_paths`` if populated;
-        # v0.6's PR1 flips the default in ``Instance.create``'s
-        # generator once stealth research validates a safe layout.
+        # defaults. render_env is the single source of truth instead of the
+        # YAML's ${VAR:-default} fallback. v0.6's PR1 flips the default in
+        # ``Instance.create``'s generator once stealth research validates a
+        # safe layout.
         f"BEETROOT_MAGISK_DB={resolved_paths['magisk_db']}",
         f"BEETROOT_MODULES_DIR={resolved_paths['modules_dir']}",
         f"BEETROOT_FRIDA_BIN={resolved_paths['frida_bin']}",

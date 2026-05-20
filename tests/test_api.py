@@ -625,7 +625,7 @@ class TestInstanceProperties:
     def test_properties_match_resolved_ports(self, cli_root: Path) -> None:
         inst = api.Instance.create("alpha")
         assert inst.index == 0
-        assert inst.ports == {"adb": 5555, "frida": 27042, "frida2": 27043}
+        assert inst.ports == {"adb": 5555, "frida": 27042, "frida_control": 27043}
         assert inst.adb_address == "localhost:5555"
         assert inst.frida_address == "localhost:27042"
 

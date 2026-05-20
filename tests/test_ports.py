@@ -6,9 +6,10 @@ import pytest
 from beetroot.config import Ports
 from beetroot.ports import (
     ADB_BASE,
-    FRIDA2_BASE,
+    FRIDA_CONTROL_BASE,
     FRIDA_BASE,
     STRIDE,
+    _MAX_PORT_INDEX,
     PortCollisionError,
     lowest_free_index,
     ports_for_index,
@@ -21,20 +22,20 @@ class TestPortsForIndex:
         p = ports_for_index(0)
         assert p["adb"] == ADB_BASE
         assert p["frida"] == FRIDA_BASE
-        assert p["frida2"] == FRIDA2_BASE
+        assert p["frida_control"] == FRIDA_CONTROL_BASE
 
     def test_index_n_applies_stride(self) -> None:
         n = 5
         p = ports_for_index(n)
         assert p["adb"] == ADB_BASE + n * STRIDE
         assert p["frida"] == FRIDA_BASE + n * STRIDE
-        assert p["frida2"] == FRIDA2_BASE + n * STRIDE
+        assert p["frida_control"] == FRIDA_CONTROL_BASE + n * STRIDE
 
     def test_index_one(self) -> None:
         p = ports_for_index(1)
         assert p["adb"] == ADB_BASE + STRIDE
         assert p["frida"] == FRIDA_BASE + STRIDE
-        assert p["frida2"] == FRIDA2_BASE + STRIDE
+        assert p["frida_control"] == FRIDA_CONTROL_BASE + STRIDE
 
     def test_negative_raises(self) -> None:
         with pytest.raises(ValueError, match="port index must be >= 0"):
@@ -46,12 +47,26 @@ class TestPortsForIndex:
 
     def test_returns_all_three_keys(self) -> None:
         p = ports_for_index(0)
-        assert set(p.keys()) == {"adb", "frida", "frida2"}
+        assert set(p.keys()) == {"adb", "frida", "frida_control"}
 
-    def test_frida2_is_one_above_frida(self) -> None:
+    def test_frida_control_is_one_above_frida(self) -> None:
         for i in (0, 3, 9):
             p = ports_for_index(i)
-            assert p["frida2"] == p["frida"] + 1
+            assert p["frida_control"] == p["frida"] + 1
+
+    def test_index_at_max_boundary_accepted(self) -> None:
+        # D5: index == _MAX_PORT_INDEX must succeed (just touches the limit).
+        p = ports_for_index(_MAX_PORT_INDEX)
+        assert p["adb"] <= 65535
+
+    def test_index_above_max_raises(self) -> None:
+        # D5: an index that would push ADB above 65535 must raise early.
+        with pytest.raises(ValueError, match="65535"):
+            ports_for_index(_MAX_PORT_INDEX + 1)
+
+    def test_index_far_above_max_raises(self) -> None:
+        with pytest.raises(ValueError, match="65535"):
+            ports_for_index(_MAX_PORT_INDEX + 100)
 
 
 class TestLowestFreeIndex:
@@ -81,61 +96,61 @@ class TestLowestFreeIndex:
 
 class TestResolvePorts:
     def test_no_overrides_returns_stride_defaults(self) -> None:
-        assert resolve_ports(0, Ports()) == {"adb": 5555, "frida": 27042, "frida2": 27043}
+        assert resolve_ports(0, Ports()) == {"adb": 5555, "frida": 27042, "frida_control": 27043}
 
     def test_no_overrides_index_one(self) -> None:
-        assert resolve_ports(1, Ports()) == {"adb": 5565, "frida": 27052, "frida2": 27053}
+        assert resolve_ports(1, Ports()) == {"adb": 5565, "frida": 27052, "frida_control": 27053}
 
     def test_no_overrides_index_five(self) -> None:
-        assert resolve_ports(5, Ports()) == {"adb": 5605, "frida": 27092, "frida2": 27093}
+        assert resolve_ports(5, Ports()) == {"adb": 5605, "frida": 27092, "frida_control": 27093}
 
     def test_adb_only_override(self) -> None:
         assert resolve_ports(0, Ports(adb=8080)) == {
             "adb": 8080,
             "frida": 27042,
-            "frida2": 27043,
+            "frida_control": 27043,
         }
 
     def test_frida_only_override(self) -> None:
         assert resolve_ports(0, Ports(frida=9000)) == {
             "adb": 5555,
             "frida": 9000,
-            "frida2": 27043,
+            "frida_control": 27043,
         }
 
     def test_frida_control_only_override(self) -> None:
         assert resolve_ports(0, Ports(frida_control=9001)) == {
             "adb": 5555,
             "frida": 27042,
-            "frida2": 9001,
+            "frida_control": 9001,
         }
 
     def test_all_three_overrides(self) -> None:
         assert resolve_ports(0, Ports(adb=1, frida=2, frida_control=3)) == {
             "adb": 1,
             "frida": 2,
-            "frida2": 3,
+            "frida_control": 3,
         }
 
     def test_partial_adb_and_frida(self) -> None:
         assert resolve_ports(2, Ports(adb=8080, frida=9000)) == {
             "adb": 8080,
             "frida": 9000,
-            "frida2": 27063,
+            "frida_control": 27063,
         }
 
     def test_partial_adb_and_frida_control(self) -> None:
         assert resolve_ports(2, Ports(adb=8080, frida_control=9001)) == {
             "adb": 8080,
             "frida": 27062,
-            "frida2": 9001,
+            "frida_control": 9001,
         }
 
     def test_partial_frida_and_frida_control(self) -> None:
         assert resolve_ports(2, Ports(frida=9000, frida_control=9001)) == {
             "adb": 5575,
             "frida": 9000,
-            "frida2": 9001,
+            "frida_control": 9001,
         }
 
     def test_override_can_match_stride_default(self) -> None:
@@ -149,14 +164,14 @@ class TestResolvePorts:
 
 class TestResolvePortsSelfCollision:
     def test_resolve_collides_when_frida_override_matches_default_frida_control(self) -> None:
-        # Index 0 stride: frida=27042, frida2=27043. Override frida=27043 →
-        # resolved frida and frida2 both 27043.
+        # Index 0 stride: frida=27042, frida_control=27043. Override frida=27043 →
+        # resolved frida and frida_control both 27043.
         with pytest.raises(PortCollisionError, match="27043"):
             resolve_ports(0, Ports(frida=27043))
 
     def test_resolve_collides_when_frida_control_override_matches_default_frida(self) -> None:
-        # Index 0 stride: frida=27042, frida2=27043. Override frida_control=27042 →
-        # resolved frida and frida2 both 27042.
+        # Index 0 stride: frida=27042, frida_control=27043. Override frida_control=27042 →
+        # resolved frida and frida_control both 27042.
         with pytest.raises(PortCollisionError, match="27042"):
             resolve_ports(0, Ports(frida_control=27042))
 
@@ -167,11 +182,11 @@ class TestResolvePortsSelfCollision:
             resolve_ports(0, Ports(adb=27042))
 
     def test_resolve_no_collision_with_partial_override(self) -> None:
-        # Pinning frida to a clearly non-stride value leaves frida2 on 27043.
+        # Pinning frida to a clearly non-stride value leaves frida_control on 27043.
         assert resolve_ports(0, Ports(frida=29000)) == {
             "adb": 5555,
             "frida": 29000,
-            "frida2": 27043,
+            "frida_control": 27043,
         }
 
     def test_resolve_error_message_names_colliding_ports(self) -> None:
@@ -180,11 +195,11 @@ class TestResolvePortsSelfCollision:
         msg = str(exc_info.value)
         assert "27043" in msg
         assert "frida" in msg
-        assert "frida2" in msg
+        assert "frida_control" in msg
         assert "beetroot.yaml" in msg
 
     def test_resolve_collision_at_nonzero_index(self) -> None:
-        # Index 2 stride: frida=27062, frida2=27063. Override frida=27063 → collide.
+        # Index 2 stride: frida=27062, frida_control=27063. Override frida=27063 → collide.
         with pytest.raises(PortCollisionError, match="27063"):
             resolve_ports(2, Ports(frida=27063))
 

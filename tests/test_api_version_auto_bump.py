@@ -1,11 +1,10 @@
 """Legacy YAMLs auto-bump ``api_version`` to :data:`SUPPORTED_API_VERSION`.
 
-v0.4 (T1) extended the auto-bump to also cover v0.3-pinned
-``api_version: 2``. v0.3 already auto-bumped v0.2's ``api_version: 1``;
-the same code path now covers both. Each bump is strictly additive (no
-fields renamed), so a YAML written by an earlier release stays valid
-once the field is rewritten. Persistence happens organically on the
-next ``beetroot apply``.
+v0.6 (D3) extended the auto-bump to also cover v0.4-pinned
+``api_version: 3``. The 1→2→3 bumps were strictly additive (no fields
+renamed); the 3→4 bump moves ``stealth.denylist`` to ``magisk.denylist``.
+A v0.4 YAML that did NOT use ``stealth:`` at all bumps silently; one that
+DID use ``stealth:`` gets a clear migration error (D1/D3).
 """
 from __future__ import annotations
 
@@ -36,7 +35,7 @@ def test_v03_api_version_auto_bumps(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # T1's schema bump: v0.3's `api_version: 2` auto-upgrades to the
-    # v0.4 default. Same dedup, same one-shot warning, same call to
+    # current default. Same dedup, same one-shot warning, same call to
     # action.
     yaml_path = tmp_path / "beetroot.yaml"
     yaml_path.write_text("api_version: 2\nandroid:\n  version: 14\n")
@@ -47,6 +46,48 @@ def test_v03_api_version_auto_bumps(
     err = capsys.readouterr().err
     assert "auto-upgraded api_version 2" in err
     assert "apply" in err
+
+
+def test_v04_api_version_without_stealth_auto_bumps(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # D3: v0.4's `api_version: 3` without a stealth: key is a valid
+    # additive bump — auto-upgrade to SUPPORTED_API_VERSION with a warning.
+    yaml_path = tmp_path / "beetroot.yaml"
+    yaml_path.write_text("api_version: 3\nandroid:\n  version: 14\n")
+
+    cfg = config.load_yaml(yaml_path)
+
+    assert cfg.api_version == config.SUPPORTED_API_VERSION
+    err = capsys.readouterr().err
+    assert "auto-upgraded api_version 3" in err
+    assert "apply" in err
+
+
+def test_v04_api_version_with_stealth_raises_migration_error(
+    tmp_path: Path,
+) -> None:
+    # D1/D3: a v0.4 YAML that used stealth.denylist must fail with a
+    # clear, actionable migration error — the stealth: key was renamed
+    # to magisk: in api_version 4. This path cannot silently auto-bump
+    # because the data lives under a different key.
+    yaml_path = tmp_path / "beetroot.yaml"
+    yaml_path.write_text(
+        "api_version: 3\n"
+        "android:\n  version: 14\n"
+        "stealth:\n"
+        "  denylist:\n"
+        "    - com.google.android.gms\n"
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        config.load_yaml(yaml_path)
+    msg = str(exc_info.value)
+    # Must name the old key and the new key so the user knows what to change.
+    assert "stealth" in msg
+    assert "magisk" in msg.lower()
+    # Must mention api_version so the user knows to bump it too.
+    assert "api_version" in msg
 
 
 def test_explicit_current_api_version_does_not_warn(

@@ -61,9 +61,11 @@ print(data['alpha']['frida']) # localhost:27042
 
 ## Why stride-10?
 
-Frida uses two consecutive ports per instance: the data port and the control port (data+1). The stride of 10 leaves 8 unused ports between instances as headroom — if Frida's port requirements change in a future version, there's room to absorb the change without a layout migration.
+Frida uses two consecutive ports per instance: the data port (`27042 + N×10`) and the control port (`27043 + N×10`, used by Frida's RPC/command channel). The stride of 10 leaves 8 unused ports between instances as headroom — if Frida's port requirements change in a future version, there's room to absorb the change without a layout migration.
 
 ADB at `5555 + N×10` follows the same stride so all three port families stay aligned by index.
+
+The maximum supported index is `5998` — above that, the ADB port would exceed 65535 and Beetroot raises a clear error at port-allocation time.
 
 ## Overriding the stride
 
@@ -98,7 +100,7 @@ ports:
 At index 0 the stride defaults are `frida=27042`, `frida_control=27043`. Pinning `frida: 27043` leaves `frida_control` on `27043` — both ports collide on the same host port. Beetroot rejects the resolved dict on `create`/`apply`/`ls`/`up` with:
 
 ```
-error: resolved ports collide on this instance: {27043: ['frida', 'frida2']}.
+error: resolved ports collide on this instance: {27043: ['frida', 'frida_control']}.
 Override ports.adb / ports.frida / ports.frida_control in beetroot.yaml
 to avoid colliding with stride-of-10 defaults.
 ```

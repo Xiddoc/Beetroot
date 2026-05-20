@@ -13,15 +13,19 @@ Per-instance overrides are supported via the ``ports:`` block in
 from __future__ import annotations
 
 from collections import Counter
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from .config import Ports
 
 ADB_BASE = 5555
 FRIDA_BASE = 27042
-FRIDA2_BASE = 27043
+FRIDA_CONTROL_BASE = 27043
 STRIDE = 10
+
+# Maximum port index before stride-of-10 would push ADB above port 65535.
+# ADB_BASE + _MAX_INDEX * STRIDE <= 65535  →  _MAX_INDEX <= (65535 - 5555) / 10 = 5998
+_MAX_PORT_INDEX: Final = (65535 - ADB_BASE) // STRIDE
 
 
 class PortCollisionError(ValueError):
@@ -43,21 +47,28 @@ def ports_for_index(index: int) -> dict[str, int]:
     Compute the ADB and Frida port numbers for a given instance index.
 
     Args:
-        index: The instance's port index (non-negative integer).
+        index: The instance's port index (non-negative integer, at most
+            :data:`_MAX_PORT_INDEX`).
 
     Returns:
-        A dict with keys ``adb``, ``frida``, and ``frida2`` mapping to
-        the host port numbers for this instance.
+        A dict with keys ``adb``, ``frida``, and ``frida_control`` mapping
+        to the host port numbers for this instance.
 
     Raises:
-        ValueError: If ``index`` is negative.
+        ValueError: If ``index`` is negative or would push ADB above port 65535.
     """
     if index < 0:
         raise ValueError(f"port index must be >= 0 (got {index})")
+    if index > _MAX_PORT_INDEX:
+        raise ValueError(
+            f"port index {index} would assign ADB port "
+            f"{ADB_BASE + index * STRIDE} > 65535. "
+            f"Maximum supported index is {_MAX_PORT_INDEX}."
+        )
     return {
         "adb": ADB_BASE + index * STRIDE,
         "frida": FRIDA_BASE + index * STRIDE,
-        "frida2": FRIDA2_BASE + index * STRIDE,
+        "frida_control": FRIDA_CONTROL_BASE + index * STRIDE,
     }
 
 
@@ -67,16 +78,16 @@ def resolve_ports(index: int, override: Ports) -> dict[str, int]:
 
     Each field on ``override`` is independently optional — a field set to
     ``None`` falls back to the stride allocation; a field set to an integer
-    pins that port to the given value. ``override.frida_control`` maps to
-    the ``frida2`` key so the result aligns with ``render_env``'s vocabulary.
+    pins that port to the given value.
 
     Args:
         index: The instance's port index (non-negative integer).
         override: The ``Ports`` override block from the instance's config.
 
     Returns:
-        A dict with keys ``adb``, ``frida``, ``frida2`` — the resolved host
-        port numbers after applying overrides on top of the stride defaults.
+        A dict with keys ``adb``, ``frida``, ``frida_control`` — the resolved
+        host port numbers after applying overrides on top of the stride
+        defaults.
 
     Raises:
         PortCollisionError: If the resolved dict has duplicate port values.
@@ -89,10 +100,10 @@ def resolve_ports(index: int, override: Ports) -> dict[str, int]:
     resolved = {
         "adb": override.adb if override.adb is not None else stride["adb"],
         "frida": override.frida if override.frida is not None else stride["frida"],
-        "frida2": (
+        "frida_control": (
             override.frida_control
             if override.frida_control is not None
-            else stride["frida2"]
+            else stride["frida_control"]
         ),
     }
     counts = Counter(resolved.values())

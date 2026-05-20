@@ -28,8 +28,8 @@ services:
     # ``docker compose`` invocation without a Beetroot-rendered .env file)
     # still boots the container the same way as ``render_env`` would.
     # BEETROOT_DENYLIST_PACKAGES is a comma-separated list consumed by
-    # magisk-config.sh via ``IFS=,``; empty by default (Stealth.denylist
-    # defaults to []), so the helper SQL'es nothing extra.
+    # magisk-config.sh via ``IFS=,``; defaults to the GMS pair (Magisk.denylist
+    # default) so root is hidden from GMS unless overridden.
     environment:
       BEETROOT_MAGISK_DB: ${BEETROOT_MAGISK_DB:-/data/adb/magisk.db}
       BEETROOT_MODULES_DIR: ${BEETROOT_MODULES_DIR:-/data/adb/modules_update}
@@ -39,7 +39,7 @@ services:
     ports:
       - "${ADB_PORT}:5555"
       - "${FRIDA_PORT}:27042"
-      - "${FRIDA_PORT2}:27043"
+      - "${FRIDA_PORT_CONTROL}:27043"
 
     command:
       - androidboot.redroid_width=${DISPLAY_WIDTH:-540}

@@ -9,13 +9,13 @@ The schema is validated by Pydantic on every load. Fields you omit use the defau
 ## Top-level structure
 
 ```yaml
-api_version: 3
+api_version: 4
 android: ...
 display: ...
 resources: ...
 frida: ...   # optional / opt-in
 modules: [...]
-stealth: ...
+magisk: ...
 ports: ...
 ```
 
@@ -27,21 +27,29 @@ Schema version this `beetroot.yaml` targets.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `api_version` | int | `3` | Schema version. Must match the value supported by this Beetroot release. |
+| `api_version` | int | `4` | Schema version. Must match the value supported by this Beetroot release. |
 
 ```yaml
-api_version: 3
+api_version: 4
 ```
 
 ### Versioning policy
 
 Each Beetroot release supports **exactly one** `api_version`. The current
-release supports `api_version: 3`. Loading a YAML that pins a different
-value (`0`, `99`, …) raises a `ValidationError` with a pointer to
-`CHANGELOG.md` for the migration steps. v0.2's `api_version: 1` and
-v0.3's `api_version: 2` are recognised legacy values and auto-bumped on
-load with a one-line warning (the bumps are strictly additive — no
-fields renamed); persistence happens on the next `beetroot apply`.
+release supports `api_version: 4`. Loading a YAML that pins a different
+value raises one of two errors:
+
+- **Unknown / future version** (`0`, `99`, …): raises a `ValidationError`
+  with a pointer to `CHANGELOG.md` for the migration steps.
+- **Non-additive migration required** (e.g. `api_version: 3` with a
+  `stealth:` key that was renamed to `magisk:` in v4): raises a clear
+  migration error naming the changed field and pointing at `CHANGELOG.md`.
+
+**Auto-bump (additive legacy versions):** `api_version: 1` (v0.2),
+`api_version: 2` (v0.3), and `api_version: 3` (v0.4) are recognised
+legacy values and auto-bumped on load with a one-line warning, because
+those bumps added only new optional fields — nothing was renamed.
+Persistence happens on the next `beetroot apply`.
 
 Omitting the field is equivalent to writing the currently supported value
 — existing instance YAMLs without `api_version` keep working. Pinning the
@@ -49,7 +57,7 @@ field explicitly is recommended once you're committing an instance YAML to
 source control, so that a future Beetroot release with a breaking schema
 change fails loud instead of silently reinterpreting your config.
 
-All [example YAMLs](../guides/examples.md) declare `api_version: 3`
+All [example YAMLs](../guides/examples.md) declare `api_version: 4`
 explicitly as the first field. When the schema breaks, the constant
 `SUPPORTED_API_VERSION` in `src/beetroot/config.py` is bumped and a
 migration entry is added to `CHANGELOG.md`.
@@ -80,9 +88,9 @@ Virtual display configuration for the Android framebuffer.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `width` | int | `540` | Framebuffer width in pixels |
-| `height` | int | `960` | Framebuffer height in pixels |
-| `fps` | int | `3` | Maximum framebuffer FPS. 3 is enough for research; raise only if you need smooth UI. |
+| `width` | int | `540` | Framebuffer width in pixels. Must be > 0. |
+| `height` | int | `960` | Framebuffer height in pixels. Must be > 0. |
+| `fps` | int | `3` | Maximum framebuffer FPS. Must be > 0. 3 is enough for research; raise only if you need smooth UI. |
 | `gpu_mode` | string | `host` | GPU passthrough mode. `host` uses the host GPU (recommended). `guest` renders in software (slow). |
 
 ```yaml
@@ -104,9 +112,12 @@ Docker resource limits for the container.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `mem` | string | `3g` | Memory limit. Docker format: `512m`, `1g`, `3g`, etc. |
+| `mem` | string | `3g` | Memory limit. Docker size format: `512m`, `1g`, `3g`, etc. Validated at load time — typos like `"3gb"` fail immediately. |
 | `cpus` | float | `2.0` | CPU limit in fractional cores. |
-| `shared_mem` | string | `256m` | Shared memory size (`/dev/shm`, Docker `shm_size`). redroid uses this for GPU passthrough. |
+| `shared_mem` | string | `256m` | Shared memory size (`/dev/shm`, Docker `shm_size`). Docker size format. |
+| `mem_reservation` | string | none | Soft memory floor. Docker size format. Docker scheduler reserves this for the container but allows it to use more up to `mem`. |
+| `memswap_limit` | string | none | Combined memory + swap cap. Docker size format. Prevents swap storms if set equal to `mem`. |
+| `pids_limit` | int | `4096` | Maximum number of PIDs the container can spawn. |
 
 ```yaml
 resources:
@@ -118,8 +129,8 @@ resources:
 !!! warning "Legacy `shm` field removed"
     The old `resources.shm` field was renamed to `resources.shared_mem` for clarity. Loading a YAML with the legacy field raises a `ValidationError` pointing at this migration — see `CHANGELOG.md`.
 
-!!! note "pids_limit is fixed"
-    `pids_limit: 4096` is hardcoded in `compose.yaml` — Android forks aggressively and hitting the default 1024 limit causes random crashes. It's not configurable in `beetroot.yaml`.
+!!! note "Docker size format"
+    All string memory fields (`mem`, `shared_mem`, `mem_reservation`, `memswap_limit`) must use Docker's size format: a number optionally followed by a single suffix — `b`, `k`, `m`, `g`, or `t` (case-insensitive). Examples: `3g`, `512m`, `1.5G`. Values like `3gb` (two-letter suffix) fail at load time with a clear error rather than being silently misinterpreted at `docker compose up`.
 
 ---
 
@@ -203,16 +214,16 @@ error: port 5555 (adb) collides with instance 'alpha' (which also uses 5555). Pi
 
 ---
 
-## `stealth`
+## `magisk`
 
-Magisk denylist configuration. Processes listed here are denylisted in the Magisk SQLite database at boot time, before any app launches.
+Magisk configuration, including the boot-time denylist. Processes listed here are denylisted in the Magisk SQLite database at boot time, before any app launches.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `denylist` | list[string] | `[]` | Package names and process names to add to Magisk's denylist. |
+| `denylist` | list[string] | `["com.google.android.gms", "com.google.android.gms.unstable"]` | Package names to add to Magisk's denylist. Each entry must match the Android package-id grammar (`[a-zA-Z0-9._]+`) — validated at load time as SQL-injection prophylaxis. |
 
 ```yaml
-stealth:
+magisk:
   denylist:
     - com.google.android.gms
     - com.google.android.gms.unstable
@@ -223,12 +234,23 @@ stealth:
 !!! note "Denylist vs. Shamiko"
     The Magisk denylist alone makes root *inaccessible* to listed processes. With [Shamiko](../guides/modules.md) installed, the denylist is upgraded to a full allowlist-based hide — listed processes can't detect Magisk at all.
 
+!!! warning "Migrating from `stealth:` (api_version 3)"
+    The `stealth:` key was renamed to `magisk:` in api_version 4. If your `beetroot.yaml` still contains `stealth:`, Beetroot will fail at load with:
+
+    ```
+    The 'stealth:' key was removed in api_version 4.
+    Move 'stealth.denylist' to 'magisk.denylist' and update
+    'api_version' to 4. See CHANGELOG.md for the migration.
+    ```
+
+    Rename the key and bump `api_version` to `4` to fix it.
+
 ---
 
 ## Complete example
 
 ```yaml
-api_version: 3
+api_version: 4
 
 android:
   version: 14
@@ -252,7 +274,7 @@ modules:
     sha256: <your-hash-here>
   - path: ./local-modules/CustomHook.zip
 
-stealth:
+magisk:
   denylist:
     - com.google.android.gms
     - com.google.android.gms.unstable

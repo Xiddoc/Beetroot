@@ -55,7 +55,7 @@ def instance_configs(draw: st.DrawFn) -> config.InstanceConfig:
     mem_reservation = draw(st.one_of(st.none(), st.sampled_from(["512m", "1g", "2g"])))
     memswap_limit = draw(st.one_of(st.none(), st.sampled_from(["2g", "4g"])))
     return config.InstanceConfig(
-        api_version=3,
+        api_version=4,
         android=config.Android(version=android_version, gapps=gapps),
         display=config.Display(width=width, height=height, fps=fps, gpu_mode=gpu_mode),
         resources=config.Resources(
@@ -108,7 +108,7 @@ def test_render_env_emits_required_keys(cfg: config.InstanceConfig) -> None:
         "BASE_IMAGE",
         "ADB_PORT",
         "FRIDA_PORT",
-        "FRIDA_PORT2",
+        "FRIDA_PORT_CONTROL",
         "MEM_LIMIT",
         "CPUS",
         "SHM_SIZE",

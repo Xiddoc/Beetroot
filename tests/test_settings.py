@@ -64,7 +64,7 @@ def test_settings_construction_inside_instance_dir(
         "INSTANCE_NAME=alpha\n"
         "ADB_PORT=5555\n"
         "FRIDA_PORT=27042\n"
-        "FRIDA_PORT2=27043\n"
+        "FRIDA_PORT_CONTROL=27043\n"
         "BEETROOT_DENYLIST_PACKAGES=com.foo,com.bar\n"
     )
     monkeypatch.chdir(tmp_path)
