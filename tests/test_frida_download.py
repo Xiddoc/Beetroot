@@ -242,6 +242,30 @@ class TestDownloadSha256:
                 expected_sha256=hashlib.sha256(FAKE_BINARY).hexdigest(),
             )
 
+    def test_sha256_mismatch_on_cached_file_deletes_cache(
+        self, isolated_registry: Path
+    ) -> None:
+        # A sha256 mismatch on a cached file must delete the bad artifact
+        # so the next download() call re-fetches rather than re-failing
+        # forever on a poisoned cache entry.
+        cache = frida_download.cached_binary(VERSION)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(b"bad content")
+        with pytest.raises(ValueError, match="sha256 mismatch"):
+            frida_download.download(VERSION, expected_sha256="0" * 64)
+        assert not cache.exists(), "bad cached file should be deleted after mismatch"
+
+    def test_sha256_mismatch_on_fresh_download_deletes_tmp_and_out(
+        self, isolated_registry: Path
+    ) -> None:
+        # A sha256 mismatch on a freshly downloaded binary must also delete
+        # the output file so the cache can't be poisoned by a bad download.
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            with pytest.raises(ValueError, match="sha256 mismatch"):
+                frida_download.download(VERSION, expected_sha256="0" * 64)
+        out = frida_download.cached_binary(VERSION)
+        assert not out.exists(), "output file should be deleted after mismatch on fresh download"
+
     def test_stage_for_instance_forwards_sha256(
         self, instance_root: Path
     ) -> None:

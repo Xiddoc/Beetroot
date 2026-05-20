@@ -107,11 +107,16 @@ def download(version: str, *, expected_sha256: str | None = None) -> Path:
 
 
 def _check_sha256(path: Path, expected: str | None) -> None:
-    """Raise ``ValueError`` if ``expected`` is set and doesn't match ``path``."""
+    """Raise ``ValueError`` if ``expected`` is set and doesn't match ``path``.
+
+    The bad file is deleted before raising so the next call re-downloads
+    rather than treating the corrupt artifact as a warm cache hit.
+    """
     if expected is None:
         return
     actual = sha256_of(path)
     if actual.lower() != expected.lower():
+        path.unlink(missing_ok=True)
         raise ValueError(
             f"sha256 mismatch for frida-server at {path}: "
             f"expected {expected.lower()}, got {actual.lower()}"
