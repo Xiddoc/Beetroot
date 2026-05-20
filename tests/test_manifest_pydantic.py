@@ -107,7 +107,7 @@ class TestManifestArchiveRoundTrip:
         # Snapshot today writes ``path_layout: {}``; the archive
         # round-trip preserves whatever the manifest carries.
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         parsed = snapshot.read_manifest(archive)
         assert parsed.kind == "redroid"
@@ -120,7 +120,7 @@ class TestManifestArchiveRoundTrip:
         # stealth-posture story) and verify the strict reader round-trips
         # it intact through ``read_manifest``.
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         replaced = tmp_path / "replaced.tar.zst"
         forged = {
@@ -142,7 +142,7 @@ class TestManifestArchiveRoundTrip:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         broken = tmp_path / "broken.tar.zst"
         forged = {
@@ -168,7 +168,7 @@ class TestManifestArchiveRoundTrip:
         # be rejected so a future v0.6 cross-backend snapshot story
         # doesn't accidentally land on a v0.4 host.
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         broken = tmp_path / "broken.tar.zst"
         forged = {

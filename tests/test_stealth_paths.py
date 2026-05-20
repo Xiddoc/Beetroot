@@ -53,7 +53,7 @@ class TestSnapshotWritesStealthPaths:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         registry.set_stealth_paths("alpha", _SAMPLE_LAYOUT)
 
         archive = snapshot.snapshot(src, tmp_path / "out")
@@ -67,7 +67,7 @@ class TestSnapshotWritesStealthPaths:
         # Belt-and-braces against a regression that would coerce a
         # missing-key blob to something other than ``{}``.
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         # No set_stealth_paths call — slot stays at the model default.
         archive = snapshot.snapshot(src, tmp_path / "out")
         assert snapshot.read_manifest(archive).path_layout == {}
@@ -80,7 +80,7 @@ class TestSnapshotWritesStealthPaths:
         # mutation. snapshot.py takes ``dict(backend.stealth_paths)``
         # to guarantee that.
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         registry.set_stealth_paths("alpha", _SAMPLE_LAYOUT)
         archive = snapshot.snapshot(src, tmp_path / "out")
         # Mutate the source row to a different layout.
@@ -100,7 +100,7 @@ class TestRestoreReplaysIntoRegistry:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         registry.set_stealth_paths("alpha", _SAMPLE_LAYOUT)
         archive = snapshot.snapshot(src, tmp_path / "out")
         registry.remove("alpha")
@@ -121,7 +121,7 @@ class TestRestoreReplaysIntoRegistry:
         # The restored row must NOT inherit any stealth_paths from
         # nowhere — the slot stays at the model default ({}).
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         registry.remove("alpha")
 
@@ -150,7 +150,7 @@ class TestForwardCompatEmptyManifest:
         # the new instance would otherwise still bind-mount to the
         # old container path.
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         registry.remove("alpha")
 
@@ -176,7 +176,7 @@ class TestForwardCompatEmptyManifest:
         # instance's .env — proving snapshot → restore → render_env
         # is wired all the way through.
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         registry.set_stealth_paths("alpha", _SAMPLE_LAYOUT)
         archive = snapshot.snapshot(src, tmp_path / "out")
         registry.remove("alpha")
@@ -320,7 +320,7 @@ class TestSetStealthPathsErrors:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         registry.set_stealth_paths("alpha", _SAMPLE_LAYOUT)
         meta = registry.get("alpha")
         assert meta is not None
@@ -333,7 +333,7 @@ class TestSetStealthPathsErrors:
         # set_stealth_paths must dict() its input so a later mutation
         # of the caller's dict doesn't retroactively edit the row.
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         layout = dict(_SAMPLE_LAYOUT)
         registry.set_stealth_paths("alpha", layout)
         layout["frida_bin"] = "/different/path"

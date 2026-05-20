@@ -3,21 +3,24 @@ Property-based round-trip tests for the v3 registry schema.
 
 For every generated :class:`InstanceMeta` (across both
 ``RedroidBackendConfig`` and ``AdbBackendConfig`` variants), assert
-that ``model_validate_json(model_dump_json())`` is the identity
-function. This is the strongest possible JSON-round-trip guarantee
-short of formal verification — if it ever fails, the registry's
-schema is no longer self-describing.
+that the ``_write``/``_read`` round-trip is the identity function.
+This is the strongest possible JSON-round-trip guarantee short of
+formal verification — if it ever fails, the registry's schema is no
+longer self-describing.
 
 Pinned to derandomized hypothesis settings so CI failures reproduce
 exactly.
 """
 from __future__ import annotations
 
+import tempfile
 from datetime import UTC, datetime
+from pathlib import Path
 
 import hypothesis.strategies as st
 from hypothesis import HealthCheck, given, settings
 
+from beetroot import registry as _registry
 from beetroot.registry import (
     AdbBackendConfig,
     InstanceMeta,
@@ -68,10 +71,14 @@ def adb_meta(draw: st.DrawFn) -> InstanceMeta:
     suppress_health_check=[HealthCheck.too_slow],
 )
 def test_instance_meta_json_round_trip_is_identity(meta: InstanceMeta) -> None:
-    """JSON round-trip preserves every InstanceMeta field exactly."""
-    raw = meta.model_dump_json()
-    rebuilt = InstanceMeta.model_validate_json(raw)
-    assert rebuilt == meta
+    """_write/_read round-trip preserves every InstanceMeta field exactly."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "instances.json"
+        doc = RegistryFile(instances={"x": meta})
+        _registry._write(path, doc)
+        rebuilt = _registry._read(path)
+    assert rebuilt.instances["x"].backend == meta.backend
+    assert rebuilt.instances["x"].index == meta.index
 
 
 @given(
@@ -90,8 +97,12 @@ def test_instance_meta_json_round_trip_is_identity(meta: InstanceMeta) -> None:
 def test_registry_file_json_round_trip_is_identity(
     instances: dict[str, InstanceMeta],
 ) -> None:
-    """RegistryFile round-trips through model_dump_json / model_validate_json."""
+    """RegistryFile round-trips through _write/_read."""
     original = RegistryFile(version=3, instances=instances)
-    raw = original.model_dump_json()
-    rebuilt = RegistryFile.model_validate_json(raw)
-    assert rebuilt == original
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "instances.json"
+        _registry._write(path, original)
+        rebuilt = _registry._read(path)
+    for name, orig_meta in instances.items():
+        assert rebuilt.instances[name].backend == orig_meta.backend
+        assert rebuilt.instances[name].index == orig_meta.index

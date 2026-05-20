@@ -322,46 +322,24 @@ class TestAddModule:
         assert len(captured_adb) == 1
 
 
-class TestLifecycleStubs:
-    """Lifecycle verbs all raise :class:`BackendCapabilityError`."""
+class TestCapabilityGating:
+    """AdbDevice does not implement Lifecycle/Snapshottable — gating is at the CLI layer."""
 
-    @pytest.mark.parametrize("method", ["up", "down", "restart", "apply"])
-    def test_zero_arg_lifecycle_methods_raise(self, method: str) -> None:
+    def test_adb_device_does_not_implement_lifecycle(self) -> None:
         dev = _make_device()
-        with pytest.raises(api.BackendCapabilityError, match="adb-backed"):
-            getattr(dev, method)()
+        assert not isinstance(dev, api.Lifecycle)
 
-    def test_destroy_raises(self) -> None:
-        with pytest.raises(api.BackendCapabilityError, match="adb-backed"):
-            _make_device().destroy(yes=True)
-
-    def test_snapshot_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(api.BackendCapabilityError, match="adb-backed"):
-            _make_device().snapshot(tmp_path / "out.tar.zst")
-
-    def test_down_error_contains_real_name_not_literal_brace(self) -> None:
-        dev = _make_device(serial="emulator-5554")
-        with pytest.raises(api.BackendCapabilityError, match="phone"):
-            dev.down()
-
-    def test_down_error_does_not_contain_v05_parenthetical(self) -> None:
+    def test_adb_device_does_not_implement_snapshottable(self) -> None:
         dev = _make_device()
-        with pytest.raises(api.BackendCapabilityError) as exc_info:
-            dev.down()
-        assert "(v0.5)" not in str(exc_info.value)
-        assert "{name}" not in str(exc_info.value)
+        assert not isinstance(dev, api.Snapshottable)
 
-    def test_destroy_error_contains_real_name_not_literal_brace(self) -> None:
-        dev = _make_device(serial="emulator-5554")
-        with pytest.raises(api.BackendCapabilityError, match="phone"):
-            dev.destroy(yes=True)
-
-    def test_destroy_error_does_not_contain_v05_parenthetical(self) -> None:
+    def test_adb_device_implements_module_installer(self) -> None:
         dev = _make_device()
-        with pytest.raises(api.BackendCapabilityError) as exc_info:
-            dev.destroy(yes=True)
-        assert "(v0.5)" not in str(exc_info.value)
-        assert "{name}" not in str(exc_info.value)
+        assert isinstance(dev, api.ModuleInstaller)
+
+    def test_adb_device_implements_health_checkable(self) -> None:
+        dev = _make_device()
+        assert isinstance(dev, api.HealthCheckable)
 
 
 class TestFromMeta:
@@ -382,7 +360,7 @@ class TestFromMeta:
     ) -> None:
         del isolated_registry
         wrong = registry.RedroidBackendConfig(absolute_path="/tmp/x")
-        with pytest.raises(TypeError, match="AdbBackendConfig"):
+        with pytest.raises(api.InstanceNotFoundError, match="AdbBackendConfig"):
             adb_backend.AdbDevice.from_meta("phone", wrong)
 
     def test_raises_when_name_not_in_registry(
@@ -390,7 +368,7 @@ class TestFromMeta:
     ) -> None:
         del isolated_registry
         cfg = registry.AdbBackendConfig(serial="emulator-5554")
-        with pytest.raises(LookupError, match="phone"):
+        with pytest.raises(api.InstanceNotFoundError, match="phone"):
             adb_backend.AdbDevice.from_meta("phone", cfg)
 
     def test_host_port_derived_from_allocated_index(

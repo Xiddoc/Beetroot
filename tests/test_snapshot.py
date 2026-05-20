@@ -82,7 +82,7 @@ class TestSnapshotRoundTrip:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "foo" / "alpha", data_bytes=b"\x00\xffmarker\x42")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
 
         archive = snapshot.snapshot(src, tmp_path / "snapshots" / "alpha-clean")
         assert archive.name == "alpha-clean.tar.zst"
@@ -107,7 +107,7 @@ class TestSnapshotRoundTrip:
     ) -> None:
         payload = b"X" * 100_000
         src = _make_instance(tmp_path / "alpha", data_bytes=payload)
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
 
         start = time.perf_counter()
         archive = snapshot.snapshot(src, tmp_path / "out")
@@ -125,7 +125,12 @@ class TestSnapshotManifest:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 3)
+        # Pre-fill indices 0, 1, 2 so "alpha" gets index 3.
+        for i in range(3):
+            dummy = tmp_path / f"dummy{i}"
+            dummy.mkdir()
+            registry.add_allocating(f"dummy{i}", dummy)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
 
         manifest = snapshot.read_manifest(archive)
@@ -140,7 +145,7 @@ class TestSnapshotManifest:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out.tar.zst")
         assert snapshot.read_manifest(archive).path_layout == {}
 
@@ -148,7 +153,7 @@ class TestSnapshotManifest:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "alpha.tar.zst")
         assert archive.name == "alpha.tar.zst"
 
@@ -159,7 +164,7 @@ class TestSnapshotArchiveLayout:
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
         (src / ".env").write_text("SECRET=1")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
 
         members = _list_archive_members(archive)
@@ -171,7 +176,7 @@ class TestSnapshotArchiveLayout:
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
         (src / "frida-server").write_bytes(b"")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
 
         members = set(_list_archive_members(archive))
@@ -187,7 +192,7 @@ class TestRestorePortAllocation:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
 
         snapshot.restore(archive, dest_name="beta", dest_path=tmp_path / "beta")
@@ -205,7 +210,7 @@ class TestRestoreForce:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         registry.remove("alpha")
 
@@ -221,7 +226,7 @@ class TestRestoreForce:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha", data_bytes=b"new")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         registry.remove("alpha")
 
@@ -244,7 +249,7 @@ class TestRestoreForce:
         # the operation even with --force; the user must destroy
         # the sibling first or pick another path.
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
 
         # Register a peer instance at the dir we're about to point
@@ -252,7 +257,7 @@ class TestRestoreForce:
         # protection must fire.
         peer_dir = tmp_path / "peer"
         _make_instance(peer_dir, data_bytes=b"peer's precious data")
-        registry.add("peer", peer_dir, 1)
+        registry.add_allocating("peer", peer_dir)
 
         with pytest.raises(snapshot.SnapshotError, match="peer"):
             snapshot.restore(
@@ -270,7 +275,7 @@ class TestRestoreForce:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         registry.remove("alpha")
 
@@ -320,11 +325,11 @@ class TestRestoreErrors:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
 
         other = _make_instance(tmp_path / "preexisting" / "beta")
-        registry.add("beta", other, 1)
+        registry.add_allocating("beta", other)
 
         with pytest.raises(snapshot.SnapshotError, match="already registered"):
             snapshot.restore(
@@ -346,14 +351,18 @@ class TestRestoreErrors:
             "android:\n  version: 14\n"
             "ports:\n  adb: 5565\n"
         )
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
 
         registry.remove("alpha")
 
         # Pre-stage a peer at index 1 (stride default ADB = 5565).
+        # Add a dummy at index 0 first so the peer gets index 1.
+        dummy = tmp_path / "dummy"
+        dummy.mkdir()
+        registry.add_allocating("dummy", dummy)
         peer = _make_instance(tmp_path / "peer")
-        registry.add("peer", peer, 1)
+        registry.add_allocating("peer", peer)
 
         with pytest.raises(snapshot.SnapshotError, match="5565"):
             snapshot.restore(
@@ -386,9 +395,9 @@ class TestSnapshotErrors:
         # registered second. The registry-entry lookup must skip past the
         # first non-matching entry, exercising the loop-continue branch.
         other = _make_instance(tmp_path / "other")
-        registry.add("aaa-other", other, 0)
+        registry.add_allocating("aaa-other", other)
         src = _make_instance(tmp_path / "alpha")
-        registry.add("zzz-alpha", src, 1)
+        registry.add_allocating("zzz-alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         manifest = snapshot.read_manifest(archive)
         assert manifest.name == "zzz-alpha"
@@ -400,7 +409,7 @@ class TestPathLayoutForwardCompat:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         original = snapshot.snapshot(src, tmp_path / "out")
 
         # Surgery: rewrite the manifest with a v0.4-shaped path_layout.
@@ -453,7 +462,7 @@ class TestReadManifestErrors:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         broken = tmp_path / "broken.tar.zst"
         _repack_with_custom_manifest(archive, broken, b"{not-json")
@@ -465,7 +474,7 @@ class TestReadManifestErrors:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         broken = tmp_path / "broken.tar.zst"
         _repack_with_custom_manifest(archive, broken, b"[1,2,3]")
@@ -477,7 +486,7 @@ class TestReadManifestErrors:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         broken = tmp_path / "broken.tar.zst"
         _repack_with_custom_manifest(
@@ -493,7 +502,7 @@ class TestReadManifestErrors:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         broken = tmp_path / "broken.tar.zst"
         bogus = {
@@ -515,7 +524,7 @@ class TestReadManifestErrors:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         broken = tmp_path / "broken.tar.zst"
         bogus = {
@@ -547,7 +556,7 @@ class TestManifestShadowRegression:
         # `name` must reflect the second-generation instance, not the
         # original.
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         first = snapshot.snapshot(src, tmp_path / "first")
 
         # Restore the snapshot as a brand-new instance "beta".
@@ -578,7 +587,7 @@ class TestManifestShadowRegression:
         # one manifest member at its root, regardless of whether the
         # source dir has a stale manifest already.
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "first")
         registry.remove("alpha")
         target = tmp_path / "beta"
@@ -661,7 +670,7 @@ class TestRestoreCorruptedArchive:
         # the SnapshotError is raised before the target dir is created
         # or the registry is mutated.
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
 
         raw = archive.read_bytes()
@@ -761,7 +770,7 @@ class TestB7bDestIsFile:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         registry.remove("alpha")
 
@@ -781,7 +790,7 @@ class TestB7bDestIsFile:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         registry.remove("alpha")
 
@@ -838,7 +847,7 @@ class TestB7cManifestSortedKeys:
     ) -> None:
         # The byte-stable manifest must still be parseable by read_manifest.
         src = _make_instance(tmp_path / "alpha")
-        registry.add("alpha", src, 0)
+        registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
         manifest = snapshot.read_manifest(archive)
         assert manifest.name == "alpha"
@@ -854,13 +863,16 @@ class TestAdbBackendBranchCoverage:
         # instance.  _find_registry_entry must skip the ADB entry and
         # return the redroid entry.
         from beetroot import registry as reg
-        reg.add(
+        # Register an ADB entry first (auto-allocates index 0), then
+        # the redroid target (auto-allocates index 1).  The specific
+        # indices don't matter — we're only verifying that
+        # _find_registry_entry skips ADB entries and returns the redroid one.
+        reg.add_allocating(
             "adb-device",
-            index=9,
             backend=reg.AdbBackendConfig(serial="emulator-5554"),
         )
         src = _make_instance(tmp_path / "alpha")
-        reg.add("alpha", src, 0)
+        reg.add_allocating("alpha", backend=reg.RedroidBackendConfig(absolute_path=str(src)))
         archive = snapshot.snapshot(src, tmp_path / "out")
         manifest = snapshot.read_manifest(archive)
         assert manifest.name == "alpha"
@@ -873,15 +885,14 @@ class TestAdbBackendBranchCoverage:
         # instance then try to restore a snapshot into an occupied dir.
         from beetroot import registry as reg
         src = _make_instance(tmp_path / "alpha")
-        reg.add("alpha", src, 0)
+        reg.add_allocating("alpha", backend=reg.RedroidBackendConfig(absolute_path=str(src)))
         archive = snapshot.snapshot(src, tmp_path / "out")
         reg.remove("alpha")
 
         # Register an ADB-backed instance (not a redroid instance) — the
         # collision guard must not fire for it.
-        reg.add(
+        reg.add_allocating(
             "adb-device",
-            index=9,
             backend=reg.AdbBackendConfig(serial="emulator-5554"),
         )
 

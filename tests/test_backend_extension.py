@@ -21,7 +21,7 @@ verbs the backend doesn't support.
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -82,7 +82,7 @@ class FakeBackend:
     def is_available(self) -> bool:
         return True
 
-    def install_frida(self, version: str) -> None:
+    def install_frida(self, version: str | None = None) -> None:
         del version
 
     def shell(self) -> int:
@@ -91,7 +91,7 @@ class FakeBackend:
             check=False,
         ).returncode
 
-    def frida_cli(self, args: list[str]) -> int:
+    def frida_cli(self, args: Sequence[str]) -> int:
         del args
         return 0
 
@@ -213,25 +213,16 @@ class TestExtensionEndToEnd:
     def test_up_raises_backend_capability_error_cleanly(
         self,
         isolated_registry: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # A third-party backend that doesn't define ``up()`` falls
-        # through to the AttributeError path. The CLI's
-        # ``_resolve_redroid`` helper catches the non-Instance branch
-        # and raises BackendCapabilityError. Verify the exit code is
-        # the canonical 2.
-        # First we need a registry row that ``cli.main`` can resolve.
-        # The discriminated-union limitation means we can't easily
-        # write a fake-kind row via the pydantic model; this test
-        # documents the *Protocol-level* contract by asserting on the
-        # ``cli._resolve_redroid`` helper directly with a synthetic
-        # backend.
-        del monkeypatch
+        # A third-party backend that doesn't implement the Lifecycle
+        # sub-protocol is rejected by the CLI's ``_require`` gate with
+        # a :class:`api.BackendCapabilityError`. Verify the error
+        # message embeds the verb and the backend kind.
+        del isolated_registry
         b = FakeBackend("fake-1", FakeBackendConfig(host="remote.example"))
-        # Confirm the helper raises the canonical exception when a
-        # non-Instance backend hits a redroid-only verb.
+        # FakeBackend does not implement Lifecycle, so _require raises.
         with pytest.raises(api.BackendCapabilityError, match="up"):
-            cli._resolve_redroid_for_backend(b, verb="up")
+            cli._require(b, api.Lifecycle, "up")
 
 
 class TestRegistryRoundTrip:

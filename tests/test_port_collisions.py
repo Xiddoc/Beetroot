@@ -56,11 +56,12 @@ class TestCmdCreateCollision:
         _write_pinned_yaml(registry.instance_path("alpha"), Ports(adb=5565))
         assert runner.invoke(cli.app, ["apply", "alpha"]).exit_code == 0
 
-        with patch.object(registry, "add") as fake_add:
-            result = runner.invoke(cli.app, ["create", "bravo"])
-            assert result.exit_code == 1
-            assert "5565" in result.stderr
-            fake_add.assert_not_called()
+        result = runner.invoke(cli.app, ["create", "bravo"])
+        assert result.exit_code == 1
+        assert "5565" in result.stderr
+        # Rollback must have freed the registry slot — bravo is not
+        # registered after the failed create.
+        assert registry.get("bravo") is None
 
 
 class TestCmdApplyCollision:

@@ -34,7 +34,7 @@ class TestManagerListSkipsOrphans:
         api.Instance.create("alpha")
         api.Instance.create("bravo")
         shutil.rmtree(registry.instance_path("alpha"))
-        names = [inst.name for inst in api.Manager.list()]
+        names = [inst.name for inst in api.Manager.list_instances()]
         assert names == ["bravo"]
 
     def test_orphan_surfaced_via_list_orphans(self, cli_root: Path) -> None:
@@ -71,7 +71,7 @@ class TestManagerListSkipsOrphans:
             "this: is: not: valid: yaml: at: all: }}}}\n"
         )
         # ``Manager.list`` skips it (would have crashed otherwise).
-        names = [inst.name for inst in api.Manager.list()]
+        names = [inst.name for inst in api.Manager.list_instances()]
         assert names == ["bravo"]
         # ``list_orphans`` surfaces it for cleanup.
         assert "alpha" in api.Manager.list_orphans()

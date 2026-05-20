@@ -386,7 +386,7 @@ class TestInstanceDestroy:
         # Registry has the entry but the on-disk dir is missing — destroy
         # must still clear the registry. Exercises the `if root.exists()`
         # false branch.
-        registry.add("alpha", cli_root / "alpha-missing", 0)
+        registry.add_allocating("alpha", cli_root / "alpha-missing")
         # Need to manually build an Instance — Instance.load would fail.
         cfg = config.InstanceConfig()
         inst = api.Instance(name="alpha", root=cli_root / "alpha-missing", cfg=cfg)
@@ -538,7 +538,10 @@ class TestInstanceAddModule:
 
         def _resp(url: str, **kwargs: object) -> MagicMock:
             r = MagicMock()
-            r.read.return_value = b"PK\x03\x04zip"
+            # Return data on first read, then empty bytes to terminate the
+            # while-True loop in _fetch_url. A plain ``return_value`` would
+            # return the same non-empty MagicMock on every call and loop forever.
+            r.read.side_effect = [b"PK\x03\x04zip", b""]
             r.__enter__ = lambda s: s
             r.__exit__ = MagicMock(return_value=False)
             return r
@@ -665,11 +668,11 @@ class TestManager:
     def test_list_returns_all_sorted(self, cli_root: Path) -> None:
         api.Instance.create("bravo")
         api.Instance.create("alpha")
-        names = [i.name for i in api.Manager.list()]
+        names = [i.name for i in api.Manager.list_instances()]
         assert names == ["alpha", "bravo"]
 
     def test_list_empty(self, cli_root: Path) -> None:
-        assert api.Manager.list() == []
+        assert api.Manager.list_instances() == []
 
     def test_get_present(self, cli_root: Path) -> None:
         api.Instance.create("alpha")
@@ -744,7 +747,7 @@ class TestCliDispatchesToApi:
 
         runner = CliRunner()
         runner.invoke(cli.app, ["create", "alpha"])
-        with patch.object(api.Manager, "list", wraps=api.Manager.list) as mock_list:
+        with patch.object(api.Manager, "list_instances", wraps=api.Manager.list_instances) as mock_list:
             with _patched_subprocess():
                 result = runner.invoke(cli.app, ["ls"])
         assert result.exit_code == 0, result.stderr

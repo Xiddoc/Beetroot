@@ -9,7 +9,7 @@ exercised here.
 """
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -57,13 +57,13 @@ class _StubBackend:
     def is_available(self) -> bool:
         return True
 
-    def install_frida(self, version: str) -> None:
+    def install_frida(self, version: str | None = None) -> None:
         del version
 
     def shell(self) -> int:
         return 0
 
-    def frida_cli(self, args: list[str]) -> int:
+    def frida_cli(self, args: Sequence[str]) -> int:
         del args
         return 0
 
@@ -92,7 +92,7 @@ class TestProtocolConformance:
         (root / "beetroot.yaml").write_text(
             "api_version: 3\nandroid:\n  version: 14\n"
         )
-        registry.add("alpha", root, 0)
+        registry.add_allocating("alpha", root)
         inst = api.Instance.load("alpha")
         assert isinstance(inst, api.DeviceBackend)
 
@@ -111,7 +111,7 @@ class TestProtocolConformance:
         (root / "beetroot.yaml").write_text(
             "api_version: 3\nandroid:\n  version: 14\n"
         )
-        registry.add("alpha", root, 0)
+        registry.add_allocating("alpha", root)
         assert api.Instance.load("alpha").kind == "redroid"
 
 
@@ -167,7 +167,7 @@ class TestManagerResolve:
         (root / "beetroot.yaml").write_text(
             "api_version: 3\nandroid:\n  version: 14\n"
         )
-        registry.add("alpha", root, 0)
+        registry.add_allocating("alpha", root)
         resolved = api.Manager.resolve("alpha")
         assert isinstance(resolved, api.Instance)
         assert resolved.name == "alpha"
@@ -192,7 +192,7 @@ class TestManagerResolve:
         )
         # Hand-write the file; the ``adb`` kind in the BackendConfig
         # union is the closest match for our stub-construction path.
-        path.write_text(doc.model_dump_json())
+        registry._write(path, doc)
         # Re-register the stub under "adb" so resolve finds it.
         backends._BACKEND_REGISTRY.pop("adb", None)
         backends.register_backend("adb", _StubBackend)
@@ -225,7 +225,7 @@ class TestManagerResolve:
                 ),
             },
         )
-        path.write_text(doc.model_dump_json())
+        registry._write(path, doc)
         # Snapshot the registry, remove "adb", and restore after.
         original = backends._BACKEND_REGISTRY.pop("adb", None)
         try:
@@ -247,7 +247,7 @@ class TestInstanceFromMeta:
         (root / "beetroot.yaml").write_text(
             "api_version: 3\nandroid:\n  version: 14\n"
         )
-        registry.add("alpha", root, 0)
+        registry.add_allocating("alpha", root)
         backend = registry.RedroidBackendConfig(absolute_path=str(root))
         inst = api.Instance.from_meta("alpha", backend)
         assert inst.root == root
