@@ -27,13 +27,13 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Self
 
 from beetroot import frida_download, ports, registry
 from beetroot.api import (
     AdbNotInstalledError,
-    BackendCapabilityError,
     FridaNotInstalledError,
     adb_device_health,
 )
@@ -128,8 +128,8 @@ class AdbDevice:
 
     @classmethod
     def from_meta(
-        cls, name: str, backend: registry.BackendConfig,
-    ) -> AdbDevice:
+        cls, name: str, backend: registry.BackendConfigBase,
+    ) -> Self:
         """
         Build an :class:`AdbDevice` from a registry meta's backend config.
 
@@ -140,27 +140,33 @@ class AdbDevice:
         instance with index ``N`` shares the Frida port a redroid
         instance with index ``N`` would have got.
 
+        Typing ``backend`` as :class:`~beetroot.registry.BackendConfigBase`
+        (the shared base) lets mypy verify the call site under strict mode
+        without requiring the old in-tree union.
+
         Args:
             name: Registry name.
-            backend: The matching :class:`registry.AdbBackendConfig`
-                row's backend field.
+            backend: The matching backend config.  Must be a
+                :class:`~beetroot.registry.AdbBackendConfig`.
 
         Returns:
             The hydrated :class:`AdbDevice`.
 
         Raises:
-            TypeError: If ``backend`` is not an
-                :class:`registry.AdbBackendConfig` (a registry shape
-                error caught by ``Manager.resolve`` upstream).
+            beetroot.api.InstanceNotFoundError: If ``backend`` is not an
+                :class:`~beetroot.registry.AdbBackendConfig`, or if the
+                registry row is missing.
         """
+        from beetroot.api import InstanceNotFoundError  # noqa: PLC0415  # avoid import cycle
+
         if not isinstance(backend, registry.AdbBackendConfig):
-            raise TypeError(
+            raise InstanceNotFoundError(
                 f"AdbDevice expected AdbBackendConfig, got "
                 f"{type(backend).__name__}",
             )
         meta = registry.get(name)
         if meta is None:
-            raise LookupError(
+            raise InstanceNotFoundError(
                 f"no instance named {name!r} in registry; "
                 "cannot derive host forward port",
             )
@@ -206,7 +212,7 @@ class AdbDevice:
         """
         return serial_is_available(self._config.serial)
 
-    def install_frida(self, version: str) -> None:
+    def install_frida(self, version: str | None = None) -> None:
         """
         Download the requested frida-server, push it, launch it, expose it.
 
@@ -222,11 +228,20 @@ class AdbDevice:
            localhost:<host_port>`` reaches the device's Frida socket.
 
         Args:
-            version: The frida release tag (e.g. ``16.4.10``).
+            version: The frida release tag (e.g. ``16.4.10``).  ``None``
+                is not supported for the adb backend — adb-adopted devices
+                have no ``beetroot.yaml`` to fall back to for a default
+                version.
 
         Raises:
+            ValueError: If ``version`` is ``None`` (no default for adb).
             AdbNotInstalledError: If the ``adb`` binary is not on PATH.
         """
+        if version is None:
+            raise ValueError(
+                "install_frida() requires an explicit version for the adb backend; "
+                "pass a frida release tag (e.g. install_frida('16.4.10'))."
+            )
         import shutil  # noqa: PLC0415  # local to avoid pulling shutil at module import
 
         if shutil.which(_ADB) is None:
@@ -273,7 +288,7 @@ class AdbDevice:
         )
         return int(res.returncode)
 
-    def frida_cli(self, args: list[str]) -> int:
+    def frida_cli(self, args: Sequence[str]) -> int:
         """
         Invoke the host ``frida`` CLI against this device.
 
@@ -355,52 +370,6 @@ class AdbDevice:
             f"Install via the Magisk app → Modules tab → Install from "
             f"storage; pick {remote}.",
             file=sys.stderr,
-        )
-
-    # ---- BackendCapability stubs (lifecycle verbs) ------------------------
-
-    def up(self) -> None:
-        """Raise :class:`BackendCapabilityError` — adb devices are always-on."""
-        raise BackendCapabilityError(
-            f"up is not supported for adb-backed instance {self._name!r}; "
-            "the device is managed outside Beetroot and is always on",
-        )
-
-    def down(self) -> None:
-        """Raise :class:`BackendCapabilityError` — adb devices are always-on."""
-        raise BackendCapabilityError(
-            f"down is not supported for adb-backed instance {self._name!r}; "
-            f"the device is managed outside Beetroot. "
-            f"Use `beetroot forget {self._name}` to deregister.",
-        )
-
-    def restart(self) -> None:
-        """Raise :class:`BackendCapabilityError` — adb devices are always-on."""
-        raise BackendCapabilityError(
-            f"restart is not supported for adb-backed instance "
-            f"{self._name!r}; reboot the device via `adb reboot` instead.",
-        )
-
-    def apply(self) -> None:
-        """Raise :class:`BackendCapabilityError` — adb instances have no yaml."""
-        raise BackendCapabilityError(
-            f"apply is not supported for adb-backed instance "
-            f"{self._name!r}; there is no beetroot.yaml to re-render.",
-        )
-
-    def destroy(self, *, yes: bool = False) -> None:  # noqa: ARG002  # ``yes`` mirrors Instance.destroy for verb parity
-        """Raise :class:`BackendCapabilityError` — adb instances live outside Beetroot."""
-        raise BackendCapabilityError(
-            f"destroy is not supported for adb-backed instance "
-            f"{self._name!r}; the device is managed outside Beetroot. "
-            f"Use `beetroot forget {self._name}` to deregister.",
-        )
-
-    def snapshot(self, dest: Path) -> Path:  # noqa: ARG002  # ``dest`` mirrors Instance.snapshot for verb parity
-        """Raise :class:`BackendCapabilityError` — no host-side state to pack."""
-        raise BackendCapabilityError(
-            f"snapshot is not supported for adb-backed instance "
-            f"{self._name!r}; there is no host-side directory to pack.",
         )
 
     # ---- health-check ----------------------------------------------------

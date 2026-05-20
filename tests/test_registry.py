@@ -21,10 +21,10 @@ def _make_instance(
     return root
 
 
-def _seed(base: Path, name: str, index: int, ports: Ports | None = None) -> Path:
-    """Create an instance dir and register it. Returns the path."""
+def _seed(base: Path, name: str, ports: Ports | None = None) -> Path:
+    """Create an instance dir and register it (auto-allocating index). Returns the path."""
     root = _make_instance(base, name, ports)
-    registry.add(name, root, index)
+    registry.add_allocating(name, root)
     return root
 
 
@@ -32,11 +32,11 @@ class TestRegistryAdd:
     def test_add_creates_registry(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 0)
+        _seed(tmp_path, "alpha")
         assert paths.user_registry_file().exists()
 
     def test_add_and_get(self, isolated_registry: Path, tmp_path: Path) -> None:
-        root = _seed(tmp_path, "alpha", 0)
+        root = _seed(tmp_path, "alpha")
         entry = registry.get("alpha")
         assert entry is not None
         assert entry.index == 0
@@ -46,7 +46,7 @@ class TestRegistryAdd:
     def test_add_stores_created_at(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 0)
+        _seed(tmp_path, "alpha")
         entry = registry.get("alpha")
         assert entry is not None
         assert entry.created_at is not None
@@ -54,15 +54,15 @@ class TestRegistryAdd:
     def test_add_duplicate_raises(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        root = _seed(tmp_path, "alpha", 0)
+        _seed(tmp_path, "alpha")
         with pytest.raises(ValueError, match="already in registry"):
-            registry.add("alpha", root, 1)
+            registry.add_allocating("alpha", tmp_path / "alpha")
 
     def test_add_multiple_instances(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 0)
-        _seed(tmp_path, "bravo", 1)
+        _seed(tmp_path, "alpha")
+        _seed(tmp_path, "bravo")
         alpha = registry.get("alpha")
         bravo = registry.get("bravo")
         assert alpha is not None
@@ -86,7 +86,7 @@ class TestInstancePath:
     def test_lookup_returns_path(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        root = _seed(tmp_path, "alpha", 0)
+        root = _seed(tmp_path, "alpha")
         assert registry.instance_path("alpha") == root
 
     def test_unknown_name_raises(self, isolated_registry: Path) -> None:
@@ -98,14 +98,14 @@ class TestRegistryRemove:
     def test_remove_deletes_entry(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 0)
+        _seed(tmp_path, "alpha")
         registry.remove("alpha")
         assert registry.get("alpha") is None
 
     def test_remove_nonexistent_is_noop(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 0)
+        _seed(tmp_path, "alpha")
         registry.remove("ghost")
         assert registry.get("alpha") is not None
 
@@ -122,15 +122,15 @@ class TestListInstances:
     def test_returns_all_added(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 0)
-        _seed(tmp_path, "bravo", 1)
+        _seed(tmp_path, "alpha")
+        _seed(tmp_path, "bravo")
         instances = registry.list_instances()
         assert set(instances.keys()) == {"alpha", "bravo"}
 
     def test_empty_after_remove_all(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 0)
+        _seed(tmp_path, "alpha")
         registry.remove("alpha")
         assert registry.list_instances() == {}
 
@@ -142,15 +142,15 @@ class TestUsedIndices:
     def test_returns_all_indices(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 0)
-        _seed(tmp_path, "bravo", 3)
-        assert registry.used_indices() == {0, 3}
+        _seed(tmp_path, "alpha")
+        _seed(tmp_path, "bravo")
+        assert registry.used_indices() == {0, 1}
 
     def test_freed_index_is_removed(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 0)
-        _seed(tmp_path, "bravo", 1)
+        _seed(tmp_path, "alpha")
+        _seed(tmp_path, "bravo")
         registry.remove("alpha")
         assert registry.used_indices() == {1}
 
@@ -164,7 +164,7 @@ class TestAllResolvedPorts:
     def test_single_instance_uses_stride_defaults(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 0)
+        _seed(tmp_path, "alpha")
         assert registry.all_resolved_ports() == {
             "alpha": {"adb": 5555, "frida": 27042, "frida_control": 27043},
         }
@@ -172,9 +172,9 @@ class TestAllResolvedPorts:
     def test_multiple_instances_each_their_own_ports(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 0)
-        _seed(tmp_path, "bravo", 1)
-        _seed(tmp_path, "charlie", 2)
+        _seed(tmp_path, "alpha")
+        _seed(tmp_path, "bravo")
+        _seed(tmp_path, "charlie")
         assert registry.all_resolved_ports() == {
             "alpha": {"adb": 5555, "frida": 27042, "frida_control": 27043},
             "bravo": {"adb": 5565, "frida": 27052, "frida_control": 27053},
@@ -184,7 +184,7 @@ class TestAllResolvedPorts:
     def test_override_wins_over_stride(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 0, Ports(adb=9000))
+        _seed(tmp_path, "alpha", Ports(adb=9000))
         result = registry.all_resolved_ports()
         assert result["alpha"]["adb"] == 9000
         assert result["alpha"]["frida"] == 27042
@@ -193,7 +193,11 @@ class TestAllResolvedPorts:
     def test_partial_override_only_replaces_named_field(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 2, Ports(frida_control=12345))
+        # Fill indices 0 and 1 first so "alpha" gets index 2 from the
+        # lowest-free allocator; index 2 maps to adb=5575, frida=27062.
+        _seed(tmp_path, "dummy0")
+        _seed(tmp_path, "dummy1")
+        _seed(tmp_path, "alpha", Ports(frida_control=12345))
         result = registry.all_resolved_ports()
         assert result["alpha"] == {"adb": 5575, "frida": 27062, "frida_control": 12345}
 
@@ -253,9 +257,11 @@ class TestRoundtrip:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         root = _make_instance(tmp_path, "alpha")
-        registry.add("alpha", root, 0)
+        # First allocation picks index 0 (lowest free).
+        registry.add_allocating("alpha", root)
         registry.remove("alpha")
-        registry.add("alpha", root, 0)
+        # After removal, index 0 is free again — re-allocation picks it.
+        registry.add_allocating("alpha", root)
         entry = registry.get("alpha")
         assert entry is not None
         assert entry.index == 0
@@ -263,11 +269,12 @@ class TestRoundtrip:
     def test_sequential_add_remove_add(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 0)
-        _seed(tmp_path, "bravo", 1)
+        # alpha→0, bravo→1; remove alpha frees 0; charlie picks 0 (lowest free).
+        _seed(tmp_path, "alpha")
+        _seed(tmp_path, "bravo")
         registry.remove("alpha")
-        _seed(tmp_path, "charlie", 2)
-        assert registry.used_indices() == {1, 2}
+        _seed(tmp_path, "charlie")
+        assert registry.used_indices() == {0, 1}
 
 
 class TestSchemaMigration:
@@ -326,7 +333,7 @@ class TestSchemaMigration:
         # disk, matching the v0.2 → v0.3 path.
         result = registry.list_instances()
         assert result == {}
-        registry.add("placeholder", Path("/tmp/placeholder"), 0)
+        registry.add_allocating("placeholder", Path("/tmp/placeholder"))
         registry.remove("placeholder")
 
         bak = path.with_suffix(path.suffix + ".bak")
@@ -371,7 +378,7 @@ class TestSchemaMigration:
     def test_v3_registry_loads_directly(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
-        _seed(tmp_path, "alpha", 0)
+        _seed(tmp_path, "alpha")
         # Subsequent reads must succeed without "migrating".
         assert "alpha" in registry.list_instances()
 
@@ -392,18 +399,8 @@ class TestSchemaMigration:
         assert bak.exists()
 
 
-class TestAddV04BackendForm:
-    """T5: ``add`` / ``add_allocating`` accept a ``backend=<BackendConfig>``."""
-
-    def test_add_with_adb_backend_kwarg(
-        self, isolated_registry: Path,
-    ) -> None:
-        cfg = registry.AdbBackendConfig(serial="emulator-5554")
-        registry.add("phone", index=0, backend=cfg)
-        meta = registry.get("phone")
-        assert meta is not None
-        assert isinstance(meta.backend, registry.AdbBackendConfig)
-        assert meta.backend.serial == "emulator-5554"
+class TestAddAllocatingBackendForms:
+    """``add_allocating`` accepts a ``backend=<BackendConfig>`` keyword arg."""
 
     def test_add_allocating_with_adb_backend_kwarg(
         self, isolated_registry: Path,
@@ -414,12 +411,7 @@ class TestAddV04BackendForm:
         meta = registry.get("phone")
         assert meta is not None
         assert isinstance(meta.backend, registry.AdbBackendConfig)
-
-    def test_add_without_any_args_raises(
-        self, isolated_registry: Path,
-    ) -> None:
-        with pytest.raises(ValueError, match="absolute_path"):
-            registry.add("orphan", index=0)
+        assert meta.backend.serial == "emulator-5554"
 
     def test_add_allocating_without_any_args_raises(
         self, isolated_registry: Path,

@@ -26,9 +26,9 @@ from beetroot.registry import (
 
 
 class TestRegistryFileRoundTrip:
-    """Both backend-config variants round-trip JSON identically."""
+    """Both backend-config variants round-trip through _write/_read identically."""
 
-    def test_redroid_variant_round_trip(self) -> None:
+    def test_redroid_variant_round_trip(self, tmp_path: Path) -> None:
         original = RegistryFile(
             instances={
                 "alpha": InstanceMeta(
@@ -41,15 +41,17 @@ class TestRegistryFileRoundTrip:
                 ),
             },
         )
-        # JSON round-trip is identity.
-        rebuilt = RegistryFile.model_validate_json(original.model_dump_json())
-        assert rebuilt == original
+        path = tmp_path / "instances.json"
+        # _write/_read is the canonical round-trip; pydantic's
+        # model_validate_json can't dispatch the open-union backend field.
+        registry._write(path, original)
+        rebuilt = registry._read(path)
         alpha = rebuilt.instances["alpha"]
         assert isinstance(alpha.backend, RedroidBackendConfig)
         assert alpha.backend.absolute_path == "/var/lib/beetroot/alpha"
         assert alpha.backend.stealth_paths == {"frida": "/data/local/tmp/x"}
 
-    def test_adb_variant_round_trip(self) -> None:
+    def test_adb_variant_round_trip(self, tmp_path: Path) -> None:
         original = RegistryFile(
             instances={
                 "phone": InstanceMeta(
@@ -59,14 +61,15 @@ class TestRegistryFileRoundTrip:
                 ),
             },
         )
-        rebuilt = RegistryFile.model_validate_json(original.model_dump_json())
-        assert rebuilt == original
+        path = tmp_path / "instances.json"
+        registry._write(path, original)
+        rebuilt = registry._read(path)
         phone = rebuilt.instances["phone"]
         assert isinstance(phone.backend, AdbBackendConfig)
         assert phone.backend.serial == "emulator-5554"
 
-    def test_mixed_variants_round_trip(self) -> None:
-        # The union holds heterogeneous values inside a single file —
+    def test_mixed_variants_round_trip(self, tmp_path: Path) -> None:
+        # The open registry holds heterogeneous values inside a single file —
         # exactly the v0.4 multi-backend story.
         original = RegistryFile(
             instances={
@@ -82,8 +85,9 @@ class TestRegistryFileRoundTrip:
                 ),
             },
         )
-        rebuilt = RegistryFile.model_validate_json(original.model_dump_json())
-        assert rebuilt == original
+        path = tmp_path / "instances.json"
+        registry._write(path, original)
+        rebuilt = registry._read(path)
         assert isinstance(
             rebuilt.instances["alpha"].backend, RedroidBackendConfig
         )
@@ -91,9 +95,11 @@ class TestRegistryFileRoundTrip:
             rebuilt.instances["phone"].backend, AdbBackendConfig
         )
 
-    def test_empty_round_trip(self) -> None:
+    def test_empty_round_trip(self, tmp_path: Path) -> None:
         original = RegistryFile()
-        rebuilt = RegistryFile.model_validate_json(original.model_dump_json())
+        path = tmp_path / "instances.json"
+        registry._write(path, original)
+        rebuilt = registry._read(path)
         assert rebuilt.instances == {}
         assert rebuilt.version == 3
 
@@ -227,15 +233,15 @@ class TestInstancePathBackendDispatch:
                 ),
             },
         )
-        path.write_text(doc.model_dump_json())
+        registry._write(path, doc)
         with pytest.raises(registry.RegistryError, match="adb"):
             registry.instance_path("phone")
 
 
-class TestAllResolvedPortsSkipsAdb:
-    """Adb-kind rows are not directory-backed and are skipped by port resolution."""
+class TestAllResolvedPortsIncludesAdb:
+    """Adb-kind rows are included in port resolution (B4 fix: prevents Frida collision)."""
 
-    def test_adb_row_is_skipped(self, isolated_registry: Path) -> None:
+    def test_adb_row_is_included(self, isolated_registry: Path) -> None:
         path = paths.user_registry_file()
         path.parent.mkdir(parents=True, exist_ok=True)
         doc = RegistryFile(
@@ -247,8 +253,13 @@ class TestAllResolvedPortsSkipsAdb:
                 ),
             },
         )
-        path.write_text(doc.model_dump_json())
-        assert registry.all_resolved_ports() == {}
+        registry._write(path, doc)
+        # B4 fix: adb-kind rows use stride-of-10 defaults (no yaml to
+        # consult) and ARE included so a redroid instance can't silently
+        # collide with an adopted device's Frida port.
+        assert registry.all_resolved_ports() == {
+            "phone": {"adb": 5555, "frida": 27042, "frida_control": 27043},
+        }
 
 
 def _write_mixed_registry(tmp_path: Path) -> Path:
@@ -280,7 +291,7 @@ def _write_mixed_registry(tmp_path: Path) -> Path:
             ),
         },
     )
-    path.write_text(doc.model_dump_json())
+    registry._write(path, doc)
     return redroid_root
 
 
@@ -321,7 +332,7 @@ class TestAdbRowsSkippedByConsumers:
         from beetroot import api
 
         _write_mixed_registry(tmp_path)
-        instances = api.Manager.list()
+        instances = api.Manager.list_instances()
         assert {i.name for i in instances} == {"alpha"}
 
     def test_instance_from_path_skips_adb(

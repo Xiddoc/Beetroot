@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -281,13 +282,13 @@ class TestModuleVerbThirdParty:
             def is_available(self) -> bool:
                 return True
 
-            def install_frida(self, version: str) -> None:
+            def install_frida(self, version: str | None = None) -> None:
                 del version
 
             def shell(self) -> int:
                 return 0
 
-            def frida_cli(self, args: list[str]) -> int:
+            def frida_cli(self, args: Sequence[str]) -> int:
                 del args
                 return 0
 
@@ -309,8 +310,8 @@ class TestModuleVerbThirdParty:
         )
         result = runner.invoke(cli.app, ["module", "fake-1", "/tmp/x.zip"])
         assert result.exit_code != 0
-        assert "does not" in result.stderr
-        assert "module" in result.stderr
+        assert isinstance(result.exception, api.BackendCapabilityError)
+        assert "module" in str(result.exception)
 
 
 class TestAdoptVerify:

@@ -410,20 +410,6 @@ class InstanceConfig(BaseModel):
             )
         return data
 
-    @property
-    def stealth(self) -> Magisk:
-        """
-        Compatibility shim: ``cfg.stealth`` returns ``cfg.magisk``.
-
-        ``api.py`` (owned by another branch) accesses ``cfg.stealth.denylist``
-        at runtime. The YAML-level ``stealth:`` key is still rejected at
-        load time by :meth:`_reject_stealth_key`, so users get a clear
-        migration error on bad YAMLs; the property only provides the
-        attribute access path for in-memory callers that were already
-        constructing ``InstanceConfig`` programmatically.
-        """
-        return self.magisk
-
     @model_validator(mode="after")
     def _check_api_version(self) -> Self:
         if self.api_version != SUPPORTED_API_VERSION:

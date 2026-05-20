@@ -1,8 +1,8 @@
 # Device Backends: Design Doc
 
-!!! success "Status: v0.4 implementation landed"
-    The `AdbDevice` backend (named `AdbDeviceBackend` in this doc's
-    original draft) shipped as part of v0.4 — see
+!!! success "Status: v0.6 backend-contract landed"
+    The `AdbDevice` backend shipped in v0.4 and the open-registry
+    extension hook shipped in v0.6 — see
     [§6 v0.4+ implementation roadmap](#6-v04-implementation-roadmap)
     for the per-PR status. Researchers wiring up a new backend should
     skip to [the Adding-a-backend guide](../guides/adding-a-backend.md)
@@ -52,6 +52,7 @@ the top-level package. It uses `@runtime_checkable` so callers can do
 test suite already exercises this against `Instance`).
 
 ```python
+from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 
@@ -60,6 +61,16 @@ class DeviceBackend(Protocol):
     """
     Abstraction for a Magisk-rooted Android device that Beetroot can drive.
     """
+
+    @property
+    def name(self) -> str:
+        """Return the registry name for this backend."""
+        ...
+
+    @property
+    def kind(self) -> str:
+        """Return the backend kind discriminator (e.g. ``"redroid"``)."""
+        ...
 
     @property
     def adb_address(self) -> str:
@@ -76,8 +87,16 @@ class DeviceBackend(Protocol):
         """Return True iff the backend is reachable right now."""
         ...
 
-    def install_frida(self, version: str) -> None:
+    def install_frida(self, version: str | None = None) -> None:
         """Make a frida-server of the requested version available on the device."""
+        ...
+
+    def shell(self) -> int:
+        """Open an interactive shell; return exit code."""
+        ...
+
+    def frida_cli(self, args: Sequence[str]) -> int:
+        """Invoke the host frida CLI against this backend; return exit code."""
         ...
 ```
 
@@ -269,22 +288,35 @@ shape.
   raise `BackendCapabilityError` for the adb backend — caught by
   `cli.main` and rendered as `error: ...` + exit code 2.
 
-After v0.4's PR5, `Manager.list()` returns redroid backends only (it's
-typed as `list[Instance]` and skips adb-kind rows), and the
+After v0.4's PR5, `Manager.list_instances()` returns all backends sorted
+by name (it was renamed from `Manager.list()` in v0.6 to reflect its
+expanded scope — it now includes all resolvable backend kinds), and the
 polymorphic walker is `Manager.resolve(name)` which dispatches via the
 backend registry to `DeviceBackend`-typed objects. Callers that need
-lifecycle methods narrow with `isinstance(b, Instance)` (or
-`isinstance(b, AdbDevice)` for adb-specific operations).
+lifecycle methods narrow with `isinstance(b, api.Lifecycle)` (or use
+`cli._require(b, api.Lifecycle, "up")` which raises
+`BackendCapabilityError` with a clear message).
 
-For writing a third-party backend (the v0.6 cloud-emulator scenario),
-the load-bearing recipe lives at
-[Adding a backend](../guides/adding-a-backend.md) — it walks through
-the pydantic `BackendConfig` subclass, the Protocol-satisfying class,
-and the `[project.entry-points."beetroot.backends"]` registration in
-~30 lines of code. v0.4 ships the in-process registration end-to-end;
-v0.6 will land the registry-side extension hook for the third-party
-JSON-discriminator round-trip (see the guide's "What works in v0.4 vs
-deferred to v0.6" section for the exact limitation).
+**v0.6 additions:**
+
+* **Open-union registry.** `BackendConfig` is now the open base class
+  `BackendConfigBase` (not a closed `Annotated[... | ...]` union). Third-party
+  backends call `registry.register_backend_config(CloudBackendConfig)` and
+  the JSON dispatcher recognises their `kind` value from that point on.
+* **Opaque row preservation.** Unknown `kind` values are wrapped in
+  `UnresolvedBackendConfig` rather than raising `ValidationError`. The raw
+  JSON is preserved verbatim so rows written by a plugin-bearing Beetroot
+  survive reads by a plugin-free one.
+* **Capability sub-protocols.** `Lifecycle`, `ModuleInstaller`,
+  `HealthCheckable`, and `Snapshottable` replace the old
+  `isinstance(b, Instance)` guard. `cli._require(b, cap, verb)` raises
+  `BackendCapabilityError` for backends that don't satisfy the sub-protocol,
+  giving a consistent `"<verb> not supported by <kind> backend"` message.
+* **`Manager.reset_for_testing()`.** Test-time helper that clears both
+  registries (backend class registry + backend config registry) for isolation.
+
+For writing a third-party backend, the step-by-step recipe lives at
+[Adding a backend](../guides/adding-a-backend.md).
 
 ## 7. Out of scope
 

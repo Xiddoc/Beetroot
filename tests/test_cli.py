@@ -104,7 +104,7 @@ class TestEnsureExists:
         assert exc.value.exit_code == 1
 
     def test_returns_none_when_instance_exists(self, cli_root: Path) -> None:
-        registry.add("alpha", cli_root / "alpha", 0)
+        registry.add_allocating("alpha", cli_root / "alpha")
         cli._ensure_exists("alpha")
 
 
@@ -118,8 +118,8 @@ class TestResolveNames:
         assert cli._resolve_names(["alpha", "bravo"], all_flag=False) == ["alpha", "bravo"]
 
     def test_all_returns_sorted_registry(self, cli_root: Path) -> None:
-        registry.add("bravo", cli_root / "bravo", 1)
-        registry.add("alpha", cli_root / "alpha", 0)
+        registry.add_allocating("bravo", cli_root / "bravo")
+        registry.add_allocating("alpha", cli_root / "alpha")
         assert cli._resolve_names([], all_flag=True) == ["alpha", "bravo"]
 
     def test_all_and_names_mutex(self, cli_root: Path) -> None:
@@ -174,7 +174,7 @@ class TestCmdCreate:
         assert (target / "beetroot.yaml").exists()
 
     def test_create_duplicate_exits(self, cli_root: Path) -> None:
-        registry.add("alpha", cli_root / "alpha", 0)
+        registry.add_allocating("alpha", cli_root / "alpha")
         result = runner.invoke(cli.app, ["create", "alpha"])
         assert result.exit_code == 1
         assert "already exists" in result.stderr
@@ -472,7 +472,7 @@ class TestCmdDestroy:
 
     def test_destroy_without_instance_dir(self, cli_root: Path) -> None:
         # Registry-only entry (path absent). Exercises the "if not exists" branch.
-        registry.add("alpha", cli_root / "alpha-missing", 0)
+        registry.add_allocating("alpha", cli_root / "alpha-missing")
         with _patched_subprocess():
             result = runner.invoke(cli.app, ["destroy", "alpha", "-y"])
         assert result.exit_code == 0, result.stderr
@@ -680,7 +680,9 @@ class TestCmdModule:
 
         def _resp(url: str, **kwargs: object) -> MagicMock:
             r = MagicMock()
-            r.read.return_value = b"PK\x03\x04zip"
+            # Return data on first read, then empty bytes to terminate the
+            # while-True loop in _fetch_url — return_value would loop forever.
+            r.read.side_effect = [b"PK\x03\x04zip", b""]
             r.__enter__ = lambda s: s
             r.__exit__ = MagicMock(return_value=False)
             return r

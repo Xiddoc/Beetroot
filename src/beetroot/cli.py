@@ -18,7 +18,7 @@ import shutil
 import sys
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 
@@ -70,82 +70,32 @@ def _load(name: str) -> api.Instance:
     return api.Instance.load(name)
 
 
-def _refuse_destroy_for_adb_kind(name: str) -> None:
+def _require(backend: api.DeviceBackend, cap: type, verb: str) -> object:
     """
-    Raise ``BackendCapabilityError`` if ``name``'s registry kind is not redroid.
+    Return ``backend`` narrowed to ``cap``, or raise :class:`api.BackendCapabilityError`.
 
-    Uses the registry meta directly rather than ``Manager.resolve`` so
-    orphan rows (redroid kind, missing on-disk yaml) still flow through
-    the v0.3 orphan-destroy path. Adb-kind rows surface a friendly
-    error pointing at the ``beetroot forget`` verb.
-    """
-    meta = registry.get(name)
-    if meta is None:  # pragma: no cover  # ``_ensure_exists`` ran upstream; defensive net only
-        return
-    if isinstance(meta.backend, registry.RedroidBackendConfig):
-        return
-    raise api.BackendCapabilityError(
-        f"destroy is not supported for {meta.backend.kind!r}-backed "
-        f"instance {name!r}; use the ``beetroot forget`` verb to "
-        "deregister an adopted device.",
-    )
-
-
-def _resolve_redroid_for_backend(
-    backend: api.DeviceBackend, *, verb: str,
-) -> api.Instance:
-    """
-    Narrow ``backend`` to :class:`api.Instance` or raise capability error.
-
-    Pulled out of :func:`_resolve_redroid` so the synthetic
-    third-backend test (``tests/test_backend_extension.py``) can
-    exercise the redroid-narrow guard without first constructing a
-    registry row through the in-tree discriminated union.
+    This is the single gate through which all capability-gated verbs
+    pass — instead of ``isinstance(b, api.Instance)`` scattered across
+    every verb, every verb calls ``_require(backend, Lifecycle, "up")``
+    and the error message is automatically correct for any backend kind.
 
     Args:
         backend: The resolved backend.
+        cap: The capability sub-protocol class (e.g. :class:`api.Lifecycle`).
         verb: The verb name (used in the error message).
 
     Returns:
-        The narrowed :class:`api.Instance`.
+        ``backend`` narrowed to ``cap`` so callers can call cap methods directly.
 
     Raises:
-        api.BackendCapabilityError: If ``backend`` is not an
-            :class:`api.Instance`.
+        api.BackendCapabilityError: If ``backend`` does not satisfy ``cap``.
     """
-    if isinstance(backend, api.Instance):
+    if isinstance(backend, cap):
         return backend
     raise api.BackendCapabilityError(
-        f"{verb} is not supported for {backend.kind!r}-backed instance "
-        f"{backend.name!r}; only redroid-backed instances expose the "
-        f"compose-driven lifecycle.",
+        f"{verb!r} is not supported by the {backend.kind!r} backend "
+        f"for instance {backend.name!r}."
     )
-
-
-def _resolve_redroid(name: str, *, verb: str) -> api.Instance:
-    """
-    Resolve a registry name to an :class:`api.Instance` or raise capability error.
-
-    Used by the lifecycle verbs (``up``, ``down``, ``restart``,
-    ``apply``, ``destroy``, ``snapshot``) — those only make sense for
-    a managed container, so a non-redroid backend surfaces a friendly
-    ``BackendCapabilityError`` rather than running compose-flavoured
-    glue against an adb-adopted device. ``cli.main`` catches the
-    error and exits with code 2 (distinct from "instance not found"
-    → 1) so scripts can distinguish.
-
-    Args:
-        name: Registry name to resolve.
-        verb: The verb name (used in the error message).
-
-    Returns:
-        The hydrated :class:`api.Instance`.
-
-    Raises:
-        api.BackendCapabilityError: If the resolved backend is not an
-            :class:`api.Instance`.
-    """
-    return _resolve_redroid_for_backend(api.Manager.resolve(name), verb=verb)
 
 
 def _resolve_names(names: list[str], all_flag: bool) -> list[str]:
@@ -363,9 +313,10 @@ def apply(
 ) -> None:
     """Re-render ``.env`` and re-stage files from the instance's beetroot.yaml."""
     _ensure_exists(name)
-    inst = _resolve_redroid(name, verb="apply")
+    backend = api.Manager.resolve(name)
+    lc = cast(api.Lifecycle, _require(backend, api.Lifecycle, "apply"))
     try:
-        inst.apply()
+        lc.apply()
     except ValueError as e:
         raise _error(str(e)) from e
     typer.echo(f"[beetroot] re-staged {name} from beetroot.yaml")
@@ -403,13 +354,17 @@ def up(
         )
     for instance_name in _resolve_names(list(names or []), all_):
         _ensure_exists(instance_name)
-        inst = _resolve_redroid(instance_name, verb="up")
-        inst.up()
-        p = inst.ports
-        typer.echo(
-            f"[beetroot] {inst.name} up — "
-            f"ADB localhost:{p['adb']}, Frida localhost:{p['frida']}"
-        )
+        backend = api.Manager.resolve(instance_name)
+        lc = cast(api.Lifecycle, _require(backend, api.Lifecycle, "up"))
+        lc.up()
+        if isinstance(backend, api.Instance):
+            p = backend.ports
+            typer.echo(
+                f"[beetroot] {backend.name} up — "
+                f"ADB localhost:{p['adb']}, Frida localhost:{p['frida']}"
+            )
+        else:
+            typer.echo(f"[beetroot] {instance_name} up")
 
 
 @app.command()
@@ -426,7 +381,8 @@ def down(
     """Stop one or more instances, preserving data."""
     for instance_name in _resolve_names(list(names or []), all_):
         _ensure_exists(instance_name)
-        _resolve_redroid(instance_name, verb="down").down()
+        backend = api.Manager.resolve(instance_name)
+        cast(api.Lifecycle, _require(backend, api.Lifecycle, "down")).down()
         typer.echo(f"[beetroot] {instance_name} down (data preserved)")
 
 
@@ -444,7 +400,8 @@ def restart(
     """Stop then start one or more instances."""
     for instance_name in _resolve_names(list(names or []), all_):
         _ensure_exists(instance_name)
-        _resolve_redroid(instance_name, verb="restart").restart()
+        backend = api.Manager.resolve(instance_name)
+        cast(api.Lifecycle, _require(backend, api.Lifecycle, "restart")).restart()
         typer.echo(f"[beetroot] {instance_name} restarted")
 
 
@@ -458,13 +415,48 @@ def destroy(
 ) -> None:
     """Stop and permanently delete an instance including its data directory."""
     _ensure_exists(name)
-    # Check the backend kind via the registry row directly (cheaper
-    # than ``Manager.resolve``, and works for orphans whose on-disk
-    # yaml has been ``rm -rf``'d — ``Manager.resolve`` would otherwise
-    # fail to construct the redroid ``Instance`` for orphans). Adb-
-    # kind rows surface a friendly BackendCapabilityError (exit 2);
-    # redroid rows fall through to the v0.3 destroy path.
-    _refuse_destroy_for_adb_kind(name)
+    # Try resolving the backend first so we can gate on the Lifecycle
+    # sub-protocol. If resolution fails with InstanceNotFoundError AND
+    # the registry row is redroid-kind (orphan: yaml gone), fall through
+    # to the registry-meta-based orphan cleanup. Non-redroid rows that
+    # lack the Lifecycle capability get a BackendCapabilityError (exit 2),
+    # pointing the user at `beetroot forget`.
+    try:
+        backend = api.Manager.resolve(name)
+        lc = cast(api.Lifecycle, _require(backend, api.Lifecycle, "destroy"))
+        try:
+            lc.destroy(yes=yes)
+        except compose.ComposeError as e:
+            # compose.down failed but host-side teardown (registry row +
+            # directory) already ran inside Instance.destroy. Surface as
+            # advisory so the user knows cleanup still happened.
+            typer.echo(f"[beetroot] (compose down failed: {e}; continuing)")
+        except RuntimeError as e:
+            # User declined the interactive confirmation — friendly abort,
+            # not an error. Instance.destroy raises RuntimeError("destroy
+            # aborted by user") when the user types anything other than "y".
+            typer.echo(f"[beetroot] {e}")
+            return
+        typer.echo(f"[beetroot] destroyed {name}")
+        return
+    except api.InstanceNotFoundError:
+        pass  # fall through to orphan-cleanup path below
+
+    # Orphan path: redroid row whose beetroot.yaml is gone. ``Manager.resolve``
+    # raises InstanceNotFoundError for these because Instance.load() trips
+    # on the missing yaml. We check the registry kind here: non-redroid
+    # orphans (shouldn't exist, but be safe) just get the registry row
+    # removed; redroid orphans also run the compose/dir cleanup.
+    meta = registry.get(name)
+    if meta is None:  # pragma: no cover  # _ensure_exists ran upstream; defensive net
+        raise _error(f"no instance named {name!r}. Try `beetroot ls`.")
+    if not isinstance(meta.backend, registry.RedroidBackendConfig):
+        # A non-redroid row that Manager.resolve couldn't build — surface
+        # a helpful error pointing at `beetroot forget`.
+        raise api.BackendCapabilityError(
+            f"'destroy' is not supported by the {meta.backend.kind!r} backend "
+            f"for instance {name!r}."
+        )
     root = registry.instance_path(name)
     if not yes:
         ans = input(f"Destroy {name} and delete {root}? [y/N] ").strip().lower()
@@ -517,7 +509,7 @@ def ls(
     ] = False,
 ) -> None:
     """List all registered instances with their ports and live status."""
-    instances = api.Manager.list()
+    instances = api.Manager.list_instances()
     orphans = api.Manager.list_orphans()
     if json_out:
         out = {inst.name: _instance_json_row(inst) for inst in instances}
@@ -607,7 +599,7 @@ def _adb_json_row(
     Build the per-instance JSON row for an adb-kind registry entry.
 
     Spec'd shape (T6): include ``serial``; OMIT redroid-only fields
-    (``absolute_path``, ``ports.frida2``, container ``status``). Uses
+    (``absolute_path``, container ``status``). Uses
     ``is_available`` instead of ``status`` because there's no compose
     project to query.
     """
@@ -644,7 +636,9 @@ def logs(
 ) -> None:
     """Tail container logs for an instance."""
     _ensure_exists(name)
-    _resolve_redroid(name, verb="logs").logs(follow=follow)
+    backend = api.Manager.resolve(name)
+    inst = cast(api.Instance, _require(backend, api.Instance, "logs"))
+    inst.logs(follow=follow)
 
 
 @app.command()
@@ -767,14 +761,9 @@ def doctor(
     ``skip`` rows do not count toward the exit code.
     """
     _ensure_exists(name)
-    meta = registry.get(name)
-    if meta is None:  # pragma: no cover
-        raise _error(f"no instance named {name!r}")
-    if isinstance(meta.backend, registry.AdbBackendConfig):
-        backend_obj = api.Manager.resolve(name)
-        results = api.adb_device_health(backend_obj)
-    else:
-        results = _load(name).health()
+    backend = api.Manager.resolve(name)
+    hc = cast(api.HealthCheckable, _require(backend, api.HealthCheckable, "doctor"))
+    results = hc.health()
     fail_count = 0
     for check_name, result in results.items():
         if result.status == "pass":
@@ -835,29 +824,15 @@ def module(
     """Append a module to beetroot.yaml and re-stage. Caller restarts."""
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
+    installer = cast(api.ModuleInstaller, _require(backend, api.ModuleInstaller, "module"))
+    installer.add_module(source, sha256=sha256)
     if isinstance(backend, api.Instance):
-        # Redroid backend: append to beetroot.yaml + re-stage via the
-        # OOP API. The .yaml mutation is what makes the module survive
-        # the next ``up``.
-        backend.add_module(source, sha256=sha256)
         typer.echo(f"[beetroot] added module → {paths.instance_yaml(backend.root)}")
         typer.echo(
             f"[beetroot] restart to flash: beetroot down {name} && beetroot up {name}"
         )
-        return
-    if isinstance(backend, adb_backend.AdbDevice):
-        backend.add_module(source, sha256=sha256)
+    else:
         typer.echo(f"[beetroot] module pushed to {name}")
-        return
-    # Third-party backends without ``add_module`` get a friendly error
-    # rather than a bare AttributeError. The verb is optional on the
-    # backend Protocol; third-party packages can wire their own
-    # equivalent (or just not support it).
-    raise _error(
-        f"backend {name!r} (kind={backend.kind!r}) does not "
-        "support `beetroot module`. The verb is optional on the "
-        "backend Protocol.",
-    )
 
 
 @app.command(name="setup", hidden=True)
@@ -907,10 +882,11 @@ def snapshot(
 ) -> None:
     """Pack an instance's host-side state into a ``.tar.zst`` archive."""
     _ensure_exists(name)
-    inst = _resolve_redroid(name, verb="snapshot")
+    backend = api.Manager.resolve(name)
+    snappable = cast(api.Snapshottable, _require(backend, api.Snapshottable, "snapshot"))
     dest = output if output is not None else Path(f"{name}.tar.zst")
     try:
-        final = inst.snapshot(dest)
+        final = snappable.snapshot(dest)
     except snapshot_mod.SnapshotError as e:
         raise _error(str(e)) from e
     typer.echo(f"[beetroot] snapshot of {name} → {final}")
@@ -981,6 +957,13 @@ def main() -> None:
         # backend-typed exit codes; the rest stay 1 for source compat.
         typer.echo(f"error: {e}", err=True)
         sys.exit(2)
+    except api.InstanceNotFoundError as e:
+        # Manager.resolve raises InstanceNotFoundError for unknown names
+        # and for unresolvable backend kinds (e.g. package not installed).
+        # v0.4 let these propagate as tracebacks; v0.6 catches them for
+        # a friendly error: ... line + exit 1.
+        typer.echo(f"error: {e}", err=True)
+        sys.exit(1)
     except paths.InstanceRootNotFoundError as e:
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)

@@ -50,11 +50,12 @@ looking at a separate tool.
 
 ## 2. The `DeviceBackend` Protocol surface
 
-Every backend must implement these eight members. The Protocol is
+Every backend must implement these nine members. The Protocol is
 `@runtime_checkable`, so `isinstance(your_backend, DeviceBackend)` is
 a meaningful test (and the synthetic third-backend test asserts it).
 
 ```python
+from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 from beetroot import registry
@@ -88,7 +89,7 @@ class DeviceBackend(Protocol):
         """Return True iff the backend is reachable right now."""
         ...
 
-    def install_frida(self, version: str) -> None:
+    def install_frida(self, version: str | None = None) -> None:
         """Make a frida-server of the requested version available."""
         ...
 
@@ -96,13 +97,13 @@ class DeviceBackend(Protocol):
         """Open an interactive shell into the device; return exit code."""
         ...
 
-    def frida_cli(self, args: list[str]) -> int:
+    def frida_cli(self, args: Sequence[str]) -> int:
         """Invoke the host frida CLI against this backend; return exit code."""
         ...
 
     @classmethod
     def from_meta(
-        cls, name: str, backend: registry.BackendConfig,
+        cls, name: str, backend: registry.BackendConfigBase,
     ) -> "DeviceBackend":
         """Construct a backend from a registry meta's backend config."""
         ...
@@ -115,10 +116,10 @@ Three details that often surprise first-time backend authors:
   Protocol.
 * **`from_meta` is a classmethod ON the Protocol.** The backend
   registry's dispatcher (`Manager.resolve`) calls it. The argument is
-  typed `registry.BackendConfig` (the in-tree discriminated union),
-  but third-party backends typically narrow the parameter to their
-  own pydantic model via `isinstance` + `TypeError` — see the
-  `CloudBackend` example below.
+  typed `registry.BackendConfigBase` (the open-union base class), and
+  third-party backends narrow the parameter to their own pydantic model
+  via `isinstance` inside the body — see the `CloudBackend` example
+  below.
 * **Verbs that don't generalise (lifecycle: `up` / `down` /
   `apply` / `destroy` / `snapshot`) are NOT on the Protocol.** Third-
   party backends don't need to implement them. The CLI narrows via
@@ -164,7 +165,10 @@ your real transport is.
 
 ```python
 import subprocess
+from collections.abc import Sequence
+
 from beetroot import frida_download
+from beetroot.registry import BackendConfigBase
 
 
 class CloudBackend:
@@ -175,13 +179,15 @@ class CloudBackend:
         self._config = config
 
     @classmethod
-    def from_meta(cls, name: str, backend: object) -> "CloudBackend":
-        # ``backend`` is typed ``object`` because the in-tree
-        # discriminated union doesn't include third-party arms — the
-        # third-party model validates against its own pydantic class,
-        # so we duck-type-narrow here. Raise ``TypeError`` (not
-        # ``ValueError``) so the registry dispatcher's error path is
-        # distinguishable from a missing-name error.
+    def from_meta(cls, name: str, backend: BackendConfigBase) -> "CloudBackend":
+        # ``backend`` arrives as ``BackendConfigBase``; narrow to our own
+        # config class so mypy strict is satisfied without resorting to
+        # the ``object`` workaround that was needed before v0.6.  The
+        # registry dispatcher already validated the raw JSON against
+        # CloudBackendConfig (because we called register_backend_config),
+        # so this isinstance is defence-in-depth.  Raise ``TypeError``
+        # (not ``ValueError``) so the error path is distinguishable from
+        # a missing-name error.
         if not isinstance(backend, CloudBackendConfig):
             raise TypeError(
                 f"CloudBackend expected CloudBackendConfig, got "
@@ -215,7 +221,7 @@ class CloudBackend:
         )
         return res.returncode == 0
 
-    def install_frida(self, version: str) -> None:
+    def install_frida(self, version: str | None = None) -> None:
         cached = frida_download.download(version)
         subprocess.run(
             ["cloud-cli", "push", str(cached), "--to", "/data/local/tmp/frida-server"],
@@ -233,7 +239,7 @@ class CloudBackend:
             check=False,
         ).returncode
 
-    def frida_cli(self, args: list[str]) -> int:
+    def frida_cli(self, args: Sequence[str]) -> int:
         return subprocess.run(
             ["frida", "-H", self.frida_address, *args],
             check=False,
@@ -246,9 +252,9 @@ docstrings you'll want to add). Three things to notice:
 1. **The class doesn't inherit from anything.** The Protocol is
    structural; satisfying its surface is enough.
 2. **No lifecycle methods.** If you call `beetroot up <cloud-name>`,
-   `cli._resolve_redroid_for_backend` raises
-   `BackendCapabilityError("up not supported by cloud-xyz backend")`
-   and `cli.main` exits with code 2.
+   `cli._require` gates the verb on the `Lifecycle` sub-protocol and
+   raises `BackendCapabilityError("up not supported by cloud-xyz backend")`
+   (exit code 2) because `CloudBackend` doesn't implement `Lifecycle`.
 3. **No registry mutation.** The backend reads its own config and
    talks to the remote service; it never writes to the registry.
    Registry rows are created by `beetroot adopt`-equivalent verbs
@@ -284,61 +290,54 @@ backends.register_backend("cloud-xyz", CloudBackend)
 The two paths are equivalent at runtime — they both populate the
 same `_BACKEND_REGISTRY` dict that `Manager.resolve` looks up.
 
-## 6. What works in v0.4 vs deferred to v0.6
+## 6. What works now (v0.6)
 
-This split matters for anyone planning to ship a third-party backend
-against v0.4.
+All three tiers of the backend contract are fully operational as of v0.6.
 
-**Works now (v0.4):**
+**In-process registration:**
 
-* In-process `register_backend("cloud-xyz", CloudBackend)` — the
-  class is registered, `Manager.resolve(name)` dispatches via the
-  lookup table, and the CLI verbs that go through the Protocol
-  (`shell`, `frida`, `env`, `status`, `doctor`) work uniformly via
-  `Manager.resolve(name).shell()` etc.
-* Entry-point registration via
-  `[project.entry-points."beetroot.backends"]` — the lazy loader in
-  `backends._load_entry_point_backends` discovers and registers
-  every entry-point in the group on first lookup.
-* The backend's own pydantic config round-trips through JSON via
-  plain `model_dump_json` / `model_validate_json` (the third-party
-  class owns the schema).
+```python
+from beetroot import backends
 
-**Deferred to v0.6: third-party `kind` values round-tripping through
-`RegistryFile` JSON validation.**
+backends.register_backend("cloud-xyz", CloudBackend)
+```
 
-v0.4's `RegistryFile` validates the full registry document through
-the in-tree `BackendConfig = Annotated[RedroidBackendConfig |
-AdbBackendConfig, Field(discriminator="kind")]` union. A third-party
-`kind` value in a saved registry row (`backend.kind: "cloud-xyz"`)
-currently raises `ValidationError` on the next `_read`. **This means
-in v0.4, a third-party backend can be used in-process but its
-registry rows can't survive a Beetroot restart.**
+The class is registered, `Manager.resolve(name)` dispatches via the
+lookup table, and every Protocol-driven CLI verb (`shell`, `frida`,
+`env`, `status`, `doctor`) works via `Manager.resolve(name).shell()`.
 
-Concrete workarounds for v0.4:
+**Entry-point registration:**
 
-* **Re-register on each Beetroot invocation** from a startup-time
-  side script that calls `register_backend(...)` and then
-  `registry.add_allocating(...)` against a fresh registry.
-* **Carry the registry shape externally** — your backend package can
-  read its own per-instance state from its own config file and only
-  use Beetroot's registry as a name-to-port-index allocator.
+The lazy loader in `backends._load_entry_point_backends` discovers
+and registers every entry-point in the
+`[project.entry-points."beetroot.backends"]` group on first lookup.
 
-**v0.6 plan:** add a registry-side extension hook so third-party
-`BackendConfig` subclasses can be registered for JSON discrimination.
-The expected shape is something like:
+**Registry JSON round-trip:**
+
+v0.6 adds `register_backend_config` to extend the open-union
+JSON dispatcher so third-party `kind` values survive a Beetroot
+restart:
 
 ```python
 from beetroot import registry
 
 registry.register_backend_config(CloudBackendConfig)
-# After this, RegistryFile JSON validation accepts kind: "cloud-xyz"
+# After this, RegistryFile JSON reads kind: "cloud-xyz"
 # rows and validates them against CloudBackendConfig.
 ```
 
-— but the exact API will be settled when v0.6 ships. Until then,
-the v0.4 recipe is "in-process Protocol dispatch works, on-disk
-round-trip needs to wait or be worked around".
+Call `register_backend_config` at the same time as
+`register_backend` — typically in your package's entry-point loader or
+in a `beetroot_plugin_init()` callable (if you want lazy setup).
+
+**Unknown-kind rows are preserved opaquely.** If a registry row has a
+`kind` that no loaded backend recognises, v0.6 wraps it in an
+`UnresolvedBackendConfig` and preserves the raw JSON verbatim. This
+means a registry written by a newer Beetroot (with more backend
+plugins) can be read by an older one without data loss. The row is
+skipped by `Manager.list_instances()` and raises
+`InstanceNotFoundError` on `Manager.resolve()` — a clear signal
+rather than a silent drop.
 
 ## 7. Test your backend
 
@@ -385,7 +384,7 @@ class TestCloudBackendStandalone:
 
     @pytest.mark.usefixtures("_cloud_registered")
     def test_lifecycle_verb_raises_capability_error(self) -> None:
-        from beetroot import cli
+        from beetroot import cli, api as bapi
 
         b = CloudBackend(
             "lab-1",
@@ -395,7 +394,7 @@ class TestCloudBackendStandalone:
             ),
         )
         with pytest.raises(api.BackendCapabilityError, match="up"):
-            cli._resolve_redroid_for_backend(b, verb="up")
+            cli._require(b, bapi.Lifecycle, "up")
 ```
 
 Three assertions are enough to grade the contract:

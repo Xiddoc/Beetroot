@@ -82,25 +82,24 @@ class TestIsinstanceNarrowing:
 
 
 class TestLifecycleCapability:
-    def test_adb_up_raises_capability_error(
+    def test_adb_does_not_satisfy_lifecycle(
         self, _two_instances: tuple[str, str]  # noqa: PT019
     ) -> None:
         _, adb_name = _two_instances
         backend = api.Manager.resolve(adb_name)
         assert isinstance(backend, adb_backend.AdbDevice)
-        with pytest.raises(api.BackendCapabilityError, match="up"):
-            backend.up()
+        assert not isinstance(backend, api.Lifecycle)
 
-    @pytest.mark.parametrize(
-        "method", ["down", "restart", "apply"],
-    )
-    def test_adb_lifecycle_methods_raise(
-        self,
-        _two_instances: tuple[str, str],  # noqa: PT019
-        method: str,
+    def test_redroid_satisfies_lifecycle(
+        self, _two_instances: tuple[str, str]  # noqa: PT019
+    ) -> None:
+        redroid_name, _ = _two_instances
+        backend = api.Manager.resolve(redroid_name)
+        assert isinstance(backend, api.Lifecycle)
+
+    def test_adb_does_not_satisfy_snapshottable(
+        self, _two_instances: tuple[str, str]  # noqa: PT019
     ) -> None:
         _, adb_name = _two_instances
         backend = api.Manager.resolve(adb_name)
-        assert isinstance(backend, adb_backend.AdbDevice)
-        with pytest.raises(api.BackendCapabilityError):
-            getattr(backend, method)()
+        assert not isinstance(backend, api.Snapshottable)

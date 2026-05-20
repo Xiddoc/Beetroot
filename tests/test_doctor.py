@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
@@ -183,13 +184,13 @@ class TestDoctorAdb:
             def is_available(self) -> bool:
                 return True
 
-            def install_frida(self, version: str) -> None:
+            def install_frida(self, version: str | None = None) -> None:
                 del version
 
             def shell(self) -> int:
                 return 0
 
-            def frida_cli(self, args: list[str]) -> int:
+            def frida_cli(self, args: Sequence[str]) -> int:
                 del args
                 return 0
 

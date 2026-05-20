@@ -39,23 +39,14 @@ import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Final, Literal, Protocol, runtime_checkable
+from typing import Final, Literal, Protocol, Self, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
 from . import compose, config, frida_download, modules_download, paths, ports, registry
 from . import snapshot as _snapshot_mod
-
-# Module-level alias for the builtin ``list`` so the two ``list*``
-# staticmethods on :class:`Manager` below can use ``_List[...]`` in
-# their return annotations. Without the alias, mypy lexically
-# resolves ``list[...]`` inside the class body to the
-# ``Manager.list`` staticmethod (which doesn't subscript). Using a
-# different identifier keeps the call sites readable while sidestepping
-# the shadowing.
-_List = list
 
 _MINIMAL_BEETROOT_YAML = "api_version: 3\nandroid:\n  version: 14\n"
 
@@ -122,42 +113,36 @@ class BackendCapabilityError(RuntimeError):
     """
     Raised when a :class:`DeviceBackend` can't honour a requested operation.
 
-    Backends only expose the universal surface (shell, frida_cli,
-    install_frida, presence). Verbs that need backend-specific behaviour
-    (``up``, ``down``, ``apply``, ``snapshot``, …) narrow with
-    ``isinstance(b, Instance)`` and raise this error if the backend
-    isn't capable. The CLI catches it and renders a friendly
-    ``error: ...`` line.
+    The CLI gate :func:`beetroot.cli._require` raises this when a verb
+    targets a backend that doesn't implement the required capability
+    sub-protocol. The CLI catches it and renders a friendly
+    ``error: ...`` line with ``exit 2``.
     """
 
 
 @runtime_checkable
 class DeviceBackend(Protocol):
     """
-    Abstraction for a Magisk-rooted Android device that Beetroot can drive.
+    Base abstraction for a Magisk-rooted Android device that Beetroot can drive.
 
-    v0.3 ships a single implicit backend: a Redroid container managed via
-    ``docker compose`` (the entire :class:`Instance` class). v0.4
-    introduces ``AdbDevice`` (T5) targeting a real rooted phone over
-    ADB; see ``docs/design/device-backends.md`` for the implementation
-    roadmap.
+    Every backend satisfies this Protocol: enough to identify the backend,
+    attach Frida, look up the canonical addresses, check reachability, and
+    dispatch the two universal user-facing operations (``shell`` and
+    ``frida_cli``).
 
-    This Protocol is the lowest-common-denominator surface every backend
-    exposes: enough to identify the backend, attach Frida, look up the
-    canonical addresses, check reachability, and dispatch the two
-    universal user-facing operations (``shell`` and ``frida_cli``).
-    Operations that don't generalise across backends (compose-layer
-    routines like ``up`` / ``down``, Magisk-DB stealth writes, container
-    overlay manipulation) are kept off the Protocol on purpose —
-    callers narrow via ``isinstance(b, Instance)`` and raise
-    :class:`BackendCapabilityError` from the offending verb if the
-    backend isn't capable.
+    Capability sub-protocols (:class:`Lifecycle`, :class:`ModuleInstaller`,
+    :class:`HealthCheckable`, :class:`Snapshottable`) are **opt-in** — a
+    backend gains a capability by implementing the methods.  The CLI gates on
+    ``isinstance(backend, <CapabilityProtocol>)`` via :func:`beetroot.cli._require`
+    rather than ``isinstance(b, Instance)`` so third-party backends are
+    first-class citizens.
 
-    The ``kind`` property is intentionally typed as :class:`str` (not a
-    ``Literal[...]``) so third-party backends that register via
-    ``[project.entry-points."beetroot.backends"]`` can declare their
-    own discriminator strings (``"cloud-xyz"``, …) without forking this
-    Protocol.
+    The ``kind`` property is typed as :class:`str` (not ``Literal[...]``) so
+    third-party backends can declare their own discriminator strings without
+    forking this Protocol.
+
+    ``from_meta`` returns :class:`~typing.Self` so mypy can prove structural
+    conformance for each concrete subclass.
     """
 
     @property
@@ -170,8 +155,8 @@ class DeviceBackend(Protocol):
         """
         Return the backend kind discriminator (``"redroid"``, ``"adb"``, …).
 
-        Mirrors the ``kind`` field of the matching :class:`BackendConfig`
-        subclass and so participates in the registry's discriminated union.
+        Mirrors the ``kind`` field of the matching
+        :class:`~beetroot.registry.BackendConfigBase` subclass.
         """
         ...
 
@@ -190,12 +175,15 @@ class DeviceBackend(Protocol):
         """Return True iff the backend is reachable right now (no install/start required)."""
         ...
 
-    def install_frida(self, version: str) -> None:
+    def install_frida(self, version: str | None = None) -> None:
         """
-        Make a frida-server of the requested version available on the device.
+        Make a frida-server available on the device.
 
         Args:
-            version: The frida release tag (e.g. ``16.4.10``).
+            version: The frida release tag (e.g. ``16.4.10``).  ``None``
+                means "use the backend's default version".  Backends that
+                have no meaningful default (e.g. :class:`AdbDevice`) raise
+                :class:`ValueError` when ``version`` is ``None``.
         """
         ...
 
@@ -203,30 +191,130 @@ class DeviceBackend(Protocol):
         """Open an interactive shell into the device; return the subprocess exit code."""
         ...
 
-    def frida_cli(self, args: list[str]) -> int:
+    def frida_cli(self, args: Sequence[str]) -> int:
         """Invoke the host ``frida`` CLI against this backend; return the exit code."""
         ...
 
     @classmethod
     def from_meta(
-        cls, name: str, backend: registry.BackendConfig,
-    ) -> DeviceBackend:
+        cls, name: str, backend: registry.BackendConfigBase,
+    ) -> Self:
         """
         Construct a backend instance from a registry meta's backend config.
 
         Used by :meth:`Manager.resolve` to dispatch via the backend
-        registry. The classmethod is part of the Protocol so static
-        type-checkers can verify third-party backends expose the
-        dispatcher contract.
+        registry.  Typing ``backend`` as :class:`~beetroot.registry.BackendConfigBase`
+        (not the old in-tree union) lets a third-party ``from_meta``
+        ``isinstance``-narrow to its own config under mypy strict.
 
         Args:
             name: Registry name for the backend.
-            backend: The matching :class:`registry.BackendConfig` row's
-                backend field — narrowed to the concrete subclass that
-                this backend kind owns.
+            backend: The matching registry backend config row — the
+                concrete subclass this backend kind owns.
 
         Returns:
             A constructed backend instance satisfying this Protocol.
+        """
+        ...
+
+
+@runtime_checkable
+class Lifecycle(Protocol):
+    """
+    Capability sub-protocol: backends that manage a container or process lifecycle.
+
+    Backends implement this to gain ``up`` / ``down`` / ``restart`` /
+    ``apply`` / ``destroy`` CLI verbs.  The :class:`Instance` (redroid)
+    backend implements this; the :class:`AdbDevice` backend does not
+    (adb-adopted devices are always-on and managed outside Beetroot).
+    """
+
+    def up(self) -> None:
+        """Start the backend."""
+        ...
+
+    def down(self) -> None:
+        """Stop the backend (data preserved)."""
+        ...
+
+    def restart(self) -> None:
+        """Stop then start the backend."""
+        ...
+
+    def apply(self) -> None:
+        """Re-load config and re-stage derived files."""
+        ...
+
+    def destroy(self, *, yes: bool = False) -> None:
+        """
+        Permanently destroy this backend and its host-side state.
+
+        Args:
+            yes: Skip the interactive confirmation prompt.
+        """
+        ...
+
+
+@runtime_checkable
+class ModuleInstaller(Protocol):
+    """
+    Capability sub-protocol: backends that can install Magisk modules.
+
+    Backends implement this to gain the ``beetroot module`` verb.
+    Both :class:`Instance` (redroid) and :class:`AdbDevice` implement
+    this capability; third-party backends can opt in too.
+    """
+
+    def add_module(self, source: str, *, sha256: str | None = None) -> None:
+        """
+        Install a Magisk module.
+
+        Args:
+            source: URL or path to the module zip.
+            sha256: Optional expected hex digest for integrity checking.
+        """
+        ...
+
+
+@runtime_checkable
+class HealthCheckable(Protocol):
+    """
+    Capability sub-protocol: backends that expose health-check diagnostics.
+
+    Backends implement this to gain the ``beetroot doctor`` verb.
+    Both :class:`Instance` (redroid) and :class:`AdbDevice` implement
+    this capability.
+    """
+
+    def health(self) -> dict[str, CheckResult]:
+        """
+        Run the aggregated health checks for this backend.
+
+        Returns:
+            Ordered dict of check name to :class:`CheckResult`.
+        """
+        ...
+
+
+@runtime_checkable
+class Snapshottable(Protocol):
+    """
+    Capability sub-protocol: backends that can be snapshotted to an archive.
+
+    Backends implement this to gain the ``beetroot snapshot`` verb.
+    Only :class:`Instance` (redroid) currently implements this; adb-backed
+    devices have no host-side directory to pack.
+    """
+
+    def snapshot(self, dest: Path) -> Path:
+        """
+        Pack the backend's host-side state into a ``.tar.zst`` archive.
+
+        Args:
+            dest: Destination archive path.
+
+        Returns:
+            The final archive path (after extension fix-up).
         """
         ...
 
@@ -332,7 +420,9 @@ class Instance:
             config.write_yaml(yaml_path, effective_cfg)
         # Atomic allocation + registration under one file lock. Two
         # parallel create() calls cannot grab the same stride slot.
-        index = registry.add_allocating(name, target_root)
+        index = registry.add_allocating(
+            name, backend=registry.RedroidBackendConfig(absolute_path=str(target_root))
+        )
         new_ports = ports.resolve_ports(index, effective_cfg.ports)
         inst = cls(name=name, root=target_root, cfg=effective_cfg)
         try:
@@ -376,7 +466,10 @@ class Instance:
             raise ValueError(f"instance {resolved_name!r} already in registry")
         cfg = config.load_yaml(yaml_path)
         # Atomic allocation + registration under one file lock.
-        index = registry.add_allocating(resolved_name, target_root)
+        index = registry.add_allocating(
+            resolved_name,
+            backend=registry.RedroidBackendConfig(absolute_path=str(target_root)),
+        )
         new_ports = ports.resolve_ports(index, cfg.ports)
         inst = cls(name=resolved_name, root=target_root, cfg=cfg)
         try:
@@ -436,26 +529,28 @@ class Instance:
 
     @classmethod
     def from_meta(
-        cls, name: str, backend: registry.BackendConfig,
-    ) -> Instance:
+        cls, name: str, backend: registry.BackendConfigBase,
+    ) -> Self:
         """
         Build an :class:`Instance` from a registry meta's backend config.
 
         Used by the backend-registry dispatcher in :mod:`beetroot.backends`
         so :meth:`Manager.resolve` can construct any backend class
-        uniformly given ``(name, BackendConfig)``.
+        uniformly given ``(name, BackendConfigBase)``.  Typing ``backend``
+        as :class:`~beetroot.registry.BackendConfigBase` (the shared base)
+        lets mypy verify the call site without requiring the in-tree union.
 
         Args:
             name: Registry name.
-            backend: The matching :class:`registry.RedroidBackendConfig`
-                row's backend field.
+            backend: The matching backend config.  Must be a
+                :class:`~beetroot.registry.RedroidBackendConfig`.
 
         Returns:
             The hydrated :class:`Instance`.
 
         Raises:
             InstanceNotFoundError: If ``backend`` is not a
-                :class:`registry.RedroidBackendConfig`.
+                :class:`~beetroot.registry.RedroidBackendConfig`.
         """
         if not isinstance(backend, registry.RedroidBackendConfig):
             raise InstanceNotFoundError(
@@ -463,7 +558,14 @@ class Instance:
                 "Instance only represents redroid backends"
             )
         root = Path(backend.absolute_path)
-        cfg = config.load_yaml(paths.instance_yaml(root))
+        try:
+            cfg = config.load_yaml(paths.instance_yaml(root))
+        except FileNotFoundError as exc:
+            raise InstanceNotFoundError(
+                f"instance {name!r} has no beetroot.yaml at {root}; "
+                "it may be an orphan — run `beetroot destroy "
+                f"{name}` to clean up"
+            ) from exc
         return cls(name=name, root=root, cfg=cfg)
 
     @classmethod
@@ -683,7 +785,7 @@ class Instance:
         res = subprocess.run(["adb", "-s", target, "shell"], check=False)  # noqa: S603, S607  # same as above
         return int(res.returncode)
 
-    def install_frida(self, version: str) -> None:
+    def install_frida(self, version: str | None = None) -> None:
         """
         Stage a frida-server binary of the requested version on the instance.
 
@@ -694,11 +796,26 @@ class Instance:
         container's ``entrypoint.sh`` to launch the new binary.
 
         Args:
-            version: The frida release tag (e.g. ``16.4.10``).
+            version: The frida release tag (e.g. ``16.4.10``).  ``None``
+                uses the version pinned in this instance's
+                ``beetroot.yaml`` (``cfg.frida.version``).  Raises
+                :class:`ValueError` if ``version`` is ``None`` and no
+                frida block is configured.
+
+        Raises:
+            ValueError: If ``version`` is ``None`` and the instance has
+                no ``frida:`` block in its config.
         """
+        if version is None:
+            if self._cfg.frida is None:
+                raise ValueError(
+                    f"instance {self._name!r} has no frida: block in its config; "
+                    "pass a version explicitly (e.g. install_frida('16.4.10'))"
+                )
+            version = self._cfg.frida.version
         frida_download.stage_for_instance(self._root, version)
 
-    def frida_cli(self, args: list[str]) -> int:
+    def frida_cli(self, args: Sequence[str]) -> int:
         """
         Invoke the host ``frida`` CLI against this instance.
 
@@ -916,7 +1033,7 @@ class Instance:
             "localhost", frida_port, enabled=self._cfg.frida is not None,
         )
         checks["magisk.zygisk"] = _check_magisk_zygisk_over_adb(f"localhost:{adb_port}")
-        denylist = self._cfg.stealth.denylist
+        denylist = self._cfg.magisk.denylist
         gms_pkg = "com.google.android.gms"
         checks[f"magisk.denylist.{gms_pkg}"] = _check_magisk_denylist_over_adb(
             f"localhost:{adb_port}", gms_pkg, enrolled=gms_pkg in denylist,
@@ -1044,19 +1161,13 @@ class Manager:
     mutations from other processes are picked up on the next call.
     """
 
-    # The two list* staticmethods below use a module-level alias for
-    # the builtin ``list`` in their return annotations. Without the
-    # alias, mypy lexically resolves ``list[...]`` to ``Manager.list``
-    # (the staticmethod itself), which doesn't subscript. The alias is
-    # declared at module scope just below the imports.
-
     @staticmethod
-    def list() -> _List[Instance]:
+    def list_instances() -> list[Instance]:
         """
         Return every registered *redroid* instance, sorted by name.
 
         Adb-kind rows are skipped because :class:`Instance` only
-        represents redroid backends — use :meth:`resolve` to walk every
+        represents redroid backends — use :meth:`all` to walk every
         backend uniformly via the Protocol. Orphan entries (redroid
         rows whose on-disk directory has been ``rm -rf``'d, or whose
         ``beetroot.yaml`` is now unparseable) are silently skipped —
@@ -1068,7 +1179,7 @@ class Manager:
             A list of :class:`Instance` objects, one per healthy
             registered redroid name.
         """
-        out: _List[Instance] = []
+        out: list[Instance] = []
         for name, meta in sorted(registry.list_instances().items()):
             if not isinstance(meta.backend, registry.RedroidBackendConfig):
                 continue
@@ -1094,7 +1205,29 @@ class Manager:
         return out
 
     @staticmethod
-    def list_orphans() -> _List[str]:
+    def all() -> list[DeviceBackend]:
+        """
+        Return every resolvable registered backend, sorted by name.
+
+        Walks all registered names via :meth:`resolve`, skipping names
+        that fail resolution (opaque/unresolvable rows, orphaned redroid
+        rows whose yaml is gone, etc.).  Useful for operations that
+        span all backend kinds.
+
+        Returns:
+            A list of :class:`DeviceBackend` instances, one per
+            successfully resolved registry entry, sorted by name.
+        """
+        out: list[DeviceBackend] = []
+        for name in sorted(registry.list_instances()):
+            try:
+                out.append(Manager.resolve(name))
+            except Exception:  # noqa: BLE001, S112  # resolution can fail for orphans, unknown kinds, etc. (InstanceNotFoundError, OSError, etc.) — skip silently
+                continue
+        return out
+
+    @staticmethod
+    def list_orphans() -> list[str]:
         """
         Return names of redroid instances whose on-disk dir is missing OR unparseable.
 
@@ -1105,8 +1238,8 @@ class Manager:
         parsed any more (e.g. a half-overwritten file, an
         api_version mismatch, or hand-edited junk). v0.3 returned only
         the first kind, so a corrupted YAML left the entry invisible
-        to ``Manager.list`` AND to ``Manager.list_orphans`` — the
-        user had no surface to clean it up from. (T2 v0.3.1 deferred.)
+        to ``Manager.list_instances`` AND to ``Manager.list_orphans`` —
+        the user had no surface to clean it up from. (T2 v0.3.1 deferred.)
 
         Adb-kind rows are not directory-backed so they can never be
         orphans by this definition. Names are returned sorted; the
@@ -1117,7 +1250,7 @@ class Manager:
             registered redroid entry's directory is present and its
             YAML parses.
         """
-        orphans: _List[str] = []
+        orphans: list[str] = []
         for name, meta in registry.list_instances().items():
             if not isinstance(meta.backend, registry.RedroidBackendConfig):
                 continue
@@ -1130,7 +1263,7 @@ class Manager:
             except Exception:  # noqa: BLE001  # parse / validation / api_version mismatch all count as orphans; the broad catch is the contract
                 # Any parse / validation failure on the YAML counts as
                 # an orphan — the row needs cleanup-attention, and
-                # ``Manager.list`` already skips it via the
+                # ``Manager.list_instances`` already skips it via the
                 # InstanceRootNotFoundError filter (which load() emits
                 # transitively when the YAML is unreachable). Catch
                 # broadly: pydantic ValidationError, yaml.YAMLError,
@@ -1140,21 +1273,28 @@ class Manager:
         return sorted(orphans)
 
     @staticmethod
-    def get(name: str) -> Instance | None:
+    def get(name: str) -> DeviceBackend | None:
         """
-        Look up a registered instance by name, returning ``None`` if missing.
+        Look up a registered backend by name.
 
-        Use :meth:`Instance.load` when you want an exception on a miss.
+        Returns ``None`` if missing or unresolvable.
+
+        Unlike :meth:`Instance.load`, this method returns any backend kind
+        (redroid, adb, or third-party), not just redroid.  Returns ``None``
+        if ``name`` is not registered or if the backend cannot be resolved
+        (e.g. the package providing an unknown kind is not installed).
 
         Args:
             name: Registry name.
 
         Returns:
-            The :class:`Instance`, or ``None`` if ``name`` isn't registered.
+            A :class:`DeviceBackend`, or ``None`` if ``name`` isn't
+            registered or can't be resolved.
         """
-        if registry.get(name) is None:
+        try:
+            return Manager.resolve(name)
+        except InstanceNotFoundError:
             return None
-        return Instance.load(name)
 
     @staticmethod
     def resolve(name: str) -> DeviceBackend:
@@ -1174,24 +1314,32 @@ class Manager:
 
         Raises:
             InstanceNotFoundError: If ``name`` is not in the registry,
-                or if its ``kind`` is not in the backend registry.
+                if its ``kind`` is not in the backend registry (install
+                the package providing it), or if the backend row is
+                opaque (unknown kind).
         """
         meta = registry.get(name)
         if meta is None:
             raise InstanceNotFoundError(
-                f"no instance named {name!r}; try Manager.list()"
+                f"no instance named {name!r}; try `beetroot ls`"
+            )
+        backend = meta.backend
+        if isinstance(backend, registry.UnresolvedBackendConfig):
+            raise InstanceNotFoundError(
+                f"instance {name!r} has backend kind {backend.kind!r} which is "
+                "not installed; install the package providing that kind and retry."
             )
         from . import backends  # noqa: PLC0415
 
         try:
-            cls = backends.get_backend(meta.backend.kind)
+            cls = backends.get_backend(backend.kind)
         except KeyError as e:
             raise InstanceNotFoundError(
-                f"no backend registered for kind {meta.backend.kind!r}; "
+                f"no backend registered for kind {backend.kind!r}; "
                 "install the package providing it (or register it in "
                 "process via beetroot.backends.register_backend)."
             ) from e
-        return cls.from_meta(name, meta.backend)
+        return cls.from_meta(name, backend)
 
 
 def _check_adb_connect(target: str) -> CheckResult:
@@ -1316,8 +1464,8 @@ def _check_magisk_denylist_over_adb(
     Args:
         adb_target: The adb serial/endpoint for ``adb -s <target>``.
         pkg: Package id (already validated against the Android
-            package-id grammar by :class:`config.Stealth`).
-        enrolled: ``False`` if the package isn't in ``cfg.stealth.denylist``.
+            package-id grammar by :class:`config.Magisk`).
+        enrolled: ``False`` if the package isn't in ``cfg.magisk.denylist``.
             When ``False`` the check returns ``skip`` (the user
             explicitly chose not to hide root from this package).
 
@@ -1326,13 +1474,13 @@ def _check_magisk_denylist_over_adb(
         ``fail`` otherwise, ``skip`` if the config doesn't list it.
     """
     if not enrolled:
-        return CheckResult(status="skip", reason=f"{pkg} not in stealth.denylist")
+        return CheckResult(status="skip", reason=f"{pkg} not in magisk.denylist")
     if shutil.which("adb") is None:
         return CheckResult(status="skip", reason="adb not on PATH")
     try:
         rc, stdout, stderr = _magisk_sqlite_value_over_adb(
             adb_target,
-            # Package id is grammar-validated upstream by config.Stealth
+            # Package id is grammar-validated upstream by config.Magisk
             # (only [a-zA-Z0-9._]) so it can't break the SQL quote. The
             # bandit warning is a false positive on that grammar.
             f"SELECT package_name FROM denylist WHERE package_name='{pkg}'",  # noqa: S608

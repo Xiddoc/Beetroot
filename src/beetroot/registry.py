@@ -7,18 +7,18 @@ The registry is a single user-global JSON file (at
 host regardless of where on disk its directory lives.
 
 Container status is NOT cached here; query Docker live so we can't lie.
-Only assignment-time data lives in the registry: the discriminated-union
-backend config, the allocated port index, and the created-at timestamp.
+Only assignment-time data lives in the registry: the open backend config,
+the allocated port index, and the created-at timestamp.
 
 The on-disk schema is now (v3) defined by :class:`RegistryFile`: a
 strongly-typed pydantic model that round-trips via
-``model_validate_json`` / ``model_dump_json``. Backend configs are a
-discriminated union over ``kind`` — ``RedroidBackendConfig`` (the
-container-managed backend that v0.3 was hard-coded for) and
-``AdbBackendConfig`` (the real-device backend that T5 will add). Third
-parties register additional backends via the
-``beetroot.backends`` entry-point group; their configs validate against
-their own pydantic models and live in their own packages.
+``model_validate_json`` / ``model_dump_json``. Backend configs use an
+**open registration-based** scheme: in-tree backends (``redroid``,
+``adb``) are pre-registered; third-party backends register their own
+:class:`BackendConfigBase` subclass via :func:`register_backend_config`.
+An unknown ``kind`` is preserved as an opaque :class:`UnresolvedBackendConfig`
+that round-trips byte-for-byte — it is never silently wiped. Only a genuinely
+corrupt envelope (bad JSON / missing version) triggers ``.bak``-and-empty.
 """
 from __future__ import annotations
 
@@ -31,9 +31,9 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from . import paths, ports
 from .config import load_yaml
@@ -57,7 +57,26 @@ class RegistryError(RuntimeError):
     """Raised on registry consistency errors (e.g. unknown name lookups)."""
 
 
-class RedroidBackendConfig(BaseModel):
+class BackendConfigBase(BaseModel):
+    """
+    Base class for all backend config models.
+
+    Every in-tree and third-party backend config must subclass this and
+    pin a :class:`~typing.Literal` ``kind`` discriminator.  The base
+    carries ``extra="forbid"`` and ``frozen=False`` to match the
+    existing in-tree config models.
+
+    Attributes:
+        kind: Backend kind discriminator string (e.g. ``"redroid"``,
+            ``"adb"``).  Subclasses pin a ``Literal[...]`` value.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=False)
+
+    kind: str
+
+
+class RedroidBackendConfig(BackendConfigBase):
     """
     Backend config for the v0.3-shaped Redroid-container backend.
 
@@ -72,20 +91,14 @@ class RedroidBackendConfig(BaseModel):
             blob so a v0.6 snapshot lands cleanly on a v0.4 host.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=False)
-
-    kind: Literal["redroid"] = "redroid"
+    kind: Literal["redroid"] = "redroid"  # type: ignore[mutable-override]  # Literal narrows the base str; required for pydantic discriminated dispatch
     absolute_path: str
     stealth_paths: dict[str, str] = Field(default_factory=dict)
 
 
-class AdbBackendConfig(BaseModel):
+class AdbBackendConfig(BackendConfigBase):
     """
     Backend config for the real-device-over-ADB backend that lands in T5.
-
-    The full :class:`AdbDevice` class arrives in T5; T1 only ships the
-    config model so the discriminated union in :class:`InstanceMeta`
-    has both arms in place.
 
     Attributes:
         kind: Discriminator tag — always ``"adb"``.
@@ -94,21 +107,136 @@ class AdbBackendConfig(BaseModel):
             verbatim to ``adb -s <serial>`` invocations.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=False)
-
-    kind: Literal["adb"] = "adb"
+    kind: Literal["adb"] = "adb"  # type: ignore[mutable-override]  # Literal narrows the base str; required for pydantic discriminated dispatch
     serial: str
 
 
-# In-tree backends are pinned in the union; third-party backends
-# register their concrete class at runtime via the entry-point
-# mechanism in :mod:`beetroot.backends`. Their config validates against
-# a *separate* pydantic model that they own — that model never goes
-# through this union and so doesn't need to be registered here.
-BackendConfig = Annotated[
-    RedroidBackendConfig | AdbBackendConfig,
-    Field(discriminator="kind"),
-]
+class UnresolvedBackendConfig(BackendConfigBase):
+    """
+    Opaque placeholder for an unknown backend kind.
+
+    When :func:`_read` encounters a ``kind`` that is not registered in
+    :data:`_BACKEND_CONFIG_REGISTRY`, the raw dict is preserved here so
+    the row survives a read/write cycle byte-for-byte.  Callers that
+    need to operate on the backend (e.g. :meth:`Manager.resolve`) will
+    get an :class:`~beetroot.api.InstanceNotFoundError` with an
+    "install the package providing kind X" message.
+
+    Attributes:
+        kind: The unknown kind discriminator (preserved verbatim).
+        _raw: The full raw dict from the JSON file, including all
+            fields that the registered model would validate.
+    """
+
+    model_config = ConfigDict(extra="allow", frozen=False)
+
+    _raw: dict[str, object]
+
+    def __init__(self, kind: str, raw: dict[str, object]) -> None:
+        """
+        Wrap an unknown-kind row for opaque round-tripping.
+
+        Args:
+            kind: The unrecognised kind string.
+            raw: The full backend sub-dict from the registry JSON,
+                preserved verbatim for :func:`_write` to re-emit.
+        """
+        super().__init__(kind=kind)
+        object.__setattr__(self, "_raw", raw)
+
+
+# Open backend-config registry: kind → pydantic model class.
+# Third parties call :func:`register_backend_config` to add their arm.
+_BACKEND_CONFIG_REGISTRY: dict[str, type[BackendConfigBase]] = {
+    "redroid": RedroidBackendConfig,
+    "adb": AdbBackendConfig,
+}
+
+# Type alias for back-compat: callers that imported ``BackendConfig``
+# from this module (the discriminated-union annotation) continue to
+# work.  The open-union equivalent is ``BackendConfigBase``.
+BackendConfig = BackendConfigBase
+
+
+def register_backend_config(cls: type[BackendConfigBase]) -> None:
+    """
+    Register a third-party backend config class under its ``kind`` discriminator.
+
+    The class must be a :class:`BackendConfigBase` subclass with a
+    ``kind`` field pinned to a ``Literal[...]``.  The kind is derived
+    from ``cls.__fields__["kind"].default`` — the Literal's sole value.
+
+    This must be called **before** any :func:`_read` that could encounter
+    the corresponding rows in the registry file.  The best place is a
+    package's ``__init__.py`` or entry-point loader.
+
+    Args:
+        cls: The pydantic model class to register.
+
+    Raises:
+        ValueError: If the class has no pinned ``kind`` default, or if
+            the kind is already registered to a different class.
+    """
+    # Derive the kind from the model's field default.
+    kind_field = cls.model_fields.get("kind")
+    if kind_field is None or kind_field.default is None:
+        raise ValueError(
+            f"{cls.__name__} must have a ``kind`` field with a Literal default "
+            "(e.g. ``kind: Literal['mykind'] = 'mykind'``)"
+        )
+    kind = kind_field.default
+    existing = _BACKEND_CONFIG_REGISTRY.get(kind)
+    if existing is not None and existing is not cls:
+        raise ValueError(
+            f"backend config kind {kind!r} is already registered to "
+            f"{existing.__name__}; cannot overwrite with {cls.__name__}"
+        )
+    _BACKEND_CONFIG_REGISTRY[kind] = cls
+
+
+def _dump_backend_config(cfg: BackendConfigBase) -> dict[str, object]:
+    """
+    Serialize a backend config to its raw dict representation.
+
+    This is the single authoritative path for opaque-row serialization —
+    both :meth:`InstanceMeta._serialize_backend` (the pydantic
+    field_serializer) and :func:`_registry_to_json` (the live write path)
+    delegate here so data-loss behaviour has exactly one implementation.
+
+    Args:
+        cfg: The backend config to serialize.
+
+    Returns:
+        For :class:`UnresolvedBackendConfig`, the original raw dict
+        preserved verbatim.  For all registered types, the pydantic
+        ``model_dump`` output.
+    """
+    if isinstance(cfg, UnresolvedBackendConfig):
+        return cfg._raw  # noqa: SLF001  # internal slot; the raw dict IS the serialized form
+    return cfg.model_dump()
+
+
+def _parse_backend_config(raw: dict[str, object]) -> BackendConfigBase:
+    """
+    Parse a raw backend sub-dict into the appropriate config class.
+
+    Looks up ``raw["kind"]`` in :data:`_BACKEND_CONFIG_REGISTRY`.
+    Registered kinds are validated against their model; unknown kinds
+    are wrapped in :class:`UnresolvedBackendConfig` and preserved
+    verbatim so the row round-trips without data loss.
+
+    Args:
+        raw: The raw dict from the registry JSON's ``backend`` field.
+
+    Returns:
+        A :class:`BackendConfigBase` subclass instance.
+    """
+    kind_val = raw.get("kind", "")
+    kind = kind_val if isinstance(kind_val, str) else ""
+    cls = _BACKEND_CONFIG_REGISTRY.get(kind)
+    if cls is None:
+        return UnresolvedBackendConfig(kind=kind, raw=raw)
+    return cls.model_validate(raw)
 
 
 class InstanceMeta(BaseModel):
@@ -121,17 +249,21 @@ class InstanceMeta(BaseModel):
     (for adb).
 
     Attributes:
-        backend: Discriminated-union backend config (``kind: "redroid"``
-            or ``kind: "adb"``).
+        backend: Backend config (open-union :class:`BackendConfigBase`).
         index: Stride-of-10 port index allocated to this instance.
         created_at: ISO-8601 UTC timestamp when the entry was added.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=False)
 
-    backend: BackendConfig
+    backend: BackendConfigBase
     index: int
     created_at: datetime
+
+    @field_serializer("backend")
+    def _serialize_backend(self, v: BackendConfigBase) -> dict[str, object]:
+        """Serialize the concrete subclass fields, not just the base class fields."""
+        return _dump_backend_config(v)
 
 
 class RegistryFile(BaseModel):
@@ -194,6 +326,12 @@ def _read(path: Path) -> RegistryFile:
     """
     Read and parse the registry, auto-handling legacy-schema migrations.
 
+    Per-row validation uses :func:`_parse_backend_config` so an
+    unknown ``kind`` is preserved as :class:`UnresolvedBackendConfig`
+    rather than triggering a file-level backup-and-empty. Only a
+    corrupt envelope (bad JSON / non-3 version) triggers the `.bak`
+    fallback. A single unknown-kind row NEVER wipes the file.
+
     A v1 / v2 registry is renamed to ``<file>.bak`` and an empty v3
     registry is returned. The user must re-register their instances
     with ``beetroot register <path>`` (paths can't be auto-migrated
@@ -207,28 +345,108 @@ def _read(path: Path) -> RegistryFile:
         return RegistryFile()
     raw_text = path.read_text()
     try:
-        return RegistryFile.model_validate_json(raw_text)
-    except ValidationError:
-        # Either an outright legacy registry (v1 / v2 / no version key)
-        # or a v3-shaped doc that fails strict validation. In either
-        # case we back the file up rather than risk corrupting it, and
-        # return a fresh empty registry so the caller can continue.
-        try:
-            parsed_version = json.loads(raw_text).get("version")
-        except (json.JSONDecodeError, AttributeError):
-            parsed_version = None
+        raw = json.loads(raw_text)
+    except (json.JSONDecodeError, ValueError):
         backup = path.with_suffix(path.suffix + ".bak")
         path.rename(backup)
         if not _LEGACY_HINT_PRINTED:
-            print(  # noqa: T201  # stderr migration hint — typer.echo is unavailable from non-CLI callers
-                f"[beetroot] registry at {path} was schema "
-                f"v{parsed_version!r}; renamed to {backup.name}. "
+            print(  # noqa: T201  # stderr migration hint
+                f"[beetroot] registry at {path} could not be parsed as JSON; "
+                f"renamed to {backup.name}. "
                 f"Re-register your instances with "
                 f"`beetroot register <path>`.",
                 file=sys.stderr,
             )
             _LEGACY_HINT_PRINTED = True
         return RegistryFile()
+
+    # Version check: only v3 is supported; anything else triggers backup.
+    version = raw.get("version") if isinstance(raw, dict) else None
+    if version != SCHEMA_VERSION:
+        backup = path.with_suffix(path.suffix + ".bak")
+        path.rename(backup)
+        if not _LEGACY_HINT_PRINTED:
+            print(  # noqa: T201  # stderr migration hint — typer.echo is unavailable from non-CLI callers
+                f"[beetroot] registry at {path} was schema "
+                f"v{version!r}; renamed to {backup.name}. "
+                f"Re-register your instances with "
+                f"`beetroot register <path>`.",
+                file=sys.stderr,
+            )
+            _LEGACY_HINT_PRINTED = True
+        return RegistryFile()
+
+    # Parse per-row with open-union backend dispatch. Unknown kinds
+    # become UnresolvedBackendConfig and are preserved — they do NOT
+    # wipe the file.
+    instances: dict[str, InstanceMeta] = {}
+    raw_instances = raw.get("instances", {})
+    if not isinstance(raw_instances, dict):
+        raw_instances = {}
+    for name, meta_dict in raw_instances.items():
+        if not isinstance(meta_dict, dict):
+            continue
+        backend_raw = meta_dict.get("backend")
+        if not isinstance(backend_raw, dict):
+            continue
+        try:
+            backend = _parse_backend_config(backend_raw)
+            # Validate the rest of the meta fields via pydantic,
+            # substituting the pre-parsed backend so it doesn't go
+            # through the closed union.
+            meta = InstanceMeta.model_validate(
+                {**meta_dict, "backend": backend}
+            )
+            instances[name] = meta
+        except Exception:  # noqa: BLE001, S112  # corrupt row (ValidationError, ValueError, etc.) — skip silently; the envelope is valid
+            continue
+    return RegistryFile(instances=instances)
+
+
+def _write(path: Path, data: RegistryFile) -> None:
+    # Atomic replace via a per-call unique tmp file: write the new
+    # content to a sibling whose name includes pid+uuid so parallel
+    # writers don't trample each other's tmp file, then os.replace
+    # it on top of ``path``. Without the atomic-replace, concurrent
+    # readers (list_instances, get) would occasionally observe
+    # ``path`` in its truncated-but-not-yet-written state and raise
+    # JSONDecodeError. Without the unique tmp name, two writers in
+    # parallel processes would both write to the same tmp and the
+    # second one's os.replace would FileNotFoundError after the
+    # first process renamed the tmp out from under it.
+    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        # Serialize: opaque rows must be re-emitted with their raw dict.
+        payload = _registry_to_json(data)
+        tmp.write_text(payload)
+        tmp.replace(path)
+    finally:
+        # If the replace happened, this is a no-op (tmp no longer
+        # exists); on a failure path, this cleans up the orphan.
+        if tmp.exists():
+            tmp.unlink()
+
+
+def _registry_to_json(data: RegistryFile) -> str:
+    """
+    Serialize a :class:`RegistryFile` to a JSON string.
+
+    :class:`UnresolvedBackendConfig` rows are re-emitted from their
+    raw dict (byte-for-byte round-trip). Registered rows go through
+    pydantic's ``model_dump``.  Both paths delegate to
+    :func:`_dump_backend_config` — the single authoritative
+    serialization helper — so opaque-row round-tripping has exactly one
+    implementation.
+    """
+    instances_out: dict[str, dict[str, object]] = {}
+    for name, meta in data.instances.items():
+        instances_out[name] = {
+            "backend": _dump_backend_config(meta.backend),
+            "index": meta.index,
+            "created_at": meta.created_at.isoformat(),
+        }
+    out: dict[str, object] = {"version": data.version, "instances": instances_out}
+    return json.dumps(out, indent=2)
 
 
 def _check_v02_registry_at_cwd(xdg_path: Path) -> None:
@@ -270,28 +488,6 @@ def _check_v02_registry_at_cwd(xdg_path: Path) -> None:
     _V02_HINT_PRINTED = True
 
 
-def _write(path: Path, data: RegistryFile) -> None:
-    # Atomic replace via a per-call unique tmp file: write the new
-    # content to a sibling whose name includes pid+uuid so parallel
-    # writers don't trample each other's tmp file, then os.replace
-    # it on top of ``path``. Without the atomic-replace, concurrent
-    # readers (list_instances, get) would occasionally observe
-    # ``path`` in its truncated-but-not-yet-written state and raise
-    # JSONDecodeError. Without the unique tmp name, two writers in
-    # parallel processes would both write to the same tmp and the
-    # second one's os.replace would FileNotFoundError after the
-    # first process renamed the tmp out from under it.
-    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-    try:
-        tmp.write_text(data.model_dump_json(indent=2))
-        tmp.replace(path)
-    finally:
-        # If the replace happened, this is a no-op (tmp no longer
-        # exists); on a failure path, this cleans up the orphan.
-        if tmp.exists():
-            tmp.unlink()
-
-
 def list_instances() -> dict[str, InstanceMeta]:
     """Return all known instances as name → metadata. Empty if registry is missing."""
     path = paths.user_registry_file()
@@ -314,65 +510,11 @@ def used_indices() -> set[int]:
     return {meta.index for meta in list_instances().values()}
 
 
-def add(
-    name: str,
-    absolute_path: Path | None = None,
-    index: int = 0,
-    *,
-    backend: BackendConfig | None = None,
-) -> None:
-    """
-    Register a new instance in the registry under an exclusive file lock.
-
-    Two calling conventions are supported for v0.3 → v0.4 source compat:
-
-    * **v0.3 form** (positional): ``add(name, absolute_path, index)``
-      registers a redroid-kind backend pointing at ``absolute_path``.
-    * **v0.4 form** (keyword): ``add(name, index=N, backend=<config>)``
-      registers any pre-built :class:`BackendConfig` discriminated-union
-      arm — adb, redroid, or third-party.
-
-    Args:
-        name: Instance name to register.
-        absolute_path: Absolute path to the instance directory (the
-            one containing ``beetroot.yaml``). Required when ``backend``
-            is None; ignored otherwise.
-        index: Port index to assign to this instance.
-        backend: Pre-built backend config (any
-            :class:`BackendConfig` union arm). When omitted, the
-            v0.3-form redroid shape is synthesised from
-            ``absolute_path``.
-
-    Raises:
-        ValueError: If ``name`` is already in the registry or if neither
-            ``absolute_path`` nor ``backend`` is supplied.
-    """
-    if backend is None:
-        if absolute_path is None:
-            raise ValueError(
-                "registry.add requires either ``absolute_path`` (for the "
-                "v0.3 redroid-only form) or ``backend`` (for the v0.4 "
-                "discriminated-union form).",
-            )
-        backend = RedroidBackendConfig(absolute_path=str(absolute_path))
-    path = paths.user_registry_file()
-    with _locked(path):
-        data = _read(path)
-        if name in data.instances:
-            raise ValueError(f"instance {name!r} already in registry")
-        data.instances[name] = InstanceMeta(
-            backend=backend,
-            index=index,
-            created_at=datetime.now(UTC),
-        )
-        _write(path, data)
-
-
 def add_allocating(
     name: str,
     absolute_path: Path | None = None,
     *,
-    backend: BackendConfig | None = None,
+    backend: BackendConfigBase | None = None,
 ) -> int:
     """
     Atomically allocate the lowest free port index AND register ``name``.
@@ -384,23 +526,19 @@ def add_allocating(
     the failure at ``docker compose up`` time, when the second
     instance's bind fails.
 
-    Two calling conventions are supported for v0.3 → v0.4 source compat:
-
-    * **v0.3 form** (positional): ``add_allocating(name, absolute_path)``
-      registers a redroid-kind backend pointing at ``absolute_path``.
-    * **v0.4 form** (keyword): ``add_allocating(name, backend=<config>)``
-      registers any pre-built :class:`BackendConfig` arm — used by the
-      ``beetroot adopt`` verb for adb-kind rows that have no
-      ``absolute_path``.
+    The ``backend`` argument is keyword-only to prevent accidental
+    positional misuse (the old dual-form ``add`` had a positional
+    ``index`` footgun).  Pass ``absolute_path`` for the legacy
+    redroid-shorthand form; pass ``backend=<config>`` for any
+    pre-built :class:`BackendConfigBase` arm.
 
     Args:
         name: Instance name to register.
         absolute_path: Absolute path to the instance directory.
             Required when ``backend`` is None; ignored otherwise.
         backend: Pre-built backend config (any
-            :class:`BackendConfig` union arm). When omitted, the
-            v0.3-form redroid shape is synthesised from
-            ``absolute_path``.
+            :class:`BackendConfigBase` subclass). When omitted, the
+            redroid shape is synthesised from ``absolute_path``.
 
     Returns:
         The port index that was allocated.
@@ -413,8 +551,8 @@ def add_allocating(
         if absolute_path is None:
             raise ValueError(
                 "registry.add_allocating requires either ``absolute_path`` "
-                "(for the v0.3 redroid-only form) or ``backend`` (for the "
-                "v0.4 discriminated-union form).",
+                "(for the redroid shorthand) or ``backend`` (for an explicit "
+                "BackendConfigBase subclass).",
             )
         backend = RedroidBackendConfig(absolute_path=str(absolute_path))
     path = paths.user_registry_file()
@@ -522,30 +660,36 @@ def instance_path(name: str) -> Path:
 
 def all_resolved_ports() -> dict[str, dict[str, int]]:
     """
-    Return resolved ports for every healthy registered instance.
+    Return resolved ports for every registered instance.
 
-    For each instance, loads its ``beetroot.yaml`` to pick up any
-    ``ports:`` override block and merges it with the stride-of-10
-    defaults derived from the registered index. Orphan entries
+    For redroid-kind instances, loads their ``beetroot.yaml`` to pick up
+    any ``ports:`` override block. For adb-kind (and other) instances,
+    uses the stride-of-10 defaults derived from the registered index
+    (they have no ``beetroot.yaml`` to consult).  Orphan redroid entries
     (registered names whose ``beetroot.yaml`` is gone) are silently
-    skipped — they're surfaced via ``Manager.list_orphans()`` and the
-    ``beetroot ls`` skip-line, not via cascading failures in
-    ``create``/``register``/``apply``/``restore``.
+    skipped.
+
+    This now includes **all** registered instances (not just redroid),
+    fixing bug B4: a redroid instance can no longer collide with an
+    adopted device's Frida port.
 
     Returns:
-        A mapping ``instance_name → {"adb", "frida", "frida2"}`` covering
-        every registered instance whose on-disk YAML still exists. Empty
-        dict if the registry is empty or every entry is an orphan.
+        A mapping ``instance_name → {"adb", "frida", "frida_control"}``
+        covering every registered instance. Empty dict if the registry is
+        empty or every redroid entry is an orphan.
     """
     out: dict[str, dict[str, int]] = {}
     for name, meta in list_instances().items():
-        if not isinstance(meta.backend, RedroidBackendConfig):
-            continue
-        try:
-            cfg = load_yaml(paths.instance_yaml(Path(meta.backend.absolute_path)))
-        except FileNotFoundError:
-            continue
-        out[name] = ports.resolve_ports(meta.index, cfg.ports)
+        backend = meta.backend
+        if isinstance(backend, RedroidBackendConfig):
+            try:
+                cfg = load_yaml(paths.instance_yaml(Path(backend.absolute_path)))
+            except FileNotFoundError:
+                continue
+            out[name] = ports.resolve_ports(meta.index, cfg.ports)
+        else:
+            # adb-kind and other backends: use stride defaults (no yaml).
+            out[name] = ports.ports_for_index(meta.index)
     return out
 
 
@@ -558,7 +702,7 @@ def find_port_collision(
 
     Args:
         new_ports: Resolved port dict for the instance being staged
-            (keys: ``adb``, ``frida``, ``frida2``).
+            (keys: ``adb``, ``frida``, ``frida_control``).
         others: Mapping of other-instance-name → resolved port dict.
             The caller is responsible for excluding the staging instance
             itself from this mapping.
@@ -566,7 +710,7 @@ def find_port_collision(
     Returns:
         ``(port, conflicting_instance, port_kind)`` on the first collision
         found — ``port_kind`` is the *new* instance's key (``adb`` /
-        ``frida`` / ``frida2``). Returns ``None`` if no collision exists.
+        ``frida`` / ``frida_control``). Returns ``None`` if no collision exists.
     """
     for kind, port in new_ports.items():
         for other_name, other_ports in others.items():

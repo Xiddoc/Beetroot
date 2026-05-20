@@ -154,7 +154,7 @@ def test_invariants_helper_detects_collision_regression(cli_root: Path) -> None:
         target / "beetroot.yaml",
         config.InstanceConfig(ports=config.Ports(adb=5555)),
     )
-    registry.add("bravo", target, 1)
+    registry.add_allocating("bravo", target)
     with pytest.raises(AssertionError):
         _assert_invariants("bravo", expect_frida=False)
 
