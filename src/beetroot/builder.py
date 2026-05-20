@@ -26,7 +26,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Final, Literal, Protocol
 
-from . import config, paths
+from . import config, console, paths
 from .settings import settings
 
 GappsVariant = Literal["none", "lite", "full", "mindthegapps"]
@@ -51,6 +51,20 @@ def _default_work_dir() -> Path:
     static ``S108`` bandit finding.
     """
     return paths.user_cache_dir("redroid-script")
+
+
+def _default_build_context() -> Path:
+    """
+    Return the default Docker build context for the Beetroot layer.
+
+    For a source / editable install the bundled compose template lives at
+    ``src/beetroot/templates/compose.yaml`` inside the repo, so walking four
+    levels up yields the repo root (which contains ``docker/Dockerfile``).
+    For a ``uv tool install`` wheel build the caller MUST pass an explicit
+    ``build_context`` because ``docker/`` is not bundled in the wheel and the
+    path derived here would be a cache directory with no ``docker/`` child.
+    """
+    return paths.bundled_compose_file().parent.parent.parent.parent
 
 
 class BootstrapError(RuntimeError):
@@ -138,12 +152,38 @@ def _image_tag(android_version: int, gapps: GappsVariant) -> str:
     return config.base_image_tag(android)
 
 
-def build_image(
+def _clone_url_matches(work: Path, url: str) -> bool:
+    """
+    Return True iff ``work`` is a git clone of exactly ``url``.
+
+    Reads ``work/.git/config`` and looks for a ``[remote "origin"]`` stanza
+    whose ``url`` key equals the requested URL (after stripping whitespace).
+    A missing directory, missing ``.git/config``, or a URL mismatch all
+    return False so the caller knows a fresh clone is required.
+    """
+    git_config = work / ".git" / "config"
+    if not git_config.is_file():
+        return False
+    in_origin = False
+    for line in git_config.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped == '[remote "origin"]':
+            in_origin = True
+        elif stripped.startswith("["):
+            in_origin = False
+        elif in_origin and stripped.startswith("url") and "=" in stripped:
+            _, _, existing_url = stripped.partition("=")
+            return existing_url.strip() == url
+    return False
+
+
+def build_image(  # noqa: PLR0913  # 6 keyword-only params; each is a distinct injectable concern
     *,
     gapps: GappsVariant = "lite",
     android_version: int = 14,
     redroid_script_url: str = _DEFAULT_REDROID_URL,
     work_dir: Path | None = None,
+    build_context: Path | None = None,
     runner: SubprocessRunner | None = None,
 ) -> str:
     """
@@ -151,11 +191,16 @@ def build_image(
 
     The three steps are:
 
-    1. ``git clone --depth 1 <redroid_script_url> <work_dir>`` (after wiping
-       any existing clone).
+    1. ``git clone --depth 1 <redroid_script_url> <work_dir>``.  If
+       ``work_dir`` already contains a clone of the same URL the clone step
+       is skipped so re-running ``beetroot build`` after a network interruption
+       doesn't discard already-downloaded Magisk / GApps / Houdini artifacts.
+       A pre-existing clone of a **different** URL is wiped and re-cloned so
+       the caller never silently builds against the wrong source.
     2. ``uv run --with requests --with tqdm python -W ignore redroid.py
        -a <version>.0.0 [gapps-flag] -i -m`` from inside ``work_dir``.
-    3. ``BASE_IMAGE=<tag> <docker_bin> compose build`` from the repo root.
+    3. ``BASE_IMAGE=<tag> <docker_bin> compose build`` from ``build_context``
+       (see below).
 
     Args:
         gapps: GMS variant to bake in.
@@ -165,6 +210,13 @@ def build_image(
         redroid_script_url: Override the patcher source (testing / forks).
         work_dir: Override the clone directory (default is a subdir of
             the user cache; see :func:`_default_work_dir`).
+        build_context: Directory passed to Docker as the build context and
+            as ``--project-directory``.  Must contain a ``docker/``
+            sub-directory with ``Dockerfile`` and the boot-script helpers.
+            Defaults to ``paths.bundled_compose_file().parent.parent.parent.parent``
+            — the repo root for a source / editable install.  For a
+            ``uv tool install``-based setup you MUST pass this explicitly
+            because ``docker/`` is not bundled in the wheel.
         runner: Inject a :class:`SubprocessRunner` for testing. Defaults to
             :class:`DefaultRunner`.
 
@@ -179,15 +231,23 @@ def build_image(
             redroid versions (delegated to :class:`beetroot.config.Android`).
     """
     work = work_dir if work_dir is not None else _default_work_dir()
+    ctx = build_context if build_context is not None else _default_build_context()
     run = runner if runner is not None else DefaultRunner()
 
     tag = _image_tag(android_version, gapps)
 
-    # Step 1: clone the patcher. ``rm -rf`` first so re-running is idempotent.
-    run.run(["rm", "-rf", str(work)])
-    run.run(
-        ["git", "clone", "--depth", "1", redroid_script_url, str(work)],
-    )
+    # Step 1: clone the patcher — skip when an identical clone already exists
+    # so a re-run doesn't discard already-downloaded Houdini / Magisk /
+    # GApps artifacts.  Wipe and re-clone when the URL differs (different fork
+    # or a corrupted work dir).
+    with console.progress("Cloning redroid-script"):
+        if _clone_url_matches(work, redroid_script_url):
+            console.info(f"reusing existing clone at {work}")
+        else:
+            run.run(["rm", "-rf", str(work)])
+            run.run(
+                ["git", "clone", "--depth", "1", redroid_script_url, str(work)],
+            )
 
     # Step 2: patch. ``-i`` installs Houdini, ``-m`` installs Magisk.
     patcher_cmd: list[str] = [
@@ -207,25 +267,27 @@ def build_image(
         "-i",
         "-m",
     ]
-    run.run(patcher_cmd, cwd=work)
+    with console.progress("Patching base image (Magisk + Houdini + GApps)"):
+        run.run(patcher_cmd, cwd=work)
 
-    # Step 3: build the Beetroot layer on top via the bundled compose template,
-    # passing the freshly produced base tag via the BASE_IMAGE env var (consumed
-    # by docker/Dockerfile) and the cwd via BEETROOT_BUILD_CONTEXT (so the
-    # template's ${BEETROOT_BUILD_CONTEXT} substitution finds the local
-    # docker/ dir).
-    cwd = Path.cwd()
-    run.run(
-        [
-            settings.docker_bin,
-            "compose",
-            "-f",
-            str(paths.bundled_compose_file()),
-            "--project-directory",
-            str(cwd),
-            "build",
-        ],
-        env={"BASE_IMAGE": tag, "BEETROOT_BUILD_CONTEXT": str(cwd)},
-    )
+    # Step 3: build the Beetroot layer on top via the bundled compose template.
+    # ``build_context`` is the directory Docker uses as the build context — it
+    # must contain ``docker/Dockerfile`` and the boot-script helpers.  Using
+    # ``Path.cwd()`` here (the old behaviour) broke programmatic / uv-tool
+    # invocations from outside the repo: the Dockerfile would not be found and
+    # the build would fail with a misleading "context not found" error.
+    with console.progress("Building Beetroot Docker layer"):
+        run.run(
+            [
+                settings.docker_bin,
+                "compose",
+                "-f",
+                str(paths.bundled_compose_file()),
+                "--project-directory",
+                str(ctx),
+                "build",
+            ],
+            env={"BASE_IMAGE": tag, "BEETROOT_BUILD_CONTEXT": str(ctx)},
+        )
 
     return tag
