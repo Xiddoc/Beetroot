@@ -7,12 +7,12 @@
 # frida-server binary is downloaded or launched. Copy examples/with-frida.yaml
 # (or add `frida: {version: "16.4.10"}` here) to enable it.
 
-api_version: 3
+api_version: 4
 
 android:
   version: 14
 
-stealth:
+magisk:
   denylist:
     - com.google.android.gms
     - com.google.android.gms.unstable

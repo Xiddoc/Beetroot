@@ -24,9 +24,10 @@ import hypothesis.strategies as st
 from hypothesis import given, settings
 
 from beetroot.ports import (
+    _MAX_PORT_INDEX,
     ADB_BASE,
-    FRIDA2_BASE,
     FRIDA_BASE,
+    FRIDA_CONTROL_BASE,
     STRIDE,
     lowest_free_index,
     ports_for_index,
@@ -62,14 +63,16 @@ def test_lowest_free_index_returns_smallest_gap(used: set[int]) -> None:
         assert i in used, f"missed gap at {i} for used={used}"
 
 
-@given(index=st.integers(min_value=0, max_value=10_000))
+@given(index=st.integers(min_value=0, max_value=_MAX_PORT_INDEX))
 @settings(deadline=None, derandomize=True, max_examples=200)
 def test_ports_for_index_is_stride_aligned(index: int) -> None:
     """Every returned port is exactly `<base> + index*STRIDE` and pairwise distinct."""
     p = ports_for_index(index)
     assert p["adb"] == ADB_BASE + index * STRIDE
     assert p["frida"] == FRIDA_BASE + index * STRIDE
-    assert p["frida2"] == FRIDA2_BASE + index * STRIDE
+    assert p["frida_control"] == FRIDA_CONTROL_BASE + index * STRIDE
     # The three ports differ by constant offsets (0, 27042-5555, etc.),
     # so they're necessarily pairwise-distinct for any N >= 0.
-    assert len({p["adb"], p["frida"], p["frida2"]}) == 3
+    assert len({p["adb"], p["frida"], p["frida_control"]}) == 3
+    # D5: no port exceeds 65535 within the valid index range.
+    assert p["adb"] <= 65535

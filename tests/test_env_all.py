@@ -36,7 +36,7 @@ class TestEnvAllRedroid:
             "INSTANCE_NAME=alpha",
             "ADB_PORT=5555",
             "FRIDA_PORT=27042",
-            "FRIDA_PORT2=27043",
+            "FRIDA_PORT_CONTROL=27043",
             "BEETROOT_MAGISK_DB=",
             "BEETROOT_MODULES_DIR=",
             "BEETROOT_FRIDA_BIN=",

@@ -127,7 +127,7 @@ class TestBundledComposeFile:
 
     def test_bundled_compose_file_contains_substitutions(self) -> None:
         text = paths.bundled_compose_file().read_text()
-        for var in ("INSTANCE_NAME", "ADB_PORT", "FRIDA_PORT", "FRIDA_PORT2"):
+        for var in ("INSTANCE_NAME", "ADB_PORT", "FRIDA_PORT", "FRIDA_PORT_CONTROL"):
             assert f"${{{var}}}" in text or f"${{{var}:-" in text
 
     def test_bundled_compose_file_is_stable_across_calls(self) -> None:

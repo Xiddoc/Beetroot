@@ -16,10 +16,10 @@ from beetroot.config import (
     Display,
     Frida,
     InstanceConfig,
+    Magisk,
     Module,
     Ports,
     Resources,
-    Stealth,
     base_image_tag,
     load_yaml,
     render_env,
@@ -31,15 +31,15 @@ class TestApiVersion:
     def test_default_api_version_is_supported(self) -> None:
         cfg = InstanceConfig()
         assert cfg.api_version == SUPPORTED_API_VERSION
-        assert cfg.api_version == 3
+        assert cfg.api_version == 4
 
     def test_explicit_supported_version_succeeds(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": 3})
-        assert cfg.api_version == 3
+        cfg = InstanceConfig.model_validate({"api_version": 4})
+        assert cfg.api_version == 4
 
     def test_string_api_version_is_coerced(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": "3"})
-        assert cfg.api_version == 3
+        cfg = InstanceConfig.model_validate({"api_version": "4"})
+        assert cfg.api_version == 4
 
     def test_zero_api_version_raises(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
@@ -63,6 +63,13 @@ class TestApiVersion:
     def test_v2_api_version_raises_via_direct_validate(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
             InstanceConfig.model_validate({"api_version": 2})
+        msg = str(exc_info.value)
+        assert "not supported" in msg
+        assert "CHANGELOG" in msg
+
+    def test_v3_api_version_raises_via_direct_validate(self) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            InstanceConfig.model_validate({"api_version": 3})
         msg = str(exc_info.value)
         assert "not supported" in msg
         assert "CHANGELOG" in msg
@@ -133,10 +140,10 @@ class TestFridaOptional:
     def test_render_env_omits_frida_specific_keys(self) -> None:
         # Behavior test: a user-supplied empty YAML flows through load_yaml
         # → render_env without producing any FRIDA-specific knob beyond the
-        # unconditional bind-mount ports (FRIDA_PORT / FRIDA_PORT2 remain so
+        # unconditional bind-mount ports (FRIDA_PORT / FRIDA_PORT_CONTROL remain so
         # compose's `${FRIDA_PORT}` substitution still works).
         cfg = InstanceConfig()
-        rendered_ports = {"adb": 5555, "frida": 27042, "frida2": 27043}
+        rendered_ports = {"adb": 5555, "frida": 27042, "frida_control": 27043}
         result = render_env("alpha", cfg, rendered_ports)
         # FRIDA_VERSION never appears — the version is consumed by frida_download,
         # not rendered into .env.
@@ -146,7 +153,7 @@ class TestFridaOptional:
         # the port mapping line even though the binary is the zero-byte
         # placeholder.
         assert "FRIDA_PORT=" in result
-        assert "FRIDA_PORT2=" in result
+        assert "FRIDA_PORT_CONTROL=" in result
 
 
 class TestFridaVersionRegex:
@@ -277,6 +284,95 @@ class TestResources:
         assert "shared_mem" in msg
         assert "CHANGELOG" in msg
 
+    # D4 — Docker-size-format validators
+    def test_valid_mem_sizes_accepted(self) -> None:
+        assert Resources(mem="3g").mem == "3g"
+        assert Resources(mem="512m").mem == "512m"
+        assert Resources(mem="1024").mem == "1024"
+        assert Resources(mem="1.5G").mem == "1.5G"
+
+    def test_invalid_mem_two_letter_suffix_rejected(self) -> None:
+        # "3gb" uses a two-letter suffix — Docker silently ignores or
+        # misinterprets it; catching it at load time keeps the error actionable.
+        with pytest.raises(ValidationError, match="Docker size format"):
+            Resources(mem="3gb")
+
+    def test_invalid_mem_space_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="Docker size format"):
+            Resources(mem="512 m")
+
+    def test_invalid_mem_empty_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="Docker size format"):
+            Resources(mem="")
+
+    def test_valid_shared_mem_accepted(self) -> None:
+        assert Resources(shared_mem="256m").shared_mem == "256m"
+
+    def test_invalid_shared_mem_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="Docker size format"):
+            Resources(shared_mem="256mb")
+
+    def test_valid_mem_reservation_accepted(self) -> None:
+        r = Resources(mem_reservation="2g")
+        assert r.mem_reservation == "2g"
+
+    def test_invalid_mem_reservation_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="Docker size format"):
+            Resources(mem_reservation="2gb")
+
+    def test_valid_memswap_limit_accepted(self) -> None:
+        r = Resources(memswap_limit="4g")
+        assert r.memswap_limit == "4g"
+
+    def test_invalid_memswap_limit_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="Docker size format"):
+            Resources(memswap_limit="4GB")
+
+    def test_none_mem_reservation_is_valid(self) -> None:
+        r = Resources(mem_reservation=None)
+        assert r.mem_reservation is None
+
+    def test_none_memswap_limit_is_valid(self) -> None:
+        r = Resources(memswap_limit=None)
+        assert r.memswap_limit is None
+
+
+class TestDisplayBounds:
+    """D4 — Display fields must be > 0."""
+
+    def test_width_zero_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            Display(width=0)
+
+    def test_width_negative_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            Display(width=-1)
+
+    def test_height_zero_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            Display(height=0)
+
+    def test_height_negative_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            Display(height=-5)
+
+    def test_fps_zero_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            Display(fps=0)
+
+    def test_fps_negative_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            Display(fps=-10)
+
+    def test_width_one_accepted(self) -> None:
+        assert Display(width=1).width == 1
+
+    def test_height_one_accepted(self) -> None:
+        assert Display(height=1).height == 1
+
+    def test_fps_one_accepted(self) -> None:
+        assert Display(fps=1).fps == 1
+
 
 class TestModule:
     def test_url_only_is_valid(self) -> None:
@@ -302,50 +398,65 @@ class TestModule:
             Module(url="https://example.com/mod.zip", path="/tmp/mod.zip")
 
 
-class TestStealthDenylist:
-    """T1: per-package regex validator on ``stealth.denylist``.
+class TestMagiskDenylist:
+    """D1: per-package regex validator on ``magisk.denylist``.
 
-    SQL-injection prophylaxis for T2's wire-up of the denylist through
+    SQL-injection prophylaxis for the wire-up of the denylist through
     ``magisk-config.sh``'s SQLite REPLACE INTO. Refusing the malformed
     shape at config-load time keeps the helper script free of escaping
     logic.
     """
 
     def test_valid_packages_accepted(self) -> None:
-        cfg = Stealth(
+        cfg = Magisk(
             denylist=["com.google.android.gms", "com.app_id", "com.x.y.z123"]
         )
         assert cfg.denylist[0] == "com.google.android.gms"
 
     def test_gms_denylist_default(self) -> None:
-        # T2 (Agent 2 B-1): the v0.3 entrypoint hard-coded the GMS pair
-        # into ``magisk-config.sh``. v0.4 moves enrolment under the
-        # config model — the default now ships the same GMS pair so a
-        # bare ``beetroot create`` keeps the v0.3 behaviour intact.
-        assert Stealth().denylist == [
+        # The GMS pair is the default so a bare ``beetroot create``
+        # denylists root from GMS out of the box.
+        assert Magisk().denylist == [
             "com.google.android.gms",
             "com.google.android.gms.unstable",
         ]
 
     def test_package_with_space_rejected(self) -> None:
         with pytest.raises(ValidationError, match="package id"):
-            Stealth(denylist=["com.bad package"])
+            Magisk(denylist=["com.bad package"])
 
     def test_package_with_semicolon_rejected(self) -> None:
         # SQL-injection probe: a literal "; DROP TABLE settings;" must
-        # be rejected by the validator before T2's helper ever sees it.
+        # be rejected by the validator before the helper ever sees it.
         with pytest.raises(ValidationError, match="package id"):
-            Stealth(denylist=["com.app'; DROP TABLE settings;--"])
+            Magisk(denylist=["com.app'; DROP TABLE settings;--"])
 
     def test_package_with_dash_rejected(self) -> None:
         # Dashes are not part of the Android package-id grammar; refuse
         # them so the validator can't drift to a looser shape later.
         with pytest.raises(ValidationError, match="package id"):
-            Stealth(denylist=["com.bad-package"])
+            Magisk(denylist=["com.bad-package"])
 
     def test_empty_package_rejected(self) -> None:
         with pytest.raises(ValidationError, match="package id"):
-            Stealth(denylist=[""])
+            Magisk(denylist=[""])
+
+    def test_stealth_key_rejected_with_migration_hint(self, tmp_path: Path) -> None:
+        # D1/D3: an old YAML using ``stealth:`` must fail with a clear,
+        # actionable migration error — not silently drop the denylist.
+        p = tmp_path / "old.yaml"
+        p.write_text(
+            "api_version: 4\n"
+            "stealth:\n"
+            "  denylist:\n"
+            "    - com.google.android.gms\n"
+        )
+        with pytest.raises(ValidationError) as exc_info:
+            load_yaml(p)
+        msg = str(exc_info.value)
+        assert "stealth" in msg
+        assert "magisk" in msg.lower()
+        assert "api_version" in msg
 
 
 class TestPorts:
@@ -475,7 +586,7 @@ class TestPermissiveDefaults:
 
 class TestRenderEnv:
     def _ports(self) -> dict[str, int]:
-        return {"adb": 5555, "frida": 27042, "frida2": 27043}
+        return {"adb": 5555, "frida": 27042, "frida_control": 27043}
 
     def test_contains_base_image(self) -> None:
         cfg = InstanceConfig()
@@ -505,7 +616,7 @@ class TestRenderEnv:
     def test_contains_frida_port2(self) -> None:
         cfg = InstanceConfig()
         result = render_env("alpha", cfg, self._ports())
-        assert "FRIDA_PORT2=27043" in result
+        assert "FRIDA_PORT_CONTROL=27043" in result
 
     def test_contains_mem_limit(self) -> None:
         cfg = InstanceConfig()
@@ -584,9 +695,8 @@ class TestRenderEnv:
         assert "MEMSWAP_LIMIT=4g" in result
 
     def test_emits_default_denylist_packages(self) -> None:
-        # T2 (Agent 2 B-1): the default Stealth model carries the GMS
-        # pair so a bare ``beetroot create`` keeps v0.3's hard-coded
-        # behaviour intact.
+        # D1: the default Magisk model carries the GMS pair so a bare
+        # ``beetroot create`` keeps the historical behaviour intact.
         cfg = InstanceConfig()
         result = render_env("alpha", cfg, self._ports())
         assert (
@@ -595,11 +705,10 @@ class TestRenderEnv:
         ) in result
 
     def test_emits_custom_denylist_packages_as_csv(self) -> None:
-        # T2 (Agent 2 B-1): the env var the bundled compose template
-        # consumes must be a comma-separated list; toybox sh has no
-        # array support, so the helper iterates via ``IFS=,``.
-        from beetroot.config import Stealth
-        cfg = InstanceConfig(stealth=Stealth(
+        # The env var the bundled compose template consumes must be a
+        # comma-separated list; toybox sh has no array support, so the
+        # helper iterates via ``IFS=,``.
+        cfg = InstanceConfig(magisk=Magisk(
             denylist=["com.app.one", "com.app.two", "com.x.y.z123"]
         ))
         result = render_env("alpha", cfg, self._ports())
@@ -609,12 +718,11 @@ class TestRenderEnv:
         )
 
     def test_emits_empty_denylist_packages_when_explicitly_disabled(self) -> None:
-        # An explicit empty list (``stealth.denylist: []``) must surface
+        # An explicit empty list (``magisk.denylist: []``) must surface
         # as ``BEETROOT_DENYLIST_PACKAGES=`` (no value) so the helper's
         # ``if [ -n "$DENYLIST_PACKAGES" ]`` guard short-circuits and no
         # rows are SQL'd.
-        from beetroot.config import Stealth
-        cfg = InstanceConfig(stealth=Stealth(denylist=[]))
+        cfg = InstanceConfig(magisk=Magisk(denylist=[]))
         result = render_env("alpha", cfg, self._ports())
         assert "BEETROOT_DENYLIST_PACKAGES=\n" in result
 
@@ -709,7 +817,7 @@ class TestDockerComposeConfig:
         self, instance_root: Path, extra: dict[str, str] | None = None
     ) -> None:
         cfg = InstanceConfig()
-        ports = {"adb": 5555, "frida": 27042, "frida2": 27043}
+        ports = {"adb": 5555, "frida": 27042, "frida_control": 27043}
         env_text = render_env("ci-test", cfg, ports)
         if extra:
             env_text += "".join(f"{k}={v}\n" for k, v in extra.items())

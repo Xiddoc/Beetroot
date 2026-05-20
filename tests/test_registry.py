@@ -166,7 +166,7 @@ class TestAllResolvedPorts:
     ) -> None:
         _seed(tmp_path, "alpha", 0)
         assert registry.all_resolved_ports() == {
-            "alpha": {"adb": 5555, "frida": 27042, "frida2": 27043},
+            "alpha": {"adb": 5555, "frida": 27042, "frida_control": 27043},
         }
 
     def test_multiple_instances_each_their_own_ports(
@@ -176,9 +176,9 @@ class TestAllResolvedPorts:
         _seed(tmp_path, "bravo", 1)
         _seed(tmp_path, "charlie", 2)
         assert registry.all_resolved_ports() == {
-            "alpha": {"adb": 5555, "frida": 27042, "frida2": 27043},
-            "bravo": {"adb": 5565, "frida": 27052, "frida2": 27053},
-            "charlie": {"adb": 5575, "frida": 27062, "frida2": 27063},
+            "alpha": {"adb": 5555, "frida": 27042, "frida_control": 27043},
+            "bravo": {"adb": 5565, "frida": 27052, "frida_control": 27053},
+            "charlie": {"adb": 5575, "frida": 27062, "frida_control": 27063},
         }
 
     def test_override_wins_over_stride(
@@ -188,47 +188,47 @@ class TestAllResolvedPorts:
         result = registry.all_resolved_ports()
         assert result["alpha"]["adb"] == 9000
         assert result["alpha"]["frida"] == 27042
-        assert result["alpha"]["frida2"] == 27043
+        assert result["alpha"]["frida_control"] == 27043
 
     def test_partial_override_only_replaces_named_field(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         _seed(tmp_path, "alpha", 2, Ports(frida_control=12345))
         result = registry.all_resolved_ports()
-        assert result["alpha"] == {"adb": 5575, "frida": 27062, "frida2": 12345}
+        assert result["alpha"] == {"adb": 5575, "frida": 27062, "frida_control": 12345}
 
 
 class TestFindPortCollision:
     def test_empty_others_returns_none(self) -> None:
-        new_ports = {"adb": 5555, "frida": 27042, "frida2": 27043}
+        new_ports = {"adb": 5555, "frida": 27042, "frida_control": 27043}
         assert registry.find_port_collision(new_ports, {}) is None
 
     def test_no_collision_returns_none(self) -> None:
-        new_ports = {"adb": 5555, "frida": 27042, "frida2": 27043}
-        others = {"bravo": {"adb": 5565, "frida": 27052, "frida2": 27053}}
+        new_ports = {"adb": 5555, "frida": 27042, "frida_control": 27043}
+        others = {"bravo": {"adb": 5565, "frida": 27052, "frida_control": 27053}}
         assert registry.find_port_collision(new_ports, others) is None
 
     def test_adb_collision_returns_tuple(self) -> None:
-        new_ports = {"adb": 5555, "frida": 9000, "frida2": 9001}
-        others = {"bravo": {"adb": 5555, "frida": 27052, "frida2": 27053}}
+        new_ports = {"adb": 5555, "frida": 9000, "frida_control": 9001}
+        others = {"bravo": {"adb": 5555, "frida": 27052, "frida_control": 27053}}
         result = registry.find_port_collision(new_ports, others)
         assert result == (5555, "bravo", "adb")
 
     def test_frida_collision_returns_tuple(self) -> None:
-        new_ports = {"adb": 8000, "frida": 27042, "frida2": 8001}
-        others = {"bravo": {"adb": 5565, "frida": 27042, "frida2": 27053}}
+        new_ports = {"adb": 8000, "frida": 27042, "frida_control": 8001}
+        others = {"bravo": {"adb": 5565, "frida": 27042, "frida_control": 27053}}
         result = registry.find_port_collision(new_ports, others)
         assert result == (27042, "bravo", "frida")
 
     def test_frida2_collision_returns_tuple(self) -> None:
-        new_ports = {"adb": 8000, "frida": 9000, "frida2": 27043}
-        others = {"bravo": {"adb": 5565, "frida": 27052, "frida2": 27043}}
+        new_ports = {"adb": 8000, "frida": 9000, "frida_control": 27043}
+        others = {"bravo": {"adb": 5565, "frida": 27052, "frida_control": 27043}}
         result = registry.find_port_collision(new_ports, others)
-        assert result == (27043, "bravo", "frida2")
+        assert result == (27043, "bravo", "frida_control")
 
     def test_cross_kind_collision_detected(self) -> None:
-        new_ports = {"adb": 27042, "frida": 9000, "frida2": 9001}
-        others = {"bravo": {"adb": 5565, "frida": 27042, "frida2": 27053}}
+        new_ports = {"adb": 27042, "frida": 9000, "frida_control": 9001}
+        others = {"bravo": {"adb": 5565, "frida": 27042, "frida_control": 27053}}
         result = registry.find_port_collision(new_ports, others)
         assert result is not None
         port, name, kind = result
@@ -237,10 +237,10 @@ class TestFindPortCollision:
         assert kind == "adb"
 
     def test_first_collision_among_many_is_returned(self) -> None:
-        new_ports = {"adb": 5555, "frida": 27042, "frida2": 27043}
+        new_ports = {"adb": 5555, "frida": 27042, "frida_control": 27043}
         others = {
-            "bravo": {"adb": 5555, "frida": 27052, "frida2": 27053},
-            "charlie": {"adb": 5575, "frida": 27042, "frida2": 27063},
+            "bravo": {"adb": 5555, "frida": 27052, "frida_control": 27053},
+            "charlie": {"adb": 5575, "frida": 27042, "frida_control": 27063},
         }
         result = registry.find_port_collision(new_ports, others)
         assert result is not None
