@@ -103,6 +103,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
+    { name = "rich" },
     { name = "typer" },
     { name = "zstandard" },
 ]
@@ -142,6 +143,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", specifier = ">=15" },
     { name = "typer", specifier = ">=0.12" },
     { name = "zstandard", specifier = ">=0.22" },
 ]
