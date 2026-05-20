@@ -181,10 +181,10 @@ def create(
     """
     Create a new instance directory and stage its files.
 
-    The new ``beetroot.yaml`` is the minimal valid config (``api_version``
-    plus ``android.version``); every other field falls back to schema
+    The new beetroot.yaml is the minimal valid config (api_version
+    plus android.version); every other field falls back to schema
     defaults. To start from a richer baseline, copy a file from the
-    repo's ``examples/`` directory over the generated ``beetroot.yaml``.
+    repo's examples/ directory over the generated beetroot.yaml.
     """
     if preset is not None:
         raise _error(
@@ -297,18 +297,18 @@ def adopt(
     ] = False,
 ) -> None:
     """
-    Adopt a rooted Android device that's already reachable via ``adb``.
+    Adopt a rooted Android device that's already reachable via adb.
 
     Allocates a Beetroot port index for the device (so a follow-up
-    ``beetroot install_frida <name>`` and ``beetroot frida <name>``
+    beetroot install_frida <name> and beetroot frida <name>
     pick the same Frida port a redroid instance with the same index
-    would have got), then writes an ``adb``-kind row to the registry.
-    Unlike ``beetroot create``, no on-disk instance directory is made;
+    would have got), then writes an adb-kind row to the registry.
+    Unlike beetroot create, no on-disk instance directory is made;
     the device is managed by whatever installed it (real phone, third-
-    party emulator, ``adb connect`` from a network device).
+    party emulator, adb connect from a network device).
 
-    Pass ``--verify`` to require the serial to be reachable via
-    ``adb devices`` before the registry row is written.
+    Pass --verify to require the serial to be reachable via
+    adb devices before the registry row is written.
     """
     import shutil  # noqa: PLC0415  # local import — avoids shutil in every CLI startup path
 
@@ -347,7 +347,7 @@ def adopt(
 def apply(
     name: Annotated[str, typer.Argument(help="Instance name.")],
 ) -> None:
-    """Re-render ``.env`` and re-stage files from the instance's beetroot.yaml."""
+    """Re-render .env and re-stage files from the instance's beetroot.yaml."""
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
     lc = cast(api.Lifecycle, _require(backend, api.Lifecycle, "apply"))
@@ -506,6 +506,13 @@ def destroy(
             # Surface the compose failure as a "continuing" advisory so
             # the user knows the host-side cleanup still ran.
             typer.echo(f"[beetroot] (compose down failed: {e}; continuing)")
+        # Remove the registry row BEFORE deleting the directory so an
+        # interrupt between the two operations always leaves a clean
+        # state: a registered-but-deleted instance (row first) is
+        # detectable as an orphan; a deleted-then-missing-row instance
+        # would silently leak the port index. Mirror the invariant in
+        # api.py's _teardown_under_lock.
+        registry.remove(name)
         shutil.rmtree(root)
     else:
         # Orphan registry entry — the on-disk dir is already gone, so
@@ -515,7 +522,7 @@ def destroy(
             f"[beetroot] (instance dir {root} already gone; "
             f"removing orphan registry entry)"
         )
-    registry.remove(name)
+        registry.remove(name)
     typer.echo(f"[beetroot] destroyed {name}")
 
 
@@ -527,9 +534,9 @@ def forget(
     Deregister an instance from the registry without touching its host directory.
 
     Removes the registry row and frees its port index. No host-directory
-    teardown, no ``docker compose down``, no data deletion — it is the
-    inverse of ``beetroot adopt`` (and the safe cleanup path for adb-backed
-    instances that ``beetroot destroy`` refuses to handle). Works for
+    teardown, no docker compose down, no data deletion — it is the
+    inverse of beetroot adopt (and the safe cleanup path for adb-backed
+    instances that beetroot destroy refuses to handle). Works for
     both redroid and adb instances.
     """
     _ensure_exists(name)
@@ -721,45 +728,6 @@ def shell(
         raise typer.Exit(code=rc)
 
 
-@app.command(name="env", hidden=True)
-def env_deprecated(
-    name: Annotated[str, typer.Argument(help="(removed — use 'beetroot status --json')")],
-    all_: Annotated[
-        bool,
-        typer.Option("--all", hidden=True),
-    ] = False,
-) -> None:
-    """(removed in v0.6 — use 'beetroot status --json' for machine-readable output)."""
-    # Emit a one-line deprecation hint on stderr and proxy to status so
-    # common eval-patterns break gracefully. The verb is hidden from
-    # help; scripts that piped through jq on the old shape should
-    # switch to `beetroot status <name>` (identical JSON row).
-    del all_
-    typer.echo(
-        "warn: 'beetroot env' was removed in v0.6 — "
-        "use 'beetroot status --json' for machine-readable output.",
-        err=True,
-    )
-    _ensure_exists(name)
-    meta = registry.get(name)
-    if meta is None:  # pragma: no cover  # _ensure_exists ran upstream
-        raise _error(f"no instance named {name!r}")
-    if isinstance(meta.backend, registry.AdbBackendConfig):
-        resolved = api.Manager.resolve(name)
-        print(json.dumps(  # noqa: T201  # plain JSON stdout
-            {
-                "name": resolved.name,
-                "kind": resolved.kind,
-                "adb_address": resolved.adb_address,
-                "frida_address": resolved.frida_address,
-            },
-            indent=2,
-        ))
-        return
-    inst = _load(name)
-    print(json.dumps(_instance_json_row(inst), indent=2, sort_keys=True))  # noqa: T201  # plain JSON stdout
-
-
 @app.command()
 def status(
     name: Annotated[str, typer.Argument(help="Instance name.")],
@@ -797,13 +765,13 @@ def doctor(
     """
     Run the aggregated health checks for an instance.
 
-    Output is machine-parseable: one ``<check>: <status> [reason]``
-    line per check. ``pass`` rows elide the reason; ``fail`` and
-    ``skip`` rows include it.
+    Output is machine-parseable: one "<check>: <status> [reason]"
+    line per check. "pass" rows elide the reason; "fail" and
+    "skip" rows include it.
 
     Exits 0 if every check passes; otherwise the exit code is the count
-    of ``fail`` results (capped at 255 — the POSIX exit-code ceiling).
-    ``skip`` rows do not count toward the exit code.
+    of "fail" results (capped at 255 — the POSIX exit-code ceiling).
+    "skip" rows do not count toward the exit code.
     """
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
@@ -836,9 +804,9 @@ def frida(
     """
     Invoke the frida CLI against an instance, forwarding extra arguments.
 
-    Any tokens after ``<name>`` (e.g. ``-n com.app``, ``-f com.app -l script.js``)
-    are passed verbatim to the underlying ``frida`` CLI, after Beetroot prepends
-    ``-H localhost:<frida_port>``. Use ``--`` to disambiguate frida flags from
+    Any tokens after <name> (e.g. -n com.app, -f com.app -l script.js)
+    are passed verbatim to the underlying frida CLI, after Beetroot prepends
+    -H localhost:<frida_port>. Use -- to disambiguate frida flags from
     Typer's own option-parsing if needed.
     """
     _ensure_exists(name)
@@ -925,7 +893,7 @@ def snapshot(
         typer.Option("-o", "--output", help="Archive path (default: ./<name>.tar.zst)."),
     ] = None,
 ) -> None:
-    """Pack an instance's host-side state into a ``.tar.zst`` archive."""
+    """Pack an instance's host-side state into a .tar.zst archive."""
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
     snappable = cast(api.Snapshottable, _require(backend, api.Snapshottable, "snapshot"))

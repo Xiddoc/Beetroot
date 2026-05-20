@@ -165,19 +165,24 @@ class TestAdoptedInstanceDispatch:
         # → ``adb -s emulator-5554 shell``.
         assert ["adb", "-s", "emulator-5554", "shell"] in stub_adb
 
-    def test_env_deprecated_proxies_to_json_for_adb_device(
-        self, isolated_registry: Path,
+    def test_shell_forwards_extra_args_to_adb(
+        self,
+        isolated_registry: Path,
+        stub_adb: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # env was removed in v0.6; the hidden shim now emits a JSON
-        # status row (not shell exports) with a deprecation warning.
+        import shutil
+
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
-        result = runner.invoke(cli.app, ["env", "phone"])
+        result = runner.invoke(cli.app, ["shell", "phone", "-c", "id"])
         assert result.exit_code == 0
-        # Deprecation warning on stderr.
-        assert "removed in v0.6" in result.stderr
-        # JSON row on stdout with addresses (not the old shell-export format).
-        assert "adb_address" in result.stdout
-        assert "frida_address" in result.stdout
+        # Extra tokens must appear in the adb argv after "shell".
+        adb_calls = [c for c in stub_adb if "shell" in c]
+        assert adb_calls, "no adb shell call recorded"
+        last_shell = adb_calls[-1]
+        assert "-c" in last_shell
+        assert "id" in last_shell
 
     def test_up_raises_backend_capability_error_with_exit_code_2(
         self,
@@ -285,7 +290,8 @@ class TestModuleVerbThirdParty:
             def install_frida(self, version: str | None = None) -> None:
                 del version
 
-            def shell(self) -> int:
+            def shell(self, args: Sequence[str] | None = None) -> int:
+                del args
                 return 0
 
             def frida_cli(self, args: Sequence[str]) -> int:

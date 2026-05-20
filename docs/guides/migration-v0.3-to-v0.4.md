@@ -131,7 +131,7 @@ custom paths before v0.6 ships, but the load-bearing user story is
   of `fail` results (capped at 255). See
   [`doctor` in the CLI reference](../reference/cli.md#doctor).
 
-* **`beetroot env <name>`** — deprecated in v0.6 and removed.
+* **`env` verb** — removed in v0.6.
   Use `beetroot status --json` for machine-readable instance data.
   See [`status` in the CLI reference](../reference/cli.md#status).
 

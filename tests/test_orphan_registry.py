@@ -169,6 +169,41 @@ class TestDestroyOrphan:
         # Orphan is no longer reported either.
         assert api.Manager.list_orphans() == []
 
+    def test_destroy_orphan_fallback_removes_registry_before_rmtree(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # C7 ordering invariant: the CLI orphan-fallback path must call
+        # registry.remove BEFORE shutil.rmtree. If registry.remove raises,
+        # the directory must still exist (because rmtree hasn't run yet).
+        # An interrupt between the two leaves a detectable orphan rather
+        # than a silently leaked port index.
+
+        runner.invoke(cli.app, ["create", "alpha"])
+        root = registry.instance_path("alpha")
+        assert root.exists()
+
+        call_order: list[str] = []
+
+        original_remove = registry.remove
+        original_rmtree = shutil.rmtree
+
+        def _spy_remove(name: str) -> None:
+            call_order.append("registry.remove")
+            original_remove(name)
+
+        def _spy_rmtree(path: str | bytes | Path) -> None:
+            call_order.append("shutil.rmtree")
+            original_rmtree(path)
+
+        monkeypatch.setattr("beetroot.cli.registry.remove", _spy_remove)
+        monkeypatch.setattr("beetroot.cli.shutil.rmtree", _spy_rmtree)
+
+        result = runner.invoke(cli.app, ["destroy", "alpha", "-y"])
+        assert result.exit_code == 0, result.stderr
+
+        # registry.remove must appear BEFORE shutil.rmtree.
+        assert call_order.index("registry.remove") < call_order.index("shutil.rmtree")
+
 
 class TestCliMainCatchesFileNotFound:
     def test_cli_main_converts_bare_file_not_found_to_error_line(

@@ -601,26 +601,6 @@ class TestCmdShell:
 
 
 # ---------------------------------------------------------------------------
-# cmd_env (deprecated hidden verb — removed in v0.6, emits JSON + warning)
-# ---------------------------------------------------------------------------
-
-
-class TestCmdEnv:
-    def test_env_deprecated_emits_json_and_warning(self, cli_root: Path) -> None:
-        # env was removed in v0.6; the hidden shim emits a deprecation
-        # warning on stderr and proxies a JSON status row to stdout.
-        runner.invoke(cli.app, ["create", "alpha"])
-        result = runner.invoke(cli.app, ["env", "alpha"])
-        assert result.exit_code == 0, result.stderr
-        # Deprecation hint goes to stderr.
-        assert "removed in v0.6" in result.stderr
-        assert "status --json" in result.stderr
-        # JSON row goes to stdout for the common eval-pattern.
-        assert "adb_address" in result.stdout
-        assert "frida_address" in result.stdout
-
-
-# ---------------------------------------------------------------------------
 # cmd_frida
 # ---------------------------------------------------------------------------
 
@@ -771,8 +751,6 @@ class TestTopLevelApp:
             "build",
         ):
             assert verb in result.stdout
-        # env was removed in v0.6 — it's hidden and must NOT appear in --help.
-        assert " env " not in result.stdout
 
     def test_create_help_lists_flags(self) -> None:
         result = runner.invoke(cli.app, ["create", "--help"])
