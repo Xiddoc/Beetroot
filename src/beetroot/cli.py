@@ -77,7 +77,7 @@ def _refuse_destroy_for_adb_kind(name: str) -> None:
     Uses the registry meta directly rather than ``Manager.resolve`` so
     orphan rows (redroid kind, missing on-disk yaml) still flow through
     the v0.3 orphan-destroy path. Adb-kind rows surface a friendly
-    error pointing at the v0.5 ``beetroot forget`` verb.
+    error pointing at the ``beetroot forget`` verb.
     """
     meta = registry.get(name)
     if meta is None:  # pragma: no cover  # ``_ensure_exists`` ran upstream; defensive net only
@@ -86,7 +86,7 @@ def _refuse_destroy_for_adb_kind(name: str) -> None:
         return
     raise api.BackendCapabilityError(
         f"destroy is not supported for {meta.backend.kind!r}-backed "
-        f"instance {name!r}; use the v0.5 ``beetroot forget`` verb to "
+        f"instance {name!r}; use the ``beetroot forget`` verb to "
         "deregister an adopted device.",
     )
 
