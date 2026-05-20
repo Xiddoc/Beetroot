@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import io
+import json
 import shutil
 import tarfile
 from datetime import UTC, datetime
@@ -118,10 +119,13 @@ def _build_manifest(
 
 def _manifest_to_json(manifest: Manifest) -> bytes:
     """Serialise a ``Manifest`` to UTF-8 JSON bytes (sorted keys, two-space indent)."""
-    # ``by_alias=False`` is the default; ``sort_keys`` is requested by
-    # the v0.3 contract so two archives produced from identical state
-    # have byte-identical manifest members.
-    return manifest.model_dump_json(indent=2).encode("utf-8")
+    # ``model_dump_json`` serialises in field-declaration order, which varies
+    # between Python versions and pydantic builds and breaks the byte-identical
+    # guarantee.  Round-tripping through ``json.dumps(sort_keys=True)`` produces
+    # a stable, deterministic encoding: two archives from identical state produce
+    # the same manifest bytes, which lets content-addressable tooling compare
+    # snapshots without re-parsing every field.
+    return json.dumps(manifest.model_dump(mode="json"), sort_keys=True, indent=2).encode("utf-8")
 
 
 def snapshot(instance_root: Path, dest: Path) -> Path:
@@ -141,6 +145,17 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
     takes the exclusive lock) blocks until snapshotting finishes.
     Without this, a destroy race would rmtree the directory mid-read
     and produce a torn archive. (T2 Agent 2 B-12.)
+
+    Warning:
+        Snapshotting a **running** container is unsupported. A live
+        ``/data`` bind-mount commonly contains absolute symlinks created
+        by Android init or the Magisk daemon.  These fail the
+        ``filter="data"`` extraction guard (tarfile raises
+        ``AbsoluteLinkError``) so the resulting archive cannot be
+        restored on most hosts.  :func:`restore` rolls back cleanly when
+        extraction fails (B7a), but the snapshot itself will be
+        unrestorable.  Always run ``beetroot down <name>`` before
+        snapshotting.
 
     Args:
         instance_root: The source instance directory (the one containing
@@ -304,11 +319,19 @@ def _prepare_destination(target: Path, *, force: bool) -> None:
     """
     Validate / clear ``target`` before extraction. Pulled out of :func:`restore`.
 
-    Raises :class:`SnapshotError` if the destination is occupied by a
-    sibling registered instance (refused even under ``--force``) or is
-    non-empty without ``--force``.
+    Raises :class:`SnapshotError` if the destination is a plain file (not a
+    directory), if it is occupied by a sibling registered instance (refused
+    even under ``--force``), or if it is non-empty without ``--force``.
     """
-    if not (target.exists() and any(target.iterdir())):
+    try:
+        occupied = target.exists() and any(target.iterdir())
+    except NotADirectoryError:
+        # ``target`` is an existing regular file; iterdir() blows up.
+        # Re-raise as a SnapshotError so callers see a consistent type.
+        raise SnapshotError(
+            f"{target} exists and is a file, not a directory"
+        ) from None
+    if not occupied:
         return
     for other_name, meta in registry.list_instances().items():
         if not isinstance(meta.backend, registry.RedroidBackendConfig):
@@ -407,13 +430,19 @@ def restore(
     # rollback path uses it to decide whether to ``rmtree``.
     created_dir = not target.exists()
     target.mkdir(parents=True, exist_ok=True)
-    _extract_archive_into(archive, target)
-    # Atomic allocation + registration under one file lock.
-    index = registry.add_allocating(dest_name, target)
     # Local import — api imports snapshot at module load, so a top-level
     # ``from . import api`` would loop.
     from . import api  # noqa: PLC0415
+    # Atomic allocation + registration under one file lock.
+    index = registry.add_allocating(dest_name, target)
     try:
+        # B7a: extraction is INSIDE the rollback try/except so a malformed
+        # archive member (tarfile FilterError / TarError, zstd error)
+        # mid-extraction triggers the same rollback that cleans up the
+        # partial directory.  v0.3 called _extract_archive_into before
+        # the try block, so a corrupt member left a partially-extracted
+        # tree behind that the user had to clean up manually.
+        _extract_archive_into(archive, target)
         # T4: replay the snapshot's path_layout into the new registry
         # entry's stealth_paths slot. v0.4 manifests carry ``{}`` so
         # this is a structural no-op today; a v0.6 snapshot carrying
