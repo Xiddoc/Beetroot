@@ -122,7 +122,7 @@ uv run ruff check --fix src/beetroot/    # auto-fix fixable violations
 uv run ruff format src/beetroot/         # auto-format (optional; no hard policy)
 ```
 
-Ruff is configured in `[tool.ruff]` / `[tool.ruff.lint]` — target Python 3.10, line length 100, with a strict rule set covering 20+ families including `D` (pydocstyle, Google convention).
+Ruff is configured in `[tool.ruff]` / `[tool.ruff.lint]` — target Python 3.13, line length 100, with a strict rule set covering 20+ families including `D` (pydocstyle, Google convention).
 
 **Comments vs. docstrings.** Inline comments (`#`) should be rare and only explain *why* something is done — not *what*. Docstrings on public APIs are required and enforced by ruff's `D` rules with Google convention (`convention = "google"`). The docstring style is D213: the summary goes on the line *after* the opening `"""`, not on the same line. Private functions (leading `_`) do not require docstrings. Tests are per-file-ignored from `D` — test function names should be self-describing.
 

@@ -1,6 +1,6 @@
 [project]
 name = "beetroot"
-version = "0.5.0"
+version = "0.6.0"
 description = "Beetroot CLI — the best Android research setup to beat root"
 readme = "README.md"
 license = { text = "MIT" }

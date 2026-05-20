@@ -96,9 +96,9 @@ through `registry.list_instances()` (which returns
 ## 4. The `stealth_paths` slot (PR6 plumbing landed; defaults empty)
 
 `registry.RedroidBackendConfig` gains an empty `stealth_paths:
-dict[str, str]` field. v0.4 defaults it to `{}`; v0.6's stealth PR1
-will populate it with `{magisk_db, modules_dir, frida_bin}` keys once
-a safe randomized path is validated (see the
+dict[str, str]` field. v0.4 defaults it to `{}`; a future release's
+stealth work will populate it with `{magisk_db, modules_dir, frida_bin}`
+keys once a safe randomized path is validated (see the
 [stealth-posture design doc](../design/stealth-posture.md#31-move-frida-off-datalocaltmp)
 for the research prerequisite). Snapshot / restore round-trips the
 slot through the manifest's `path_layout` field, so a v0.6 snapshot

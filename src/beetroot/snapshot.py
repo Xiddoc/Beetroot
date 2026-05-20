@@ -11,12 +11,12 @@ base image plus the persisted ``/data`` bind mount, so re-running
 
 The archive carries a ``.beetroot-snapshot.json`` manifest at its root.
 The manifest's ``path_layout`` field carries the source instance's
-``RedroidBackendConfig.stealth_paths`` blob (T4) so a randomized
-v0.6 layout round-trips through ``snapshot → restore`` into the new
-instance's registry entry. v0.4 itself defaults the slot to the empty
-dict, so v0.4 → v0.4 round-trips preserve ``{}``; v0.6's PR1 will
-populate the slot in ``Instance.create``'s generator and the same
-round-trip will preserve those randomized paths.
+``RedroidBackendConfig.stealth_paths`` blob (T4) so a randomized layout
+round-trips through ``snapshot → restore`` into the new instance's
+registry entry. v0.4 itself defaults the slot to the empty dict, so
+v0.4 → v0.4 round-trips preserve ``{}``; a future release's stealth
+work will populate the slot in ``Instance.create``'s generator and the
+same round-trip will preserve those randomized paths.
 
 The ``.env`` file is deliberately excluded — it's regenerated from
 ``beetroot.yaml`` on the next ``beetroot apply``.

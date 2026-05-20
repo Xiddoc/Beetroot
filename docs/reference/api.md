@@ -93,8 +93,8 @@ The v0.3 OOP surface (`Instance`, `Manager`, `DeviceBackend`,
   back-compat shim for pre-T7 programmatic callers.
 * **`registry.set_stealth_paths(name, blob)`** — write a `dict[str,
   str]` into the named instance's `RedroidBackendConfig.stealth_paths`
-  slot (T4 plumbing for v0.6's stealth-path PR1). Locked + atomic-
-  replaced via the same `_write` pattern the rest of `registry.py`
+  slot (T4 plumbing for a future release's stealth-path work). Locked +
+  atomic-replaced via the same `_write` pattern the rest of `registry.py`
   uses. Rejects unknown names and adb-kind rows.
 
 ::: beetroot.api

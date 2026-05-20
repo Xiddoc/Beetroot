@@ -276,8 +276,8 @@ shape.
   `/sdcard/Download/<basename>` and the user gets a one-line "install
   via the Magisk app → Modules tab" instruction on stderr. The
   auto-install variant (push directly into `/data/adb/modules_update/`
-  via `su -c`) is deferred to v0.6 pending UX work for per-module
-  success / failure reporting.
+  via `su -c`) is deferred to a future release pending UX work for
+  per-module success / failure reporting.
 * **PR5: CLI integration — `beetroot adopt <serial>`.** **DONE in v0.4
   (T5).** New verb registers an `AdbBackendConfig` row in the
   user-global registry so subsequent `beetroot shell <name>` /

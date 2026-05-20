@@ -25,7 +25,7 @@ This verb:
 Pass a variant to pick a different GMS flavor: `beetroot build none | lite | full | mindthegapps` (default `lite`).
 
 !!! warning "This takes a while"
-    The patcher downloads several large artifacts (Magisk, GApps, Houdini). Budget 10–20 minutes depending on your connection. Re-running `beetroot build` is safe — it only rebuilds what changed.
+    The patcher downloads several large artifacts (Magisk, GApps, Houdini). Budget 10–20 minutes depending on your connection. Re-running `beetroot build` reuses an existing clone when the work directory already matches the same repo URL, but otherwise re-runs the full patcher and image build.
 
 Verify:
 

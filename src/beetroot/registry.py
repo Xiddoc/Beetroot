@@ -85,10 +85,11 @@ class RedroidBackendConfig(BackendConfigBase):
         absolute_path: Absolute path to the instance directory (the
             directory containing ``beetroot.yaml``).
         stealth_paths: Reserved slot for the v0.4 stealth-posture
-            plumbing. Empty in v0.4; v0.6's PR1 populates it with the
-            randomized container-path layout produced by
-            ``Instance.create``. Snapshot / restore round-trips the
-            blob so a v0.6 snapshot lands cleanly on a v0.4 host.
+            plumbing. Empty in v0.4; a future release's stealth work
+            populates it with the randomized container-path layout
+            produced by ``Instance.create``. Snapshot / restore
+            round-trips the blob so a future snapshot lands cleanly on
+            a v0.4 host.
     """
 
     kind: Literal["redroid"] = "redroid"  # type: ignore[mutable-override]  # Literal narrows the base str; required for pydantic discriminated dispatch
@@ -98,7 +99,7 @@ class RedroidBackendConfig(BackendConfigBase):
 
 class AdbBackendConfig(BackendConfigBase):
     """
-    Backend config for the real-device-over-ADB backend that lands in T5.
+    Backend config for the real-device-over-ADB backend (shipped in v0.4, T5).
 
     Attributes:
         kind: Discriminator tag — always ``"adb"``.
@@ -591,12 +592,17 @@ def set_stealth_paths(name: str, stealth_paths: dict[str, str]) -> None:
     """
     Replace the stealth-path blob on an existing redroid instance row.
 
-    Used by :func:`snapshot.restore` (T4) to replay a v0.6-shaped
-    ``path_layout`` from the snapshot manifest into the freshly-allocated
-    registry entry. Keeping the mutation on its own helper (rather
-    than threading the blob through ``add_allocating``) keeps the hot
-    create-path's signature stable and avoids coupling T4's
-    snapshot/restore plumbing to T5's ``AdbBackendConfig`` work.
+    Used by :func:`snapshot.restore` (T4) to replay a path-layout blob
+    from the snapshot manifest into the freshly-allocated registry entry.
+    Keeping the mutation on its own helper (rather than threading the blob
+    through ``add_allocating``) keeps the hot create-path's signature stable
+    and avoids coupling snapshot/restore plumbing to ``AdbBackendConfig``
+    work.
+
+    .. note::
+        This helper and the ``stealth_paths`` slot are **provisional** and
+        may change before v1.0 — stealth path-randomization work is
+        deferred to a future release.
 
     Args:
         name: Instance name to update.
