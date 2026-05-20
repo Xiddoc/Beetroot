@@ -3,7 +3,7 @@
 Beetroot v0.4 is a foundation release: it lands the pydantic-typed
 registry, the second device backend (`AdbDevice` over the host `adb`
 CLI), three new user-facing verbs (`adopt`, `status`, `doctor`), a
-hardened CI / lint / type-check stack, and the plumbing for v0.5's
+hardened CI / lint / type-check stack, and the plumbing for v0.6's
 randomized-path stealth work. The CLI auto-migrates v0.3 registries
 and YAMLs (one warning per process), so "do nothing" gets you most of
 the way — but a handful of breaking changes need attention.
@@ -96,18 +96,18 @@ through `registry.list_instances()` (which returns
 ## 4. The `stealth_paths` slot (PR6 plumbing landed; defaults empty)
 
 `registry.RedroidBackendConfig` gains an empty `stealth_paths:
-dict[str, str]` field. v0.4 defaults it to `{}`; v0.5's stealth PR1
+dict[str, str]` field. v0.4 defaults it to `{}`; v0.6's stealth PR1
 will populate it with `{magisk_db, modules_dir, frida_bin}` keys once
 a safe randomized path is validated (see the
 [stealth-posture design doc](../design/stealth-posture.md#31-move-frida-off-datalocaltmp)
 for the research prerequisite). Snapshot / restore round-trips the
-slot through the manifest's `path_layout` field, so a v0.5 snapshot
+slot through the manifest's `path_layout` field, so a v0.6 snapshot
 restored against a v0.4 host (or vice versa) lands cleanly.
 
 A new `registry.set_stealth_paths(name, blob)` helper writes the
 slot; `config.render_env(..., stealth_paths=...)` consumes it. v0.4
 researchers can pre-populate the slot by hand if they want to test
-custom paths before v0.5 ships, but the load-bearing user story is
+custom paths before v0.6 ships, but the load-bearing user story is
 "don't touch this".
 
 ## 5. New verbs: `adopt`, `status`, `doctor`, and `env --all`
@@ -371,24 +371,26 @@ Runs the v0.4 health-check verb and prints one line per check.
 Useful for sanity-checking that `magisk.zygisk = 1`, `adb.connect`
 succeeds, and the GMS denylist enrolment is in place after the upgrade.
 
-## v0.5 known limitations (deferred from v0.4)
+## v0.5 / v0.6 known limitations (deferred from v0.4)
 
 A handful of items the v0.4 sprint flagged but couldn't ship cleanly
-in-window. These are tracked for v0.5; here so contributors and
-researchers know the rough edges.
+in-window. Two were addressed in v0.5; the rest are tracked for v0.6.
 
-1. **`beetroot adopt` doesn't verify the serial exists** via `adb
-   devices` before writing to the registry. The pre-registration
-   shape is intentional (you can adopt a device before plugging it
-   in), but a typo silently creates a dead registry row. v0.5
-   candidate: opt-in `--verify` flag that runs `adb devices` first
-   and refuses to write if the serial isn't listed.
+1. **`beetroot adopt --verify` (shipped in v0.5).** v0.4's `adopt`
+   didn't verify the serial exists via `adb devices` before writing
+   to the registry, so a typo silently created a dead registry row.
+   v0.5 ships the opt-in `--verify` flag: pass it to run `adb devices`
+   first and refuse to write if the serial isn't listed. The
+   pre-registration shape remains the default (you can still adopt
+   before plugging in).
+   **`beetroot forget <name>` also shipped in v0.5** — deregister an
+   instance from the registry without destroying its host directory or
+   tearing down the container.
 2. **Dual-form `registry.add` / `add_allocating` lives forever.**
    v0.4 accepts both the v0.3 positional `(name, absolute_path,
    index)` form and the new `backend=BackendConfig(...)` keyword form,
-   so existing programmatic code keeps working. v0.5+ should consider
-   marking the v0.3 positional form `@deprecated` and dropping it in
-   v0.6.
+   so existing programmatic code keeps working. v0.6 will mark the
+   v0.3 positional form `@deprecated` and plan its removal.
 3. **Third-party backends can't round-trip through `RegistryFile` JSON
    yet.** v0.4's `BackendConfig` discriminated union only knows about
    `redroid` and `adb`; a third-party `kind` value in a saved registry
@@ -396,7 +398,7 @@ researchers know the rough edges.
    means in v0.4, a third-party backend can be **used in-process**
    (via `register_backend("cloud-xyz", CloudBackend)` + an in-memory
    `Manager.resolve` call), but its registry rows can't survive a
-   Beetroot restart. v0.5 will add a registry-side extension hook for
+   Beetroot restart. v0.6 will add a registry-side extension hook for
    third-party `BackendConfig` subclasses to opt into JSON
    discrimination. See [Adding a backend](adding-a-backend.md) for
    the full "what works now vs deferred" breakdown.
@@ -404,7 +406,7 @@ researchers know the rough edges.
    shipped the `stealth_paths` plumbing (PR6) and the
    `/data/adb/modules_update/` mount swap (PR5), but did **not** flip
    the default Frida path off `/data/local/tmp/`. The flip is
-   deferred to v0.5 pending a written decision on a safe randomized
+   deferred to v0.6 pending a written decision on a safe randomized
    path — see the
    [stealth-posture design doc](../design/stealth-posture.md#31-move-frida-off-datalocaltmp)
    for the research prerequisite and the candidate paths.

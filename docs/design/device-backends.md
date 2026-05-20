@@ -257,7 +257,7 @@ shape.
   `/sdcard/Download/<basename>` and the user gets a one-line "install
   via the Magisk app → Modules tab" instruction on stderr. The
   auto-install variant (push directly into `/data/adb/modules_update/`
-  via `su -c`) is deferred to v0.5 pending UX work for per-module
+  via `su -c`) is deferred to v0.6 pending UX work for per-module
   success / failure reporting.
 * **PR5: CLI integration — `beetroot adopt <serial>`.** **DONE in v0.4
   (T5).** New verb registers an `AdbBackendConfig` row in the
@@ -276,15 +276,15 @@ backend registry to `DeviceBackend`-typed objects. Callers that need
 lifecycle methods narrow with `isinstance(b, Instance)` (or
 `isinstance(b, AdbDevice)` for adb-specific operations).
 
-For writing a third-party backend (the v0.5 cloud-emulator scenario),
+For writing a third-party backend (the v0.6 cloud-emulator scenario),
 the load-bearing recipe lives at
 [Adding a backend](../guides/adding-a-backend.md) — it walks through
 the pydantic `BackendConfig` subclass, the Protocol-satisfying class,
 and the `[project.entry-points."beetroot.backends"]` registration in
 ~30 lines of code. v0.4 ships the in-process registration end-to-end;
-v0.5 will land the registry-side extension hook for the third-party
+v0.6 will land the registry-side extension hook for the third-party
 JSON-discriminator round-trip (see the guide's "What works in v0.4 vs
-deferred to v0.5" section for the exact limitation).
+deferred to v0.6" section for the exact limitation).
 
 ## 7. Out of scope
 
