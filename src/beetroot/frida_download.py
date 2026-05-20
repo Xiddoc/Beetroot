@@ -21,6 +21,16 @@ from . import paths
 from .settings import settings
 
 
+class FridaFetchError(RuntimeError):
+    """Raised when frida-server cannot be downloaded or decompressed.
+
+    Mirrors :class:`~beetroot.modules_download.ModuleFetchError` so callers
+    can catch a single, named domain exception rather than the raw
+    :class:`lzma.LZMAError` or :class:`urllib.error.URLError` that
+    surfaced before this class existed.
+    """
+
+
 def release_url(version: str) -> str:
     """
     Return the GitHub download URL for a frida-server release.
@@ -74,7 +84,8 @@ def download(version: str, *, expected_sha256: str | None = None) -> Path:
         Path to the cached (decompressed, executable) binary.
 
     Raises:
-        RuntimeError: On HTTP errors, network timeouts, or URL errors.
+        FridaFetchError: On HTTP errors, network timeouts, URL errors, or
+            a corrupt/truncated ``.xz`` payload that cannot be decompressed.
         ValueError: If ``expected_sha256`` is set and doesn't match
             the binary's actual digest.
     """
@@ -90,14 +101,20 @@ def download(version: str, *, expected_sha256: str | None = None) -> Path:
         with urllib.request.urlopen(url, timeout=settings.http_timeout) as resp:  # noqa: S310  # URL built from a pinned GitHub release path; scheme is https
             compressed = resp.read()
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"download failed: HTTP {e.code} fetching {url}") from e
+        raise FridaFetchError(f"download failed: HTTP {e.code} fetching {url}") from e
     except TimeoutError as e:
-        raise RuntimeError(
+        raise FridaFetchError(
             f"download timed out after {settings.http_timeout}s: {url}"
         ) from e
     except urllib.error.URLError as e:
-        raise RuntimeError(f"download failed: cannot reach {url}: {e.reason}") from e
-    decompressed = lzma.decompress(compressed)
+        raise FridaFetchError(f"download failed: cannot reach {url}: {e.reason}") from e
+    try:
+        decompressed = lzma.decompress(compressed)
+    except lzma.LZMAError as e:
+        raise FridaFetchError(
+            f"decompression failed for frida-server {url}: the download may be "
+            "corrupt or truncated — delete the partial cache and retry"
+        ) from e
     tmp = out.with_suffix(".tmp")
     tmp.write_bytes(decompressed)
     tmp.chmod(0o755)

@@ -93,28 +93,47 @@ class TestDownload:
 
 
 class TestDownloadErrors:
-    def test_http_error_raises_runtime_error(self, isolated_registry: Path) -> None:
+    def test_http_error_raises_frida_fetch_error(self, isolated_registry: Path) -> None:
         def _raise(url: str, **kwargs: object) -> MagicMock:
             raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)  # type: ignore[arg-type]
 
         with patch("urllib.request.urlopen", side_effect=_raise):
-            with pytest.raises(RuntimeError, match="HTTP 404"):
+            with pytest.raises(frida_download.FridaFetchError, match="HTTP 404"):
                 frida_download.download(VERSION)
 
-    def test_timeout_raises_runtime_error(self, isolated_registry: Path) -> None:
+    def test_timeout_raises_frida_fetch_error(self, isolated_registry: Path) -> None:
         def _raise(url: str, **kwargs: object) -> MagicMock:
             raise TimeoutError("timed out")
 
         with patch("urllib.request.urlopen", side_effect=_raise):
-            with pytest.raises(RuntimeError, match="timed out"):
+            with pytest.raises(frida_download.FridaFetchError, match="timed out"):
                 frida_download.download(VERSION)
 
-    def test_url_error_raises_runtime_error(self, isolated_registry: Path) -> None:
+    def test_url_error_raises_frida_fetch_error(self, isolated_registry: Path) -> None:
         def _raise(url: str, **kwargs: object) -> MagicMock:
             raise urllib.error.URLError("no route to host")
 
         with patch("urllib.request.urlopen", side_effect=_raise):
-            with pytest.raises(RuntimeError, match="cannot reach"):
+            with pytest.raises(frida_download.FridaFetchError, match="cannot reach"):
+                frida_download.download(VERSION)
+
+    def test_frida_fetch_error_is_runtime_error_subclass(self) -> None:
+        # Existing callers that catch RuntimeError continue to work.
+        assert issubclass(frida_download.FridaFetchError, RuntimeError)
+
+    def test_lzma_error_raises_frida_fetch_error(self, isolated_registry: Path) -> None:
+        # A corrupt or truncated .xz payload must surface as FridaFetchError,
+        # not as a raw lzma.LZMAError that reveals internal implementation
+        # details to the caller.
+        def _bad_resp(url: str, **kwargs: object) -> MagicMock:
+            resp = MagicMock()
+            resp.read.return_value = b"not valid lzma data"
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=_bad_resp):
+            with pytest.raises(frida_download.FridaFetchError, match="decompression failed"):
                 frida_download.download(VERSION)
 
 
