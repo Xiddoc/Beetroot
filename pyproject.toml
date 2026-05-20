@@ -203,7 +203,7 @@ exclude_also = [
 # convention (D100/D103 don't fire on them either). Tests are
 # excluded because the per-file ignore in [tool.ruff.lint] drops the
 # ``D`` family there too.
-fail-under = 95
+fail-under = 100
 ignore-init-module = true
 ignore-init-method = true
 ignore-private = true
@@ -240,10 +240,9 @@ ignore_names = [
 
 [tool.mutmut]
 # Mutation testing runs nightly out-of-band (see
-# .github/workflows/mutation-nightly.yml). Scoped to the load-bearing
-# subset of the codebase to keep the nightly under 90 minutes.
-# Expanding to all of ``src/beetroot/`` is on the v0.5 deferred list.
-paths_to_mutate = "src/beetroot/registry.py,src/beetroot/snapshot.py,src/beetroot/api.py,src/beetroot/config.py"
+# .github/workflows/mutation-nightly.yml). Covers the entire
+# ``src/beetroot/`` package, including the backends sub-package.
+paths_to_mutate = "src/beetroot/registry.py,src/beetroot/snapshot.py,src/beetroot/api.py,src/beetroot/config.py,src/beetroot/backends/adb.py,src/beetroot/backends/__init__.py,src/beetroot/ports.py,src/beetroot/compose.py,src/beetroot/frida_download.py,src/beetroot/modules_download.py,src/beetroot/builder.py,src/beetroot/paths.py,src/beetroot/settings.py,src/beetroot/cli.py"
 runner = "uv run pytest -x -q"
 
 [tool.pyright]

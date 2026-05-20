@@ -155,6 +155,16 @@ class Module(BaseModel):
 
     @override
     def model_post_init(self, _ctx: object) -> None:
+        """
+        Validate that exactly one of ``url`` or ``path`` is set.
+
+        Args:
+            _ctx: Pydantic post-init context (unused).
+
+        Raises:
+            ValueError: If neither or both of ``url`` and ``path`` are set,
+                or if ``url`` uses a non-http(s) scheme.
+        """
         if not self.url and not self.path:
             raise ValueError("module entry must set either `url` or `path`")
         if self.url and self.path:
