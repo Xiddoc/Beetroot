@@ -318,3 +318,177 @@ class TestSettingsHonoured:
         runner = FakeRunner()
         build_image(runner=runner)
         assert runner.calls[3].cmd[0] == "/opt/docker"
+
+
+class TestCloneUrlMatches:
+    """Unit tests for _clone_url_matches (idempotency helper)."""
+
+    def test_returns_false_when_dir_does_not_exist(self, tmp_path: Path) -> None:
+        from beetroot.builder import _clone_url_matches
+        assert _clone_url_matches(tmp_path / "nonexistent", "https://example.com/repo.git") is False
+
+    def test_returns_false_when_git_config_missing(self, tmp_path: Path) -> None:
+        from beetroot.builder import _clone_url_matches
+        (tmp_path / ".git").mkdir()
+        assert _clone_url_matches(tmp_path, "https://example.com/repo.git") is False
+
+    def test_returns_true_when_url_matches(self, tmp_path: Path) -> None:
+        from beetroot.builder import _clone_url_matches
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "config").write_text(
+            "[core]\n"
+            "    repositoryformatversion = 0\n"
+            '[remote "origin"]\n'
+            "    url = https://example.com/repo.git\n"
+            "    fetch = +refs/heads/*:refs/remotes/origin/*\n"
+        )
+        assert _clone_url_matches(tmp_path, "https://example.com/repo.git") is True
+
+    def test_returns_false_when_url_differs(self, tmp_path: Path) -> None:
+        from beetroot.builder import _clone_url_matches
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "config").write_text(
+            '[remote "origin"]\n'
+            "    url = https://example.com/DIFFERENT.git\n"
+        )
+        assert _clone_url_matches(tmp_path, "https://example.com/repo.git") is False
+
+    def test_returns_false_when_no_remote_origin(self, tmp_path: Path) -> None:
+        from beetroot.builder import _clone_url_matches
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "config").write_text(
+            "[core]\n"
+            "    repositoryformatversion = 0\n"
+        )
+        assert _clone_url_matches(tmp_path, "https://example.com/repo.git") is False
+
+    def test_returns_true_strips_whitespace(self, tmp_path: Path) -> None:
+        from beetroot.builder import _clone_url_matches
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "config").write_text(
+            '[remote "origin"]\n'
+            "    url =   https://example.com/repo.git   \n"
+        )
+        assert _clone_url_matches(tmp_path, "https://example.com/repo.git") is True
+
+
+class TestBuilderIdempotency:
+    """Builder idempotency: skip rm+clone when the clone URL already matches."""
+
+    def test_skips_rm_and_clone_when_url_matches(self, tmp_path: Path) -> None:
+        # Pre-stage a fake git clone with the default URL.
+        from beetroot.builder import _DEFAULT_REDROID_URL
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "config").write_text(
+            '[remote "origin"]\n'
+            f"    url = {_DEFAULT_REDROID_URL}\n"
+        )
+        runner = FakeRunner()
+        build_image(work_dir=tmp_path, runner=runner)
+
+        # Only 2 calls: patch + compose build (rm and git clone skipped).
+        assert len(runner.calls) == 2
+        assert runner.calls[0].cmd[0] == "uv"
+        assert runner.calls[1].cmd[1] == "compose"
+
+    def test_re_clones_when_url_differs(self, tmp_path: Path) -> None:
+        # Pre-stage a clone with a DIFFERENT URL.
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "config").write_text(
+            '[remote "origin"]\n'
+            "    url = https://example.com/DIFFERENT.git\n"
+        )
+        runner = FakeRunner()
+        build_image(work_dir=tmp_path, runner=runner)
+
+        # 4 calls: rm + clone (because URL mismatch) + patch + build.
+        assert len(runner.calls) == 4
+        assert runner.calls[0].cmd[0] == "rm"
+        assert runner.calls[1].cmd[0] == "git"
+
+    def test_re_clones_when_no_existing_clone(self, tmp_path: Path) -> None:
+        runner = FakeRunner()
+        build_image(work_dir=tmp_path / "fresh", runner=runner)
+        assert len(runner.calls) == 4
+        assert runner.calls[0].cmd[0] == "rm"
+        assert runner.calls[1].cmd[1] == "clone"
+
+    def test_idempotent_run_does_not_change_return_value(self, tmp_path: Path) -> None:
+        # The image tag returned must be the same regardless of whether clone
+        # was skipped (the tag is derived from gapps+version, not the clone step).
+        from beetroot.builder import _DEFAULT_REDROID_URL
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "config").write_text(
+            '[remote "origin"]\n'
+            f"    url = {_DEFAULT_REDROID_URL}\n"
+        )
+        runner = FakeRunner()
+        tag = build_image(work_dir=tmp_path, runner=runner)
+        assert tag == "redroid/redroid:14.0.0_litegapps_houdini_magisk"
+
+
+class TestBuildContext:
+    """build_context param: build context is derived from package, not cwd."""
+
+    def test_explicit_build_context_used_in_compose_build(self, tmp_path: Path) -> None:
+        runner = FakeRunner()
+        build_image(build_context=tmp_path, runner=runner)
+        build_call = runner.calls[-1]
+        # --project-directory must be the explicit build_context
+        pd_idx = build_call.cmd.index("--project-directory")
+        assert build_call.cmd[pd_idx + 1] == str(tmp_path)
+        # BEETROOT_BUILD_CONTEXT env must also match
+        assert build_call.env is not None
+        assert build_call.env["BEETROOT_BUILD_CONTEXT"] == str(tmp_path)
+
+    def test_default_build_context_derives_from_package(self) -> None:
+        # The default is derived from paths.bundled_compose_file(), not Path.cwd().
+        from beetroot import paths
+        from beetroot.builder import _default_build_context
+        expected = paths.bundled_compose_file().parent.parent.parent.parent
+        assert _default_build_context() == expected
+
+    def test_default_build_context_used_when_not_passed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from beetroot.builder import _default_build_context
+        expected_ctx = _default_build_context()
+        runner = FakeRunner()
+        build_image(runner=runner)
+        build_call = runner.calls[-1]
+        pd_idx = build_call.cmd.index("--project-directory")
+        assert build_call.cmd[pd_idx + 1] == str(expected_ctx)
+        assert build_call.env is not None
+        assert build_call.env["BEETROOT_BUILD_CONTEXT"] == str(expected_ctx)
+
+    def test_default_build_context_is_not_cwd(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # cwd is changed to a random tmp dir; the default build context
+        # must still resolve from the package, not cwd.
+        from beetroot.builder import _default_build_context
+        monkeypatch.chdir(tmp_path)
+        ctx = _default_build_context()
+        assert ctx != tmp_path
+
+
+class TestBuilderProgress:
+    """Console progress bars are invoked for each long phase."""
+
+    def test_progress_called_for_clone_phase(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Verify console.progress is called at least once during build_image.
+        import io
+
+        from rich.console import Console
+
+        from beetroot import console
+        buf = io.StringIO()
+        test_console = Console(file=buf, force_terminal=False)
+        console.set_consoles(stderr=test_console)
+        runner = FakeRunner()
+        build_image(runner=runner)
+        # The progress context manager writes its description to stderr.
+        output = buf.getvalue()
+        # At minimum, one of the three progress labels must appear.
+        assert any(
+            label in output
+            for label in ["redroid-script", "Patching", "Building"]
+        ), f"no progress output captured; got: {output!r}"

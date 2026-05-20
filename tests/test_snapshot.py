@@ -672,3 +672,246 @@ class TestRestoreCorruptedArchive:
             snapshot.restore(archive, dest_name="beta", dest_path=target)
         assert not target.exists()
         assert registry.get("beta") is None
+
+
+def _make_archive_with_absolute_symlink(archive: Path, manifest_bytes: bytes) -> None:
+    """Build a valid-manifest archive that also contains an absolute symlink member."""
+    cctx = zstandard.ZstdCompressor()
+    with archive.open("wb") as raw_out, cctx.stream_writer(raw_out) as zst:
+        with tarfile.open(fileobj=zst, mode="w|") as tar:
+            # Valid beetroot.yaml first so _extract_archive_into gets past it
+            yaml_payload = _MIN_YAML.encode()
+            yaml_info = tarfile.TarInfo(name="./beetroot.yaml")
+            yaml_info.size = len(yaml_payload)
+            yaml_info.mode = 0o644
+            tar.addfile(yaml_info, io.BytesIO(yaml_payload))
+            # Absolute symlink — triggers tarfile.AbsoluteLinkError under
+            # filter="data".  This is the B7d scenario: a live container's
+            # /data bind-mount can contain such symlinks, making the archive
+            # unrestorable.
+            link_info = tarfile.TarInfo(name="./data/evil_link")
+            link_info.type = tarfile.SYMTYPE
+            link_info.linkname = "/etc/passwd"
+            link_info.mode = 0o755
+            tar.addfile(link_info)
+            # Manifest at the end so read_manifest() succeeds
+            manifest_info = tarfile.TarInfo(name=f"./{snapshot.MANIFEST_FILENAME}")
+            manifest_info.size = len(manifest_bytes)
+            manifest_info.mode = 0o644
+            tar.addfile(manifest_info, io.BytesIO(manifest_bytes))
+
+
+_VALID_MANIFEST_BYTES = json.dumps(
+    {
+        "schema_version": 1,
+        "name": "alpha",
+        "source_index": 0,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "beetroot_version": "0.1.0",
+        "path_layout": {},
+    }
+).encode("utf-8")
+
+
+class TestB7aExtractionRollback:
+    """B7a: a corrupt/abusive archive that fails mid-extraction leaves no partial dir."""
+
+    def test_abusive_archive_leaves_no_partial_dir(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # Archive passes read_manifest() but fails _extract_archive_into()
+        # because of an AbsoluteLinkError on the embedded symlink.
+        archive = tmp_path / "abusive.tar.zst"
+        _make_archive_with_absolute_symlink(archive, _VALID_MANIFEST_BYTES)
+
+        target = tmp_path / "beta"
+        with pytest.raises((snapshot.SnapshotError, tarfile.FilterError)):
+            snapshot.restore(archive, dest_name="beta", dest_path=target)
+
+        # B7a fix: the partial directory must NOT survive.
+        assert not target.exists(), (
+            "B7a regression: partial extracted directory left behind after "
+            "mid-extraction failure"
+        )
+        assert registry.get("beta") is None
+
+    def test_abusive_archive_force_mode_still_rolls_back(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # Even with --force (which wipes an existing dir), a mid-extraction
+        # failure must clean up the newly-created directory.
+        archive = tmp_path / "abusive.tar.zst"
+        _make_archive_with_absolute_symlink(archive, _VALID_MANIFEST_BYTES)
+
+        target = tmp_path / "beta"
+        target.mkdir()
+        (target / "marker.txt").write_bytes(b"temporary")
+
+        with pytest.raises((snapshot.SnapshotError, tarfile.FilterError)):
+            snapshot.restore(archive, dest_name="beta", dest_path=target, force=True)
+
+        assert not target.exists()
+        assert registry.get("beta") is None
+
+
+class TestB7bDestIsFile:
+    """B7b: _prepare_destination raises SnapshotError when target is a file."""
+
+    def test_restore_to_file_path_raises(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        src = _make_instance(tmp_path / "alpha")
+        registry.add("alpha", src, 0)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+        registry.remove("alpha")
+
+        # Write a plain file at the destination path.
+        file_dest = tmp_path / "not_a_dir.txt"
+        file_dest.write_bytes(b"I am a file, not a directory")
+
+        with pytest.raises(snapshot.SnapshotError, match="is a file"):
+            snapshot.restore(archive, dest_name="beta", dest_path=file_dest)
+
+        # The file must still exist and be untouched.
+        assert file_dest.is_file()
+        assert file_dest.read_bytes() == b"I am a file, not a directory"
+        assert registry.get("beta") is None
+
+    def test_restore_to_file_path_raises_with_force(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        src = _make_instance(tmp_path / "alpha")
+        registry.add("alpha", src, 0)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+        registry.remove("alpha")
+
+        file_dest = tmp_path / "not_a_dir.txt"
+        file_dest.write_bytes(b"still a file")
+
+        with pytest.raises(snapshot.SnapshotError, match="is a file"):
+            snapshot.restore(
+                archive, dest_name="beta", dest_path=file_dest, force=True
+            )
+        assert file_dest.is_file()
+
+
+class TestB7cManifestSortedKeys:
+    """B7c: _manifest_to_json produces sorted-key, byte-identical output."""
+
+    def test_same_content_produces_identical_bytes(self) -> None:
+        # Construct the same manifest twice and verify byte identity.
+        m1 = snapshot.Manifest(
+            name="alpha",
+            source_index=0,
+            created_at="2026-01-01T00:00:00+00:00",
+            beetroot_version="0.1.0",
+            path_layout={"z": "last", "a": "first"},
+        )
+        m2 = snapshot.Manifest(
+            name="alpha",
+            source_index=0,
+            created_at="2026-01-01T00:00:00+00:00",
+            beetroot_version="0.1.0",
+            path_layout={"a": "first", "z": "last"},
+        )
+        b1 = snapshot._manifest_to_json(m1)
+        b2 = snapshot._manifest_to_json(m2)
+        assert b1 == b2, (
+            "B7c regression: manifests with same content but different field-insertion "
+            "order produced different bytes"
+        )
+
+    def test_manifest_output_is_sorted(self) -> None:
+        m = snapshot.Manifest(
+            name="z_name",
+            source_index=5,
+            created_at="2026-01-01T00:00:00+00:00",
+            beetroot_version="0.1.0",
+        )
+        raw = snapshot._manifest_to_json(m)
+        parsed = json.loads(raw)
+        keys = list(parsed.keys())
+        assert keys == sorted(keys), f"keys not sorted: {keys}"
+
+    def test_round_trip_after_sort_keys(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # The byte-stable manifest must still be parseable by read_manifest.
+        src = _make_instance(tmp_path / "alpha")
+        registry.add("alpha", src, 0)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+        manifest = snapshot.read_manifest(archive)
+        assert manifest.name == "alpha"
+
+
+class TestAdbBackendBranchCoverage:
+    """Cover the 'continue' branches that skip ADB-backed entries in find/prepare."""
+
+    def test_find_registry_entry_skips_adb_backend(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # Register an ADB-backed instance first, then the target redroid
+        # instance.  _find_registry_entry must skip the ADB entry and
+        # return the redroid entry.
+        from beetroot import registry as reg
+        reg.add(
+            "adb-device",
+            index=9,
+            backend=reg.AdbBackendConfig(serial="emulator-5554"),
+        )
+        src = _make_instance(tmp_path / "alpha")
+        reg.add("alpha", src, 0)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+        manifest = snapshot.read_manifest(archive)
+        assert manifest.name == "alpha"
+
+    def test_prepare_destination_skips_adb_backend_in_collision_check(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # _prepare_destination's loop skips ADB-backed entries when
+        # checking for cross-instance collisions.  Register an ADB
+        # instance then try to restore a snapshot into an occupied dir.
+        from beetroot import registry as reg
+        src = _make_instance(tmp_path / "alpha")
+        reg.add("alpha", src, 0)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+        reg.remove("alpha")
+
+        # Register an ADB-backed instance (not a redroid instance) — the
+        # collision guard must not fire for it.
+        reg.add(
+            "adb-device",
+            index=9,
+            backend=reg.AdbBackendConfig(serial="emulator-5554"),
+        )
+
+        # An occupied non-registered dir without force must raise the
+        # non-empty error (NOT the cross-instance error, since the ADB
+        # entry is skipped).
+        occupied = tmp_path / "occupied"
+        occupied.mkdir()
+        (occupied / "some_file.txt").write_bytes(b"some content")
+
+        with pytest.raises(snapshot.SnapshotError, match="--force"):
+            snapshot.restore(archive, dest_name="beta", dest_path=occupied)
+
+    def test_b7a_rollback_pre_existing_empty_target_skips_rmtree(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # Branch coverage for the rollback path where created_dir=False
+        # (target already existed, but was empty so _prepare_destination
+        # returned without wiping it).  When extraction fails, rollback
+        # must NOT try to rmtree — we didn't create the directory.
+        archive = tmp_path / "abusive.tar.zst"
+        _make_archive_with_absolute_symlink(archive, _VALID_MANIFEST_BYTES)
+
+        target = tmp_path / "pre_existing_empty"
+        target.mkdir()  # already exists, empty — created_dir will be False
+
+        with pytest.raises((snapshot.SnapshotError, tarfile.FilterError)):
+            snapshot.restore(archive, dest_name="beta", dest_path=target)
+
+        # The pre-existing (empty) dir must still exist — rollback skips
+        # rmtree when it didn't create the directory.
+        assert target.exists()
+        assert registry.get("beta") is None
