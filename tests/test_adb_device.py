@@ -170,6 +170,20 @@ class TestInstallFrida:
             "forward", "tcp:27052", "tcp:27042",
         ]
 
+    def test_raises_when_adb_not_on_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        fake_cached = tmp_path / "frida-server-16.4.10"
+        fake_cached.write_bytes(b"fake-binary")
+        monkeypatch.setattr(
+            frida_download, "download", lambda version: fake_cached,
+        )
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        with pytest.raises(api.AdbNotInstalledError, match="adb not found on PATH"):
+            _make_device().install_frida("16.4.10")
+
     def test_raises_when_adb_returns_nonzero(
         self,
         monkeypatch: pytest.MonkeyPatch,

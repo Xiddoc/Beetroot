@@ -203,7 +203,16 @@ class AdbDevice:
 
         Args:
             version: The frida release tag (e.g. ``16.4.10``).
+
+        Raises:
+            AdbNotInstalledError: If the ``adb`` binary is not on PATH.
         """
+        import shutil  # noqa: PLC0415  # local to avoid pulling shutil at module import
+
+        if shutil.which(_ADB) is None:
+            raise AdbNotInstalledError(
+                "adb not found on PATH (install android-tools)",
+            )
         cached = frida_download.download(version)
         self._adb("push", str(cached), _REMOTE_FRIDA_SERVER)
         self._adb_shell(["chmod", "755", _REMOTE_FRIDA_SERVER])
