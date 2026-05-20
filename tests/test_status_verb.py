@@ -48,13 +48,16 @@ class TestStatusRedroid:
 
 
 class TestStatusAdb:
-    def _seed_adb_instance(self, cli_root: Path, name: str = "phone") -> None:
+    def _seed_adb_instance(
+        self, cli_root: Path, name: str = "phone", index: int = 0,
+        serial: str = "emulator-5554",
+    ) -> None:
         del cli_root  # fixture present only for XDG isolation
         path = paths.user_registry_file()
         path.parent.mkdir(parents=True, exist_ok=True)
         meta = registry.InstanceMeta(
-            backend=registry.AdbBackendConfig(serial="emulator-5554"),
-            index=0,
+            backend=registry.AdbBackendConfig(serial=serial),
+            index=index,
             created_at=datetime.now(UTC),
         )
         doc = registry.RegistryFile(instances={name: meta})
@@ -68,13 +71,27 @@ class TestStatusAdb:
         assert row["name"] == "phone"
         assert row["kind"] == "adb"
         assert row["serial"] == "emulator-5554"
-        # Adb backend has no on-disk instance dir; ``absolute_path`` /
-        # ``path`` must not surface for adb-kind rows.
+        # Adb backend has no on-disk instance dir; absolute_path /
+        # path must not surface for adb-kind rows.
         assert "absolute_path" not in row
         assert "path" not in row
-        # Spec: ``ports.frida2`` is omitted for adb-kind rows because
+        # Spec: ports.frida2 is omitted for adb-kind rows because
         # the frida-control port is a redroid-only concept (the second
-        # forwarded port). Adb-kind rows don't surface a ``ports`` key
+        # forwarded port). Adb-kind rows don't surface a ports key
         # at all in this impl.
         assert "ports" not in row or "frida2" not in row.get("ports", {})
         assert "stealth_paths" in row
+
+    def test_index1_adb_reports_correct_frida_port(self, cli_root: Path) -> None:
+        # B1 regression guard: an adb device at index 1 must report the
+        # stride-of-10 frida port for index 1 (27052), NOT the hardcoded
+        # index-0 default (27042). This distinguishes a real fix from code
+        # that only happened to pass because the test seeded index 0.
+        self._seed_adb_instance(cli_root, name="phone1", index=1, serial="emulator-5564")
+        result = runner.invoke(cli.app, ["status", "phone1"])
+        assert result.exit_code == 0, result.stderr
+        row = json.loads(result.stdout)
+        # adb_address is the raw serial, not a host:port pair.
+        assert row["adb_address"] == "emulator-5564"
+        # frida_address must reflect index 1 (frida_port = 27042 + 1*10 = 27052).
+        assert row["frida_address"] == "localhost:27052"

@@ -86,9 +86,10 @@ class FakeBackend:
     def install_frida(self, version: str | None = None) -> None:
         del version
 
-    def shell(self) -> int:
+    def shell(self, args: Sequence[str] | None = None) -> int:
+        cmd = ["ssh", self._config.host, *(args or [])]
         return subprocess.run(  # noqa: S603  # synthetic test backend; argv is constant
-            ["ssh", self._config.host],  # noqa: S607  # ssh on $PATH is the third-party backend's contract
+            cmd,
             check=False,
         ).returncode
 

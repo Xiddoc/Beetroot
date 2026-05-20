@@ -43,9 +43,11 @@ bravo         1    localhost:5565        localhost:27052       running       /ho
 ## Getting ports programmatically
 
 ```bash
-eval $(beetroot env alpha)
-echo "$ANDROID_DEVICE"  # localhost:5555
-echo "$FRIDA_DEVICE"    # localhost:27042
+beetroot status --json alpha | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+print(r['adb_address'])    # localhost:5555
+print(r['frida_address'])  # localhost:27042
+"
 ```
 
 Or from JSON:

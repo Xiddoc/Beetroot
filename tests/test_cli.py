@@ -399,6 +399,20 @@ class TestCmdUp:
         assert result.exit_code == 0, result.stderr
         assert mock_run.call_count == 2
 
+    def test_up_all_skips_non_lifecycle_backend(self, cli_root: Path) -> None:
+        # A mixed registry (one redroid + one adb) — up --all must skip the
+        # adb-backed instance with a stderr advisory and only compose-up redroid.
+        runner.invoke(cli.app, ["create", "redroid-inst"])
+        runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "adb-inst"])
+        with _patched_subprocess() as mock_run:
+            result = runner.invoke(cli.app, ["up", "--all"])
+        assert result.exit_code == 0, result.stderr
+        # Only the redroid instance triggers compose; the adb one is skipped.
+        assert mock_run.call_count == 1
+        # Skip advisory goes to stderr, not stdout.
+        assert "skipped" in result.stderr
+        assert "adb-inst" in result.stderr
+
 
 class TestCmdDown:
     def test_down_invokes_compose(self, cli_root: Path) -> None:
@@ -439,15 +453,17 @@ class TestCmdDestroy:
 
     def test_destroy_prompt_yes(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
-        with _patched_subprocess(), patch("builtins.input", return_value="y"):
-            result = runner.invoke(cli.app, ["destroy", "alpha"])
+        # CliRunner injects "y\n" as stdin input for typer.confirm.
+        with _patched_subprocess():
+            result = runner.invoke(cli.app, ["destroy", "alpha"], input="y\n")
         assert result.exit_code == 0, result.stderr
         assert registry.get("alpha") is None
 
     def test_destroy_prompt_no_aborts(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
-        with _patched_subprocess(), patch("builtins.input", return_value="n"):
-            result = runner.invoke(cli.app, ["destroy", "alpha"])
+        # CliRunner injects "n\n" as stdin input for typer.confirm.
+        with _patched_subprocess():
+            result = runner.invoke(cli.app, ["destroy", "alpha"], input="n\n")
         assert result.exit_code == 0, result.stderr
         assert registry.get("alpha") is not None
         assert "aborted" in result.stdout
@@ -582,20 +598,6 @@ class TestCmdShell:
         with patch("subprocess.run", side_effect=_proc):
             result = runner.invoke(cli.app, ["shell", "alpha"])
         assert result.exit_code == 7
-
-
-# ---------------------------------------------------------------------------
-# cmd_env
-# ---------------------------------------------------------------------------
-
-
-class TestCmdEnv:
-    def test_env_prints_exports(self, cli_root: Path) -> None:
-        runner.invoke(cli.app, ["create", "alpha"])
-        result = runner.invoke(cli.app, ["env", "alpha"])
-        assert result.exit_code == 0, result.stderr
-        assert "ANDROID_DEVICE=localhost:5555" in result.stdout
-        assert "FRIDA_DEVICE=localhost:27042" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -744,7 +746,6 @@ class TestTopLevelApp:
             "ls",
             "logs",
             "shell",
-            "env",
             "frida",
             "module",
             "build",

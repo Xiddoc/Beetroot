@@ -368,18 +368,22 @@ class TestInstanceDestroy:
         assert registry.get("alpha") is None
         assert not root.exists()
 
-    def test_destroy_prompt_yes(self, cli_root: Path) -> None:
+    def test_destroy_yes_false_raises_value_error(self, cli_root: Path) -> None:
+        # The library API must NOT prompt on stdin — calling destroy(yes=False)
+        # raises ValueError so the caller knows they must confirm first.
+        # The CLI does this via typer.confirm before calling destroy(yes=True).
         inst = api.Instance.create("alpha")
-        with _patched_subprocess(), patch("builtins.input", return_value="y"):
-            inst.destroy()
-        assert registry.get("alpha") is None
+        with pytest.raises(ValueError, match="yes=True"):
+            inst.destroy(yes=False)
+        # Registry entry survives — no side effect ran.
+        assert registry.get("alpha") is not None
 
-    def test_destroy_prompt_no_raises(self, cli_root: Path) -> None:
+    def test_destroy_yes_false_is_default(self, cli_root: Path) -> None:
+        # The default yes=False should also raise (defense against accidental
+        # library calls that omit the kwarg entirely).
         inst = api.Instance.create("alpha")
-        with _patched_subprocess(), patch("builtins.input", return_value="n"):
-            with pytest.raises(RuntimeError, match="aborted"):
-                inst.destroy()
-        # Registry entry survives.
+        with pytest.raises(ValueError, match="yes=True"):
+            inst.destroy()
         assert registry.get("alpha") is not None
 
     def test_destroy_when_root_already_gone(self, cli_root: Path) -> None:

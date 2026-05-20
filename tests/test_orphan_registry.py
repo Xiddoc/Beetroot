@@ -102,9 +102,11 @@ class TestCliLsSurfacesOrphans:
 
         result = runner.invoke(cli.app, ["ls"])
         assert result.exit_code == 0, result.stderr
-        assert "skipping 1 orphan" in result.stdout
-        assert "alpha" in result.stdout
-        assert "beetroot destroy" in result.stdout
+        # Orphan advisory goes to stderr (not stdout) so it never
+        # pollutes JSON or table output captured by downstream tools.
+        assert "skipping 1 orphan" in result.stderr
+        assert "alpha" in result.stderr
+        assert "beetroot destroy" in result.stderr
 
     def test_ls_with_mix_shows_both_table_and_orphan_line(
         self, cli_root: Path
@@ -118,8 +120,9 @@ class TestCliLsSurfacesOrphans:
         assert "bravo" in result.stdout
         # Header is only printed once.
         assert result.stdout.count("NAME") == 1
-        assert "skipping 1 orphan entry" in result.stdout
-        assert "alpha" in result.stdout
+        # Orphan advisory goes to stderr.
+        assert "skipping 1 orphan entry" in result.stderr
+        assert "alpha" in result.stderr
 
     def test_ls_multiple_orphans_uses_plural(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
@@ -130,11 +133,12 @@ class TestCliLsSurfacesOrphans:
 
         result = runner.invoke(cli.app, ["ls"])
         assert result.exit_code == 0, result.stderr
-        assert "skipping 2 orphan entries" in result.stdout
-        assert "alpha" in result.stdout
-        assert "bravo" in result.stdout
+        # Orphan advisory goes to stderr.
+        assert "skipping 2 orphan entries" in result.stderr
+        assert "alpha" in result.stderr
+        assert "bravo" in result.stderr
 
-    def test_ls_json_includes_orphan_skip_line_on_stdout(
+    def test_ls_json_includes_orphan_skip_line_on_stderr(
         self, cli_root: Path
     ) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
@@ -143,10 +147,11 @@ class TestCliLsSurfacesOrphans:
 
         result = runner.invoke(cli.app, ["ls", "--json"])
         assert result.exit_code == 0, result.stderr
-        # JSON has only bravo; orphan-skip line follows.
+        # JSON has only bravo; orphan-skip advisory goes to stderr
+        # so it never pollutes the JSON stream.
         assert '"bravo"' in result.stdout
         assert '"alpha"' not in result.stdout
-        assert "skipping 1 orphan" in result.stdout
+        assert "skipping 1 orphan" in result.stderr
 
 
 class TestDestroyOrphan:
@@ -163,6 +168,41 @@ class TestDestroyOrphan:
         assert registry.get("alpha") is None
         # Orphan is no longer reported either.
         assert api.Manager.list_orphans() == []
+
+    def test_destroy_orphan_fallback_removes_registry_before_rmtree(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # C7 ordering invariant: the CLI orphan-fallback path must call
+        # registry.remove BEFORE shutil.rmtree. If registry.remove raises,
+        # the directory must still exist (because rmtree hasn't run yet).
+        # An interrupt between the two leaves a detectable orphan rather
+        # than a silently leaked port index.
+
+        runner.invoke(cli.app, ["create", "alpha"])
+        root = registry.instance_path("alpha")
+        assert root.exists()
+
+        call_order: list[str] = []
+
+        original_remove = registry.remove
+        original_rmtree = shutil.rmtree
+
+        def _spy_remove(name: str) -> None:
+            call_order.append("registry.remove")
+            original_remove(name)
+
+        def _spy_rmtree(path: str | bytes | Path) -> None:
+            call_order.append("shutil.rmtree")
+            original_rmtree(path)
+
+        monkeypatch.setattr("beetroot.cli.registry.remove", _spy_remove)
+        monkeypatch.setattr("beetroot.cli.shutil.rmtree", _spy_rmtree)
+
+        result = runner.invoke(cli.app, ["destroy", "alpha", "-y"])
+        assert result.exit_code == 0, result.stderr
+
+        # registry.remove must appear BEFORE shutil.rmtree.
+        assert call_order.index("registry.remove") < call_order.index("shutil.rmtree")
 
 
 class TestCliMainCatchesFileNotFound:

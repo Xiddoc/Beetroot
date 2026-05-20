@@ -165,19 +165,24 @@ class TestAdoptedInstanceDispatch:
         # → ``adb -s emulator-5554 shell``.
         assert ["adb", "-s", "emulator-5554", "shell"] in stub_adb
 
-    def test_env_dispatches_to_adb_device(
-        self, isolated_registry: Path,
+    def test_shell_forwards_extra_args_to_adb(
+        self,
+        isolated_registry: Path,
+        stub_adb: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        import shutil
+
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
-        result = runner.invoke(cli.app, ["env", "phone"])
+        result = runner.invoke(cli.app, ["shell", "phone", "-c", "id"])
         assert result.exit_code == 0
-        # T6's _emit_env_adb emits ADB_SERIAL + FRIDA_HOST for adb-backed
-        # instances (render_env is redroid-only — emits compose .env
-        # keys that don't apply to a physical phone). T5's adopt verb
-        # registers the row; the env verb dispatches via the registry's
-        # kind discriminator into the adb-specific helper.
-        assert "export ADB_SERIAL=emulator-5554" in result.stdout
-        assert "FRIDA_HOST=localhost:" in result.stdout
+        # Extra tokens must appear in the adb argv after "shell".
+        adb_calls = [c for c in stub_adb if "shell" in c]
+        assert adb_calls, "no adb shell call recorded"
+        last_shell = adb_calls[-1]
+        assert "-c" in last_shell
+        assert "id" in last_shell
 
     def test_up_raises_backend_capability_error_with_exit_code_2(
         self,
@@ -285,7 +290,8 @@ class TestModuleVerbThirdParty:
             def install_frida(self, version: str | None = None) -> None:
                 del version
 
-            def shell(self) -> int:
+            def shell(self, args: Sequence[str] | None = None) -> int:
+                del args
                 return 0
 
             def frida_cli(self, args: Sequence[str]) -> int:

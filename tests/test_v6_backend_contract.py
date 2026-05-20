@@ -103,7 +103,8 @@ class _FakeBackend:
     def install_frida(self, version: str | None = None) -> None:
         del version
 
-    def shell(self) -> int:
+    def shell(self, args: Sequence[str] | None = None) -> int:
+        del args
         return 0
 
     def frida_cli(self, args: Sequence[str]) -> int:
@@ -611,7 +612,8 @@ class TestUpVerbNonInstanceBackend:
             def install_frida(self, version: str | None = None) -> None:
                 del version
 
-            def shell(self) -> int:
+            def shell(self, args: Sequence[str] | None = None) -> int:
+                del args
                 return 0
 
             def frida_cli(self, args: Sequence[str]) -> int:
@@ -681,10 +683,9 @@ class TestDestroyOrphanBranches:
         import shutil as _shutil
         _shutil.rmtree(registry.instance_path("alpha"))
 
-        with patch("builtins.input", return_value="n"):
-            result = runner.invoke(cli.app, ["destroy", "alpha"])
+        result = runner.invoke(cli.app, ["destroy", "alpha"], input="n\n")
         assert result.exit_code == 0, result.stderr
-        assert "aborted" in result.stdout
+        assert "aborted" in result.output
         assert registry.get("alpha") is not None  # not cleaned up
 
     def test_orphan_prompt_yes_proceeds_to_cleanup(
@@ -695,8 +696,7 @@ class TestDestroyOrphanBranches:
         import shutil as _shutil
         _shutil.rmtree(registry.instance_path("alpha"))
 
-        with patch("builtins.input", return_value="y"):
-            result = runner.invoke(cli.app, ["destroy", "alpha"])
+        result = runner.invoke(cli.app, ["destroy", "alpha"], input="y\n")
         assert result.exit_code == 0, result.stderr
         assert registry.get("alpha") is None
 
