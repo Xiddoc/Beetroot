@@ -370,8 +370,8 @@ class AdbDevice:
         """Raise :class:`BackendCapabilityError` — adb devices are always-on."""
         raise BackendCapabilityError(
             f"down is not supported for adb-backed instance {self._name!r}; "
-            "the device is managed outside Beetroot. "
-            "Use `beetroot forget {name}` (v0.5) to deregister.",
+            f"the device is managed outside Beetroot. "
+            f"Use `beetroot forget {self._name}` to deregister.",
         )
 
     def restart(self) -> None:
@@ -393,7 +393,7 @@ class AdbDevice:
         raise BackendCapabilityError(
             f"destroy is not supported for adb-backed instance "
             f"{self._name!r}; the device is managed outside Beetroot. "
-            "Use `beetroot forget {name}` (v0.5) to deregister.",
+            f"Use `beetroot forget {self._name}` to deregister.",
         )
 
     def snapshot(self, dest: Path) -> Path:  # noqa: ARG002  # ``dest`` mirrors Instance.snapshot for verb parity

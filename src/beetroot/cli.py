@@ -491,6 +491,24 @@ def destroy(
     typer.echo(f"[beetroot] destroyed {name}")
 
 
+@app.command()
+def forget(
+    name: Annotated[str, typer.Argument(help="Instance name to deregister.")],
+) -> None:
+    """
+    Deregister an instance from the registry without touching its host directory.
+
+    Removes the registry row and frees its port index. No host-directory
+    teardown, no ``docker compose down``, no data deletion — it is the
+    inverse of ``beetroot adopt`` (and the safe cleanup path for adb-backed
+    instances that ``beetroot destroy`` refuses to handle). Works for
+    both redroid and adb instances.
+    """
+    _ensure_exists(name)
+    registry.remove(name)
+    typer.echo(f"[beetroot] forgot {name} (registry row removed; host directory untouched)")
+
+
 @app.command(name="ls")
 def ls(
     json_out: Annotated[

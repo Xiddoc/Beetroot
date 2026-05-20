@@ -339,6 +339,30 @@ class TestLifecycleStubs:
         with pytest.raises(api.BackendCapabilityError, match="adb-backed"):
             _make_device().snapshot(tmp_path / "out.tar.zst")
 
+    def test_down_error_contains_real_name_not_literal_brace(self) -> None:
+        dev = _make_device(serial="emulator-5554")
+        with pytest.raises(api.BackendCapabilityError, match="phone"):
+            dev.down()
+
+    def test_down_error_does_not_contain_v05_parenthetical(self) -> None:
+        dev = _make_device()
+        with pytest.raises(api.BackendCapabilityError) as exc_info:
+            dev.down()
+        assert "(v0.5)" not in str(exc_info.value)
+        assert "{name}" not in str(exc_info.value)
+
+    def test_destroy_error_contains_real_name_not_literal_brace(self) -> None:
+        dev = _make_device(serial="emulator-5554")
+        with pytest.raises(api.BackendCapabilityError, match="phone"):
+            dev.destroy(yes=True)
+
+    def test_destroy_error_does_not_contain_v05_parenthetical(self) -> None:
+        dev = _make_device()
+        with pytest.raises(api.BackendCapabilityError) as exc_info:
+            dev.destroy(yes=True)
+        assert "(v0.5)" not in str(exc_info.value)
+        assert "{name}" not in str(exc_info.value)
+
 
 class TestFromMeta:
     def test_constructs_from_registry_meta(

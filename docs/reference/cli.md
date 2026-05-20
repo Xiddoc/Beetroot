@@ -206,6 +206,30 @@ Steps:
 
 ---
 
+## `forget`
+
+Deregister an instance from the registry without touching its host directory.
+
+```
+beetroot forget <name>
+```
+
+| Argument / Flag | Type | Description |
+|----------------|------|-------------|
+| `name` | positional | Instance name to deregister |
+
+Removes the registry row and frees its port index. No host-directory teardown, no `docker compose down`, no data deletion. Works for both redroid and adb-backed instances.
+
+This is the companion to `beetroot adopt` — the safe way to remove an adb-adopted device from the registry when you no longer want Beetroot to track it. For redroid instances where you want to destroy the data too, use `beetroot destroy` instead.
+
+**Output:**
+
+```
+[beetroot] forgot phone (registry row removed; host directory untouched)
+```
+
+---
+
 ## `ls`
 
 List all known instances.

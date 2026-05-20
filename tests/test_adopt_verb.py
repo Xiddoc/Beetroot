@@ -375,6 +375,58 @@ class TestAdoptVerify:
         assert registry.get("phone") is None
 
 
+class TestForgetVerb:
+    """Tests for the ``beetroot forget`` verb."""
+
+    def test_forget_removes_registry_row_for_adb_instance(
+        self, isolated_registry: Path,
+    ) -> None:
+        runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
+        assert registry.get("phone") is not None
+        result = runner.invoke(cli.app, ["forget", "phone"])
+        assert result.exit_code == 0
+        assert registry.get("phone") is None
+        assert "forgot phone" in result.stdout
+
+    def test_forget_removes_registry_row_for_redroid_instance(
+        self, cli_root: Path,
+    ) -> None:
+        result = runner.invoke(cli.app, ["create", "alpha"])
+        assert result.exit_code == 0
+        assert registry.get("alpha") is not None
+        instance_dir = cli_root / "alpha"
+        result = runner.invoke(cli.app, ["forget", "alpha"])
+        assert result.exit_code == 0
+        assert registry.get("alpha") is None
+        assert instance_dir.exists()
+
+    def test_forget_frees_port_index(
+        self, isolated_registry: Path,
+    ) -> None:
+        runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
+        meta_before = registry.get("phone")
+        assert meta_before is not None
+        idx = meta_before.index
+        runner.invoke(cli.app, ["forget", "phone"])
+        assert idx not in registry.used_indices()
+
+    def test_forget_does_not_delete_host_dir(
+        self, cli_root: Path,
+    ) -> None:
+        runner.invoke(cli.app, ["create", "beta"])
+        host_dir = cli_root / "beta"
+        assert host_dir.exists()
+        runner.invoke(cli.app, ["forget", "beta"])
+        assert host_dir.exists()
+
+    def test_forget_errors_when_instance_not_found(
+        self, isolated_registry: Path,
+    ) -> None:
+        result = runner.invoke(cli.app, ["forget", "nonexistent"])
+        assert result.exit_code != 0
+        assert "nonexistent" in result.stderr
+
+
 class TestDefaultNameBuilder:
     def test_emulator_serial(self) -> None:
         assert cli._adopt_default_name("emulator-5554") == "adb-emulator-5554"
