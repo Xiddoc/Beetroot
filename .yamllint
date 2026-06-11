@@ -1,0 +1,17 @@
+# yamllint policy (issue #21 CI hardening). Extends the default
+# ruleset; the deviations below match the existing style of the linted
+# files (the bundled compose template, the workflows, and examples/)
+# rather than forcing a reformat of load-bearing YAML.
+extends: default
+
+rules:
+  # The repo's YAML carries comment-heavy lines up to ~120 columns
+  # (ruff's line-length=100 plus slack for URLs in comments).
+  line-length:
+    max: 120
+  # No file in the repo uses the `---` document-start marker.
+  document-start: disable
+  # GitHub workflows use the bare `on:` trigger key, which the truthy
+  # rule would otherwise flag as an implicit boolean.
+  truthy:
+    check-keys: false
