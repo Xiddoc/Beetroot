@@ -14,6 +14,35 @@
   unchanged, including the v0.3 back-compat `path`/`adb`/`frida` keys.
   Orphan entries are still skipped with the trailing stderr advisory.
 
+### CI hardening, part 1 (#21)
+
+No schema or CLI changes — this slice hardens the quality gates and the
+CI pipeline itself.
+
+- Test runs now treat **every warning as an error**
+  (`filterwarnings = ["error"]`; allowlist upstream deprecations
+  individually), execute in **random order** (`pytest-randomly`), and
+  fail any single test that exceeds **30 seconds** (`pytest-timeout`).
+  CI additionally runs pytest with `-p no:cacheprovider` so runs are
+  stateless, and uploads the coverage report (XML + terminal) as a
+  workflow artifact.
+- `src/beetroot/` is now `ruff format`-formatted and CI enforces
+  `ruff format --check` as a hard gate.
+- New CI gates, all version-pinned (release binaries are
+  checksum-verified): `uv lock --check` (lockfile drift), actionlint +
+  zizmor (workflow lint + security audit), codespell (spelling, over
+  `src/`, `docs/`, `README.md`, `CHANGELOG.md`), yamllint (policy in the
+  new `.yamllint`, over the bundled compose template, the workflows, and
+  `examples/`), deptry (dependency hygiene; config in
+  `[tool.deptry]` in `pyproject.toml`), and `shfmt -i 4 -d docker/*.sh`
+  (boot-helper comment spacing normalized to match).
+- New packaging gate: `uv build`, `twine check dist/*`, then the wheel
+  is installed into a clean venv and smoke-tested with `beetroot --help`.
+- Workflow security fixes flagged by zizmor: the docs deploy workflow's
+  actions are SHA-pinned and its `pages: write` / `id-token: write`
+  permissions are scoped to the deploy job; every checkout across all
+  workflows sets `persist-credentials: false`.
+
 ## v0.6.0 — 2026-05-20
 
 A stability + cleanup release on the road to v1.0 — bug-fixing, OOP/CLI
