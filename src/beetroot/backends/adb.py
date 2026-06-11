@@ -71,8 +71,15 @@ def serial_is_available(serial: str) -> bool:
 
     Returns:
         True if ``adb devices`` exits 0 and the serial is listed as
-        ``device``; False otherwise.
+        ``device``; False otherwise.  Also False when the ``adb`` binary
+        is absent from PATH — an uninstalled adb means no device is
+        reachable, so ``status`` / ``ls`` render a clean unavailable row
+        instead of crashing on ``FileNotFoundError``.
     """
+    import shutil  # noqa: PLC0415  # local to avoid pulling shutil at module import
+
+    if shutil.which(_ADB) is None:
+        return False
     res = subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv is constant
         [_ADB, "devices"],
         check=False,
