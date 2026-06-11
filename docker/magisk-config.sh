@@ -39,7 +39,7 @@ waited=0
 while ! magisk --sqlite "SELECT 1" >/dev/null 2>&1; do
     waited=$((waited + 1))
     if [ "$waited" -ge "$MAGISK_WAIT_SECS" ]; then
-        echo "[!] Magisk daemon unreachable after ${MAGISK_WAIT_SECS}s — Magisk is broken or missing. Aborting boot configuration." >&2
+        echo "[!] Magisk daemon unreachable after ${MAGISK_WAIT_SECS} attempts (~${MAGISK_WAIT_SECS}s) — Magisk is broken or missing. Aborting boot configuration." >&2
         exit 1
     fi
     sleep 1

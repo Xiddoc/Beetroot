@@ -65,8 +65,13 @@ def _run_helper(
     *,
     zygisk_value: str = "1",
     daemon_reachable: bool = True,
+    timeout: float = 10,
 ) -> tuple[int, str, list[str]]:
     """Source ``magisk-config.sh`` with a fake magisk on PATH.
+
+    The ``timeout`` (seconds) bounds the subprocess so a regression to an
+    unbounded daemon wait (issue #14) fails fast instead of hanging the
+    suite.
 
     Returns ``(exit_code, stdout, sqlite_queries)``.
     """
@@ -89,6 +94,7 @@ def _run_helper(
         capture_output=True,
         text=True,
         env=full_env,
+        timeout=timeout,
     )
     queries = [line for line in log.read_text().splitlines() if line]
     return res.returncode, res.stdout + res.stderr, queries
