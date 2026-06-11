@@ -70,15 +70,16 @@ class TestAutoInstallHappyPath:
         assert stub_adb == [
             [
                 "adb", "-s", "emulator-5554", "push",
-                str(zip_path), "/data/local/tmp/MyModule.zip",
+                str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
             ],
             [
                 "adb", "-s", "emulator-5554", "shell",
-                "su", "-c", "magisk --install-module /data/local/tmp/MyModule.zip",
+                "su", "-c",
+                "'magisk --install-module /data/local/tmp/beetroot-module-0.zip'",
             ],
             [
                 "adb", "-s", "emulator-5554", "shell",
-                "su", "-c", "rm -f /data/local/tmp/MyModule.zip",
+                "su", "-c", "'rm -f /data/local/tmp/beetroot-module-0.zip'",
             ],
         ]
         assert f"[beetroot] ok: {zip_path}" in result.output
@@ -132,7 +133,8 @@ class TestAutoInstallFailureReporting:
             del args, kwargs
             captured.append(list(cmd))
             failing = (
-                "magisk --install-module" in cmd[-1] and "Bad.zip" in cmd[-1]
+                "magisk --install-module" in cmd[-1]
+                and "beetroot-module-0.zip" in cmd[-1]
             )
             return subprocess.CompletedProcess(
                 args=cmd,
@@ -152,7 +154,7 @@ class TestAutoInstallFailureReporting:
         assert f"[beetroot] failed: {bad}" in result.stderr
         assert "Unable to install" in result.stderr
         assert f"[beetroot] ok: {good}" in result.output
-        assert "magisk --install-module /data/local/tmp/Good.zip" in [
+        assert "'magisk --install-module /data/local/tmp/beetroot-module-1.zip'" in [
             cmd[-1] for cmd in captured
         ]
 

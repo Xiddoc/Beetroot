@@ -400,13 +400,16 @@ class AdbDevice:
         Install Magisk modules via root, reporting per-module outcomes.
 
         The issue-#7 auto-install variant of :meth:`add_module`. Each
-        zip is pushed to ``/data/local/tmp/<basename>`` and installed
-        with ``su -c magisk --install-module <path>`` — Magisk's own
-        supported non-interactive install primitive (the same one the
-        redroid backend's ``flash-modules.sh`` uses), which stages the
-        module into ``/data/adb/modules_update/<id>/`` for the next
-        reboot. The pushed temp zip is removed afterwards, even when
-        the install step fails.
+        zip is pushed to a synthesized device-side temp name
+        (``/data/local/tmp/beetroot-module-<N>.zip``, ``N`` = batch
+        position — the untrusted local basename never reaches a device
+        shell) and installed with ``su -c magisk --install-module
+        <path>`` — Magisk's own supported non-interactive install
+        primitive (the same one the redroid backend's
+        ``flash-modules.sh`` uses), which stages the module into
+        ``/data/adb/modules_update/<id>/`` for the next reboot. The
+        pushed temp zip is removed afterwards, even when the install
+        step fails.
 
         A failing module never aborts the batch: every source gets its
         own :class:`beetroot.api.ModuleInstallResult` row, in request
@@ -440,9 +443,9 @@ class AdbDevice:
             )
         digests = sha256s if sha256s is not None else [None] * len(sources)
         results: list[ModuleInstallResult] = []
-        for source, digest in zip(sources, digests, strict=True):
+        for index, (source, digest) in enumerate(zip(sources, digests, strict=True)):
             try:
-                detail = self._auto_install_one(source, digest)
+                detail = self._auto_install_one(source, digest, index)
                 results.append(
                     ModuleInstallResult(source=source, ok=True, detail=detail),
                 )
@@ -452,21 +455,32 @@ class AdbDevice:
                 )
         return results
 
-    def _auto_install_one(self, source: str, sha256: str | None) -> str:
+    def _auto_install_one(self, source: str, sha256: str | None, index: int) -> str:
         src = _validated_zip_source(source)
         if sha256 is not None:
             modules_download.verify_sha256(src, sha256)
-        remote = f"{_MAGISK_MODULE_TMP}/{src.name}"
-        quoted = shlex.quote(remote)
+        # The device-side temp name is synthesized ([A-Za-z0-9._-] by
+        # construction), never the untrusted local basename: the `su -c`
+        # payload is shell-parsed TWICE on-device (adb shell flattens
+        # argv, then MagiskSU re-joins its post-`-c` args into a second
+        # `sh -c`), so a hostile basename — spaces, `$(...)`, backticks —
+        # would otherwise be re-split or executed as root.
+        remote = f"{_MAGISK_MODULE_TMP}/beetroot-module-{index}.zip"
+        # Belt and braces on top of the synthesized name: quote the path
+        # for the inner (MagiskSU `sh -c`) parse, then quote the whole
+        # command for the outer (device-shell) parse.
+        install_cmd = f"magisk --install-module {shlex.quote(remote)}"
         self._adb("push", str(src), remote)
         try:
-            self._adb_shell(["su", "-c", f"magisk --install-module {quoted}"])
+            self._adb_shell(["su", "-c", shlex.quote(install_cmd)])
         finally:
             # Best-effort temp cleanup: never let a failing ``rm`` mask
             # the install outcome (success or the original error).
             with contextlib.suppress(RuntimeError):
-                self._adb_shell(["su", "-c", f"rm -f {quoted}"])
-        return f"installed via `su -c magisk --install-module {remote}`"
+                self._adb_shell(
+                    ["su", "-c", shlex.quote(f"rm -f {shlex.quote(remote)}")],
+                )
+        return f"installed via `su -c {shlex.quote(install_cmd)}`"
 
     # ---- health-check ----------------------------------------------------
 

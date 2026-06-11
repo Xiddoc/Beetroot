@@ -6,7 +6,9 @@
 
 - **`beetroot module --auto-install`** — root-driven Magisk-module install
   for adb-adopted devices (#7; the variant deferred from v0.4 T5 / v0.5).
-  Each zip is pushed to `/data/local/tmp/` and installed with
+  Each zip is pushed to a synthesized temp name under `/data/local/tmp/`
+  (`beetroot-module-<N>.zip` — the untrusted local filename never reaches
+  the device shell) and installed with
   `su -c magisk --install-module <zip>` — Magisk's supported
   non-interactive install primitive (the same one the redroid backend's
   `flash-modules.sh` uses), which stages the module into

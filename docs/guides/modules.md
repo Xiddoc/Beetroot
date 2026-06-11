@@ -64,7 +64,7 @@ The zip is pushed to `/sdcard/Download/MyHook.zip` and Beetroot prints a one-lin
 beetroot module phone ./MyHook.zip --auto-install
 ```
 
-For rooted devices where you don't want manual Magisk-app interaction. Each zip is pushed to `/data/local/tmp/` and installed with `su -c magisk --install-module <zip>` — Magisk's own non-interactive install primitive (the same one Beetroot's redroid boot scripts use), which stages the module into `/data/adb/modules_update/<id>/` for the next reboot. The pushed temp zip is removed afterwards, even if the install step fails.
+For rooted devices where you don't want manual Magisk-app interaction. Each zip is pushed to a synthesized temp name under `/data/local/tmp/` (`beetroot-module-<N>.zip`, numbered by batch position — the local filename never reaches the device shell) and installed with `su -c magisk --install-module <zip>` — Magisk's own non-interactive install primitive (the same one Beetroot's redroid boot scripts use), which stages the module into `/data/adb/modules_update/<id>/` for the next reboot. The pushed temp zip is removed afterwards, even if the install step fails.
 
 Several modules can be installed in one invocation, and `--sha256` is **enforced** here — a zip whose digest doesn't match is never pushed:
 
@@ -77,7 +77,7 @@ When pinning digests, repeat `--sha256` once per source, in the same order. Ever
 
 ```
 [beetroot] failed: ./Shamiko.zip — sha256 mismatch for Shamiko.zip: expected ..., got ...
-[beetroot] ok: ./MyHook.zip — installed via `su -c magisk --install-module /data/local/tmp/MyHook.zip`
+[beetroot] ok: ./MyHook.zip — installed via `su -c 'magisk --install-module /data/local/tmp/beetroot-module-1.zip'`
 ```
 
 The verb exits `0` only if every module installed; any failure exits `1`, so scripted flows can gate on `$?`. Reboot the device for the staged modules to take effect.

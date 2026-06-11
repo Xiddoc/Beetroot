@@ -441,7 +441,7 @@ beetroot down <name> && beetroot up <name>
 
 **adb-adopted devices (default):** the zip is pushed to `/sdcard/Download/<name>.zip` and a one-line "install via the Magisk app → Modules tab" instruction is printed — no root interaction.
 
-**adb-adopted devices (`--auto-install`):** each zip is pushed to `/data/local/tmp/` and installed with `su -c magisk --install-module <zip>` (Magisk stages it into `/data/adb/modules_update/<id>/` for the next reboot); the temp zip is removed afterwards. Every module gets its own `ok:` (stdout) or `failed:` (stderr) report line; a failed module doesn't stop the rest, and the verb exits `1` if any module failed. Redroid instances don't support the flag and exit `2`. See [the modules guide](../guides/modules.md#modules-on-adb-adopted-devices) for examples.
+**adb-adopted devices (`--auto-install`):** each zip is pushed to a synthesized temp name under `/data/local/tmp/` (`beetroot-module-<N>.zip` — the local filename never reaches the device shell) and installed with `su -c magisk --install-module <zip>` (Magisk stages it into `/data/adb/modules_update/<id>/` for the next reboot); the temp zip is removed afterwards. Every module gets its own `ok:` (stdout) or `failed:` (stderr) report line; a failed module doesn't stop the rest, and the verb exits `1` if any module failed. Redroid instances don't support the flag and exit `2`. See [the modules guide](../guides/modules.md#modules-on-adb-adopted-devices) for examples.
 
 ---
 

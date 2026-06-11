@@ -366,21 +366,28 @@ class TestAutoInstallModules:
         assert captured_adb == [
             [
                 "adb", "-s", "emulator-5554", "push",
-                str(zip_path), "/data/local/tmp/MyModule.zip",
+                str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
             ],
             [
                 "adb", "-s", "emulator-5554", "shell",
-                "su", "-c", "magisk --install-module /data/local/tmp/MyModule.zip",
+                "su", "-c",
+                "'magisk --install-module /data/local/tmp/beetroot-module-0.zip'",
             ],
             [
                 "adb", "-s", "emulator-5554", "shell",
-                "su", "-c", "rm -f /data/local/tmp/MyModule.zip",
+                "su", "-c", "'rm -f /data/local/tmp/beetroot-module-0.zip'",
             ],
         ]
         assert len(results) == 1
         assert results[0].ok is True
         assert results[0].source == str(zip_path)
         assert "magisk --install-module" in results[0].detail
+        # The ok-row detail must show the command as actually executed
+        # (outer-quoted), not a prettified unquoted variant.
+        assert results[0].detail == (
+            "installed via `su -c "
+            "'magisk --install-module /data/local/tmp/beetroot-module-0.zip'`"
+        )
 
     def test_remote_path_with_spaces_is_shell_quoted(
         self,
@@ -388,19 +395,73 @@ class TestAutoInstallModules:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        # The su -c command string is parsed by the on-device shell, so
-        # a basename with spaces must arrive quoted there (the adb push
-        # argv element needs no quoting — it never passes through a shell).
+        # The su -c payload is shell-parsed TWICE on-device (device shell,
+        # then MagiskSU's own `sh -c` re-join), so the untrusted local
+        # basename must never appear in it: the zip is pushed under a
+        # synthesized safe name and the command string is quoted for the
+        # outer parse on top.
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         zip_path = tmp_path / "My Module.zip"
         zip_path.write_bytes(b"PK\x03\x04fake")
         results = _make_device().auto_install_modules([str(zip_path)])
         assert results[0].ok is True
-        assert captured_adb[0][-1] == "/data/local/tmp/My Module.zip"
-        assert captured_adb[1][-1] == (
-            "magisk --install-module '/data/local/tmp/My Module.zip'"
-        )
-        assert captured_adb[2][-1] == "rm -f '/data/local/tmp/My Module.zip'"
+        assert captured_adb == [
+            [
+                "adb", "-s", "emulator-5554", "push",
+                str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "shell",
+                "su", "-c",
+                "'magisk --install-module /data/local/tmp/beetroot-module-0.zip'",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "shell",
+                "su", "-c", "'rm -f /data/local/tmp/beetroot-module-0.zip'",
+            ],
+        ]
+
+    def test_hostile_basename_never_reaches_the_device_shell(
+        self,
+        captured_adb: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # A `$(...)` in the zip's filename would execute AS ROOT under
+        # MagiskSU's second `sh -c` parse if the basename were embedded
+        # in the command string. The synthesized remote name must contain
+        # no shell metacharacters, and the hostile substring must appear
+        # in no device-side command at all (the local host path in the
+        # push argv is exec'd directly — argv never passes through a
+        # shell on the host).
+        import re
+
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        zip_path = tmp_path / "$(boom).zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+        results = _make_device().auto_install_modules([str(zip_path)])
+        assert results[0].ok is True
+        remote = captured_adb[0][-1]
+        assert re.fullmatch(r"(/[A-Za-z0-9._-]+)+", remote)
+        assert captured_adb == [
+            [
+                "adb", "-s", "emulator-5554", "push",
+                str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "shell",
+                "su", "-c",
+                "'magisk --install-module /data/local/tmp/beetroot-module-0.zip'",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "shell",
+                "su", "-c", "'rm -f /data/local/tmp/beetroot-module-0.zip'",
+            ],
+        ]
+        assert "$(boom)" not in remote
+        for cmd in captured_adb[1:]:  # the two device-shell invocations
+            for element in cmd:
+                assert "$(boom)" not in element
 
     def test_matching_sha256_installs(
         self,
@@ -458,7 +519,10 @@ class TestAutoInstallModules:
         ) -> subprocess.CompletedProcess[str]:
             del args, kwargs
             captured.append(list(cmd))
-            failing = "magisk --install-module" in cmd[-1] and "Bad.zip" in cmd[-1]
+            failing = (
+                "magisk --install-module" in cmd[-1]
+                and "beetroot-module-0.zip" in cmd[-1]
+            )
             return subprocess.CompletedProcess(
                 args=cmd,
                 returncode=1 if failing else 0,
@@ -470,8 +534,10 @@ class TestAutoInstallModules:
         results = _make_device().auto_install_modules([str(bad), str(good)])
         assert [r.ok for r in results] == [False, True]
         assert "Unable to install" in results[0].detail
-        assert "rm -f /data/local/tmp/Bad.zip" in [cmd[-1] for cmd in captured]
-        assert "magisk --install-module /data/local/tmp/Good.zip" in [
+        assert "'rm -f /data/local/tmp/beetroot-module-0.zip'" in [
+            cmd[-1] for cmd in captured
+        ]
+        assert "'magisk --install-module /data/local/tmp/beetroot-module-1.zip'" in [
             cmd[-1] for cmd in captured
         ]
 
@@ -488,7 +554,7 @@ class TestAutoInstallModules:
             cmd: list[str], *args: object, **kwargs: object
         ) -> subprocess.CompletedProcess[str]:
             del args, kwargs
-            failing = cmd[-1].startswith("rm -f")
+            failing = "rm -f" in cmd[-1]
             return subprocess.CompletedProcess(
                 args=cmd,
                 returncode=1 if failing else 0,
