@@ -58,6 +58,8 @@ dev = [
     "vulture>=2.10",
     "pip-audit>=2.7",
     "mutmut>=2.4",
+    "pytest-randomly>=4.1.0",
+    "pytest-timeout>=2.4.0",
 ]
 docs = [
     "mkdocs-material>=9.5",
@@ -181,6 +183,18 @@ testpaths = ["tests"]
 # disables the coverage plugin, the flag here is a second line of
 # defence that ``pytest`` itself enforces.
 addopts = "-ra --strict-markers --strict-config --cov=beetroot --cov-report=term-missing --cov-fail-under=100"
+# Every warning is an error (issue #21 CI hardening). Upstream
+# deprecations must be allowlisted individually below with a comment
+# naming their origin — no blanket ignores. Warnings raised from
+# Beetroot's own code are bugs: fix them instead of allowlisting.
+filterwarnings = [
+    "error",
+]
+# No single test should come anywhere near 30s — the suite stubs all
+# network/docker calls except the container-boot smoke test. A hang
+# (deadlocked flock, stuck subprocess) fails fast instead of eating
+# the whole CI job's time budget.
+timeout = 30
 
 [tool.coverage.run]
 source = ["beetroot"]
