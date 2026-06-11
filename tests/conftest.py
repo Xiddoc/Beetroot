@@ -54,6 +54,26 @@ def _reset_api_version_warning_dedup() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_registry_hint_flags() -> Iterator[None]:
+    """Reset the registry module's print-once hint flags between tests.
+
+    ``_LEGACY_HINT_PRINTED`` and ``_V02_HINT_PRINTED`` dedup per-process
+    stderr hints, so whichever test triggers a hint first silently
+    swallows it for every later test in the same process.  Under
+    pytest-randomly's order shuffling (issue #21) that made
+    hint-asserting tests fail on some seeds.  Same pattern as
+    ``_reset_api_version_warning_dedup`` above.
+    """
+    from beetroot import registry
+
+    registry._LEGACY_HINT_PRINTED = False
+    registry._V02_HINT_PRINTED = False
+    yield
+    registry._LEGACY_HINT_PRINTED = False
+    registry._V02_HINT_PRINTED = False
+
+
+@pytest.fixture(autouse=True)
 def _reset_consoles() -> Iterator[None]:
     """Snapshot and restore the console module's stdout/stderr singletons.
 
