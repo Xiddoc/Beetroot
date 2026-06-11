@@ -1,8 +1,12 @@
 #!/system/bin/sh
 # magisk-config.sh — write Beetroot's stealth posture into Magisk's sqlite DB.
 #
-# Waits for the Magisk daemon to be reachable, then enables Zygisk and the
-# denylist, and enrols the configured packages so root is hidden from them.
+# Waits (bounded) for the Magisk daemon to be reachable, then enables Zygisk
+# and the denylist, and enrols the configured packages so root is hidden from
+# them. If the daemon never answers within the wait budget, the helper exits 1
+# — and because entrypoint.sh sources this file under `set -eu`, that aborts
+# the whole boot configuration loudly instead of hanging forever in a
+# container that looks "up" (issue #14).
 #
 # Container paths are read from env vars with safe defaults so v0.4 stealth
 # work (see docs/design/stealth-posture.md) can randomize them without
@@ -18,15 +22,26 @@
 #     denylist (per-package SQL-injection prophylaxis lives in pydantic;
 #     see Stealth._check_packages in src/beetroot/config.py). Empty by
 #     default — the helper SQL'es nothing extra.
+#   BEETROOT_MAGISK_WAIT_SECS=120
+#     Upper bound (in 1-second probe attempts) on the Magisk daemon wait.
+#     Conservative because a first boot of redroid+Magisk can legitimately
+#     take a while. Not passed through compose — a test / escape-hatch knob.
 #
 # Idempotent: REPLACE INTO and INSERT OR IGNORE both no-op on re-run.
 set -eu  # fail fast on undefined vars and unhandled errors (T3).
 
 MAGISK_DB="${BEETROOT_MAGISK_DB:-/data/adb/magisk.db}"
 DENYLIST_PACKAGES="${BEETROOT_DENYLIST_PACKAGES:-}"
+MAGISK_WAIT_SECS="${BEETROOT_MAGISK_WAIT_SECS:-120}"
 
 echo "[*] Waiting for Magisk daemon (db: $MAGISK_DB)..."
+waited=0
 while ! magisk --sqlite "SELECT 1" >/dev/null 2>&1; do
+    waited=$((waited + 1))
+    if [ "$waited" -ge "$MAGISK_WAIT_SECS" ]; then
+        echo "[!] Magisk daemon unreachable after ${MAGISK_WAIT_SECS} attempts (~${MAGISK_WAIT_SECS}s) — Magisk is broken or missing. Aborting boot configuration." >&2
+        exit 1
+    fi
     sleep 1
 done
 
