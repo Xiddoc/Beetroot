@@ -896,23 +896,86 @@ def frida(
         raise typer.Exit(code=rc)
 
 
+def _module_auto_install(
+    backend: api.DeviceBackend,
+    sources: list[str],
+    digests: list[str],
+) -> None:
+    """
+    Drive the ``module --auto-install`` path and report per-module outcomes.
+
+    Each module gets its own ``ok:`` (stdout) or ``failed:`` (stderr)
+    line; a failed module never aborts reporting of the rest, and any
+    failure makes the verb exit 1.
+    """
+    installer = cast(
+        api.AutoModuleInstaller,
+        _require(backend, api.AutoModuleInstaller, "module --auto-install"),
+    )
+    if digests and len(digests) != len(sources):
+        raise _error(
+            "--sha256 must be repeated once per source (or omitted entirely) with --auto-install."
+        )
+    try:
+        results = installer.auto_install_modules(sources, sha256s=digests or None)
+    except api.AdbNotInstalledError as e:
+        raise _error(str(e)) from e
+    for r in results:
+        if r.ok:
+            typer.echo(f"[beetroot] ok: {r.source} — {r.detail}")
+        else:
+            typer.echo(f"[beetroot] failed: {r.source} — {r.detail}", err=True)
+    if not all(r.ok for r in results):
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def module(
     name: Annotated[str, typer.Argument(help="Instance name.")],
-    source: Annotated[
-        str,
-        typer.Argument(help="https URL or instance-relative path to a .zip."),
+    sources: Annotated[
+        list[str],
+        typer.Argument(
+            metavar="SOURCE...",
+            help=(
+                "https URL or instance-relative path to a .zip. "
+                "Multiple sources are allowed with --auto-install only."
+            ),
+        ),
     ],
     sha256: Annotated[
-        str | None,
-        typer.Option("--sha256", metavar="HEX", help="Expected sha256 hex digest of the zip."),
+        list[str] | None,
+        typer.Option(
+            "--sha256",
+            metavar="HEX",
+            help=(
+                "Expected sha256 hex digest of the zip. With --auto-install, "
+                "repeat once per source; a mismatching zip is never pushed."
+            ),
+        ),
     ] = None,
+    auto_install: Annotated[
+        bool,
+        typer.Option(
+            "--auto-install",
+            help=(
+                "Install via root on an adb-adopted device "
+                "(su -c magisk --install-module) instead of the safe "
+                "push-to-Downloads default. Enforces --sha256."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Append a module to beetroot.yaml and re-stage. Caller restarts."""
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
+    digests = sha256 or []
+    if auto_install:
+        _module_auto_install(backend, sources, digests)
+        return
+    if len(sources) != 1 or len(digests) > 1:
+        raise _error("without --auto-install, pass exactly one source (and at most one --sha256).")
     installer = cast(api.ModuleInstaller, _require(backend, api.ModuleInstaller, "module"))
-    installer.add_module(source, sha256=sha256)
+    installer.add_module(sources[0], sha256=digests[0] if digests else None)
     if isinstance(backend, api.Instance):
         typer.echo(f"[beetroot] added module → {paths.instance_yaml(backend.root)}")
         typer.echo(f"[beetroot] restart to flash: beetroot down {name} && beetroot up {name}")
