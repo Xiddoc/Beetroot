@@ -161,7 +161,7 @@ beetroot down <name> [<name> ...]
 
 Runs `docker compose down`. The instance's `data/` directory is untouched.
 
-When using `--all`, instances backed by non-Lifecycle backends (e.g. adb-adopted devices) are skipped with a one-line advisory to stderr — only redroid instances are stopped.
+When using `--all`, instances backed by non-Lifecycle backends (e.g. adb-adopted devices) are skipped with a one-line advisory to stderr — only redroid instances are stopped. Orphan or unresolvable registry rows (a redroid instance whose `beetroot.yaml` was deleted, or an unknown backend kind) are likewise skipped with a one-line advisory rather than aborting the whole fan-out. Explicit single-name invocations still raise a clear error.
 
 **Output:**
 

@@ -414,6 +414,98 @@ class TestCmdUp:
         assert "skipped" in result.stderr
         assert "adb-inst" in result.stderr
 
+    def test_up_all_skips_orphan_and_acts_on_healthy(self, cli_root: Path) -> None:
+        # Issue #12: a redroid orphan (its dir/yaml rm -rf'd behind the
+        # CLI's back) must NOT abort the whole fan-out. The healthy
+        # instance still gets composed-up; the orphan is skipped with an
+        # advisory on stderr.
+        import shutil
+
+        runner.invoke(cli.app, ["create", "alpha"])
+        runner.invoke(cli.app, ["create", "bravo"])
+        shutil.rmtree(registry.instance_path("alpha"))
+        with _patched_subprocess() as mock_run:
+            result = runner.invoke(cli.app, ["up", "--all"])
+        assert result.exit_code == 0, result.stderr
+        # Only the healthy bravo triggers compose; the orphan alpha is skipped.
+        assert mock_run.call_count == 1
+        assert "skipped alpha" in result.stderr
+        # The healthy instance was acted on.
+        assert "bravo up" in result.stdout
+
+    def test_up_all_skips_unresolvable_kind_and_acts_on_healthy(
+        self, cli_root: Path
+    ) -> None:
+        # An unknown backend kind resolves to UnresolvedBackendConfig, which
+        # Manager.resolve raises InstanceNotFoundError for. --all must skip
+        # it (with advisory) and still act on the healthy redroid row.
+        runner.invoke(cli.app, ["create", "alpha"])
+        registry.add_allocating(
+            "ghost",
+            backend=registry.UnresolvedBackendConfig(
+                kind="cloud", raw={"kind": "cloud"}
+            ),
+        )
+        with _patched_subprocess() as mock_run:
+            result = runner.invoke(cli.app, ["up", "--all"])
+        assert result.exit_code == 0, result.stderr
+        assert mock_run.call_count == 1
+        assert "skipped ghost" in result.stderr
+        assert "alpha up" in result.stdout
+
+    def test_up_explicit_orphan_name_still_errors(
+        self,
+        cli_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Issue #12 invariant: an explicit (non-`--all`) bad name must KEEP
+        # raising a friendly error + exit 1, so a typo isn't silently dropped.
+        # Driven through cli.main() (the real entrypoint) so the friendly
+        # domain-exception wrapper runs, mirroring the actual shell.
+        import shutil
+
+        runner.invoke(cli.app, ["create", "alpha"])
+        shutil.rmtree(registry.instance_path("alpha"))
+        monkeypatch.setattr("sys.argv", ["beetroot", "up", "alpha"])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "error:" in err
+        assert "alpha" in err
+
+
+class TestDownRestartAllSkipUnresolvable:
+    def test_down_all_skips_orphan_and_acts_on_healthy(self, cli_root: Path) -> None:
+        import shutil
+
+        runner.invoke(cli.app, ["create", "alpha"])
+        runner.invoke(cli.app, ["create", "bravo"])
+        shutil.rmtree(registry.instance_path("alpha"))
+        with _patched_subprocess() as mock_run:
+            result = runner.invoke(cli.app, ["down", "--all"])
+        assert result.exit_code == 0, result.stderr
+        assert mock_run.call_count == 1
+        assert "skipped alpha" in result.stderr
+        assert "bravo down" in result.stdout
+
+    def test_restart_all_skips_orphan_and_acts_on_healthy(
+        self, cli_root: Path
+    ) -> None:
+        import shutil
+
+        runner.invoke(cli.app, ["create", "alpha"])
+        runner.invoke(cli.app, ["create", "bravo"])
+        shutil.rmtree(registry.instance_path("alpha"))
+        with _patched_subprocess() as mock_run:
+            result = runner.invoke(cli.app, ["restart", "--all"])
+        assert result.exit_code == 0, result.stderr
+        # restart = down + up => two compose calls for the one healthy bravo.
+        assert mock_run.call_count == 2
+        assert "skipped alpha" in result.stderr
+        assert "bravo restarted" in result.stdout
+
 
 class TestCmdDown:
     def test_down_invokes_compose(self, cli_root: Path) -> None:
