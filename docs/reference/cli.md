@@ -362,7 +362,7 @@ beetroot doctor <name>
 
 Output is one `<check>: pass|fail|skip [reason]` line per check. Exits `0` if every check passes; otherwise the exit code is the count of `fail` results (capped at 255). `skip` rows do not count toward the exit code.
 
-Redroid checks: `compose.status`, `adb.connect`, `frida.handshake`, `magisk.zygisk`, `magisk.denylist.com.google.android.gms` (skipped if the package isn't in `stealth.denylist`).
+Redroid checks: `compose.status`, `adb.connect`, `frida.handshake`, `magisk.zygisk`, `magisk.denylist.com.google.android.gms` (skipped if the package isn't in `magisk.denylist`).
 
 Adb checks: `adb.serial`, `frida.handshake`, `magisk.zygisk`, `magisk.denylist.com.google.android.gms`. `compose.status` is not applicable.
 

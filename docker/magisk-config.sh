@@ -16,7 +16,7 @@
 #   BEETROOT_DENYLIST_PACKAGES=
 #     Comma-separated list of Android package ids to enrol in Magisk's
 #     denylist (per-package SQL-injection prophylaxis lives in pydantic;
-#     see Stealth._check_packages in src/beetroot/config.py). Empty by
+#     see Magisk._check_packages in src/beetroot/config.py). Empty by
 #     default — the helper SQL'es nothing extra.
 #
 # Idempotent: REPLACE INTO and INSERT OR IGNORE both no-op on re-run.
