@@ -541,6 +541,60 @@ class TestAutoInstallModules:
             cmd[-1] for cmd in captured
         ]
 
+    def test_failed_push_skips_rm_and_continues_to_next_module(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # When `adb push` itself fails there is nothing on the device to
+        # clean up: the failed module gets a failed row with NO install
+        # and NO rm attempt, and the batch continues to the next module.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        bad = tmp_path / "Bad.zip"
+        bad.write_bytes(b"PK\x03\x04bad")
+        good = tmp_path / "Good.zip"
+        good.write_bytes(b"PK\x03\x04good")
+        captured: list[list[str]] = []
+
+        def _fake_run(
+            cmd: list[str], *args: object, **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            del args, kwargs
+            captured.append(list(cmd))
+            failing = cmd[3] == "push" and cmd[4] == str(bad)
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=1 if failing else 0,
+                stdout="",
+                stderr="adb: error: failed to copy" if failing else "",
+            )
+
+        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
+        results = _make_device().auto_install_modules([str(bad), str(good)])
+        assert [r.ok for r in results] == [False, True]
+        assert "failed to copy" in results[0].detail
+        # No install and no rm for the failed push — only the failed push
+        # itself, then the full sequence for the second module.
+        assert captured == [
+            [
+                "adb", "-s", "emulator-5554", "push",
+                str(bad), "/data/local/tmp/beetroot-module-0.zip",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "push",
+                str(good), "/data/local/tmp/beetroot-module-1.zip",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "shell",
+                "su", "-c",
+                "'magisk --install-module /data/local/tmp/beetroot-module-1.zip'",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "shell",
+                "su", "-c", "'rm -f /data/local/tmp/beetroot-module-1.zip'",
+            ],
+        ]
+
     def test_failed_rm_does_not_mask_install_success(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -565,6 +619,39 @@ class TestAutoInstallModules:
         monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
         results = _make_device().auto_install_modules([str(zip_path)])
         assert results[0].ok is True
+
+    def test_failed_rm_does_not_mask_failed_install_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # Both the install AND the cleanup rm fail: the row must carry
+        # the install error, never the rm error from the finally block.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        zip_path = tmp_path / "M.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+
+        def _fake_run(
+            cmd: list[str], *args: object, **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            del args, kwargs
+            if "magisk --install-module" in cmd[-1]:
+                stderr = "! Unable to install"
+            elif "rm -f" in cmd[-1]:
+                stderr = "rm: read-only"
+            else:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout="", stderr="",
+                )
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=1, stdout="", stderr=stderr,
+            )
+
+        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
+        results = _make_device().auto_install_modules([str(zip_path)])
+        assert results[0].ok is False
+        assert "Unable to install" in results[0].detail
+        assert "rm: read-only" not in results[0].detail
 
     def test_missing_zip_becomes_failed_result(
         self,
