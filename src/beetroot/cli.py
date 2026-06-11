@@ -562,23 +562,32 @@ def ls(
         typer.Option("--json", help="Emit JSON instead of the human-readable table."),
     ] = False,
 ) -> None:
-    """List all registered instances with their ports and live status."""
-    instances = api.Manager.list_instances()
+    """
+    List every registered instance — redroid containers and adopted devices alike.
+
+    Walks all backend kinds via Manager.all(), so adb-adopted devices
+    appear next to redroid instances. Redroid rows report live
+    docker compose ps status and the instance directory; adb rows
+    report live adb devices availability, the serial in the ADB
+    column, and - for PATH (no on-disk directory). Orphan entries
+    are skipped with a trailing stderr advisory, as before.
+    """
+    rows = _ls_rows()
     orphans = api.Manager.list_orphans()
     if json_out:
         # JSON must go to plain stdout (not through rich) so downstream
         # parsers never see ANSI markup. Orphan advisories go to stderr
         # so they don't pollute the JSON stream.
-        out = {inst.name: _instance_json_row(inst) for inst in instances}
+        out = {name: _backend_json_row(name, meta, backend) for name, meta, backend in rows}
         print(json.dumps(out, indent=2, sort_keys=True))  # noqa: T201  # plain JSON stdout — must not go through rich
         if orphans:
             _emit_orphan_skip(orphans)
         return
 
-    if not instances and not orphans:
+    if not rows and not orphans:
         typer.echo("(no instances — try 'beetroot create alpha')")
         return
-    if instances:
+    if rows:
         # Inject a runtime-bound Console so the table writes to the
         # current sys.stdout (e.g. CliRunner's StringIO in tests, or the
         # real terminal in production). The module-level singleton is
@@ -588,23 +597,80 @@ def ls(
         console.set_consoles(stdout=_runtime_console)
         try:
             console.table(
-                columns=["NAME", "IDX", "ADB", "FRIDA", "STATUS", "PATH"],
+                columns=["NAME", "KIND", "IDX", "ADB", "FRIDA", "STATUS", "PATH"],
                 rows=[
-                    [
-                        inst.name,
-                        str(inst.index),
-                        f"localhost:{inst.ports['adb']}",
-                        f"localhost:{inst.ports['frida']}",
-                        str(inst.status),
-                        str(inst.root),
-                    ]
-                    for inst in instances
+                    _ls_table_row(name, meta, backend)
+                    for name, meta, backend in rows
                 ],
             )
         finally:
             console.set_consoles(stdout=old_stdout_console)
     if orphans:
         _emit_orphan_skip(orphans)
+
+
+def _ls_rows() -> list[tuple[str, registry.InstanceMeta, api.DeviceBackend]]:
+    """
+    Pair every resolvable backend with its registry meta, sorted by name.
+
+    ``Manager.all()`` and the registry snapshot are two separate reads,
+    so a row that vanishes between them (a concurrent ``beetroot
+    forget`` / ``destroy`` in another process) is skipped rather than
+    crashing ``ls``. Orphan and unresolvable rows never come back from
+    ``Manager.all()`` in the first place — the orphan-skip contract is
+    unchanged.
+    """
+    metas = registry.list_instances()
+    rows: list[tuple[str, registry.InstanceMeta, api.DeviceBackend]] = []
+    for backend in api.Manager.all():
+        meta = metas.get(backend.name)
+        if meta is None:
+            continue
+        rows.append((backend.name, meta, backend))
+    return rows
+
+
+def _backend_json_row(
+    name: str, meta: registry.InstanceMeta, backend: api.DeviceBackend,
+) -> dict[str, object]:
+    """
+    Dispatch to the kind-appropriate JSON row builder for ``ls --json``.
+
+    Redroid instances keep the richer ``_instance_json_row`` shape
+    (including the v0.3 back-compat ``path`` / ``adb`` / ``frida``
+    keys); every other backend kind gets the Protocol-surface row from
+    ``_adb_json_row`` — the same shape ``beetroot status`` emits.
+    """
+    if isinstance(backend, api.Instance):
+        return _instance_json_row(backend)
+    return _adb_json_row(name, meta, backend)
+
+
+def _ls_table_row(
+    name: str, meta: registry.InstanceMeta, backend: api.DeviceBackend,
+) -> list[str]:
+    """
+    Render one ``beetroot ls`` table row for any backend kind.
+
+    Redroid rows show the live compose status and the instance
+    directory; non-directory-backed kinds (adb) show ``adb devices``
+    availability, the serial as the ADB address, and ``-`` for PATH.
+    """
+    if isinstance(backend, api.Instance):
+        status = str(backend.status)
+        path = str(backend.root)
+    else:
+        status = "available" if backend.is_available else "unavailable"
+        path = "-"
+    return [
+        name,
+        backend.kind,
+        str(meta.index),
+        backend.adb_address,
+        backend.frida_address,
+        status,
+        path,
+    ]
 
 
 def _emit_orphan_skip(orphans: list[str]) -> None:

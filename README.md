@@ -13,8 +13,8 @@ $ beetroot create alpha
 $ beetroot up alpha
 [beetroot] alpha up — ADB localhost:5555, Frida localhost:27042
 $ beetroot ls
-NAME   IDX  ADB             FRIDA            STATUS    PATH
-alpha  0    localhost:5555  localhost:27042  running   ./alpha
+NAME   KIND     IDX  ADB             FRIDA            STATUS    PATH
+alpha  redroid  0    localhost:5555  localhost:27042  running   ./alpha
 ```
 
 ## Quick start

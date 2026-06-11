@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-from beetroot import cli, config, paths, ports, registry, snapshot
+from beetroot import api, cli, config, paths, ports, registry, snapshot
 
 runner = CliRunner()
 
@@ -599,7 +599,11 @@ class TestCmdLs:
         assert result.exit_code == 0, result.stderr
         assert "no instances" in result.stdout
 
-    def test_ls_human_with_entries(self, cli_root: Path) -> None:
+    def test_ls_human_with_entries(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Wide console so rich never truncates the cells we assert on.
+        monkeypatch.setenv("COLUMNS", "200")
         runner.invoke(cli.app, ["create", "alpha"])
         with _patched_subprocess():
             result = runner.invoke(cli.app, ["ls"])
@@ -616,6 +620,113 @@ class TestCmdLs:
         assert "alpha" in data
         assert data["alpha"]["adb"] == "localhost:5555"
         assert data["alpha"]["path"] == str(registry.instance_path("alpha"))
+
+
+# ---------------------------------------------------------------------------
+# cmd_ls — adopted adb devices (issue #15)
+# ---------------------------------------------------------------------------
+
+
+def _adb_devices_proc(stdout: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+
+
+class TestCmdLsAdoptedDevices:
+    """`beetroot ls` must show adopted adb devices next to redroid instances."""
+
+    def _seed_mixed_registry(self) -> None:
+        """User path: one created redroid instance + one adopted adb device."""
+        create = runner.invoke(cli.app, ["create", "alpha"])
+        assert create.exit_code == 0, create.stderr
+        adopt = runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
+        assert adopt.exit_code == 0, adopt.stderr
+
+    def test_ls_table_shows_both_kinds(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Wide console so rich never truncates the cells we assert on.
+        monkeypatch.setenv("COLUMNS", "200")
+        self._seed_mixed_registry()
+
+        def _run(
+            cmd: list[str], *args: object, **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            if cmd[:2] == ["adb", "devices"]:
+                return _adb_devices_proc(
+                    "List of devices attached\nemulator-5554\tdevice\n"
+                )
+            return _ok_proc()
+
+        with patch("subprocess.run", side_effect=_run):
+            result = runner.invoke(cli.app, ["ls"])
+        assert result.exit_code == 0, result.stderr
+        out = result.stdout
+        # Redroid row: kind + stride-0 ports + instance directory.
+        assert "alpha" in out
+        assert "redroid" in out
+        assert "localhost:5555" in out
+        assert str(registry.instance_path("alpha")) in out
+        # Adb row: kind, serial as the ADB address, the index-1 Frida
+        # forward port, and live availability from `adb devices`.
+        assert "phone" in out
+        assert "adb" in out
+        assert "emulator-5554" in out
+        assert "localhost:27052" in out
+        assert "available" in out
+        assert "unavailable" not in out
+
+    def test_ls_table_marks_unreachable_device_unavailable(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("COLUMNS", "200")
+        adopt = runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
+        assert adopt.exit_code == 0, adopt.stderr
+        # Stubbed `adb devices` lists nothing → the device is unreachable.
+        with _patched_subprocess():
+            result = runner.invoke(cli.app, ["ls"])
+        assert result.exit_code == 0, result.stderr
+        assert "phone" in result.stdout
+        assert "unavailable" in result.stdout
+        assert "-" in result.stdout
+
+    def test_ls_json_shows_both_kinds(self, cli_root: Path) -> None:
+        self._seed_mixed_registry()
+        with _patched_subprocess():
+            result = runner.invoke(cli.app, ["ls", "--json"])
+        assert result.exit_code == 0, result.stderr
+        data = json.loads(result.stdout)
+        assert set(data) == {"alpha", "phone"}
+        # Redroid row keeps the full shape including v0.3 back-compat keys.
+        assert data["alpha"]["kind"] == "redroid"
+        assert data["alpha"]["adb"] == "localhost:5555"
+        assert data["alpha"]["adb_address"] == "localhost:5555"
+        assert data["alpha"]["path"] == str(registry.instance_path("alpha"))
+        # Adb row matches the `beetroot status` shape: serial as the adb
+        # address and the index-1 allocated Frida forward port.
+        phone = data["phone"]
+        assert phone["kind"] == "adb"
+        assert phone["index"] == 1
+        assert phone["serial"] == "emulator-5554"
+        assert phone["adb_address"] == "emulator-5554"
+        assert phone["frida_address"] == "localhost:27052"
+        assert phone["is_available"] is False
+
+    def test_ls_skips_row_that_vanished_between_reads(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Manager.all() and the registry snapshot are two separate reads;
+        # simulate a row disappearing in between (a concurrent
+        # `beetroot forget` in another process) with a backend whose name
+        # is no longer registered.
+        class _Ghost:
+            name = "ghost"
+
+        monkeypatch.setattr(
+            api.Manager, "all", staticmethod(lambda: [_Ghost()])
+        )
+        result = runner.invoke(cli.app, ["ls"])
+        assert result.exit_code == 0, result.stderr
+        assert "(no instances" in result.stdout
 
 
 # ---------------------------------------------------------------------------

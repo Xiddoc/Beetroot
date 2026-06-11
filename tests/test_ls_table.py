@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 
 from beetroot import cli, registry
 
-LS_TABLE_COLUMNS: tuple[str, ...] = ("NAME", "IDX", "ADB", "FRIDA", "STATUS", "PATH")
+LS_TABLE_COLUMNS: tuple[str, ...] = ("NAME", "KIND", "IDX", "ADB", "FRIDA", "STATUS", "PATH")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,6 +28,7 @@ DOC_FILES_WITH_LS_EXAMPLE: tuple[Path, ...] = (
     REPO_ROOT / "docs" / "reference" / "cli.md",
     REPO_ROOT / "docs" / "getting-started" / "first-instance.md",
     REPO_ROOT / "docs" / "guides" / "migration-v0.2-to-v0.3.md",
+    REPO_ROOT / "docs" / "guides" / "migration-v0.3-to-v0.4.md",
 )
 
 
