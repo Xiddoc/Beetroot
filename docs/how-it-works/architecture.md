@@ -58,4 +58,4 @@ A single user-global JSON file at `~/.config/beetroot/instances.json` (respects 
 - `index` — the allocated port-stride index.
 - `created_at` — ISO 8601 timestamp.
 
-The registry is updated under an `fcntl.flock` advisory lock to guard against parallel `beetroot create`/`destroy` calls. Runtime status (running, stopped, etc.) is **not cached** here — every `beetroot ls` queries `docker compose ps` live. The registry tells you where alpha lives; it cannot tell you whether alpha's container is up.
+The registry is updated under an `fcntl.flock` advisory lock to guard against parallel `beetroot create`/`destroy` calls. Runtime status (running, stopped, etc.) is **not cached** here — every `beetroot ls` queries `docker compose ps` live for redroid rows (and `adb devices` for adb-adopted rows). The registry tells you where alpha lives; it cannot tell you whether alpha's container is up.

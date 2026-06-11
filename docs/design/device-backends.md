@@ -288,11 +288,13 @@ shape.
   raise `BackendCapabilityError` for the adb backend — caught by
   `cli.main` and rendered as `error: ...` + exit code 2.
 
-After v0.4's PR5, `Manager.list_instances()` returns all backends sorted
-by name (it was renamed from `Manager.list()` in v0.6 to reflect its
-expanded scope — it now includes all resolvable backend kinds), and the
-polymorphic walker is `Manager.resolve(name)` which dispatches via the
-backend registry to `DeviceBackend`-typed objects. Callers that need
+After v0.4's PR5, `Manager.all()` returns every resolvable backend
+sorted by name (`Manager.list_instances()` — renamed from
+`Manager.list()` in v0.6 — remains the redroid-only walker), and the
+polymorphic resolver is `Manager.resolve(name)` which dispatches via the
+backend registry to `DeviceBackend`-typed objects. `beetroot ls` walks
+`Manager.all()`, so adopted adb devices are listed next to redroid
+instances. Callers that need
 lifecycle methods narrow with `isinstance(b, api.Lifecycle)` (or use
 `cli._require(b, api.Lifecycle, "up")` which raises
 `BackendCapabilityError` with a clear message).
