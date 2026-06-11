@@ -6,10 +6,10 @@ on:
       - master
   workflow_dispatch:
 
+# zizmor (CI workflow-lint): write permissions are scoped to the deploy
+# job below rather than granted workflow-wide.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -20,13 +20,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871  # v4.2.1
+        with:
+          persist-credentials: false
 
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b  # v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355  # v4.1.0
 
       - name: Install docs dependencies
         run: uv sync --group docs
@@ -35,11 +37,14 @@ jobs:
         run: uv run mkdocs build --strict
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3
         with:
           path: ./site
 
   deploy:
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -48,4 +53,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4
