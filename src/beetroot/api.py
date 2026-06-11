@@ -320,6 +320,44 @@ class ModuleInstallResult(BaseModel):
     detail: str
 
 
+class DevicePreflightError(RuntimeError):
+    """
+    Raised when an auto-install device probe fails before (or mid-) batch.
+
+    :meth:`beetroot.backends.adb.AdbDevice.auto_install_modules` probes
+    the device before pushing anything (is the device reachable? does
+    ``su`` work? is ``magisk`` on the root PATH?) and raises this with a
+    single friendly diagnosis instead of emitting N identical failed
+    rows. It is also raised mid-batch when an adb call fails with a
+    device-offline signature — the remaining modules are skipped because
+    they would all fail identically.
+
+    The CLI catches it, reports any per-module rows completed before the
+    abort, and renders ``error: <message>`` + exit 1 (the standard
+    domain-error shape; capability gating stays exit 2).
+
+    Attributes:
+        results: Per-module rows completed before the abort, in request
+            order. Empty for pre-flight failures (nothing was attempted).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        results: Sequence[ModuleInstallResult] = (),
+    ) -> None:
+        """
+        Bind the friendly diagnosis and any pre-abort per-module rows.
+
+        Args:
+            message: The user-facing diagnosis (rendered after
+                ``error:`` by the CLI).
+            results: Rows for modules processed before the abort.
+        """
+        super().__init__(message)
+        self.results = list(results)
+
+
 @runtime_checkable
 class AutoModuleInstaller(Protocol):
     """

@@ -896,6 +896,14 @@ def frida(
         raise typer.Exit(code=rc)
 
 
+def _echo_module_rows(results: list[api.ModuleInstallResult]) -> None:
+    for r in results:
+        if r.ok:
+            typer.echo(f"[beetroot] ok: {r.source} — {r.detail}")
+        else:
+            typer.echo(f"[beetroot] failed: {r.source} — {r.detail}", err=True)
+
+
 def _module_auto_install(
     backend: api.DeviceBackend,
     sources: list[str],
@@ -906,7 +914,11 @@ def _module_auto_install(
 
     Each module gets its own ``ok:`` (stdout) or ``failed:`` (stderr)
     line; a failed module never aborts reporting of the rest, and any
-    failure makes the verb exit 1.
+    failure makes the verb exit 1. Whole-device problems (offline, no
+    usable root, no magisk binary) surface as a single friendly
+    ``error: ...`` line + exit 1 via the backend's pre-flight probe
+    (issue #38) — any rows completed before a mid-batch abort are still
+    reported first.
     """
     installer = cast(
         api.AutoModuleInstaller,
@@ -920,11 +932,10 @@ def _module_auto_install(
         results = installer.auto_install_modules(sources, sha256s=digests or None)
     except api.AdbNotInstalledError as e:
         raise _error(str(e)) from e
-    for r in results:
-        if r.ok:
-            typer.echo(f"[beetroot] ok: {r.source} — {r.detail}")
-        else:
-            typer.echo(f"[beetroot] failed: {r.source} — {r.detail}", err=True)
+    except api.DevicePreflightError as e:
+        _echo_module_rows(e.results)
+        raise _error(str(e)) from e
+    _echo_module_rows(results)
     if not all(r.ok for r in results):
         raise typer.Exit(code=1)
 

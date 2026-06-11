@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Literal, Self
 from beetroot import frida_download, modules_download, ports, registry
 from beetroot.api import (
     AdbNotInstalledError,
+    DevicePreflightError,
     FridaNotInstalledError,
     ModuleInstallResult,
     adb_device_health,
@@ -411,9 +412,22 @@ class AdbDevice:
         pushed temp zip is removed afterwards, even when the install
         step fails.
 
+        Before anything is pushed, a cheap pre-flight probe (issue #38)
+        diagnoses whole-device problems that would otherwise surface as
+        N identical opaque failed rows: ``su -c true`` checks for usable
+        root and ``su -c 'command -v magisk'`` checks for the ``magisk``
+        binary, each quoted exactly like the install command itself.
+        A failed probe — or an adb error carrying a device-offline
+        signature — raises :class:`beetroot.api.DevicePreflightError`
+        with a single friendly diagnosis and nothing is pushed.
+
         A failing module never aborts the batch: every source gets its
         own :class:`beetroot.api.ModuleInstallResult` row, in request
-        order, and the caller decides the aggregate exit status.
+        order, and the caller decides the aggregate exit status. The one
+        exception is a device that goes offline mid-batch: the remaining
+        modules would all fail identically, so the batch aborts with
+        :class:`beetroot.api.DevicePreflightError` carrying the rows
+        completed so far in its ``results`` attribute.
 
         Args:
             sources: Host paths to local ``.zip`` modules.
@@ -429,6 +443,9 @@ class AdbDevice:
             AdbNotInstalledError: If the ``adb`` binary is not on PATH.
             ValueError: If ``sha256s`` is given with a length different
                 from ``sources``.
+            DevicePreflightError: If the device is offline, has no
+                usable root, or has no ``magisk`` binary (pre-flight),
+                or if it goes offline mid-batch.
         """
         import shutil  # noqa: PLC0415  # local to avoid pulling shutil at module import
 
@@ -442,6 +459,7 @@ class AdbDevice:
                 "pass one digest per source (use None for unpinned entries).",
             )
         digests = sha256s if sha256s is not None else [None] * len(sources)
+        self._preflight_root_and_magisk()
         results: list[ModuleInstallResult] = []
         for index, (source, digest) in enumerate(zip(sources, digests, strict=True)):
             try:
@@ -450,10 +468,51 @@ class AdbDevice:
                     ModuleInstallResult(source=source, ok=True, detail=detail),
                 )
             except (ValueError, RuntimeError) as e:
+                if self._is_offline_failure(str(e)):
+                    raise DevicePreflightError(self._offline_message(), results) from e
                 results.append(
                     ModuleInstallResult(source=source, ok=False, detail=str(e)),
                 )
         return results
+
+    def _preflight_root_and_magisk(self) -> None:
+        # Probe commands go through the same dual-parse quoting as the
+        # install command itself (shlex.quote for the inner MagiskSU
+        # `sh -c` re-join; both payloads are metacharacter-free
+        # constants, so the outer device-shell parse is already safe).
+        root = self._adb_unchecked("shell", "su", "-c", shlex.quote("true"))
+        if root.returncode != 0:
+            if self._is_offline_failure(root.stdout + root.stderr):
+                raise DevicePreflightError(self._offline_message())
+            raise DevicePreflightError(
+                f"device {self._config.serial!r} has no usable root "
+                "(su not found — is the device rooted?)",
+            )
+        magisk = self._adb_unchecked("shell", "su", "-c", shlex.quote("command -v magisk"))
+        if magisk.returncode != 0:
+            if self._is_offline_failure(magisk.stdout + magisk.stderr):
+                raise DevicePreflightError(self._offline_message())
+            raise DevicePreflightError(
+                f"device {self._config.serial!r} has root but no usable magisk binary "
+                "(install or repair the Magisk app, then retry)",
+            )
+
+    def _is_offline_failure(self, text: str) -> bool:
+        # adb's own failure shapes for an unreachable device: `adb:
+        # device offline` and `adb: device '<serial>' not found`. The
+        # serial is included in the second match so an on-device
+        # `su: not found` / `magisk: not found` never false-positives.
+        lowered = text.lower()
+        return (
+            "device offline" in lowered
+            or f"device '{self._config.serial.lower()}' not found" in lowered
+        )
+
+    def _offline_message(self) -> str:
+        return (
+            f"device {self._config.serial!r} is offline or not connected "
+            "(reconnect it and check `adb devices`)"
+        )
 
     def _auto_install_one(self, source: str, sha256: str | None, index: int) -> str:
         src = _validated_zip_source(source)
@@ -509,18 +568,22 @@ class AdbDevice:
 
     # ---- internals --------------------------------------------------------
 
-    def _adb(self, *argv: str) -> subprocess.CompletedProcess[str]:
-        """Run ``adb -s <serial> <argv...>`` with capture; raise on non-zero."""
+    def _adb_unchecked(self, *argv: str) -> subprocess.CompletedProcess[str]:
+        """Run ``adb -s <serial> <argv...>`` with capture; never raise on non-zero."""
         full = [_ADB, "-s", self._config.serial, *argv]
-        res = subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv built from validated config + caller-pinned strings
+        return subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv built from validated config + caller-pinned strings
             full,
             check=False,
             capture_output=True,
             text=True,
         )
+
+    def _adb(self, *argv: str) -> subprocess.CompletedProcess[str]:
+        """Run ``adb -s <serial> <argv...>`` with capture; raise on non-zero."""
+        res = self._adb_unchecked(*argv)
         if res.returncode != 0:
             raise RuntimeError(
-                f"adb command {full!r} failed (rc={res.returncode}): {res.stderr.strip()}",
+                f"adb command {res.args!r} failed (rc={res.returncode}): {res.stderr.strip()}",
             )
         return res
 
