@@ -123,11 +123,18 @@ def _resolve_names(names: list[str], all_flag: bool) -> list[str]:
 
 def _resolve_lifecycle_names(names: list[str], all_flag: bool, verb: str) -> list[str]:
     """
-    Like _resolve_names but when --all is used, skip non-Lifecycle backends.
+    Like _resolve_names but when --all is used, skip names we can't act on.
 
-    Single-name invocations still raise BackendCapabilityError as before —
-    only the --all fan-out silently skips rows that don't support Lifecycle
-    (printing one "skipped <name> (<kind>)" line to stderr per skip).
+    Single-name invocations still raise (BackendCapabilityError for a
+    non-Lifecycle backend, InstanceNotFoundError for an orphan/unresolvable
+    row) so the user gets a clear error for a bad explicit name. Only the
+    --all fan-out skips bad rows — printing one "skipped <name>" advisory to
+    stderr per skip. Two skip reasons exist: a row that resolves to a
+    non-Lifecycle backend (e.g. adb), and a row that won't resolve at all
+    (a redroid orphan whose beetroot.yaml is gone, or an unknown backend
+    kind). The latter would otherwise raise InstanceNotFoundError before the
+    Lifecycle filter runs, aborting the whole fan-out — mirroring how
+    Manager.all()/list_instances() already skip such rows.
 
     Args:
         names: Explicit instance names from positional args.
@@ -140,10 +147,14 @@ def _resolve_lifecycle_names(names: list[str], all_flag: bool, verb: str) -> lis
     raw = _resolve_names(names, all_flag)
     if not all_flag:
         return raw
-    # Filter out non-Lifecycle backends; warn and skip them.
+    # Filter out non-Lifecycle and unresolvable backends; warn and skip them.
     filtered: list[str] = []
     for instance_name in raw:
-        backend = api.Manager.resolve(instance_name)
+        try:
+            backend = api.Manager.resolve(instance_name)
+        except api.InstanceNotFoundError as e:
+            typer.echo(f"skipped {instance_name}: {e}", err=True)
+            continue
         if isinstance(backend, api.Lifecycle):
             filtered.append(instance_name)
         else:
