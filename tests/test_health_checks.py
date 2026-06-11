@@ -56,28 +56,17 @@ class TestCheckFridaSocket:
         assert result.status == "skip"
         assert result.reason == "frida not configured"
 
-    def test_skip_when_nc_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(shutil, "which", lambda _: None)
-        result = api._check_frida_socket("localhost", 27042, enabled=True)
-        assert result.status == "skip"
-        assert result.reason == "nc not on PATH"
+    def test_passes_when_connect_succeeds(self) -> None:
+        with patch("socket.create_connection") as mock_conn:
+            result = api._check_frida_socket("localhost", 27042, enabled=True)
+        mock_conn.assert_called_once_with(("localhost", 27042), timeout=1)
+        assert result.status == "pass"
 
-    def test_fails_on_subprocess_oserror(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/nc")
-
-        def _raise(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
-            raise OSError("nc died")
-
-        with patch("subprocess.run", side_effect=_raise):
+    def test_fails_when_connect_refused(self) -> None:
+        with patch("socket.create_connection", side_effect=OSError("connection refused")):
             result = api._check_frida_socket("localhost", 27042, enabled=True)
         assert result.status == "fail"
-
-    def test_fails_when_nc_nonzero(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/nc")
-        with patch("subprocess.run", return_value=_proc(1)):
-            result = api._check_frida_socket("localhost", 27042, enabled=True)
-        assert result.status == "fail"
-        assert "no listener" in (result.reason or "")
+        assert "no listener at localhost:27042" in (result.reason or "")
 
 
 class TestCheckMagiskZygisk:

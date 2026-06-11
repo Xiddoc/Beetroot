@@ -37,6 +37,7 @@ import contextlib
 import fcntl
 import re
 import shutil
+import socket
 import subprocess
 import sys
 from collections.abc import Iterator, Sequence
@@ -1409,10 +1410,13 @@ def _check_frida_socket(host: str, port: int, *, enabled: bool) -> CheckResult:
     """
     Confirm a TCP listener exists at ``host:port`` without doing the D-Bus handshake.
 
-    Uses ``nc -zw 1`` (zero-I/O scan, 1s connect timeout) to keep the
-    probe socket-only. The D-Bus handshake would require the host
-    ``frida`` CLI; here we only assert that *something* is listening
-    so the doctor verb is fast and minimally-coupled.
+    Probes the port with :func:`socket.create_connection` (1s connect
+    timeout) instead of shelling out to ``nc`` — ``nc``'s ``-z``/``-w``
+    flags are not portable across variants (nmap-ncat, busybox), so an
+    in-process socket connect is both faster and dependency-free. The
+    D-Bus handshake would require the host ``frida`` CLI; here we only
+    assert that *something* is listening so the doctor verb is fast and
+    minimally-coupled.
 
     Args:
         host: Hostname to connect to (usually ``localhost``).
@@ -1421,21 +1425,16 @@ def _check_frida_socket(host: str, port: int, *, enabled: bool) -> CheckResult:
             since v0.3). When ``False`` the check returns ``skip``.
 
     Returns:
-        ``pass`` if ``nc`` exits 0, ``fail`` otherwise, ``skip`` if
-        Frida isn't configured for this instance.
+        ``pass`` if the connect succeeds, ``fail`` if it's refused /
+        times out / is unreachable, ``skip`` if Frida isn't configured
+        for this instance.
     """
     if not enabled:
         return CheckResult(status="skip", reason="frida not configured")
-    if shutil.which("nc") is None:
-        return CheckResult(status="skip", reason="nc not on PATH")
     try:
-        res = subprocess.run(  # noqa: S603  # nc is a host CLI resolved via PATH; argv is constant + integer-typed port
-            ["nc", "-zw", "1", host, str(port)],  # noqa: S607
-            check=False, capture_output=True, text=True, timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        return CheckResult(status="fail", reason=str(e))
-    if res.returncode != 0:
+        with socket.create_connection((host, port), timeout=1):
+            pass
+    except OSError:
         return CheckResult(status="fail", reason=f"no listener at {host}:{port}")
     return CheckResult(status="pass")
 

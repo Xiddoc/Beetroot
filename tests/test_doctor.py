@@ -109,11 +109,10 @@ class TestDoctorRedroid:
             result = runner.invoke(cli.app, ["doctor", "alpha"])
         assert "frida.handshake: skip frida not configured" in result.stdout
 
-    def test_frida_enabled_handshake_runs(
-        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_frida_enabled_handshake_runs(self, cli_root: Path) -> None:
+        del cli_root  # fixture present only for XDG isolation
         # Make frida configured, then re-apply so the instance picks
-        # it up. With frida enabled, the nc-socket probe runs.
+        # it up. With frida enabled, the socket probe runs.
         runner.invoke(cli.app, ["create", "alpha"])
         root = registry.instance_path("alpha")
         yaml_path = root / "beetroot.yaml"
@@ -122,19 +121,12 @@ class TestDoctorRedroid:
             "android:\n  version: 14\n"
             "frida:\n  version: 16.4.10\n",
         )
-        # cli_root's _which stub omits nc — extend it so the frida
-        # socket probe doesn't skip.
-        import shutil
-
-        original = shutil.which
-
-        def _which(name: str) -> str | None:
-            if name == "nc":
-                return "/usr/bin/nc"
-            return original(name)
-
-        monkeypatch.setattr(shutil, "which", _which)
-        with patch("subprocess.run", side_effect=_healthy_subprocess):
+        # The frida probe now connects directly via socket — mock it to
+        # succeed so the handshake reports a live listener.
+        with (
+            patch("subprocess.run", side_effect=_healthy_subprocess),
+            patch("socket.create_connection"),
+        ):
             result = runner.invoke(cli.app, ["doctor", "alpha"])
         assert "frida.handshake: pass" in result.stdout
 
@@ -209,7 +201,10 @@ class TestDoctorAdb:
             backends.register_backend("adb", _StubAdb)
         try:
             self._seed_adb_instance(cli_root)
-            with patch("subprocess.run", side_effect=_healthy_subprocess):
+            with (
+                patch("subprocess.run", side_effect=_healthy_subprocess),
+                patch("socket.create_connection"),
+            ):
                 result = runner.invoke(cli.app, ["doctor", "phone"])
         finally:
             if inserted_stub:
