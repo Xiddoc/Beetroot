@@ -333,18 +333,372 @@ class TestAddModule:
             _make_device().add_module(str(not_zip))
         assert captured_adb == []
 
-    def test_sha256_is_currently_advisory(
+    def test_sha256_is_ignored_on_safe_default(
         self,
         captured_adb: list[list[str]],
         tmp_path: Path,
     ) -> None:
-        # The sha256 kwarg is reserved for the v0.5 auto-install variant
-        # and is intentionally a no-op for v0.4. Pass a deliberately-
-        # wrong hex to confirm the parameter is ignored without error.
+        # The sha256 kwarg is enforced only by auto_install_modules; on
+        # the safe-default push-to-Downloads path it stays a no-op. Pass
+        # a deliberately-wrong hex to confirm the parameter is ignored
+        # without error.
         zip_path = tmp_path / "M.zip"
         zip_path.write_bytes(b"PK\x03\x04fake")
         _make_device().add_module(str(zip_path), sha256="0" * 64)
         assert len(captured_adb) == 1
+
+
+class TestAutoInstallModules:
+    """The issue-#7 root-driven install path (`module --auto-install`)."""
+
+    def test_emits_push_install_rm_sequence(
+        self,
+        captured_adb: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        zip_path = tmp_path / "MyModule.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+        results = _make_device(serial="emulator-5554").auto_install_modules(
+            [str(zip_path)]
+        )
+        assert captured_adb == [
+            [
+                "adb", "-s", "emulator-5554", "push",
+                str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "shell",
+                "su", "-c",
+                "'magisk --install-module /data/local/tmp/beetroot-module-0.zip'",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "shell",
+                "su", "-c", "'rm -f /data/local/tmp/beetroot-module-0.zip'",
+            ],
+        ]
+        assert len(results) == 1
+        assert results[0].ok is True
+        assert results[0].source == str(zip_path)
+        assert "magisk --install-module" in results[0].detail
+        # The ok-row detail must show the command as actually executed
+        # (outer-quoted), not a prettified unquoted variant.
+        assert results[0].detail == (
+            "installed via `su -c "
+            "'magisk --install-module /data/local/tmp/beetroot-module-0.zip'`"
+        )
+
+    def test_remote_path_with_spaces_is_shell_quoted(
+        self,
+        captured_adb: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # The su -c payload is shell-parsed TWICE on-device (device shell,
+        # then MagiskSU's own `sh -c` re-join), so the untrusted local
+        # basename must never appear in it: the zip is pushed under a
+        # synthesized safe name and the command string is quoted for the
+        # outer parse on top.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        zip_path = tmp_path / "My Module.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+        results = _make_device().auto_install_modules([str(zip_path)])
+        assert results[0].ok is True
+        assert captured_adb == [
+            [
+                "adb", "-s", "emulator-5554", "push",
+                str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "shell",
+                "su", "-c",
+                "'magisk --install-module /data/local/tmp/beetroot-module-0.zip'",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "shell",
+                "su", "-c", "'rm -f /data/local/tmp/beetroot-module-0.zip'",
+            ],
+        ]
+
+    def test_hostile_basename_never_reaches_the_device_shell(
+        self,
+        captured_adb: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # A `$(...)` in the zip's filename would execute AS ROOT under
+        # MagiskSU's second `sh -c` parse if the basename were embedded
+        # in the command string. The synthesized remote name must contain
+        # no shell metacharacters, and the hostile substring must appear
+        # in no device-side command at all (the local host path in the
+        # push argv is exec'd directly — argv never passes through a
+        # shell on the host).
+        import re
+
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        zip_path = tmp_path / "$(boom).zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+        results = _make_device().auto_install_modules([str(zip_path)])
+        assert results[0].ok is True
+        remote = captured_adb[0][-1]
+        assert re.fullmatch(r"(/[A-Za-z0-9._-]+)+", remote)
+        assert captured_adb == [
+            [
+                "adb", "-s", "emulator-5554", "push",
+                str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "shell",
+                "su", "-c",
+                "'magisk --install-module /data/local/tmp/beetroot-module-0.zip'",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "shell",
+                "su", "-c", "'rm -f /data/local/tmp/beetroot-module-0.zip'",
+            ],
+        ]
+        assert "$(boom)" not in remote
+        for cmd in captured_adb[1:]:  # the two device-shell invocations
+            for element in cmd:
+                assert "$(boom)" not in element
+
+    def test_matching_sha256_installs(
+        self,
+        captured_adb: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        import hashlib
+
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        payload = b"PK\x03\x04fake"
+        zip_path = tmp_path / "Pinned.zip"
+        zip_path.write_bytes(payload)
+        sha = hashlib.sha256(payload).hexdigest()
+        results = _make_device().auto_install_modules(
+            [str(zip_path)], sha256s=[sha]
+        )
+        assert results[0].ok is True
+        assert len(captured_adb) == 3
+
+    def test_sha256_mismatch_refuses_to_push(
+        self,
+        captured_adb: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        zip_path = tmp_path / "Tampered.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+        results = _make_device().auto_install_modules(
+            [str(zip_path)], sha256s=["0" * 64]
+        )
+        assert captured_adb == []
+        assert results[0].ok is False
+        assert "sha256 mismatch" in results[0].detail
+        assert zip_path.exists()
+
+    def test_failed_install_reports_and_continues(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # First module's magisk --install-module exits non-zero; the
+        # second module must still be processed and succeed. The temp
+        # zip of the failed module must still be rm'd.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        bad = tmp_path / "Bad.zip"
+        bad.write_bytes(b"PK\x03\x04bad")
+        good = tmp_path / "Good.zip"
+        good.write_bytes(b"PK\x03\x04good")
+        captured: list[list[str]] = []
+
+        def _fake_run(
+            cmd: list[str], *args: object, **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            del args, kwargs
+            captured.append(list(cmd))
+            failing = (
+                "magisk --install-module" in cmd[-1]
+                and "beetroot-module-0.zip" in cmd[-1]
+            )
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=1 if failing else 0,
+                stdout="",
+                stderr="! Unable to install" if failing else "",
+            )
+
+        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
+        results = _make_device().auto_install_modules([str(bad), str(good)])
+        assert [r.ok for r in results] == [False, True]
+        assert "Unable to install" in results[0].detail
+        assert "'rm -f /data/local/tmp/beetroot-module-0.zip'" in [
+            cmd[-1] for cmd in captured
+        ]
+        assert "'magisk --install-module /data/local/tmp/beetroot-module-1.zip'" in [
+            cmd[-1] for cmd in captured
+        ]
+
+    def test_failed_push_skips_rm_and_continues_to_next_module(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # When `adb push` itself fails there is nothing on the device to
+        # clean up: the failed module gets a failed row with NO install
+        # and NO rm attempt, and the batch continues to the next module.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        bad = tmp_path / "Bad.zip"
+        bad.write_bytes(b"PK\x03\x04bad")
+        good = tmp_path / "Good.zip"
+        good.write_bytes(b"PK\x03\x04good")
+        captured: list[list[str]] = []
+
+        def _fake_run(
+            cmd: list[str], *args: object, **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            del args, kwargs
+            captured.append(list(cmd))
+            failing = cmd[3] == "push" and cmd[4] == str(bad)
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=1 if failing else 0,
+                stdout="",
+                stderr="adb: error: failed to copy" if failing else "",
+            )
+
+        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
+        results = _make_device().auto_install_modules([str(bad), str(good)])
+        assert [r.ok for r in results] == [False, True]
+        assert "failed to copy" in results[0].detail
+        # No install and no rm for the failed push — only the failed push
+        # itself, then the full sequence for the second module.
+        assert captured == [
+            [
+                "adb", "-s", "emulator-5554", "push",
+                str(bad), "/data/local/tmp/beetroot-module-0.zip",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "push",
+                str(good), "/data/local/tmp/beetroot-module-1.zip",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "shell",
+                "su", "-c",
+                "'magisk --install-module /data/local/tmp/beetroot-module-1.zip'",
+            ],
+            [
+                "adb", "-s", "emulator-5554", "shell",
+                "su", "-c", "'rm -f /data/local/tmp/beetroot-module-1.zip'",
+            ],
+        ]
+
+    def test_failed_rm_does_not_mask_install_success(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        zip_path = tmp_path / "M.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+
+        def _fake_run(
+            cmd: list[str], *args: object, **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            del args, kwargs
+            failing = "rm -f" in cmd[-1]
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=1 if failing else 0,
+                stdout="",
+                stderr="rm: read-only" if failing else "",
+            )
+
+        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
+        results = _make_device().auto_install_modules([str(zip_path)])
+        assert results[0].ok is True
+
+    def test_failed_rm_does_not_mask_failed_install_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # Both the install AND the cleanup rm fail: the row must carry
+        # the install error, never the rm error from the finally block.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        zip_path = tmp_path / "M.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+
+        def _fake_run(
+            cmd: list[str], *args: object, **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            del args, kwargs
+            if "magisk --install-module" in cmd[-1]:
+                stderr = "! Unable to install"
+            elif "rm -f" in cmd[-1]:
+                stderr = "rm: read-only"
+            else:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout="", stderr="",
+                )
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=1, stdout="", stderr=stderr,
+            )
+
+        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
+        results = _make_device().auto_install_modules([str(zip_path)])
+        assert results[0].ok is False
+        assert "Unable to install" in results[0].detail
+        assert "rm: read-only" not in results[0].detail
+
+    def test_missing_zip_becomes_failed_result(
+        self,
+        captured_adb: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        results = _make_device().auto_install_modules(
+            [str(tmp_path / "missing.zip")]
+        )
+        assert captured_adb == []
+        assert results[0].ok is False
+        assert "does not exist" in results[0].detail
+
+    def test_raises_when_adb_not_on_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        with pytest.raises(api.AdbNotInstalledError, match="adb not found on PATH"):
+            _make_device().auto_install_modules([str(tmp_path / "M.zip")])
+
+    def test_rejects_mismatched_sha256s_length(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        zip_path = tmp_path / "M.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+        with pytest.raises(ValueError, match="one digest per source"):
+            _make_device().auto_install_modules(
+                [str(zip_path)], sha256s=["0" * 64, "1" * 64]
+            )
+
+    def test_results_preserve_request_order(
+        self,
+        captured_adb: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        first = tmp_path / "First.zip"
+        first.write_bytes(b"PK\x03\x04a")
+        second = tmp_path / "Second.zip"
+        second.write_bytes(b"PK\x03\x04b")
+        results = _make_device().auto_install_modules([str(first), str(second)])
+        assert [r.source for r in results] == [str(first), str(second)]
+        assert all(r.ok for r in results)
 
 
 class TestCapabilityGating:
@@ -361,6 +715,10 @@ class TestCapabilityGating:
     def test_adb_device_implements_module_installer(self) -> None:
         dev = _make_device()
         assert isinstance(dev, api.ModuleInstaller)
+
+    def test_adb_device_implements_auto_module_installer(self) -> None:
+        dev = _make_device()
+        assert isinstance(dev, api.AutoModuleInstaller)
 
     def test_adb_device_implements_health_checkable(self) -> None:
         dev = _make_device()

@@ -104,6 +104,29 @@ def _fetch_url(url: str) -> Path:
     return cache
 
 
+def verify_sha256(path: Path, expected: str) -> None:
+    """
+    Verify a file's SHA-256 digest against an expected hex value.
+
+    Shared by the staging path (:func:`stage_for_instance` via
+    ``_resolve``) and by :meth:`beetroot.backends.adb.AdbDevice.auto_install_modules`
+    so both enforce the same case-insensitive comparison and raise the
+    same ``sha256 mismatch`` message shape. The file is left untouched —
+    callers that cache downloads decide whether a mismatch should also
+    evict the bad artifact.
+
+    Args:
+        path: The file to hash.
+        expected: The expected SHA-256 hex digest (case-insensitive).
+
+    Raises:
+        ValueError: If the actual digest differs from ``expected``.
+    """
+    actual = frida_download.sha256_of(path)
+    if actual.lower() != expected.lower():
+        raise ValueError(f"sha256 mismatch for {path.name}: expected {expected}, got {actual}")
+
+
 def _resolve(module: Module, instance_root: Path) -> Path:
     if module.url:
         local = _fetch_url(module.url)
@@ -117,14 +140,13 @@ def _resolve(module: Module, instance_root: Path) -> Path:
         if not local.exists():
             raise FileNotFoundError(f"module path not found: {local}")
     if module.sha256:
-        actual = frida_download.sha256_of(local)
-        if actual.lower() != module.sha256.lower():
+        try:
+            verify_sha256(local, module.sha256)
+        except ValueError:
             # Delete the bad cached file before raising so the next call
             # re-downloads rather than re-failing forever on a poisoned entry.
             local.unlink(missing_ok=True)
-            raise ValueError(
-                f"sha256 mismatch for {local.name}: expected {module.sha256}, got {actual}"
-            )
+            raise
     return local
 
 

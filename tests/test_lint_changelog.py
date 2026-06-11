@@ -145,6 +145,74 @@ def test_python_import_skip_does_not_swallow_real_invocation_in_same_paragraph()
     assert "unknown beetroot verb 'doctor'" in errors[0]
 
 
+_PLAIN_HELP = """\
+ Usage: beetroot [OPTIONS] COMMAND [ARGS]...
+
+ Beetroot — multi-instance Magisk-Android research lab CLI.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ create    Create a new instance directory and stage its files.               │
+│ module    Install a Magisk module — append + re-stage (redroid), push (adb), │
+│           or root --auto-install.                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+"""
+
+# The same help as Rich renders it under GitHub Actions (terminal mode
+# forced by the GITHUB_ACTIONS env var): verb names wrapped in SGR
+# escapes, box-drawing characters dimmed.
+_ANSI_HELP = _PLAIN_HELP.replace(
+    "│ create ", "\x1b[2m│\x1b[0m \x1b[1;36mcreate\x1b[0m ",
+).replace(
+    "│ module ", "\x1b[2m│\x1b[0m \x1b[1;36mmodule\x1b[0m ",
+).replace(
+    "--auto-install", "\x1b[1;36m-\x1b[0m\x1b[1;36m-auto\x1b[0m\x1b[1;36m-install\x1b[0m",
+)
+
+
+def test_parse_verbs_plain_help_finds_verbs_and_drops_typer_meta() -> None:
+    verbs = lint_changelog._parse_verbs(_PLAIN_HELP)
+    assert "create" in verbs
+    assert "module" in verbs
+    # Section headings and usage boilerplate must not register as verbs.
+    assert {"options", "commands", "usage"}.isdisjoint(verbs)
+
+
+def test_parse_verbs_strips_ansi_escapes_from_github_actions_help() -> None:
+    """Regression: PR #37 CI failure ("unknown beetroot verb 'module'").
+
+    Rich force-enables terminal mode under GitHub Actions, so
+    ``beetroot --help`` arrives wrapped in ANSI SGR escapes there. The
+    first token of each command row was ``\\x1b[1;36mmodule`` — not an
+    identifier — so the parsed verb set came back EMPTY in CI (while
+    passing locally), and every CHANGELOG invocation was reported as an
+    unknown verb. The parser must yield the same set either way.
+    """
+    assert lint_changelog._parse_verbs(_ANSI_HELP) == lint_changelog._parse_verbs(_PLAIN_HELP)
+    assert "module" in lint_changelog._parse_verbs(_ANSI_HELP)
+
+
+def test_parse_verbs_does_not_invent_verbs_absent_from_help() -> None:
+    """ANSI stripping must not loosen the gate: a verb the CLI does not
+    register is still unknown, colour codes or not."""
+    assert "doctor" not in lint_changelog._parse_verbs(_ANSI_HELP)
+    assert "doctor" not in lint_changelog._parse_verbs(_PLAIN_HELP)
+
+
+def test_parse_long_flags_reassembles_ansi_split_flag() -> None:
+    """Rich emits ``--auto-install`` as ``-``/``-auto``/``-install``
+    fragments with escapes in between; stripping must reassemble it."""
+    flags = lint_changelog._parse_long_flags(_ANSI_HELP)
+    assert "--auto-install" in flags
+    assert flags == lint_changelog._parse_long_flags(_PLAIN_HELP)
+
+
+def test_parse_long_flags_does_not_invent_flags() -> None:
+    assert "--no-such-flag" not in lint_changelog._parse_long_flags(_ANSI_HELP)
+
+
 def test_empty_unreleased_returns_no_lines() -> None:
     raw = """\
 ## Unreleased

@@ -129,8 +129,13 @@ def _registered_verbs() -> set[str]:
     )
     if proc.returncode != 0:
         raise RuntimeError(f"`beetroot --help` failed (exit {proc.returncode}): {proc.stderr}")
+    return _parse_verbs(proc.stdout)
+
+
+def _parse_verbs(help_text: str) -> set[str]:
+    """Extract registered verb names from ``beetroot --help`` output."""
     verbs: set[str] = set()
-    for raw in proc.stdout.splitlines():
+    for raw in _strip_ansi(help_text).splitlines():
         line = _strip_box_drawing(raw).strip()
         if not line:
             continue
@@ -154,8 +159,13 @@ def _verb_long_flags(verb: str) -> set[str]:
         raise RuntimeError(
             f"`beetroot {verb} --help` failed (exit {proc.returncode}): {proc.stderr}",
         )
+    return _parse_long_flags(proc.stdout)
+
+
+def _parse_long_flags(help_text: str) -> set[str]:
+    """Extract long-flag names from ``beetroot <verb> --help`` output."""
     flags: set[str] = set()
-    for match in re.finditer(r"--[A-Za-z][A-Za-z0-9-]*", proc.stdout):
+    for match in re.finditer(r"--[A-Za-z][A-Za-z0-9-]*", _strip_ansi(help_text)):
         flags.add(match.group(0))
     flags.update({"--help", "--install-completion", "--show-completion"})
     return flags
@@ -164,6 +174,23 @@ def _verb_long_flags(verb: str) -> set[str]:
 def _strip_box_drawing(line: str) -> str:
     """Strip Typer's Rich box-drawing characters so we can parse the inner text."""
     return re.sub(r"[│╭╮╯╰─╞╡┃┌┐└┘├┤┬┴┼━┏┓┗┛┣┫┳┻╋]", " ", line)
+
+
+# Rich force-enables terminal mode under GitHub Actions (it detects the
+# GITHUB_ACTIONS env var so CI logs get colour), so in CI ``beetroot
+# --help`` arrives wrapped in ANSI SGR escapes: the verb column reads
+# ``\x1b[1;36mmodule\x1b[0m``, the first-token ``isidentifier()`` check
+# rejects every row, the known-verb set comes back empty, and every
+# CHANGELOG invocation is reported as an unknown verb. Flags split the
+# same way (``--auto-install`` is emitted as ``-``/``-auto``/``-install``
+# fragments with escapes in between). Strip every escape sequence before
+# parsing so the linter sees the same text a human does.
+_ANSI_ESCAPE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def _strip_ansi(text: str) -> str:
+    """Strip ANSI escape sequences (colour/style codes) from ``text``."""
+    return _ANSI_ESCAPE.sub("", text)
 
 
 def _check_invocations(

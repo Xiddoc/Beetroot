@@ -207,10 +207,11 @@ exception type introduced alongside `AdbDeviceBackend` in v0.4).
     * **Route through `adb push`** — copy the zip to
       `/sdcard/Download/<name>.zip` and surface a one-line user
       instruction (`"now flash the module from the Magisk app
-      Modules tab → Install from storage"`). A future enhancement
-      could use Magisk's `/data/adb/modules/` install path directly,
-      but that requires `su` and lives downstream of the safe v0.4
-      shape.
+      Modules tab → Install from storage"`). This shipped as the
+      default; the `su`-driven enhancement shipped later as the
+      opt-in `--auto-install` variant (see §6 PR4) — it routes
+      through `su -c magisk --install-module`, which stages into
+      `/data/adb/modules_update/<id>/`.
 * **`up()` / `down()` / `restart()` / `apply()` / `destroy()` —
   lifecycle.** `RedroidBackend` is the only thing that has a container
   to manage. The `AdbDeviceBackend` analogue would be "power-cycle
@@ -272,12 +273,22 @@ shape.
   don't need it). Returns the `adb shell` exit code verbatim so
   research scripts can chain.
 * **PR4: `add_module()` via `adb push` + user instruction.** **DONE
-  in v0.4 (T5).** The safe-default variant ships: zip is pushed to
+  in v0.4 (T5); auto-install variant DONE post-v0.6 (issue #7).** The
+  safe-default variant ships: zip is pushed to
   `/sdcard/Download/<basename>` and the user gets a one-line "install
   via the Magisk app → Modules tab" instruction on stderr. The
-  auto-install variant (push directly into `/data/adb/modules_update/`
-  via `su -c`) is deferred to a future release pending UX work for
-  per-module success / failure reporting.
+  auto-install variant landed as `AdbDevice.auto_install_modules`
+  behind the new `AutoModuleInstaller` capability sub-protocol
+  (`beetroot module <name> <zip>... --auto-install`): each zip is
+  pushed to `/data/local/tmp/` and installed via
+  `su -c magisk --install-module`, Magisk's supported non-interactive
+  primitive, which stages it into `/data/adb/modules_update/<id>/`
+  (raw unpacking into that directory would have required
+  reimplementing Magisk's module-id extraction and validation).
+  `sha256` digests are enforced fail-closed on this path, and the
+  per-module success / failure reporting UX that gated the deferral
+  ships with it — one `ok:` / `failed:` line per module, batch
+  continues past failures, non-zero exit if any module failed.
 * **PR5: CLI integration — `beetroot adopt <serial>`.** **DONE in v0.4
   (T5).** New verb registers an `AdbBackendConfig` row in the
   user-global registry so subsequent `beetroot shell <name>` /

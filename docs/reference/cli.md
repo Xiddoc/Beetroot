@@ -420,22 +420,28 @@ beetroot frida alpha -- -l script.js
 
 ## `module`
 
-Append a Magisk module to `beetroot.yaml` and re-stage.
+Install a Magisk module — append + re-stage (redroid), push (adb), or auto-install via root (adb, `--auto-install`).
 
 ```
-beetroot module <name> <source>
+beetroot module <name> <source>... [--sha256 HEX]... [--auto-install]
 ```
 
 | Argument | Type | Description |
 |----------|------|-------------|
 | `name` | positional | Instance name |
-| `source` | positional | `https://` or `http://` URL, or a path to a `.zip` (relative paths resolve against the instance directory). |
+| `source` | positional, repeatable | Redroid instances: `https://` or `http://` URL, or a path to a `.zip` (relative paths resolve against the instance directory). adb-adopted devices: path to an existing `.zip` on the host filesystem — URLs are not accepted, and relative paths resolve against your current working directory. Multiple sources are allowed with `--auto-install` only. |
+| `--sha256` | option, repeatable | Expected sha256 hex digest of the zip. With `--auto-install`, repeat once per source (or omit entirely); a mismatching zip is never pushed. Without the flag, ignored for adb pushes (verify the hash yourself) and verified at staging time for redroid instances. |
+| `--auto-install` | flag | adb backend only: install via root (`su -c magisk --install-module`) instead of the safe push-to-Downloads default. |
 
-The module is appended to the instance's `beetroot.yaml` and immediately staged into its `modules/` directory. Restart to flash:
+**Redroid instances:** the module is appended to the instance's `beetroot.yaml` and immediately staged into its `modules/` directory. Restart to flash:
 
 ```bash
 beetroot down <name> && beetroot up <name>
 ```
+
+**adb-adopted devices (default):** the zip is pushed to `/sdcard/Download/<name>.zip` and a one-line "install via the Magisk app → Modules tab" instruction is printed — no root interaction.
+
+**adb-adopted devices (`--auto-install`):** each zip is pushed to a synthesized temp name under `/data/local/tmp/` (`beetroot-module-<N>.zip` — the local filename never reaches the device shell) and installed with `su -c magisk --install-module <zip>` (Magisk stages it into `/data/adb/modules_update/<id>/` for the next reboot); the temp zip is removed afterwards. Every module gets its own `ok:` (stdout) or `failed:` (stderr) report line; a failed module doesn't stop the rest, and the verb exits `1` if any module failed. Redroid instances don't support the flag and exit `2`. See [the modules guide](../guides/modules.md#modules-on-adb-adopted-devices) for examples.
 
 ---
 
