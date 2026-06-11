@@ -28,7 +28,7 @@
 #     take a while. Not passed through compose — a test / escape-hatch knob.
 #
 # Idempotent: REPLACE INTO and INSERT OR IGNORE both no-op on re-run.
-set -eu  # fail fast on undefined vars and unhandled errors (T3).
+set -eu # fail fast on undefined vars and unhandled errors (T3).
 
 MAGISK_DB="${BEETROOT_MAGISK_DB:-/data/adb/magisk.db}"
 DENYLIST_PACKAGES="${BEETROOT_DENYLIST_PACKAGES:-}"

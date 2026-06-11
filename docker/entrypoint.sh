@@ -4,7 +4,7 @@
 # `wait` so logs stream to `docker compose logs`. See
 # docs/how-it-works/boot-scripts.md for each helper's contract.
 # shellcheck disable=SC1091  # helpers live at container root, not this tree.
-set -eu  # fail fast on undefined vars and unhandled errors (T3).
+set -eu # fail fast on undefined vars and unhandled errors (T3).
 echo "[*] Android boot detected. Applying Beetroot configuration..."
 . /magisk-config.sh
 . /flash-modules.sh
