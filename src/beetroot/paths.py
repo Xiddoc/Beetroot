@@ -14,6 +14,7 @@ to :mod:`platformdirs` so the same code does the right thing on Linux
 and Windows (``%APPDATA%`` / ``%LOCALAPPDATA%``). The XDG env vars are
 honoured automatically by platformdirs on Linux.
 """
+
 from __future__ import annotations
 
 import importlib.resources
@@ -128,9 +129,7 @@ def _materialise_bundled_compose() -> Path:
     global _BUNDLED_COMPOSE_CACHE  # noqa: PLW0603
     if _BUNDLED_COMPOSE_CACHE is not None and _BUNDLED_COMPOSE_CACHE.exists():
         return _BUNDLED_COMPOSE_CACHE
-    ref = importlib.resources.files("beetroot.templates").joinpath(
-        "compose.yaml"
-    )
+    ref = importlib.resources.files("beetroot.templates").joinpath("compose.yaml")
     with importlib.resources.as_file(ref) as resolved:
         if resolved.is_file():
             # Editable / source install: ``resolved`` is a real

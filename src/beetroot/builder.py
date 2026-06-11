@@ -18,6 +18,7 @@ Public surface:
 * :func:`build_image` — entry point that orchestrates the three steps and
   returns the resulting image tag.
 """
+
 from __future__ import annotations
 
 import os

@@ -7,6 +7,7 @@ to the instance directory itself (the one containing ``beetroot.yaml``).
 An optional ``sha256`` field is verified when present to guard against
 corruption or supply-chain substitution.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -68,8 +69,7 @@ def _fetch_url(url: str) -> Path:
         # raw _fetch_url call from a third-party script can't bypass
         # the allowlist via a hand-built string.
         raise ModuleFetchError(
-            f"module url {url!r} uses an unsupported scheme; "
-            "only http:// and https:// are allowed"
+            f"module url {url!r} uses an unsupported scheme; only http:// and https:// are allowed"
         )
     cache = _cache_path_for_url(url)
     if cache.exists() and cache.stat().st_size > 0:
@@ -95,13 +95,9 @@ def _fetch_url(url: str) -> Path:
             "verify the URL is current (the upstream release may have moved)"
         ) from e
     except TimeoutError as e:
-        raise ModuleFetchError(
-            f"download timed out after {settings.http_timeout}s: {url}"
-        ) from e
+        raise ModuleFetchError(f"download timed out after {settings.http_timeout}s: {url}") from e
     except urllib.error.URLError as e:
-        raise ModuleFetchError(
-            f"download failed: cannot reach {url}: {e.reason}"
-        ) from e
+        raise ModuleFetchError(f"download failed: cannot reach {url}: {e.reason}") from e
     tmp = cache.with_suffix(".tmp")
     tmp.write_bytes(data)
     tmp.replace(cache)
@@ -127,8 +123,7 @@ def _resolve(module: Module, instance_root: Path) -> Path:
             # re-downloads rather than re-failing forever on a poisoned entry.
             local.unlink(missing_ok=True)
             raise ValueError(
-                f"sha256 mismatch for {local.name}: "
-                f"expected {module.sha256}, got {actual}"
+                f"sha256 mismatch for {local.name}: expected {module.sha256}, got {actual}"
             )
     return local
 

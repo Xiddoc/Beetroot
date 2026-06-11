@@ -11,6 +11,7 @@ procedural modules (:mod:`beetroot.compose`, :mod:`beetroot.config`,
 the public surface — :class:`Instance` composes them, doesn't replace
 them.
 """
+
 from __future__ import annotations
 
 from .api import (

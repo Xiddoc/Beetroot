@@ -9,6 +9,7 @@ invoke compose with ``-p <project>`` set to the instance name and
 authoritative for container state — the registry only knows about
 allocation, not runtime status.
 """
+
 from __future__ import annotations
 
 import json
@@ -114,7 +115,10 @@ def run(
     # are the cost of expressing "callers pass whatever subprocess.run
     # accepts" under ``disallow_any_explicit``.
     result: subprocess.CompletedProcess[str] = subprocess.run(  # type: ignore[call-overload]  # noqa: S603  # **kwargs is object-typed; docker is resolved via PATH
-        cmd, cwd=instance_root, check=False, **kwargs,  # pyright: ignore[reportArgumentType]
+        cmd,
+        cwd=instance_root,
+        check=False,
+        **kwargs,  # pyright: ignore[reportArgumentType]
     )
     return result
 

@@ -6,6 +6,7 @@ default and can be omitted entirely from an instance YAML. Optional
 top-level sections: ``display``, ``resources``, ``frida``, ``modules``,
 ``magisk``, ``ports``.
 """
+
 from __future__ import annotations
 
 import re
@@ -254,9 +255,7 @@ class Magisk(BaseModel):
             behaviour identical while putting the user in control).
     """
 
-    denylist: list[str] = Field(
-        default_factory=lambda: list(_DEFAULT_DENYLIST)
-    )
+    denylist: list[str] = Field(default_factory=lambda: list(_DEFAULT_DENYLIST))
 
     @field_validator("denylist")
     @classmethod
@@ -350,18 +349,14 @@ class Ports(BaseModel):
         if v is None:
             return v
         if not (_MIN_PORT <= v <= _MAX_PORT):
-            raise ValueError(
-                f"port {v} out of range (must be {_MIN_PORT}..{_MAX_PORT})"
-            )
+            raise ValueError(f"port {v} out of range (must be {_MIN_PORT}..{_MAX_PORT})")
         return v
 
     @model_validator(mode="after")
     def _check_distinct(self) -> Self:
         values = [v for v in (self.adb, self.frida, self.frida_control) if v is not None]
         if len(values) != len(set(values)):
-            raise ValueError(
-                "ports.adb / ports.frida / ports.frida_control must be distinct"
-            )
+            raise ValueError("ports.adb / ports.frida / ports.frida_control must be distinct")
         return self
 
 

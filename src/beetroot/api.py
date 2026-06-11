@@ -31,6 +31,7 @@ call a ``Manager`` static method. The verbs themselves stay as
 module-level Typer commands (not bound methods) because Typer captures
 the function reference at import time.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -52,9 +53,7 @@ from . import snapshot as _snapshot_mod
 # Derived from ``config.SUPPORTED_API_VERSION`` rather than hardcoded so the
 # pinned version can never drift behind the schema. A fresh create must load
 # without triggering the auto-bump warning in ``config.load_yaml``.
-_MINIMAL_BEETROOT_YAML = (
-    f"api_version: {config.SUPPORTED_API_VERSION}\nandroid:\n  version: 14\n"
-)
+_MINIMAL_BEETROOT_YAML = f"api_version: {config.SUPPORTED_API_VERSION}\nandroid:\n  version: 14\n"
 
 # ``adb devices`` lines are ``<serial>\t<state>`` (two whitespace-separated
 # columns). Anything with fewer columns is a header line or blank —
@@ -214,7 +213,9 @@ class DeviceBackend(Protocol):
 
     @classmethod
     def from_meta(
-        cls, name: str, backend: registry.BackendConfigBase,
+        cls,
+        name: str,
+        backend: registry.BackendConfigBase,
     ) -> Self:
         """
         Construct a backend instance from a registry meta's backend config.
@@ -506,7 +507,9 @@ class Instance:
             # other files they put there must survive a partial
             # registration failure.
             _rollback_partial_create(
-                resolved_name, target_root, created_dir=False,
+                resolved_name,
+                target_root,
+                created_dir=False,
             )
             raise
         # Network step runs post-commit; soft failure leaves a usable
@@ -535,9 +538,7 @@ class Instance:
         """
         meta = registry.get(name)
         if meta is None:
-            raise InstanceNotFoundError(
-                f"no instance named {name!r}; try Manager.list()"
-            )
+            raise InstanceNotFoundError(f"no instance named {name!r}; try Manager.list()")
         if not isinstance(meta.backend, registry.RedroidBackendConfig):
             raise InstanceNotFoundError(
                 f"instance {name!r} is a {meta.backend.kind!r} backend; "
@@ -549,7 +550,9 @@ class Instance:
 
     @classmethod
     def from_meta(
-        cls, name: str, backend: registry.BackendConfigBase,
+        cls,
+        name: str,
+        backend: registry.BackendConfigBase,
     ) -> Self:
         """
         Build an :class:`Instance` from a registry meta's backend config.
@@ -617,8 +620,7 @@ class Instance:
                 cfg = config.load_yaml(paths.instance_yaml(root))
                 return cls(name=candidate_name, root=root, cfg=cfg)
         raise InstanceNotFoundError(
-            f"directory {resolved} is not registered; "
-            "call Instance.register(path) first"
+            f"directory {resolved} is not registered; call Instance.register(path) first"
         )
 
     # ---- introspection ----------------------------------------------------
@@ -809,9 +811,7 @@ class Instance:
             AdbNotInstalledError: If the ``adb`` binary is not on PATH.
         """
         if shutil.which("adb") is None:
-            raise AdbNotInstalledError(
-                "adb not found on PATH (install android-tools)"
-            )
+            raise AdbNotInstalledError("adb not found on PATH (install android-tools)")
         target = self.adb_address
         subprocess.run(["adb", "connect", target], check=False)  # noqa: S603, S607  # adb is a research CLI we deliberately resolve via PATH
         cmd = ["adb", "-s", target, "shell", *(args or [])]
@@ -916,9 +916,7 @@ class Instance:
         # Building a one-off InstanceConfig keeps us from mutating
         # ``self._cfg`` until we know the stage succeeded. (T2 Agent 2
         # B-6, Agent 3 1.6.)
-        transient = self._cfg.model_copy(
-            update={"modules": [*self._cfg.modules, new_module]}
-        )
+        transient = self._cfg.model_copy(update={"modules": [*self._cfg.modules, new_module]})
         modules_download.stage_for_instance(self._root, transient)
         self._cfg = transient
         config.write_yaml(paths.instance_yaml(self._root), self._cfg)
@@ -945,9 +943,7 @@ class Instance:
     def _meta(self) -> registry.InstanceMeta:
         meta = registry.get(self._name)
         if meta is None:
-            raise InstanceNotFoundError(
-                f"instance {self._name!r} disappeared from the registry"
-            )
+            raise InstanceNotFoundError(f"instance {self._name!r} disappeared from the registry")
         return meta
 
     def _stage(self) -> None:
@@ -984,16 +980,17 @@ class Instance:
         meta = self._meta()
         backend = meta.backend
         stealth_paths = (
-            backend.stealth_paths
-            if isinstance(backend, registry.RedroidBackendConfig)
-            else None
+            backend.stealth_paths if isinstance(backend, registry.RedroidBackendConfig) else None
         )
         new_ports = ports.resolve_ports(meta.index, self._cfg.ports)
         paths.instance_data(self._root).mkdir(parents=True, exist_ok=True)
         paths.instance_modules(self._root).mkdir(parents=True, exist_ok=True)
         paths.instance_env(self._root).write_text(
             config.render_env(
-                self._name, self._cfg, new_ports, stealth_paths=stealth_paths,
+                self._name,
+                self._cfg,
+                new_ports,
+                stealth_paths=stealth_paths,
             )
         )
         # Always place the placeholder, even when frida is configured.
@@ -1063,13 +1060,17 @@ class Instance:
         )
         checks["adb.connect"] = _check_adb_connect(f"localhost:{adb_port}")
         checks["frida.handshake"] = _check_frida_socket(
-            "localhost", frida_port, enabled=self._cfg.frida is not None,
+            "localhost",
+            frida_port,
+            enabled=self._cfg.frida is not None,
         )
         checks["magisk.zygisk"] = _check_magisk_zygisk_over_adb(f"localhost:{adb_port}")
         denylist = self._cfg.magisk.denylist
         gms_pkg = "com.google.android.gms"
         checks[f"magisk.denylist.{gms_pkg}"] = _check_magisk_denylist_over_adb(
-            f"localhost:{adb_port}", gms_pkg, enrolled=gms_pkg in denylist,
+            f"localhost:{adb_port}",
+            gms_pkg,
+            enrolled=gms_pkg in denylist,
         )
         return checks
 
@@ -1078,9 +1079,7 @@ _INSTANCE_LOCK_FILENAME = ".beetroot.lock"
 
 
 @contextlib.contextmanager
-def instance_lock(
-    instance_root: Path, *, exclusive: bool
-) -> Iterator[Path]:
+def instance_lock(instance_root: Path, *, exclusive: bool) -> Iterator[Path]:
     """
     Acquire an advisory ``fcntl.flock`` on ``<instance_root>/.beetroot.lock``.
 
@@ -1143,9 +1142,7 @@ def _stage_network_soft(inst: Instance) -> None:
         )
 
 
-def _rollback_partial_create(
-    name: str, target_root: Path, *, created_dir: bool
-) -> None:
+def _rollback_partial_create(name: str, target_root: Path, *, created_dir: bool) -> None:
     """
     Roll back the partial side-effects of a failed instance constructor.
 
@@ -1353,9 +1350,7 @@ class Manager:
         """
         meta = registry.get(name)
         if meta is None:
-            raise InstanceNotFoundError(
-                f"no instance named {name!r}; try `beetroot ls`"
-            )
+            raise InstanceNotFoundError(f"no instance named {name!r}; try `beetroot ls`")
         backend = meta.backend
         if isinstance(backend, registry.UnresolvedBackendConfig):
             raise InstanceNotFoundError(
@@ -1393,7 +1388,10 @@ def _check_adb_connect(target: str) -> CheckResult:
     try:
         res = subprocess.run(  # noqa: S603  # adb is a host CLI resolved via PATH; target arg validated upstream
             ["adb", "connect", target],  # noqa: S607
-            check=False, capture_output=True, text=True, timeout=5,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
     except (OSError, subprocess.SubprocessError) as e:
         return CheckResult(status="fail", reason=str(e))
@@ -1449,7 +1447,10 @@ def _magisk_sqlite_value_over_adb(adb_target: str, sql: str) -> tuple[int, str, 
     """
     res = subprocess.run(  # noqa: S603  # adb is a host CLI resolved via PATH; sql is composed from constants + validated package names
         ["adb", "-s", adb_target, "shell", "magisk", "--sqlite", sql],  # noqa: S607
-        check=False, capture_output=True, text=True, timeout=5,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
     )
     return res.returncode, res.stdout, res.stderr
 
@@ -1467,7 +1468,8 @@ def _check_magisk_zygisk_over_adb(adb_target: str) -> CheckResult:
         return CheckResult(status="skip", reason="adb not on PATH")
     try:
         rc, stdout, stderr = _magisk_sqlite_value_over_adb(
-            adb_target, "SELECT value FROM settings WHERE key='zygisk'",
+            adb_target,
+            "SELECT value FROM settings WHERE key='zygisk'",
         )
     except (OSError, subprocess.SubprocessError) as e:
         return CheckResult(status="fail", reason=str(e))
@@ -1487,7 +1489,10 @@ def _check_magisk_zygisk_over_adb(adb_target: str) -> CheckResult:
 
 
 def _check_magisk_denylist_over_adb(
-    adb_target: str, pkg: str, *, enrolled: bool,
+    adb_target: str,
+    pkg: str,
+    *,
+    enrolled: bool,
 ) -> CheckResult:
     """
     Confirm ``pkg`` is enrolled in Magisk's denylist via the adb SQL channel.
@@ -1542,7 +1547,10 @@ def _check_adb_serial_listed(serial: str) -> CheckResult:
     try:
         res = subprocess.run(
             ["adb", "devices"],  # noqa: S607  # adb is a host CLI resolved via PATH; argv constant
-            check=False, capture_output=True, text=True, timeout=5,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
     except (OSError, subprocess.SubprocessError) as e:
         return CheckResult(status="fail", reason=str(e))
@@ -1605,12 +1613,16 @@ def adb_device_health(device: DeviceBackend) -> dict[str, CheckResult]:
     checks: dict[str, CheckResult] = {}
     checks["adb.serial"] = _check_adb_serial_listed(serial)
     checks["frida.handshake"] = _check_frida_socket(
-        frida_host or "localhost", frida_port, enabled=frida_port > 0,
+        frida_host or "localhost",
+        frida_port,
+        enabled=frida_port > 0,
     )
     checks["magisk.zygisk"] = _check_magisk_zygisk_over_adb(serial)
     gms_pkg = "com.google.android.gms"
     checks[f"magisk.denylist.{gms_pkg}"] = _check_magisk_denylist_over_adb(
-        serial, gms_pkg, enrolled=True,
+        serial,
+        gms_pkg,
+        enrolled=True,
     )
     return checks
 
