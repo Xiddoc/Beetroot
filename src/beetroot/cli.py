@@ -592,10 +592,7 @@ def ls(
         try:
             console.table(
                 columns=["NAME", "KIND", "IDX", "ADB", "FRIDA", "STATUS", "PATH"],
-                rows=[
-                    _ls_table_row(name, meta, backend)
-                    for name, meta, backend in rows
-                ],
+                rows=[_ls_table_row(name, meta, backend) for name, meta, backend in rows],
             )
         finally:
             console.set_consoles(stdout=old_stdout_console)
@@ -625,7 +622,9 @@ def _ls_rows() -> list[tuple[str, registry.InstanceMeta, api.DeviceBackend]]:
 
 
 def _backend_json_row(
-    name: str, meta: registry.InstanceMeta, backend: api.DeviceBackend,
+    name: str,
+    meta: registry.InstanceMeta,
+    backend: api.DeviceBackend,
 ) -> dict[str, object]:
     """
     Dispatch to the kind-appropriate JSON row builder for ``ls --json``.
@@ -641,7 +640,9 @@ def _backend_json_row(
 
 
 def _ls_table_row(
-    name: str, meta: registry.InstanceMeta, backend: api.DeviceBackend,
+    name: str,
+    meta: registry.InstanceMeta,
+    backend: api.DeviceBackend,
 ) -> list[str]:
     """
     Render one ``beetroot ls`` table row for any backend kind.
