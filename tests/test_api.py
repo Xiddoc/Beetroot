@@ -39,6 +39,14 @@ class TestDeviceBackend:
         assert isinstance(inst.frida_address, str)
         assert isinstance(inst.is_available, bool)
 
+    def test_instance_does_not_implement_auto_module_installer(
+        self, cli_root: Path
+    ) -> None:
+        # Redroid instances flash staged modules at boot; `module
+        # --auto-install` must capability-gate to exit 2 for them.
+        inst = api.Instance.create("alpha")
+        assert not isinstance(inst, api.AutoModuleInstaller)
+
     def test_partial_object_is_not_devicebackend(self) -> None:
         # A class that satisfies most of the Protocol but is missing
         # one method must NOT pass isinstance(obj, DeviceBackend).

@@ -297,6 +297,64 @@ class ModuleInstaller(Protocol):
         ...
 
 
+class ModuleInstallResult(BaseModel):
+    """
+    Per-module outcome of an auto-install run.
+
+    Returned (one row per requested module, in request order) from
+    :meth:`AutoModuleInstaller.auto_install_modules`. A failed module
+    never aborts the rest of the batch — callers inspect ``ok`` per row
+    and decide the aggregate exit status themselves (the CLI exits
+    non-zero if any row failed).
+
+    Attributes:
+        source: The host-side source path exactly as the caller passed it.
+        ok: True iff the module was pushed and installed successfully.
+        detail: One-line human-readable outcome — the on-device install
+            target for ``ok`` rows, the error message for failed rows.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    source: str
+    ok: bool
+    detail: str
+
+
+@runtime_checkable
+class AutoModuleInstaller(Protocol):
+    """
+    Capability sub-protocol: backends that can auto-install Magisk modules.
+
+    Opting in gives the backend the ``beetroot module --auto-install``
+    path: modules are installed without manual Magisk-app interaction
+    (on the adb backend, via ``su -c magisk --install-module``, which
+    stages the zip into ``/data/adb/modules_update/<id>/``).
+    :class:`beetroot.backends.adb.AdbDevice` implements this capability;
+    :class:`Instance` deliberately does not (redroid instances flash
+    staged modules at boot — there is nothing to auto-install at runtime).
+    """
+
+    def auto_install_modules(
+        self,
+        sources: Sequence[str],
+        *,
+        sha256s: Sequence[str | None] | None = None,
+    ) -> list[ModuleInstallResult]:
+        """
+        Install Magisk modules via root, reporting per-module outcomes.
+
+        Args:
+            sources: Host paths to local ``.zip`` modules.
+            sha256s: Optional per-source expected hex digests, parallel
+                to ``sources``. A configured digest is enforced
+                fail-closed — a mismatching zip is never pushed.
+
+        Returns:
+            One :class:`ModuleInstallResult` per source, in order.
+        """
+        ...
+
+
 @runtime_checkable
 class HealthCheckable(Protocol):
     """

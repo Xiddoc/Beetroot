@@ -26,16 +26,19 @@ of ``beetroot adopt``.
 
 from __future__ import annotations
 
+import contextlib
+import shlex
 import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
 
-from beetroot import frida_download, ports, registry
+from beetroot import frida_download, modules_download, ports, registry
 from beetroot.api import (
     AdbNotInstalledError,
     FridaNotInstalledError,
+    ModuleInstallResult,
     adb_device_health,
 )
 from beetroot.backends import register_backend
@@ -48,6 +51,28 @@ _FRIDA = "frida"
 _REMOTE_FRIDA_SERVER = "/data/local/tmp/frida-server"
 _DEVICE_PORT = 27042
 _MAGISK_MODULE_DROP = "/sdcard/Download"
+_MAGISK_MODULE_TMP = "/data/local/tmp"
+
+
+def _validated_zip_source(source: str) -> Path:
+    src = Path(source)
+    if not src.exists():
+        raise ValueError(
+            f"module source {source!r} does not exist on the host filesystem; "
+            "download the zip first and pass its local path.",
+        )
+    if not src.is_file():
+        raise ValueError(
+            f"module source {source!r} is a directory, not a zip file; "
+            "pass the path to the .zip itself.",
+        )
+    if src.suffix.lower() != ".zip":
+        raise ValueError(
+            f"module source {source!r} does not end in .zip; "
+            "Magisk modules must be packaged as zip archives.",
+        )
+    return src
+
 
 # Number of whitespace-separated columns the ``adb devices`` output
 # produces for an entry — the first is the serial, the second is the
@@ -332,13 +357,12 @@ class AdbDevice:
         """
         Push a Magisk module zip to the device's Downloads dir.
 
-        v0.4 ships the safe-default variant: the zip is pushed to
+        This is the safe-default variant: the zip is pushed to
         ``/sdcard/Download/<basename>`` and the user is told to install
-        it via the Magisk app's Modules tab. The auto-install variant
-        (push directly to ``/data/adb/modules_update/`` via ``su -c``)
-        is deferred to v0.6 because it requires extra UX to surface
-        per-module success/failure without booting the device into a
-        bad state.
+        it via the Magisk app's Modules tab. For root-driven installs
+        without manual Magisk-app interaction, use
+        :meth:`auto_install_modules` (the ``beetroot module
+        --auto-install`` path), which also enforces ``sha256``.
 
         Args:
             source: Path to a local ``.zip`` on the host filesystem.
@@ -346,27 +370,13 @@ class AdbDevice:
                 user can ``curl`` the zip into ``./modules/`` first if
                 they want the same UX as :class:`beetroot.api.Instance`.
             sha256: Optional expected hex digest for integrity checking.
-                Currently advisory only — the v0.6 auto-install variant
-                will enforce it; for v0.4 the host-side hash is the
-                user's responsibility before invoking ``beetroot module``.
+                Advisory only on this safe-default path — the host-side
+                hash stays the user's responsibility before invoking
+                ``beetroot module``; :meth:`auto_install_modules`
+                enforces it fail-closed.
         """
-        del sha256  # Reserved for the v0.6 auto-install variant.
-        src = Path(source)
-        if not src.exists():
-            raise ValueError(
-                f"module source {source!r} does not exist on the host filesystem; "
-                "download the zip first and pass its local path.",
-            )
-        if not src.is_file():
-            raise ValueError(
-                f"module source {source!r} is a directory, not a zip file; "
-                "pass the path to the .zip itself.",
-            )
-        if src.suffix.lower() != ".zip":
-            raise ValueError(
-                f"module source {source!r} does not end in .zip; "
-                "Magisk modules must be packaged as zip archives.",
-            )
+        del sha256  # Advisory on the safe default; auto_install_modules enforces it.
+        src = _validated_zip_source(source)
         basename = src.name
         remote = f"{_MAGISK_MODULE_DROP}/{basename}"
         self._adb("push", str(src), remote)
@@ -379,6 +389,84 @@ class AdbDevice:
             f"storage; pick {remote}.",
             file=sys.stderr,
         )
+
+    def auto_install_modules(
+        self,
+        sources: Sequence[str],
+        *,
+        sha256s: Sequence[str | None] | None = None,
+    ) -> list[ModuleInstallResult]:
+        """
+        Install Magisk modules via root, reporting per-module outcomes.
+
+        The issue-#7 auto-install variant of :meth:`add_module`. Each
+        zip is pushed to ``/data/local/tmp/<basename>`` and installed
+        with ``su -c magisk --install-module <path>`` — Magisk's own
+        supported non-interactive install primitive (the same one the
+        redroid backend's ``flash-modules.sh`` uses), which stages the
+        module into ``/data/adb/modules_update/<id>/`` for the next
+        reboot. The pushed temp zip is removed afterwards, even when
+        the install step fails.
+
+        A failing module never aborts the batch: every source gets its
+        own :class:`beetroot.api.ModuleInstallResult` row, in request
+        order, and the caller decides the aggregate exit status.
+
+        Args:
+            sources: Host paths to local ``.zip`` modules.
+            sha256s: Optional per-source expected hex digests, parallel
+                to ``sources``. Unlike the safe-default
+                :meth:`add_module`, a configured digest is enforced
+                fail-closed here — a mismatching zip is never pushed.
+
+        Returns:
+            One :class:`beetroot.api.ModuleInstallResult` per source.
+
+        Raises:
+            AdbNotInstalledError: If the ``adb`` binary is not on PATH.
+            ValueError: If ``sha256s`` is given with a length different
+                from ``sources``.
+        """
+        import shutil  # noqa: PLC0415  # local to avoid pulling shutil at module import
+
+        if shutil.which(_ADB) is None:
+            raise AdbNotInstalledError(
+                "adb not found on PATH (install android-tools)",
+            )
+        if sha256s is not None and len(sha256s) != len(sources):
+            raise ValueError(
+                f"sha256s has {len(sha256s)} entries for {len(sources)} sources; "
+                "pass one digest per source (use None for unpinned entries).",
+            )
+        digests = sha256s if sha256s is not None else [None] * len(sources)
+        results: list[ModuleInstallResult] = []
+        for source, digest in zip(sources, digests, strict=True):
+            try:
+                detail = self._auto_install_one(source, digest)
+                results.append(
+                    ModuleInstallResult(source=source, ok=True, detail=detail),
+                )
+            except (ValueError, RuntimeError) as e:
+                results.append(
+                    ModuleInstallResult(source=source, ok=False, detail=str(e)),
+                )
+        return results
+
+    def _auto_install_one(self, source: str, sha256: str | None) -> str:
+        src = _validated_zip_source(source)
+        if sha256 is not None:
+            modules_download.verify_sha256(src, sha256)
+        remote = f"{_MAGISK_MODULE_TMP}/{src.name}"
+        quoted = shlex.quote(remote)
+        self._adb("push", str(src), remote)
+        try:
+            self._adb_shell(["su", "-c", f"magisk --install-module {quoted}"])
+        finally:
+            # Best-effort temp cleanup: never let a failing ``rm`` mask
+            # the install outcome (success or the original error).
+            with contextlib.suppress(RuntimeError):
+                self._adb_shell(["su", "-c", f"rm -f {quoted}"])
+        return f"installed via `su -c magisk --install-module {remote}`"
 
     # ---- health-check ----------------------------------------------------
 
