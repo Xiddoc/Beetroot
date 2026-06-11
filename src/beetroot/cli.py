@@ -323,8 +323,6 @@ def adopt(
     Pass --verify to require the serial to be reachable via
     adb devices before the registry row is written.
     """
-    import shutil  # noqa: PLC0415  # local import — avoids shutil in every CLI startup path
-
     resolved_name = name if name is not None else _adopt_default_name(serial)
     if not _INSTANCE_NAME_RE.fullmatch(resolved_name):
         raise _error(

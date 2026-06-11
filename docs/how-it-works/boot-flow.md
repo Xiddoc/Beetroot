@@ -12,7 +12,7 @@ into the container's environment via the bundled compose template's
 
 ```
 beetroot.yaml
-  ↓ pydantic models (config.py — InstanceConfig, Stealth, Frida, ...)
+  ↓ pydantic models (config.py — InstanceConfig, Magisk, Frida, ...)
   ↓ config.render_env()
 instance .env file (per-instance, in the instance directory)
   ↓ docker compose --env-file <.env>  + the bundled compose template's
@@ -85,7 +85,7 @@ In v0.3, each numbered step below lives in a dedicated helper (see [Boot Scripts
 
 1. **Wait for the Magisk daemon.** (`magisk-config.sh`.) Polls `magisk --sqlite "SELECT 1"` in a bounded loop (default 120 one-second attempts, ~2 minutes — conservative because a first boot of redroid+Magisk can legitimately take a while). The DB at `/data/adb/magisk.db` is created by Magisk during its own initialization, which happens during the Zygote start. Without this wait, the SQL writes below would silently no-op. If Magisk never answers (broken or missing), the helper exits 1 and the boot configuration aborts loudly — the error surfaces in `docker compose logs` instead of the container hanging half-configured forever.
 
-2. **Configure Magisk via SQL.** (`magisk-config.sh`.) Calls `magisk --sqlite` to enable Zygisk and the denylist, then inserts each package from `stealth.denylist` as a denylist entry. These writes take effect the next time Zygisk reads the DB — which happens before any app process starts, because Zygisk hooks into Zygote before forking app processes.
+2. **Configure Magisk via SQL.** (`magisk-config.sh`.) Calls `magisk --sqlite` to enable Zygisk and the denylist, then inserts each package from `magisk.denylist` as a denylist entry. These writes take effect the next time Zygisk reads the DB — which happens before any app process starts, because Zygisk hooks into Zygote before forking app processes.
 
 3. **Flash modules.** (`flash-modules.sh`.) Iterates every `*.zip` in `/data/adb/modules_update` (the bind-mounted `<instance-dir>/modules/` directory — v0.4 T4 moved the target from the Beetroot-invented `/flash_dir` to Magisk's well-known staging dir) and calls `magisk --install-module <zip>`. Modules that are already installed are reinstalled safely (Magisk handles idempotency). A module that fails to install is logged with a `[!]` warning and skipped — boot continues to the Frida launch step.
 

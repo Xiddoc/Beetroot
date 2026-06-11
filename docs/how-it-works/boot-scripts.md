@@ -83,8 +83,8 @@ Four actions (v0.4 T2):
    when Magisk's schema or daemon-race timing changes).
 4. `INSERT OR IGNORE INTO denylist` — enrol each package in
    `BEETROOT_DENYLIST_PACKAGES` (comma-separated). The list is the
-   string form of `stealth.denylist` from `beetroot.yaml`; per-package
-   shape is validated by the pydantic regex in `Stealth._check_packages`,
+   string form of `magisk.denylist` from `beetroot.yaml`; per-package
+   shape is validated by the pydantic regex in `Magisk._check_packages`,
    so the helper joins on `,` without escaping.
 
 | Env var                       | Default                                                 | Notes                                                                                                                          |

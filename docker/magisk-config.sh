@@ -20,7 +20,7 @@
 #   BEETROOT_DENYLIST_PACKAGES=
 #     Comma-separated list of Android package ids to enrol in Magisk's
 #     denylist (per-package SQL-injection prophylaxis lives in pydantic;
-#     see Stealth._check_packages in src/beetroot/config.py). Empty by
+#     see Magisk._check_packages in src/beetroot/config.py). Empty by
 #     default — the helper SQL'es nothing extra.
 #   BEETROOT_MAGISK_WAIT_SECS=120
 #     Upper bound (in 1-second probe attempts) on the Magisk daemon wait.

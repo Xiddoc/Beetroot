@@ -40,7 +40,7 @@ Most Magisk configuration UIs (the Magisk app, `magisk --denylist`) rely on the 
 
 1. Enable Zygisk (`INSERT OR REPLACE INTO settings (key, value) VALUES ('zygisk', 1)`).
 2. Enable the denylist (`INSERT OR REPLACE INTO settings (key, value) VALUES ('denylist', 1)`).
-3. Add each package from `stealth.denylist` as a denylist entry.
+3. Add each package from `magisk.denylist` as a denylist entry.
 
 This is reliable because the DB is only read by Zygisk after Zygote starts, which happens after `entrypoint.sh` has already written to it.
 
