@@ -30,9 +30,9 @@ Index is assigned at `create` time and freed on `destroy`. If you destroy index 
 `beetroot ls` always shows the current mapping:
 
 ```
-NAME              IDX  ADB                   FRIDA                 STATUS        PATH
-research-clean    0    localhost:5555        localhost:27042       running       /home/you/research-clean
-research-stealth  1    localhost:5565        localhost:27052       running       /home/you/research-stealth
+NAME              KIND     IDX  ADB                   FRIDA                 STATUS        PATH
+research-clean    redroid  0    localhost:5555        localhost:27042       running       /home/you/research-clean
+research-stealth  redroid  1    localhost:5565        localhost:27052       running       /home/you/research-stealth
 ```
 
 ## Pinning ports

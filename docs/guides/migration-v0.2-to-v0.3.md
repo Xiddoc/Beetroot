@@ -65,9 +65,9 @@ beetroot ls
 ```
 
 ```
-NAME    IDX  ADB             FRIDA            STATUS         PATH
-alpha   0    localhost:5555  localhost:27042  not-created    /home/you/alpha
-bravo   1    localhost:5565  localhost:27052  not-created    /home/you/bravo
+NAME    KIND     IDX  ADB             FRIDA            STATUS         PATH
+alpha   redroid  0    localhost:5555  localhost:27042  not-created    /home/you/alpha
+bravo   redroid  1    localhost:5565  localhost:27052  not-created    /home/you/bravo
 ```
 
 A freshly-registered instance shows `STATUS = not-created` because no container has been built for it yet. After `beetroot up alpha` the status will flip to `running`; `beetroot down alpha` flips it to `exited` (container present but stopped, data preserved).

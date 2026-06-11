@@ -760,15 +760,17 @@ class TestCliDispatchesToApi:
         assert result.exit_code == 0, result.stderr
         mock_apply.assert_called_once_with()
 
-    def test_ls_verb_calls_manager_list(self, cli_root: Path) -> None:
+    def test_ls_verb_calls_manager_all(self, cli_root: Path) -> None:
+        # `ls` walks every backend kind via Manager.all() (issue #15),
+        # not the redroid-only Manager.list_instances().
         from typer.testing import CliRunner
 
         from beetroot import cli
 
         runner = CliRunner()
         runner.invoke(cli.app, ["create", "alpha"])
-        with patch.object(api.Manager, "list_instances", wraps=api.Manager.list_instances) as mock_list:
+        with patch.object(api.Manager, "all", wraps=api.Manager.all) as mock_all:
             with _patched_subprocess():
                 result = runner.invoke(cli.app, ["ls"])
         assert result.exit_code == 0, result.stderr
-        mock_list.assert_called_once_with()
+        mock_all.assert_called_once_with()

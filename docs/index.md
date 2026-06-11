@@ -11,9 +11,9 @@ $ beetroot up alpha bravo
 [beetroot] alpha up — ADB localhost:5555, Frida localhost:27042
 [beetroot] bravo up — ADB localhost:5565, Frida localhost:27052
 $ beetroot ls
-NAME          IDX  ADB                   FRIDA                 STATUS        PATH
-alpha         0    localhost:5555        localhost:27042       running       /home/you/alpha
-bravo         1    localhost:5565        localhost:27052       running       /home/you/bravo
+NAME          KIND     IDX  ADB                   FRIDA                 STATUS        PATH
+alpha         redroid  0    localhost:5555        localhost:27042       running       /home/you/alpha
+bravo         redroid  1    localhost:5565        localhost:27052       running       /home/you/bravo
 ```
 
 ## What's included

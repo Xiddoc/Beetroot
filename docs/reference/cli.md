@@ -96,6 +96,8 @@ beetroot adopt <serial> [--name NAME] [--verify]
 
 Verbs that need an on-disk container (`up`, `down`, `restart`, `apply`, `destroy`, `snapshot`) raise `BackendCapabilityError` against an adopted device and exit with code 2 — distinct from the standard "instance not found" exit 1, so wrapping scripts can distinguish. Use `beetroot shell <name>` / `beetroot frida <name>` / `beetroot module <name>` for the universal verbs.
 
+Adopted devices show up in `beetroot ls` like any other instance — `KIND` is `adb`, the ADB column shows the serial, and PATH is `-` (no on-disk directory). See [`ls`](#ls).
+
 ---
 
 ## `apply`
@@ -245,7 +247,7 @@ This is the companion to `beetroot adopt` — the safe way to remove an adb-adop
 
 ## `ls`
 
-List all known instances.
+List all known instances — every backend kind, so adb-adopted devices appear next to redroid containers.
 
 ```
 beetroot ls [--json]
@@ -255,30 +257,47 @@ beetroot ls [--json]
 |------|-------------|
 | `--json` | Emit JSON instead of a table. Suitable for piping to `jq` or Python. |
 
-Container status is queried live from `docker compose ps` — it's never cached.
+Status is queried live, never cached: redroid rows from `docker compose ps`, adb rows from `adb devices` (`available` when the serial is listed in state `device`, `unavailable` otherwise).
 
 **Table output:**
 
 ```
-NAME          IDX  ADB                   FRIDA                 STATUS        PATH
-alpha         0    localhost:5555        localhost:27042       running       /home/you/alpha
-bravo         1    localhost:5565        localhost:27052       exited        /tmp/scratch/bravo
+NAME          KIND     IDX  ADB                   FRIDA                 STATUS        PATH
+alpha         redroid  0    localhost:5555        localhost:27042       running       /home/you/alpha
+bravo         redroid  1    localhost:5565        localhost:27052       exited        /tmp/scratch/bravo
+phone         adb      2    emulator-5554         localhost:27062       available     -
 ```
+
+For adb rows the ADB column shows the device serial verbatim (the value `adb -s` targets — there is no `host:port` form), FRIDA shows the allocated host forward port for the row's index, and PATH is `-` because an adopted device has no on-disk instance directory.
 
 **JSON output (abbreviated):**
 
 ```json
 {
   "alpha": {
+    "kind": "redroid",
     "path": "/home/you/alpha",
     "index": 0,
     "adb": "localhost:5555",
     "frida": "localhost:27042",
+    "adb_address": "localhost:5555",
+    "frida_address": "localhost:27042",
     "status": "running",
+    "created_at": "2025-01-15T10:30:00+00:00"
+  },
+  "phone": {
+    "kind": "adb",
+    "index": 2,
+    "serial": "emulator-5554",
+    "adb_address": "emulator-5554",
+    "frida_address": "localhost:27062",
+    "is_available": true,
     "created_at": "2025-01-15T10:30:00+00:00"
   }
 }
 ```
+
+Adb-kind rows use the same shape as `beetroot status` for an adopted device: `serial` plus the Protocol-surface fields (`adb_address`, `frida_address`, `is_available`). The v0.3 back-compat keys (`path` / `adb` / `frida`) exist only on redroid rows.
 
 ---
 

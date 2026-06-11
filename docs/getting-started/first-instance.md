@@ -93,8 +93,8 @@ beetroot ls
 ```
 
 ```
-NAME    IDX  ADB             FRIDA            STATUS    PATH
-alpha   0    localhost:5555  localhost:27042  running   /home/you/alpha
+NAME    KIND     IDX  ADB             FRIDA            STATUS    PATH
+alpha   redroid  0    localhost:5555  localhost:27042  running   /home/you/alpha
 ```
 
 ## Stop (data preserved)
