@@ -210,6 +210,24 @@ exclude_also = [
     "@overload",
 ]
 
+[tool.deptry]
+# Dependency hygiene gate (issue #21): undeclared imports (DEP001) and
+# declared-but-unused deps (DEP002) fail CI. CI runs it via
+# ``uvx deptry==<pin> .`` — an isolated env where Beetroot's own
+# metadata isn't installed — so first-party and import-name mappings
+# must be spelled out explicitly.
+known_first_party = ["beetroot"]
+
+[tool.deptry.package_module_name_map]
+pyyaml = "yaml"
+
+[tool.deptry.per_rule_ignores]
+# frida-tools is the optional [frida] extra and is consumed as a CLI:
+# ``beetroot frida`` shells out to the host ``frida`` binary and never
+# imports the package, so DEP002's declared-but-never-imported
+# heuristic is a false positive for it.
+DEP002 = ["frida-tools"]
+
 [tool.interrogate]
 # Docstring coverage gate. The ``D`` ruff family already enforces
 # Google-style docstrings on public APIs at lint time; ``interrogate``
