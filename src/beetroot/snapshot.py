@@ -415,7 +415,7 @@ def restore(
     if registry.get(dest_name) is not None:
         raise SnapshotError(
             f"instance {dest_name!r} already registered; "
-            "pick a different --as <name>"
+            "pick a different --name <name>"
         )
     target = dest_path.resolve()
     # Validate the archive's manifest BEFORE any destructive action on

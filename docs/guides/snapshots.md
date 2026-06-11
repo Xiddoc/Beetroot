@@ -57,14 +57,14 @@ The `.tar.zst` extension is appended automatically if you omit it.
 ## Restoring a snapshot
 
 ```bash
-beetroot restore ~/beetroot-snapshots/alpha-20260518.tar.zst --as beta
+beetroot restore ~/beetroot-snapshots/alpha-20260518.tar.zst --name beta
 ```
 
-Without `--as <name>`, the restored instance uses the source's recorded name (from the manifest). Without `--path <dir>`, it lands at `./<name>/`. Both flags are optional:
+Without `--name <name>`, the restored instance uses the source's recorded name (from the manifest). Without `--path <dir>`, it lands at `./<name>/`. Both flags are optional:
 
 ```bash
 # Most explicit form
-beetroot restore archive.tar.zst --as beta --path /srv/instances/beta
+beetroot restore archive.tar.zst --name beta --path /srv/instances/beta
 
 # Defaults: name from manifest, path is ./<name>
 beetroot restore archive.tar.zst
@@ -91,7 +91,7 @@ error: /home/x/existing-data already exists and is non-empty; pass --force to ov
 Pass `--force` to overwrite. The target is `rm -rf`'d, then the archive is extracted into the freshly empty directory:
 
 ```bash
-beetroot restore archive.tar.zst --as beta --path ./existing-data --force
+beetroot restore archive.tar.zst --name beta --path ./existing-data --force
 ```
 
 `--force` does *not* touch the registry. If a name already exists there, you'll get a separate error and need to `beetroot destroy <name>` first.
@@ -115,7 +115,7 @@ beetroot snapshot alpha -o ./baseline.tar.zst
 # ... destructive experiment ...
 beetroot down alpha
 beetroot destroy -y alpha
-beetroot restore ./baseline.tar.zst --as alpha
+beetroot restore ./baseline.tar.zst --name alpha
 beetroot apply alpha
 beetroot up alpha
 ```
