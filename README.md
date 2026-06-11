@@ -1,6 +1,6 @@
 # Beetroot 🫜
 
-**The best Android research setup to beat root.**
+**The best Android research setup to beat root.** _(Get it? Beat... root? It sounded funnier in my head)_
 
 [![CI](https://github.com/Xiddoc/Beetroot/actions/workflows/ci.yml/badge.svg)](https://github.com/Xiddoc/Beetroot/actions/workflows/ci.yml)
 [![Docs](https://github.com/Xiddoc/Beetroot/actions/workflows/docs.yml/badge.svg)](https://xiddoc.github.io/Beetroot/)
