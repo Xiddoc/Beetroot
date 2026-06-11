@@ -111,7 +111,11 @@ jobs:
         # interrogate; the affected code path (svnwc) is not used by
         # Beetroot or interrogate. Track it and drop the suppression
         # if/when interrogate upgrades.
-        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969
+        # PYSEC-2026-196 is in ``pip`` itself (the build tool, fixed in
+        # pip 26.1.2) — an environment package, not a Beetroot runtime
+        # dependency. Drop the suppression once the runner ships pip
+        # >=26.1.2.
+        run: uv run pip-audit --ignore-vuln PYSEC-2022-42969 --ignore-vuln PYSEC-2026-196
 
   shellcheck:
     runs-on: ubuntu-latest
@@ -133,11 +137,13 @@ jobs:
         uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf  # v3.1.0
         with:
           dockerfile: docker/Dockerfile
-          # DL3007 = "always tag the version of an image explicitly".
-          # Our base image arg is ``${BASE_IMAGE}`` which is resolved
-          # by ``beetroot build`` to an exact tag at substitution
-          # time; hadolint can't see that, so we whitelist the rule.
-          ignore: DL3007
+          # DL3006/DL3007 = "always tag the version of an image
+          # explicitly". Our base is ``FROM ${BASE_IMAGE}`` — a build
+          # arg supplied and tagged at build time (defaulting to
+          # ``redroid/redroid:14.0.0_litegapps_houdini_magisk`` and
+          # resolved by ``beetroot build``). hadolint can't see the tag
+          # behind the arg, so we whitelist both rules.
+          ignore: DL3006,DL3007
 
   docker-build-smoke:
     # Validates that the Dockerfile's structure and COPY instructions are
