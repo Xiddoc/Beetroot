@@ -21,6 +21,7 @@ same round-trip will preserve those randomized paths.
 The ``.env`` file is deliberately excluded — it's regenerated from
 ``beetroot.yaml`` on the next ``beetroot apply``.
 """
+
 from __future__ import annotations
 
 import importlib.metadata
@@ -48,9 +49,13 @@ _ARCHIVE_SUFFIX = ".tar.zst"
 # basename-based readers. The lock file is a per-host artefact;
 # carrying it through a snapshot would also export a now-broken
 # kernel flock state to a different host.
-_EXCLUDED_TOP_LEVEL = frozenset({
-    ".env", MANIFEST_FILENAME, INSTANCE_LOCK_FILENAME,
-})
+_EXCLUDED_TOP_LEVEL = frozenset(
+    {
+        ".env",
+        MANIFEST_FILENAME,
+        INSTANCE_LOCK_FILENAME,
+    }
+)
 
 
 class SnapshotError(RuntimeError):
@@ -172,9 +177,7 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
     """
     yaml_path = paths.instance_yaml(instance_root)
     if not yaml_path.is_file():
-        raise SnapshotError(
-            f"no beetroot.yaml at {yaml_path}; not a Beetroot instance directory"
-        )
+        raise SnapshotError(f"no beetroot.yaml at {yaml_path}; not a Beetroot instance directory")
     name, meta, backend = _find_registry_entry(instance_root)
     final_dest = _ensure_suffix(dest)
     final_dest.parent.mkdir(parents=True, exist_ok=True)
@@ -227,8 +230,7 @@ def _find_registry_entry(
         if Path(backend.absolute_path).resolve() == target:
             return name, meta, backend
     raise SnapshotError(
-        f"instance at {instance_root} is not registered; "
-        "run `beetroot register <path>` first"
+        f"instance at {instance_root} is not registered; run `beetroot register <path>` first"
     )
 
 
@@ -293,15 +295,15 @@ def _extract_manifest_bytes(archive: Path) -> bytes:
         raise SnapshotError(f"archive {archive} is not a valid zstd stream: {e}") from e
     except tarfile.TarError as e:
         raise SnapshotError(f"archive {archive} contains a malformed tar stream: {e}") from e
-    raise SnapshotError(
-        f"archive {archive} is missing its {MANIFEST_FILENAME} manifest"
-    )
+    raise SnapshotError(f"archive {archive} is missing its {MANIFEST_FILENAME} manifest")
 
 
-_MANIFEST_ARCNAMES = frozenset({
-    f"./{MANIFEST_FILENAME}",
-    MANIFEST_FILENAME,
-})
+_MANIFEST_ARCNAMES = frozenset(
+    {
+        f"./{MANIFEST_FILENAME}",
+        MANIFEST_FILENAME,
+    }
+)
 
 
 def _is_manifest_member(member: tarfile.TarInfo) -> bool:
@@ -328,9 +330,7 @@ def _prepare_destination(target: Path, *, force: bool) -> None:
     except NotADirectoryError:
         # ``target`` is an existing regular file; iterdir() blows up.
         # Re-raise as a SnapshotError so callers see a consistent type.
-        raise SnapshotError(
-            f"{target} exists and is a file, not a directory"
-        ) from None
+        raise SnapshotError(f"{target} exists and is a file, not a directory") from None
     if not occupied:
         return
     for other_name, meta in registry.list_instances().items():
@@ -361,10 +361,7 @@ def _check_restored_port_collision(dest_name: str, index: int, target: Path) -> 
     """
     cfg = config.load_yaml(paths.instance_yaml(target))
     new_ports = ports.resolve_ports(index, cfg.ports)
-    others = {
-        n: p for n, p in registry.all_resolved_ports().items()
-        if n != dest_name
-    }
+    others = {n: p for n, p in registry.all_resolved_ports().items() if n != dest_name}
     collision = registry.find_port_collision(new_ports, others)
     if collision is None:
         return
@@ -414,8 +411,7 @@ def restore(
     """
     if registry.get(dest_name) is not None:
         raise SnapshotError(
-            f"instance {dest_name!r} already registered; "
-            "pick a different --name <name>"
+            f"instance {dest_name!r} already registered; pick a different --name <name>"
         )
     target = dest_path.resolve()
     # Validate the archive's manifest BEFORE any destructive action on
@@ -433,6 +429,7 @@ def restore(
     # Local import — api imports snapshot at module load, so a top-level
     # ``from . import api`` would loop.
     from . import api  # noqa: PLC0415
+
     # Atomic allocation + registration under one file lock.
     index = registry.add_allocating(
         dest_name,

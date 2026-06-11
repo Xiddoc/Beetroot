@@ -17,6 +17,7 @@ union — that is what makes their rows survive read/write cycles.
 T1 ships only the redroid backend; T5 adds ``adb.py`` (the
 :class:`AdbDevice` backend) and registers it as ``"adb"``.
 """
+
 from __future__ import annotations
 
 from importlib.metadata import entry_points

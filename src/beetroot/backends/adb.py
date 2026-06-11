@@ -23,6 +23,7 @@ side of ``adb forward tcp:<host_port> tcp:27042`` is the resolved
 the user would have got if they'd called ``beetroot create`` instead
 of ``beetroot adopt``.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -90,11 +91,7 @@ def serial_is_available(serial: str) -> bool:
         return False
     for line in res.stdout.splitlines():
         parts = line.split()
-        if (
-            len(parts) >= _ADB_DEVICES_COLUMNS
-            and parts[0] == serial
-            and parts[1] == "device"
-        ):
+        if len(parts) >= _ADB_DEVICES_COLUMNS and parts[0] == serial and parts[1] == "device":
             return True
     return False
 
@@ -135,7 +132,9 @@ class AdbDevice:
 
     @classmethod
     def from_meta(
-        cls, name: str, backend: registry.BackendConfigBase,
+        cls,
+        name: str,
+        backend: registry.BackendConfigBase,
     ) -> Self:
         """
         Build an :class:`AdbDevice` from a registry meta's backend config.
@@ -168,14 +167,12 @@ class AdbDevice:
 
         if not isinstance(backend, registry.AdbBackendConfig):
             raise InstanceNotFoundError(
-                f"AdbDevice expected AdbBackendConfig, got "
-                f"{type(backend).__name__}",
+                f"AdbDevice expected AdbBackendConfig, got {type(backend).__name__}",
             )
         meta = registry.get(name)
         if meta is None:
             raise InstanceNotFoundError(
-                f"no instance named {name!r} in registry; "
-                "cannot derive host forward port",
+                f"no instance named {name!r} in registry; cannot derive host forward port",
             )
         host_port = ports.ports_for_index(meta.index)["frida"]
         return cls(name=name, config=backend, host_forward_port=host_port)
@@ -421,8 +418,7 @@ class AdbDevice:
         )
         if res.returncode != 0:
             raise RuntimeError(
-                f"adb command {full!r} failed (rc={res.returncode}): "
-                f"{res.stderr.strip()}",
+                f"adb command {full!r} failed (rc={res.returncode}): {res.stderr.strip()}",
             )
         return res
 

@@ -20,6 +20,7 @@ An unknown ``kind`` is preserved as an opaque :class:`UnresolvedBackendConfig`
 that round-trips byte-for-byte — it is never silently wiped. Only a genuinely
 corrupt envelope (bad JSON / missing version) triggers ``.bak``-and-empty.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -395,9 +396,7 @@ def _read(path: Path) -> RegistryFile:
             # Validate the rest of the meta fields via pydantic,
             # substituting the pre-parsed backend so it doesn't go
             # through the closed union.
-            meta = InstanceMeta.model_validate(
-                {**meta_dict, "backend": backend}
-            )
+            meta = InstanceMeta.model_validate({**meta_dict, "backend": backend})
             instances[name] = meta
         except Exception:  # noqa: BLE001, S112  # corrupt row (ValidationError, ValueError, etc.) — skip silently; the envelope is valid
             continue
@@ -658,8 +657,7 @@ def instance_path(name: str) -> Path:
     backend = meta.backend
     if not isinstance(backend, RedroidBackendConfig):
         raise RegistryError(
-            f"instance {name!r} is a {backend.kind!r} backend; "
-            "it has no on-disk directory"
+            f"instance {name!r} is a {backend.kind!r} backend; it has no on-disk directory"
         )
     return Path(backend.absolute_path)
 

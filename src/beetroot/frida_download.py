@@ -8,6 +8,7 @@ cached under ``$XDG_CACHE_HOME/beetroot/frida/`` (default
 ``~/.cache/beetroot/frida/``) and copied per-instance on apply, shared
 across all instances on the host.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -115,9 +116,7 @@ def download(version: str, *, expected_sha256: str | None = None) -> Path:
     except urllib.error.HTTPError as e:
         raise FridaFetchError(f"download failed: HTTP {e.code} fetching {url}") from e
     except TimeoutError as e:
-        raise FridaFetchError(
-            f"download timed out after {settings.http_timeout}s: {url}"
-        ) from e
+        raise FridaFetchError(f"download timed out after {settings.http_timeout}s: {url}") from e
     except urllib.error.URLError as e:
         raise FridaFetchError(f"download failed: cannot reach {url}: {e.reason}") from e
     try:

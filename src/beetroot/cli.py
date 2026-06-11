@@ -11,6 +11,7 @@ The verbs stay as module-level Typer commands (not bound methods)
 because ``@app.command()`` captures the function reference at import
 time — wrapping them in a class would break Typer's dispatch.
 """
+
 from __future__ import annotations
 
 import json
@@ -95,8 +96,7 @@ def _require(backend: api.DeviceBackend, cap: type, verb: str) -> object:
     if isinstance(backend, cap):
         return backend
     raise api.BackendCapabilityError(
-        f"{verb!r} is not supported by the {backend.kind!r} backend "
-        f"for instance {backend.name!r}."
+        f"{verb!r} is not supported by the {backend.kind!r} backend for instance {backend.name!r}."
     )
 
 
@@ -161,8 +161,7 @@ def _resolve_lifecycle_names(names: list[str], all_flag: bool, verb: str) -> lis
             filtered.append(instance_name)
         else:
             typer.echo(
-                f"skipped {instance_name} ({backend.kind}): "
-                f"{verb!r} not supported by this backend",
+                f"skipped {instance_name} ({backend.kind}): {verb!r} not supported by this backend",
                 err=True,
             )
     return filtered
@@ -304,7 +303,8 @@ def adopt(
     verify: Annotated[
         bool,
         typer.Option(
-            "--verify", "-V",
+            "--verify",
+            "-V",
             help="Refuse to register if the serial is not listed as 'device' in `adb devices`.",
         ),
     ] = False,
@@ -344,10 +344,7 @@ def adopt(
             )
     backend_config = registry.AdbBackendConfig(serial=serial)
     index = registry.add_allocating(resolved_name, backend=backend_config)
-    typer.echo(
-        f"[beetroot] adopted {resolved_name} → adb serial {serial} "
-        f"(index {index})"
-    )
+    typer.echo(f"[beetroot] adopted {resolved_name} → adb serial {serial} (index {index})")
     typer.echo(
         f"[beetroot] next: beetroot shell {resolved_name} "
         f"(or `beetroot frida {resolved_name}` once frida-server is running)"
@@ -529,10 +526,7 @@ def destroy(
         # Orphan registry entry — the on-disk dir is already gone, so
         # compose.down would FileNotFoundError on its cwd= arg.
         # Skip it and just clean the registry row.
-        typer.echo(
-            f"[beetroot] (instance dir {root} already gone; "
-            f"removing orphan registry entry)"
-        )
+        typer.echo(f"[beetroot] (instance dir {root} already gone; removing orphan registry entry)")
         registry.remove(name)
     typer.echo(f"[beetroot] destroyed {name}")
 
@@ -731,7 +725,9 @@ def _instance_json_row(inst: api.Instance) -> dict[str, object]:
 
 
 def _adb_json_row(
-    name: str, meta: registry.InstanceMeta, backend: api.DeviceBackend,
+    name: str,
+    meta: registry.InstanceMeta,
+    backend: api.DeviceBackend,
 ) -> dict[str, object]:
     """
     Build the per-instance JSON row for a non-redroid backend.
@@ -918,9 +914,7 @@ def module(
     installer.add_module(source, sha256=sha256)
     if isinstance(backend, api.Instance):
         typer.echo(f"[beetroot] added module → {paths.instance_yaml(backend.root)}")
-        typer.echo(
-            f"[beetroot] restart to flash: beetroot down {name} && beetroot up {name}"
-        )
+        typer.echo(f"[beetroot] restart to flash: beetroot down {name} && beetroot up {name}")
     else:
         typer.echo(f"[beetroot] module pushed to {name}")
 
@@ -1021,7 +1015,10 @@ def restore(
     dest_path = (path if path is not None else Path(dest_name)).resolve()
     try:
         restored = snapshot_mod.restore(
-            archive, dest_name=dest_name, dest_path=dest_path, force=force,
+            archive,
+            dest_name=dest_name,
+            dest_path=dest_path,
+            force=force,
         )
     except snapshot_mod.SnapshotError as e:
         raise _error(str(e)) from e

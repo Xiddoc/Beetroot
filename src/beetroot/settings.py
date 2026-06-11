@@ -28,6 +28,7 @@ tripped on the missing match. v0.4 dropped ``env_file`` entirely
 (T2 — Agent 3 §1.5, Agent 4 §4 Issue 1) so Beetroot's CLI overrides
 are decoupled from the instance .env contract.
 """
+
 from __future__ import annotations
 
 from pydantic_settings import BaseSettings, SettingsConfigDict

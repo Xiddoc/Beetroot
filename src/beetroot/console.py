@@ -19,6 +19,7 @@ sequences because rich's ``Progress``/``Console`` detects a non-interactive
 (non-TTY) console and disables the ``Live`` refresh loop, emitting plain line
 output instead.
 """
+
 from __future__ import annotations
 
 import contextlib
