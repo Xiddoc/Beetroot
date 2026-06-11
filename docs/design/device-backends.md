@@ -289,6 +289,11 @@ shape.
   per-module success / failure reporting UX that gated the deferral
   ships with it — one `ok:` / `failed:` line per module, batch
   continues past failures, non-zero exit if any module failed.
+  Issue #38 layered a pre-flight probe on top: whole-device problems
+  (offline / not connected, no usable root, no `magisk` binary) raise
+  `DevicePreflightError` with a single friendly diagnosis before
+  anything is pushed, instead of producing N identical failed rows;
+  a mid-batch offline aborts the remaining modules the same way.
 * **PR5: CLI integration — `beetroot adopt <serial>`.** **DONE in v0.4
   (T5).** New verb registers an `AdbBackendConfig` row in the
   user-global registry so subsequent `beetroot shell <name>` /

@@ -27,6 +27,22 @@
   sub-protocol and its `beetroot.api.ModuleInstallResult` row model, plus
   `beetroot.modules_download.verify_sha256` (extracted from the staging
   resolver so both install paths share one digest check).
+- **`--auto-install` pre-flight diagnostics** (#38). Whole-device
+  problems no longer surface as N identical opaque `failed:` rows with
+  raw adb stderr. Before anything is pushed, the adb backend probes the
+  device (`su -c true` for usable root, then `su -c 'command -v magisk'`
+  for the Magisk binary, quoted exactly like the install command) and
+  fails fast with a single friendly `error: ...` line + exit 1: offline
+  / not-connected devices get a reconnect-and-check-`adb devices` hint,
+  unrooted devices get a "has no usable root (su not found — is the
+  device rooted?)" diagnosis, and rooted-but-Magisk-less devices are
+  told to install or repair the Magisk app. A device that drops offline
+  mid-batch aborts the remaining modules with the same offline
+  diagnosis — rows completed before the abort are still reported.
+  Genuinely per-module failures (bad zip, sha256 mismatch) keep the
+  per-row reporting contract. New public API:
+  `beetroot.api.DevicePreflightError` (carries the pre-abort rows in
+  its `results` attribute).
 
 ### Bug fixes
 - **Adopted adb devices are now visible to the `ls` verb** (#15). The verb

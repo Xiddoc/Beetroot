@@ -82,6 +82,8 @@ When pinning digests, repeat `--sha256` once per source, in the same order. Ever
 
 The verb exits `0` only if every module installed; any failure exits `1`, so scripted flows can gate on `$?`. Reboot the device for the staged modules to take effect.
 
+Whole-device problems are diagnosed up front instead of drowning you in identical failed rows: before anything is pushed, a pre-flight probe checks that the device is reachable, that `su` works, and that the `magisk` binary is on the root PATH. A failed probe prints a single friendly `error: ...` line (e.g. ``error: device 'emulator-5554' is offline or not connected (reconnect it and check `adb devices`)``) and exits `1` without pushing a thing. A device that drops offline mid-batch aborts the remaining modules with the same offline diagnosis — modules already installed keep their `ok:` rows.
+
 !!! note "Redroid instances don't take `--auto-install`"
     Container instances flash their staged `modules/` directory at boot — there is nothing to auto-install at runtime, so the flag exits with code `2` (`BackendCapabilityError`) for them. Use the declarative `beetroot.yaml` flow above instead.
 
