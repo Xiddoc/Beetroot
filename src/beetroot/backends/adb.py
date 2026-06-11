@@ -370,12 +370,12 @@ class AdbDevice:
                 user can ``curl`` the zip into ``./modules/`` first if
                 they want the same UX as :class:`beetroot.api.Instance`.
             sha256: Optional expected hex digest for integrity checking.
-                Advisory only on this safe-default path — the host-side
-                hash stays the user's responsibility before invoking
-                ``beetroot module``; :meth:`auto_install_modules`
+                Ignored on this safe-default path — verifying the
+                host-side hash stays the user's responsibility before
+                invoking ``beetroot module``; :meth:`auto_install_modules`
                 enforces it fail-closed.
         """
-        del sha256  # Advisory on the safe default; auto_install_modules enforces it.
+        del sha256  # Ignored on the safe default; auto_install_modules enforces it.
         src = _validated_zip_source(source)
         basename = src.name
         remote = f"{_MAGISK_MODULE_DROP}/{basename}"

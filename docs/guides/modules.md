@@ -56,7 +56,7 @@ Instances registered with `beetroot adopt` have no `beetroot.yaml` and no boot-t
 beetroot module phone ./MyHook.zip
 ```
 
-The zip is pushed to `/sdcard/Download/MyHook.zip` and Beetroot prints a one-line instruction: install it from the Magisk app's **Modules** tab (*Install from storage*). Nothing on the device is modified beyond the copied file, and `--sha256` is advisory only on this path — verify the hash yourself before invoking.
+The zip is pushed to `/sdcard/Download/MyHook.zip` and Beetroot prints a one-line instruction: install it from the Magisk app's **Modules** tab (*Install from storage*). Nothing on the device is modified beyond the copied file, and `--sha256` is ignored on this path — verify the hash yourself before invoking.
 
 ### `--auto-install`: root-driven install
 

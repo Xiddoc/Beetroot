@@ -333,7 +333,7 @@ class TestAddModule:
             _make_device().add_module(str(not_zip))
         assert captured_adb == []
 
-    def test_sha256_is_advisory_on_safe_default(
+    def test_sha256_is_ignored_on_safe_default(
         self,
         captured_adb: list[list[str]],
         tmp_path: Path,

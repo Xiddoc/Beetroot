@@ -15,7 +15,8 @@
   `/data/adb/modules_update/<id>/` for the next reboot; the pushed temp
   zip is removed afterwards. `--sha256` is **enforced fail-closed** on
   this path — a mismatching zip is never pushed (on the safe-default
-  push-to-Downloads path it stays advisory). Multiple zips install in one
+  push-to-Downloads path it is ignored — verify the hash yourself).
+  Multiple zips install in one
   invocation (`beetroot module phone a.zip b.zip --auto-install`, with
   `--sha256` repeated once per source when pinning): every module gets
   its own `ok:` (stdout) / `failed:` (stderr) report line, a failure

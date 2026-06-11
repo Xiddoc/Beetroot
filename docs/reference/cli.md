@@ -429,8 +429,8 @@ beetroot module <name> <source>... [--sha256 HEX]... [--auto-install]
 | Argument | Type | Description |
 |----------|------|-------------|
 | `name` | positional | Instance name |
-| `source` | positional, repeatable | `https://` or `http://` URL, or a path to a `.zip` (relative paths resolve against the instance directory). Multiple sources are allowed with `--auto-install` only. |
-| `--sha256` | option, repeatable | Expected sha256 hex digest of the zip. With `--auto-install`, repeat once per source (or omit entirely); a mismatching zip is never pushed. Without the flag, advisory for adb pushes and verified at staging time for redroid instances. |
+| `source` | positional, repeatable | Redroid instances: `https://` or `http://` URL, or a path to a `.zip` (relative paths resolve against the instance directory). adb-adopted devices: path to an existing `.zip` on the host filesystem — URLs are not accepted, and relative paths resolve against your current working directory. Multiple sources are allowed with `--auto-install` only. |
+| `--sha256` | option, repeatable | Expected sha256 hex digest of the zip. With `--auto-install`, repeat once per source (or omit entirely); a mismatching zip is never pushed. Without the flag, ignored for adb pushes (verify the hash yourself) and verified at staging time for redroid instances. |
 | `--auto-install` | flag | adb backend only: install via root (`su -c magisk --install-module`) instead of the safe push-to-Downloads default. |
 
 **Redroid instances:** the module is appended to the instance's `beetroot.yaml` and immediately staged into its `modules/` directory. Restart to flash:

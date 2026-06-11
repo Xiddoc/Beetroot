@@ -937,7 +937,8 @@ def module(
         typer.Argument(
             metavar="SOURCE...",
             help=(
-                "https URL or instance-relative path to a .zip. "
+                "Module zip: https URL or instance-relative path (redroid); "
+                "existing local .zip path, relative to the CWD (adb). "
                 "Multiple sources are allowed with --auto-install only."
             ),
         ),
@@ -960,7 +961,8 @@ def module(
             help=(
                 "Install via root on an adb-adopted device "
                 "(su -c magisk --install-module) instead of the safe "
-                "push-to-Downloads default. Enforces --sha256."
+                "push-to-Downloads default; --sha256 (if given) is "
+                "enforced fail-closed."
             ),
         ),
     ] = False,
