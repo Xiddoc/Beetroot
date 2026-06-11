@@ -32,7 +32,7 @@ from .backends import adb as adb_backend
 # Instance-name regex mirrors ``api._INSTANCE_NAME_RE`` — used to
 # validate names auto-derived from adb serials in :func:`adopt` before
 # any registry side-effect runs.
-_INSTANCE_NAME_RE = api._INSTANCE_NAME_RE  # noqa: SLF001  # intentional re-use of the api-layer regex so the two stay in lock-step
+_INSTANCE_NAME_RE = api._INSTANCE_NAME_RE  # noqa: SLF001  # intentional reuse of the api-layer regex so the two stay in lock-step
 
 
 class _GappsVariant(StrEnum):

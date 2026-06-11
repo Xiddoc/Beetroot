@@ -26,7 +26,7 @@ it might be on a rooted device. That suspicion is driven by code shipped
 in **GMS (Google Mobile Services)**, the **Play Integrity API** (which
 replaced SafetyNet Attestation in 2024), and the **DroidGuard** VM that
 backs both. The same fingerprinting code is also distributed in many
-banking, gaming, and anti-cheat SDKs that re-use Google's attestation
+banking, gaming, and anti-cheat SDKs that reuse Google's attestation
 results or run parallel checks of their own.
 
 The detection surface they sweep is well documented. The categories
