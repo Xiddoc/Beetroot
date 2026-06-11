@@ -88,7 +88,7 @@ The `PATH` column is new in v0.3 — it shows the absolute path each instance wa
 
   See [Examples](examples.md) for the full menu.
 
-## 6. (If applicable) Re-declare Frida explicitly
+## 6. (If applicable) Redeclare Frida explicitly
 
 Frida is opt-in in v0.3. v0.2 instances that relied on the implicit `Frida(version="16.4.10")` default no longer download or launch `frida-server` after upgrade — the bind-mount becomes a 0-byte placeholder and `launch-frida.sh` skips it.
 

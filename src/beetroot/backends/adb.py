@@ -15,7 +15,7 @@ Lifecycle verbs that only make sense for a managed container
 raise :class:`beetroot.api.BackendCapabilityError` — the CLI catches
 it and renders a friendly ``error: ...`` line + ``exit 2``.
 
-Per-host port allocation re-uses the stride-of-10 scheme from
+Per-host port allocation reuses the stride-of-10 scheme from
 :mod:`beetroot.ports` so an adb-adopted instance never collides with
 the Frida control ports a redroid container would pick. The ``host``
 side of ``adb forward tcp:<host_port> tcp:27042`` is the resolved

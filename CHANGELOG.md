@@ -365,7 +365,7 @@ Step-by-step walkthrough:
   effect runs — no mkdir, no registry write, no port allocation
   for a bad name. The default basename used by `register` (when
   `name=` is omitted) goes through the same gate. (v0.3.1 deferred.)
-- **`Manager.list` + `Manager.list_orphans` now surface unparseable
+- **`Manager.list` + `Manager.list_orphans` now surface unparsable
   YAML.** v0.3's `list_orphans` only surfaced rows whose
   `beetroot.yaml` was *missing*; a corrupted or
   api_version-mismatched YAML was invisible to both `list` and

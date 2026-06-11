@@ -1200,7 +1200,7 @@ class Manager:
         represents redroid backends — use :meth:`all` to walk every
         backend uniformly via the Protocol. Orphan entries (redroid
         rows whose on-disk directory has been ``rm -rf``'d, or whose
-        ``beetroot.yaml`` is now unparseable) are silently skipped —
+        ``beetroot.yaml`` is now unparsable) are silently skipped —
         without this, a single orphan would crash ``beetroot ls`` and
         prevent the user from cleaning up. Use :meth:`list_orphans`
         to surface them for cleanup.
@@ -1226,7 +1226,7 @@ class Manager:
             try:
                 out.append(Instance.load(name))
             except Exception:  # noqa: BLE001, S112  # super-set of list_orphans: yaml.YAMLError + pydantic ValidationError + api-version mismatch all converge here; continue is the orphan-skip contract documented in list_orphans
-                # YAML present but unparseable — mirrors the orphan
+                # YAML present but unparsable — mirrors the orphan
                 # contract from ``list_orphans``. Without this, a
                 # single corrupted YAML crashes ``beetroot ls`` and
                 # the user has no way to surface the row for cleanup.
@@ -1259,7 +1259,7 @@ class Manager:
     @staticmethod
     def list_orphans() -> list[str]:
         """
-        Return names of redroid instances whose on-disk dir is missing OR unparseable.
+        Return names of redroid instances whose on-disk dir is missing OR unparsable.
 
         An orphan is a redroid-kind registry row pointing at a path
         with no ``beetroot.yaml`` (typically because the user manually
