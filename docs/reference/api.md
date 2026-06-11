@@ -137,7 +137,7 @@ The v0.3 OOP surface (`Instance`, `Manager`, `DeviceBackend`,
 
 ## `beetroot.backends.adb` — the `AdbDevice` backend
 
-T5's real-device backend. Drives a rooted Android device (real phone, third-party emulator, `adb connect`-ed network device) via the host `adb` CLI. Satisfies the `DeviceBackend` Protocol so every universal CLI verb (`shell`, `frida`, `module`, `status`) works uniformly against an adopted instance; lifecycle verbs (`up`, `down`, `restart`, `apply`, `destroy`, `snapshot`) raise `BackendCapabilityError` cleanly because there's no on-disk container to manage.
+T5's real-device backend. Drives a rooted Android device (real phone, third-party emulator, `adb connect`-ed network device) via the host `adb` CLI. Satisfies the `DeviceBackend` Protocol so every universal CLI verb (`shell`, `frida`, `module`, `status`) works uniformly against an adopted instance; lifecycle verbs (`up`, `down`, `restart`, `apply`, `destroy`, `snapshot`) raise `BackendCapabilityError` cleanly because there's no on-disk container to manage. Implements the `AutoModuleInstaller` capability: `auto_install_modules()` backs `beetroot module --auto-install` (push to `/data/local/tmp/` + `su -c magisk --install-module`, sha256 enforced, per-module `ModuleInstallResult` rows).
 
 ```python
 from beetroot.backends.adb import AdbDevice

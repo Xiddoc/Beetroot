@@ -46,6 +46,45 @@ beetroot module alpha ./local-modules/MyHook.zip
 beetroot down alpha && beetroot up alpha
 ```
 
+## Modules on adb-adopted devices
+
+Instances registered with `beetroot adopt` have no `beetroot.yaml` and no boot-time staging — the `module` verb talks to the device directly over `adb`, in one of two modes.
+
+### Safe default: push to Downloads
+
+```bash
+beetroot module phone ./MyHook.zip
+```
+
+The zip is pushed to `/sdcard/Download/MyHook.zip` and Beetroot prints a one-line instruction: install it from the Magisk app's **Modules** tab (*Install from storage*). Nothing on the device is modified beyond the copied file, and `--sha256` is advisory only on this path — verify the hash yourself before invoking.
+
+### `--auto-install`: root-driven install
+
+```bash
+beetroot module phone ./MyHook.zip --auto-install
+```
+
+For rooted devices where you don't want manual Magisk-app interaction. Each zip is pushed to `/data/local/tmp/` and installed with `su -c magisk --install-module <zip>` — Magisk's own non-interactive install primitive (the same one Beetroot's redroid boot scripts use), which stages the module into `/data/adb/modules_update/<id>/` for the next reboot. The pushed temp zip is removed afterwards, even if the install step fails.
+
+Several modules can be installed in one invocation, and `--sha256` is **enforced** here — a zip whose digest doesn't match is never pushed:
+
+```bash
+beetroot module phone ./Shamiko.zip ./MyHook.zip --auto-install \
+    --sha256 <shamiko-hex> --sha256 <myhook-hex>
+```
+
+When pinning digests, repeat `--sha256` once per source, in the same order. Every module gets its own report line — `ok:` on stdout, `failed:` (with the reason) on stderr — and a failing module never aborts the rest of the batch:
+
+```
+[beetroot] failed: ./Shamiko.zip — sha256 mismatch for Shamiko.zip: expected ..., got ...
+[beetroot] ok: ./MyHook.zip — installed via `su -c magisk --install-module /data/local/tmp/MyHook.zip`
+```
+
+The verb exits `0` only if every module installed; any failure exits `1`, so scripted flows can gate on `$?`. Reboot the device for the staged modules to take effect.
+
+!!! note "Redroid instances don't take `--auto-install`"
+    Container instances flash their staged `modules/` directory at boot — there is nothing to auto-install at runtime, so the flag exits with code `2` (`BackendCapabilityError`) for them. Use the declarative `beetroot.yaml` flow above instead.
+
 ## Shamiko walk-through
 
 [Shamiko](https://github.com/LSPosed/LSPosed.github.io) is the most commonly needed module — it upgrades Magisk's denylist from a "hide root access" mode to a full allowlist-based hide where denylisted processes can't detect Magisk at all.

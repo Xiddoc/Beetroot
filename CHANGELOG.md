@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Features
+
+- **`beetroot module --auto-install`** — root-driven Magisk-module install
+  for adb-adopted devices (#7; the variant deferred from v0.4 T5 / v0.5).
+  Each zip is pushed to `/data/local/tmp/` and installed with
+  `su -c magisk --install-module <zip>` — Magisk's supported
+  non-interactive install primitive (the same one the redroid backend's
+  `flash-modules.sh` uses), which stages the module into
+  `/data/adb/modules_update/<id>/` for the next reboot; the pushed temp
+  zip is removed afterwards. `--sha256` is **enforced fail-closed** on
+  this path — a mismatching zip is never pushed (on the safe-default
+  push-to-Downloads path it stays advisory). Multiple zips install in one
+  invocation (`beetroot module phone a.zip b.zip --auto-install`, with
+  `--sha256` repeated once per source when pinning): every module gets
+  its own `ok:` (stdout) / `failed:` (stderr) report line, a failure
+  never aborts the rest of the batch, and the verb exits non-zero if any
+  module failed. Redroid instances don't implement the capability and
+  exit 2 (they flash staged modules at boot).
+- **New public API:** the `beetroot.api.AutoModuleInstaller` capability
+  sub-protocol and its `beetroot.api.ModuleInstallResult` row model, plus
+  `beetroot.modules_download.verify_sha256` (extracted from the staging
+  resolver so both install paths share one digest check).
+
 ### Bug fixes
 - **Adopted adb devices are now visible to the `ls` verb** (#15). The verb
   walks every backend kind via `Manager.all()` instead of the redroid-only
