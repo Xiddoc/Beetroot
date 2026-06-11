@@ -130,11 +130,13 @@ def _resolve_lifecycle_names(names: list[str], all_flag: bool, verb: str) -> lis
     row) so the user gets a clear error for a bad explicit name. Only the
     --all fan-out skips bad rows — printing one "skipped <name>" advisory to
     stderr per skip. Two skip reasons exist: a row that resolves to a
-    non-Lifecycle backend (e.g. adb), and a row that won't resolve at all
-    (a redroid orphan whose beetroot.yaml is gone, or an unknown backend
-    kind). The latter would otherwise raise InstanceNotFoundError before the
-    Lifecycle filter runs, aborting the whole fan-out — mirroring how
-    Manager.all()/list_instances() already skip such rows.
+    non-Lifecycle backend (e.g. adb), and a row that raises
+    InstanceNotFoundError (a redroid orphan whose beetroot.yaml is gone, or an
+    unresolvable/unknown backend kind). The latter would otherwise raise before
+    the Lifecycle filter runs, aborting the whole fan-out. Note this skip is
+    scoped to InstanceNotFoundError only: a present-but-unparseable
+    beetroot.yaml raises ValidationError/YAMLError and is intentionally left to
+    surface loudly rather than skipped.
 
     Args:
         names: Explicit instance names from positional args.
