@@ -110,6 +110,12 @@ If the directory is missing, the helper prints `[!] Modules directory
 $DIR not present — skipping flash step.` and exits 0 (a missing modules
 dir is a config choice, not an error).
 
+A failing `magisk --install-module` is **non-fatal**: the helper prints
+`[!] Module $zip failed to install — continuing.` and moves on to the
+next zip. The helper is sourced under the entrypoint's `set -e`, so a
+bare non-zero exit would otherwise abort the whole boot and skip
+`launch-frida.sh` — one bad module must not take the container down.
+
 **Idempotency:** Magisk's `--install-module` handles re-install of an
 already-present module gracefully.
 

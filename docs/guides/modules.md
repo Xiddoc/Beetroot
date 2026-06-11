@@ -4,7 +4,7 @@ Beetroot supports flashing Magisk modules into instances declaratively — decla
 
 ## How module flashing works
 
-At boot, `entrypoint.sh` (running inside the Android container under the `u:r:magisk:s0` SELinux context) iterates every `.zip` in `/data/adb/modules_update/` and calls `magisk --install-module <zip>` for each one. That container path is a read-only bind-mount of the instance directory's `modules/` subdirectory on the host — Magisk's well-known staging directory, so the modules are visible to the daemon the way a manually-side-loaded one would be.
+At boot, `entrypoint.sh` (running inside the Android container under the `u:r:magisk:s0` SELinux context) iterates every `.zip` in `/data/adb/modules_update/` and calls `magisk --install-module <zip>` for each one. A module that fails to install is logged with a `[!]` warning and skipped — the remaining modules still flash and boot continues (Frida still launches). Check `beetroot logs <name>` for the warning. That container path is a read-only bind-mount of the instance directory's `modules/` subdirectory on the host — Magisk's well-known staging directory, so the modules are visible to the daemon the way a manually-side-loaded one would be.
 
 (v0.3 used the Beetroot-invented `/flash_dir` mount target; v0.4 T4 moved the default to `/data/adb/modules_update` to drop the indicator from `/proc/mounts`. The `BEETROOT_MODULES_DIR` env var overrides the path if you need a different one.)
 

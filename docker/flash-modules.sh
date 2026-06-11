@@ -29,7 +29,12 @@ if [ -d "$MODULES_DIR" ]; then
     for zip in "$MODULES_DIR"/*.zip; do
         if [ -f "$zip" ]; then
             echo "[*] Flashing module: $zip"
-            magisk --install-module "$zip"
+            # `|| echo` keeps a bad module from aborting boot: this file
+            # is sourced under the entrypoint's `set -e`, so a bare
+            # non-zero exit here would skip launch-frida.sh and the
+            # trailing `wait`, killing the container.
+            magisk --install-module "$zip" \
+                || echo "[!] Module $zip failed to install — continuing."
         fi
     done
 else
