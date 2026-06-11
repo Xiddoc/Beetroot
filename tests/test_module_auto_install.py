@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,41 @@ def _write_zip(directory: Path, name: str, payload: bytes = b"PK\x03\x04fake") -
     return zip_path
 
 
+# The issue-#38 pre-flight probes emitted before any push: root via
+# `su -c true`, then magisk via `su -c 'command -v magisk'`.
+_PREFLIGHT_ARGV = [
+    ["adb", "-s", "emulator-5554", "shell", "su", "-c", "true"],
+    ["adb", "-s", "emulator-5554", "shell", "su", "-c", "'command -v magisk'"],
+]
+
+
+def _stub_run_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    should_fail: Callable[[list[str]], bool],
+    *,
+    stdout: str = "",
+    stderr: str = "",
+) -> list[list[str]]:
+    """Stub adb subprocess.run: rc 1 + the given output for matching argvs."""
+    captured: list[list[str]] = []
+
+    def _fake_run(
+        cmd: list[str], *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del args, kwargs
+        captured.append(list(cmd))
+        failing = should_fail(cmd)
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=1 if failing else 0,
+            stdout=stdout if failing else "",
+            stderr=stderr if failing else "",
+        )
+
+    monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
+    return captured
+
+
 class TestAutoInstallHappyPath:
     def test_single_zip_full_argv_sequence_report_and_exit_code(
         self, cli_root: Path, stub_adb: list[list[str]], tmp_path: Path
@@ -68,6 +104,7 @@ class TestAutoInstallHappyPath:
         )
         assert result.exit_code == 0, result.stderr
         assert stub_adb == [
+            *_PREFLIGHT_ARGV,
             [
                 "adb", "-s", "emulator-5554", "push",
                 str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
@@ -97,7 +134,7 @@ class TestAutoInstallHappyPath:
             ["module", "phone", str(zip_path), "--auto-install", "--sha256", sha],
         )
         assert result.exit_code == 0, result.stderr
-        assert len(stub_adb) == 3
+        assert len(stub_adb) == len(_PREFLIGHT_ARGV) + 3
 
     def test_multiple_zips_each_get_an_ok_line(
         self, cli_root: Path, stub_adb: list[list[str]], tmp_path: Path
@@ -171,7 +208,8 @@ class TestAutoInstallFailureReporting:
             ],
         )
         assert result.exit_code == 1
-        assert stub_adb == []
+        # The pre-flight probes ran, but the mismatching zip was never pushed.
+        assert stub_adb == _PREFLIGHT_ARGV
         assert "sha256 mismatch" in result.stderr
         assert f"[beetroot] failed: {zip_path}" in result.stderr
 
@@ -243,6 +281,111 @@ class TestArgumentValidation:
         assert result.exit_code == 1
         assert "at most one --sha256" in result.stderr
         assert stub_adb == []
+
+
+class TestPreflightTaxonomy:
+    """Issue #38: one friendly error per whole-device cause, exit 1, no rows."""
+
+    def test_unrooted_device_is_a_single_friendly_error(
+        self,
+        cli_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        _adopt_phone()
+        first = _write_zip(tmp_path, "First.zip")
+        second = _write_zip(tmp_path, "Second.zip")
+        captured = _stub_run_failures(
+            monkeypatch,
+            lambda cmd: cmd[-1] == "true",
+            stdout="su: inaccessible or not found\n",
+        )
+        result = runner.invoke(
+            cli.app, ["module", "phone", str(first), str(second), "--auto-install"]
+        )
+        assert result.exit_code == 1
+        assert (
+            "error: device 'emulator-5554' has no usable root "
+            "(su not found — is the device rooted?)" in result.stderr
+        )
+        # One diagnosis, not N identical failed rows — and nothing pushed.
+        assert "[beetroot] failed:" not in result.stderr
+        assert [cmd for cmd in captured if cmd[3] == "push"] == []
+
+    def test_missing_magisk_is_a_single_friendly_error(
+        self,
+        cli_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        _adopt_phone()
+        zip_path = _write_zip(tmp_path, "M.zip")
+        captured = _stub_run_failures(
+            monkeypatch, lambda cmd: cmd[-1] == "'command -v magisk'"
+        )
+        result = runner.invoke(
+            cli.app, ["module", "phone", str(zip_path), "--auto-install"]
+        )
+        assert result.exit_code == 1
+        assert (
+            "error: device 'emulator-5554' has root but no usable magisk binary "
+            "(install or repair the Magisk app, then retry)" in result.stderr
+        )
+        assert "[beetroot] failed:" not in result.stderr
+        assert [cmd for cmd in captured if cmd[3] == "push"] == []
+
+    def test_offline_device_is_a_single_friendly_error(
+        self,
+        cli_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        _adopt_phone()
+        zip_path = _write_zip(tmp_path, "M.zip")
+        captured = _stub_run_failures(
+            monkeypatch,
+            lambda cmd: cmd[-1] == "true",
+            stderr="adb: device offline\n",
+        )
+        result = runner.invoke(
+            cli.app, ["module", "phone", str(zip_path), "--auto-install"]
+        )
+        assert result.exit_code == 1
+        assert (
+            "error: device 'emulator-5554' is offline or not connected "
+            "(reconnect it and check `adb devices`)" in result.stderr
+        )
+        assert "[beetroot] failed:" not in result.stderr
+        assert [cmd for cmd in captured if cmd[3] == "push"] == []
+
+    def test_mid_batch_offline_reports_completed_rows_then_error(
+        self,
+        cli_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # First module installs and keeps its ok row; the device drops
+        # before the second's push, which aborts the batch with the
+        # friendly offline error — the second module gets NO row.
+        _adopt_phone()
+        first = _write_zip(tmp_path, "First.zip")
+        second = _write_zip(tmp_path, "Second.zip")
+        _stub_run_failures(
+            monkeypatch,
+            lambda cmd: cmd[3] == "push" and cmd[4] == str(second),
+            stderr="adb: device 'emulator-5554' not found\n",
+        )
+        result = runner.invoke(
+            cli.app, ["module", "phone", str(first), str(second), "--auto-install"]
+        )
+        assert result.exit_code == 1
+        assert f"[beetroot] ok: {first}" in result.output
+        assert (
+            "error: device 'emulator-5554' is offline or not connected "
+            "(reconnect it and check `adb devices`)" in result.stderr
+        )
+        assert str(second) not in result.output
+        assert "[beetroot] failed:" not in result.stderr
 
 
 class TestCapabilityGating:
