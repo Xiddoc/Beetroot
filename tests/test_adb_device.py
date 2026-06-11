@@ -77,6 +77,7 @@ def _stub_adb_devices(
     monkeypatch: pytest.MonkeyPatch, stdout: str, returncode: int = 0
 ) -> None:
     """Stub adb_backend.subprocess.run to a single fake response."""
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
 
     def _fake_run(
         cmd: list[str],
@@ -127,6 +128,21 @@ class TestIsAvailable:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _stub_adb_devices(monkeypatch, "", returncode=1)
+        assert _make_device().is_available is False
+
+    def test_returns_false_when_adb_not_on_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With no adb binary on PATH, is_available must report the device
+        # as unavailable (so status/ls render a clean row) rather than
+        # letting subprocess.run raise FileNotFoundError.
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+
+        def _explode(*args: object, **kwargs: object) -> object:
+            del args, kwargs
+            raise AssertionError("subprocess.run must not run when adb is absent")
+
+        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _explode)
         assert _make_device().is_available is False
 
 
