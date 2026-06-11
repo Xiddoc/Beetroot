@@ -35,11 +35,17 @@ jobs:
         with:
           enable-cache: true
 
+      - name: uv lock check (pyproject.toml / uv.lock drift gate)
+        run: uv lock --check
+
       - name: Install dev dependencies
         run: uv sync --group dev --frozen
 
       - name: Ruff check
         run: uv run ruff check src/beetroot/ tests/ scripts/
+
+      - name: Ruff format check (src/beetroot/ stays formatter-clean)
+        run: uv run ruff format --check src/beetroot/
 
       - name: Ensure arbitrary_types_allowed is never used
         run: |
@@ -71,7 +77,22 @@ jobs:
         run: uv sync --group dev --frozen
 
       - name: Pytest (100% line+branch coverage gate)
-        run: uv run pytest --cov-fail-under=100
+        # ``-p no:cacheprovider`` keeps CI runs stateless — no
+        # ``.pytest_cache`` is written, so nothing can leak between
+        # runs or into a cached workspace.
+        run: uv run pytest --cov-fail-under=100 --cov-report=xml -p no:cacheprovider
+
+      - name: Render terminal coverage report for the artifact
+        run: uv run coverage report --show-missing > coverage-term.txt
+
+      - name: Upload coverage artifact (XML + terminal report)
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882  # v4.4.3
+        with:
+          name: coverage-${{ github.sha }}
+          path: |
+            coverage.xml
+            coverage-term.txt
+          retention-days: 14
 
   docstring-and-complexity:
     runs-on: ubuntu-latest
@@ -137,6 +158,26 @@ jobs:
 
       - name: Shellcheck -S warning (POSIX sh — boot helpers run under /system/bin/sh)
         run: shellcheck -S warning -s sh docker/*.sh
+
+  shfmt:
+    # Formatting gate for the boot helpers (issue #21). The binary is a
+    # pinned release download with a checksum check — same supply-chain
+    # posture as the SHA-pinned actions above.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871  # v4.2.1
+        with:
+          persist-credentials: false
+
+      - name: Install shfmt v3.13.1 (pinned release binary, checksum-verified)
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/shfmt" \
+            https://github.com/mvdan/sh/releases/download/v3.13.1/shfmt_v3.13.1_linux_amd64
+          echo "fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1  $RUNNER_TEMP/shfmt" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/shfmt"
+
+      - name: shfmt diff gate (4-space indent, matching the tree)
+        run: '"$RUNNER_TEMP/shfmt" -i 4 -d docker/*.sh'
 
   hadolint:
     runs-on: ubuntu-latest
@@ -211,3 +252,77 @@ jobs:
 
       - name: Build docs (strict mode — any warning fails the PR check)
         run: uv run mkdocs build --strict
+
+  workflow-lint:
+    # Lints the CI definitions themselves (issue #21). actionlint checks
+    # workflow syntax, expression types, and the shell in run blocks;
+    # zizmor audits for security smells (unpinned actions, credential
+    # persistence, excessive permissions). actionlint is a pinned release
+    # download with a checksum check; zizmor is version-pinned via uvx.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871  # v4.2.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355  # v4.1.0
+
+      - name: Install actionlint v1.7.12 (pinned release binary, checksum-verified)
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          sum="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+          echo "$sum  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/actionlint.tar.gz" actionlint
+
+      - name: actionlint (workflow syntax + type checks)
+        run: '"$RUNNER_TEMP/actionlint" -color'
+
+      - name: zizmor (workflow security audit)
+        run: uvx zizmor==1.25.2 .github/workflows/
+
+  hygiene:
+    # Cross-cutting hygiene gates (issue #21), all run from uvx with
+    # explicit version pins so the job needs no project install.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871  # v4.2.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355  # v4.1.0
+
+      - name: Codespell (src, docs, README, CHANGELOG)
+        run: uvx codespell==2.4.2 src/ docs/ README.md CHANGELOG.md
+
+      - name: Yamllint (compose template, workflows, examples — policy in .yamllint)
+        run: >
+          uvx yamllint==1.38.0 -c .yamllint
+          src/beetroot/templates/compose.yaml .github/workflows/ examples/
+
+      - name: Deptry (dependency hygiene — config in pyproject.toml)
+        run: uvx deptry==0.25.1 .
+
+  packaging:
+    # Packaging gate (issue #21): the wheel must build, pass twine's
+    # metadata checks, and install + run in a clean venv — proving the
+    # published artifact works outside the dev tree.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871  # v4.2.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f  # v5.1.1
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@4db96194c378173c656ce18a155ffc14a9fc4355  # v4.1.0
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Twine check (metadata renders on PyPI)
+        run: uvx twine==6.2.0 check dist/*
+
+      - name: Install wheel into a clean venv and smoke-test the CLI
+        run: |
+          uv venv "$RUNNER_TEMP/smoke"
+          uv pip install --python "$RUNNER_TEMP/smoke/bin/python" dist/*.whl
+          "$RUNNER_TEMP/smoke/bin/beetroot" --help
