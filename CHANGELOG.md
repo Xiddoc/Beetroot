@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Bug fixes
+- **Adopted adb devices are now visible to `beetroot ls`** (#15). The verb
+  walks every backend kind via `Manager.all()` instead of the redroid-only
+  `Manager.list_instances()`, so `beetroot adopt`-ed devices appear next to
+  redroid instances. The table gains a `KIND` column; adb rows show the
+  device serial in the ADB column, live availability (from `adb devices`)
+  in STATUS, and `-` for PATH (no on-disk directory). With `--json`,
+  adb-kind rows use the same shape as `beetroot status` (`serial`,
+  `adb_address`, `frida_address`, `is_available`); redroid rows are
+  unchanged, including the v0.3 back-compat `path`/`adb`/`frida` keys.
+  Orphan entries are still skipped with the trailing stderr advisory.
+
 ## v0.6.0 — 2026-05-20
 
 A stability + cleanup release on the road to v1.0 — bug-fixing, OOP/CLI

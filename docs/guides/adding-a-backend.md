@@ -335,7 +335,7 @@ in a `beetroot_plugin_init()` callable (if you want lazy setup).
 `UnresolvedBackendConfig` and preserves the raw JSON verbatim. This
 means a registry written by a newer Beetroot (with more backend
 plugins) can be read by an older one without data loss. The row is
-skipped by `Manager.list_instances()` and raises
+skipped by `Manager.all()` (and therefore by `beetroot ls`) and raises
 `InstanceNotFoundError` on `Manager.resolve()` — a clear signal
 rather than a silent drop.
 
