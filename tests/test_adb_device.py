@@ -145,6 +145,10 @@ class TestInstallFrida:
         monkeypatch.setattr(
             frida_download, "download", lambda version: fake_cached,
         )
+        # Stub shutil.which so install_frida's PATH guard sees adb present
+        # (the CI runner has no real adb binary), letting the stubbed
+        # subprocess.run drive the full install sequence.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         _make_device(serial="emulator-5554", host_port=27052).install_frida(
             "16.4.10"
         )
@@ -209,6 +213,9 @@ class TestInstallFrida:
             )
 
         monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
+        # Stub shutil.which so the PATH guard passes and we reach the
+        # nonzero-returncode path under test (CI has no real adb binary).
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         with pytest.raises(RuntimeError, match="adb command"):
             _make_device().install_frida("16.4.10")
 
