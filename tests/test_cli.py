@@ -752,7 +752,11 @@ class TestTopLevelApp:
         ):
             assert verb in result.stdout
 
-    def test_create_help_lists_flags(self) -> None:
+    def test_create_help_lists_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Pin a wide terminal so rich/Click don't wrap the option column
+        # and truncate the flag strings (CI runners default to a narrow,
+        # non-TTY width where ``--from-data`` renders as ``--fro…``).
+        monkeypatch.setenv("COLUMNS", "200")
         result = runner.invoke(cli.app, ["create", "--help"])
         assert result.exit_code == 0
         assert "--path" in result.stdout
@@ -763,7 +767,10 @@ class TestTopLevelApp:
         assert result.exit_code == 0
         assert "path" in result.stdout.lower()
 
-    def test_up_all_flag_help(self) -> None:
+    def test_up_all_flag_help(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Pin a wide terminal so the option column isn't wrapped/truncated
+        # on narrow non-TTY CI runners (see test_create_help_lists_flags).
+        monkeypatch.setenv("COLUMNS", "200")
         result = runner.invoke(cli.app, ["up", "--help"])
         assert result.exit_code == 0
         assert "--all" in result.stdout
