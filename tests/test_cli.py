@@ -753,10 +753,14 @@ class TestTopLevelApp:
             assert verb in result.stdout
 
     def test_create_help_lists_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Pin a wide terminal so rich/Click don't wrap the option column
-        # and truncate the flag strings (CI runners default to a narrow,
-        # non-TTY width where ``--from-data`` renders as ``--fro…``).
-        monkeypatch.setenv("COLUMNS", "200")
+        # CI forces a terminal (e.g. FORCE_COLOR/CI), which makes rich
+        # ignore COLUMNS and auto-detect a narrow width, truncating the
+        # option column so flag strings render as ``--fro…``. Pin Typer's
+        # help-render width to bypass TTY auto-detection. The forced
+        # terminal also enables color, which would splice ANSI codes into
+        # the flag strings, so disable the color system too.
+        monkeypatch.setattr("typer.rich_utils.MAX_WIDTH", 200)
+        monkeypatch.setattr("typer.rich_utils.COLOR_SYSTEM", None)
         result = runner.invoke(cli.app, ["create", "--help"])
         assert result.exit_code == 0
         assert "--path" in result.stdout
@@ -768,9 +772,12 @@ class TestTopLevelApp:
         assert "path" in result.stdout.lower()
 
     def test_up_all_flag_help(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Pin a wide terminal so the option column isn't wrapped/truncated
-        # on narrow non-TTY CI runners (see test_create_help_lists_flags).
-        monkeypatch.setenv("COLUMNS", "200")
+        # CI forces a terminal which makes rich ignore COLUMNS, auto-detect
+        # a narrow width, and emit color (see test_create_help_lists_flags).
+        # Pin Typer's help-render width and disable the color system so the
+        # option column isn't truncated and no ANSI codes splice the flags.
+        monkeypatch.setattr("typer.rich_utils.MAX_WIDTH", 200)
+        monkeypatch.setattr("typer.rich_utils.COLOR_SYSTEM", None)
         result = runner.invoke(cli.app, ["up", "--help"])
         assert result.exit_code == 0
         assert "--all" in result.stdout
