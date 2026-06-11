@@ -36,7 +36,7 @@ Frida is **not in the image**, and starting in v0.3 it's also **opt-in per insta
 
 Most Magisk configuration UIs (the Magisk app, `magisk --denylist`) rely on the running Zygisk process — which isn't available at boot time when `entrypoint.sh` runs. Beetroot bypasses the UI entirely and writes directly to Magisk's SQLite database at `/data/adb/magisk.db`.
 
-`entrypoint.sh` waits for the DB file to appear (it's created by Magisk on first boot), then uses `magisk --sqlite` to:
+`entrypoint.sh` waits for the Magisk daemon to answer (the DB is created by Magisk on first boot; the wait is bounded at ~2 minutes and aborts the boot configuration loudly on timeout), then uses `magisk --sqlite` to:
 
 1. Enable Zygisk (`INSERT OR REPLACE INTO settings (key, value) VALUES ('zygisk', 1)`).
 2. Enable the denylist (`INSERT OR REPLACE INTO settings (key, value) VALUES ('denylist', 1)`).

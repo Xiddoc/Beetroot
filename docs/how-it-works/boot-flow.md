@@ -83,7 +83,7 @@ sequenceDiagram
 
 In v0.3, each numbered step below lives in a dedicated helper (see [Boot Scripts](boot-scripts.md) for per-helper contracts). The entrypoint itself is 12 lines of glue that sources the three helpers in order.
 
-1. **Wait for the Magisk daemon.** (`magisk-config.sh`.) Polls `magisk --sqlite "SELECT 1"` in a loop. The DB at `/data/adb/magisk.db` is created by Magisk during its own initialization, which happens during the Zygote start. Without this wait, the SQL writes below would silently no-op.
+1. **Wait for the Magisk daemon.** (`magisk-config.sh`.) Polls `magisk --sqlite "SELECT 1"` in a bounded loop (default 120 one-second attempts, ~2 minutes — conservative because a first boot of redroid+Magisk can legitimately take a while). The DB at `/data/adb/magisk.db` is created by Magisk during its own initialization, which happens during the Zygote start. Without this wait, the SQL writes below would silently no-op. If Magisk never answers (broken or missing), the helper exits 1 and the boot configuration aborts loudly — the error surfaces in `docker compose logs` instead of the container hanging half-configured forever.
 
 2. **Configure Magisk via SQL.** (`magisk-config.sh`.) Calls `magisk --sqlite` to enable Zygisk and the denylist, then inserts each package from `stealth.denylist` as a denylist entry. These writes take effect the next time Zygisk reads the DB — which happens before any app process starts, because Zygisk hooks into Zygote before forking app processes.
 

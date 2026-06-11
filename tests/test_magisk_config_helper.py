@@ -10,6 +10,11 @@ T2 (Agent 1, Agent 2 F-9, Agent 3 1.2) added a post-write Zygisk
 verification — the helper SELECTs ``zygisk`` back from the settings
 table and exits non-zero if Magisk didn't accept the write.
 
+Issue #14 bounded the daemon wait — the helper now gives up after
+``BEETROOT_MAGISK_WAIT_SECS`` (default 120) one-second probe attempts
+and exits 1 with a clear error instead of looping forever when Magisk
+is broken or missing.
+
 These tests source ``magisk-config.sh`` from ``sh`` with a fake
 ``magisk`` binary on PATH. The fake records every ``--sqlite`` query
 into a log file so the test can assert on the exact statements that
@@ -25,7 +30,9 @@ import pytest
 HELPER = Path(__file__).parent.parent / "docker" / "magisk-config.sh"
 
 
-def _fake_magisk(zygisk_select_value: str = "1") -> str:
+def _fake_magisk(
+    zygisk_select_value: str = "1", *, daemon_reachable: bool = True
+) -> str:
     """Return a sh script that records every ``magisk --sqlite`` invocation.
 
     Args:
@@ -33,13 +40,17 @@ def _fake_magisk(zygisk_select_value: str = "1") -> str:
             ``SELECT value FROM settings WHERE key='zygisk'`` query.
             Default ``1`` (the success path); pass ``0`` to drive the
             verification-fail branch.
+        daemon_reachable: When ``False``, the fake fails the
+            ``SELECT 1`` liveness probe forever, driving the
+            bounded-wait timeout branch (issue #14).
     """
+    probe_exit = 0 if daemon_reachable else 1
     return f"""#!/bin/sh
 # Fake magisk shim — logs every invocation to $MAGISK_LOG.
 # Replies to the zygisk SELECT with ``value={zygisk_select_value}``.
 echo "$@" >> "$MAGISK_LOG"
 case "$2" in
-    "SELECT 1") exit 0 ;;
+    "SELECT 1") exit {probe_exit} ;;
     "SELECT value FROM settings WHERE key='zygisk';")
         echo "value={zygisk_select_value}"
         ;;
@@ -53,6 +64,7 @@ def _run_helper(
     env: dict[str, str],
     *,
     zygisk_value: str = "1",
+    daemon_reachable: bool = True,
 ) -> tuple[int, str, list[str]]:
     """Source ``magisk-config.sh`` with a fake magisk on PATH.
 
@@ -61,7 +73,7 @@ def _run_helper(
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     magisk = fake_bin / "magisk"
-    magisk.write_text(_fake_magisk(zygisk_value))
+    magisk.write_text(_fake_magisk(zygisk_value, daemon_reachable=daemon_reachable))
     magisk.chmod(0o755)
     log = tmp_path / "magisk.log"
     log.write_text("")
@@ -148,6 +160,39 @@ def test_zygisk_post_write_verification_fails_loudly(tmp_path: Path) -> None:
     )
     assert code != 0, "helper accepted a botched zygisk write silently"
     assert "Zygisk" in out
+
+
+def test_daemon_wait_times_out_and_fails_loudly(tmp_path: Path) -> None:
+    # If the Magisk daemon never answers (broken / missing Magisk), the
+    # helper must give up after $BEETROOT_MAGISK_WAIT_SECS attempts and
+    # exit non-zero with a clear error — not loop forever leaving a
+    # container that looks "up" but never configures (issue #14).
+    code, out, queries = _run_helper(
+        tmp_path,
+        env={
+            "BEETROOT_DENYLIST_PACKAGES": "",
+            "BEETROOT_MAGISK_WAIT_SECS": "2",
+        },
+        daemon_reachable=False,
+    )
+    assert code != 0, "helper hung past the wait budget or exited 0"
+    assert "Magisk daemon unreachable" in out
+    writes = [q for q in queries if "REPLACE INTO settings" in q]
+    assert not writes, f"helper wrote settings despite unreachable daemon: {writes!r}"
+
+
+def test_daemon_wait_succeeds_within_budget(tmp_path: Path) -> None:
+    # A reachable daemon must still configure normally with the bound
+    # in place — the timeout is an upper bound, not a fixed delay.
+    code, _out, queries = _run_helper(
+        tmp_path,
+        env={
+            "BEETROOT_DENYLIST_PACKAGES": "",
+            "BEETROOT_MAGISK_WAIT_SECS": "2",
+        },
+    )
+    assert code == 0
+    assert any("REPLACE INTO settings" in q for q in queries)
 
 
 @pytest.mark.parametrize("packages", [",,", ",com.app,", " "])

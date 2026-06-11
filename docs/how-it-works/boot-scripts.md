@@ -65,7 +65,13 @@ backgrounded children (notably `frida-server`).
 Writes Beetroot's stealth posture into Magisk's sqlite DB. Waits for
 the Magisk daemon (`magisk --sqlite "SELECT 1"`) before any writes;
 without this wait, the writes race the daemon's own DB initialisation
-and silently no-op.
+and silently no-op. The wait is **bounded** (default 120 one-second
+attempts, ~2 minutes — conservative because a first boot of
+redroid+Magisk can legitimately take a while): if the daemon never
+answers, the helper prints a `[!]` error to stderr and exits 1, which
+aborts the sourced-under-`set -eu` entrypoint so the failure surfaces
+in `docker compose logs` / `beetroot doctor` instead of hanging the
+boot configuration forever in a container that looks "up".
 
 Four actions (v0.4 T2):
 
@@ -85,6 +91,7 @@ Four actions (v0.4 T2):
 |-------------------------------|---------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|
 | `BEETROOT_MAGISK_DB`          | `/data/adb/magisk.db`                                   | Informational only — `magisk --sqlite` always targets this path internally. Echoed in the waiting-log line.                    |
 | `BEETROOT_DENYLIST_PACKAGES`  | `com.google.android.gms,com.google.android.gms.unstable` | Comma-separated package ids. Empty list → helper skips the INSERT entirely (no SQL'inject of an empty `('', '')` row).         |
+| `BEETROOT_MAGISK_WAIT_SECS`   | `120`                                                   | Upper bound (1-second probe attempts) on the daemon wait; on timeout the helper exits 1. Script-level knob only — not passed through `compose.yaml` / `render_env`. |
 
 **Idempotency:** `REPLACE INTO` and `INSERT OR IGNORE` both no-op on
 re-run.
@@ -137,7 +144,9 @@ attempt's port bind anyway).
 
 All three are passed through `compose.yaml`'s service `environment:`
 block from the host shell, with an empty-string fallback that triggers
-each helper's bake-in default.
+each helper's bake-in default. (`BEETROOT_MAGISK_WAIT_SECS` is
+intentionally absent from this table — it never crosses compose; it's
+a script-level default consumed only by `magisk-config.sh`, see above.)
 
 ## Why not Python?
 
