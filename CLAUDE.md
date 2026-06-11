@@ -119,7 +119,8 @@ uv lock                       # regenerate uv.lock after manual edits
 ```bash
 uv run ruff check src/beetroot/          # check for violations
 uv run ruff check --fix src/beetroot/    # auto-fix fixable violations
-uv run ruff format src/beetroot/         # auto-format (optional; no hard policy)
+uv run ruff format src/beetroot/         # auto-format
+uv run ruff format --check src/beetroot/ # CI gate — src/beetroot/ must be formatter-clean
 ```
 
 Ruff is configured in `[tool.ruff]` / `[tool.ruff.lint]` — target Python 3.13, line length 100, with a strict rule set covering 20+ families including `D` (pydocstyle, Google convention).
@@ -141,6 +142,8 @@ Mypy is configured in `[tool.mypy]` with `strict = true` and the `pydantic.mypy`
 uv run pytest                                         # full suite (coverage gate is wired into addopts)
 uv run pytest --cov=beetroot --cov-report=term-missing  # equivalent — explicit cov flags
 ```
+
+The suite treats every warning as an error (`filterwarnings = ["error"]` in `pyproject.toml` — allowlist upstream deprecations individually, with a comment naming their origin), runs in **random order** (`pytest-randomly`; pass `-p no:randomly` to disable while bisecting an order-dependent failure), and fails any single test that runs past **30 seconds** (`pytest-timeout`).
 
 Tests live under `tests/` and use pytest's built-in mocking (`unittest.mock`) — no real network or docker calls. `conftest.py` provides two composable fixtures: `isolated_registry` (points `$XDG_CONFIG_HOME` and `$XDG_CACHE_HOME` at a per-test tmp dir) and `isolated_instance` (creates a minimal instance dir and `chdir`s into it). Most CLI/registry tests use the `cli_root` composite fixture, which layers `isolated_registry` with stubbed `shutil.which` + a no-op `frida_download.download`.
 
@@ -169,7 +172,17 @@ For a system-wide install of your working tree (so plain `beetroot <verb>` works
 
 **CI**
 
-GitHub Actions runs ruff, mypy, and pytest on every push to `main` and on every pull request targeting `main`. The workflow is at `.github/workflows/ci.yml`. To replicate CI locally, run the three commands listed above under Lint, Type checking, and Tests — they are exactly what CI executes.
+GitHub Actions runs the full gate set on every push to `main` and on every pull request targeting `main`. The workflow is at `.github/workflows/ci.yml`. The core jobs are exactly the commands listed above under Lint, Type checking, and Tests (ruff check, `ruff format --check src/beetroot/`, mypy, pytest with the 100% coverage gate) — CI additionally passes `--cov-report=xml -p no:cacheprovider` to pytest (stateless runs) and uploads the coverage report (XML + terminal) as a workflow artifact. On top of those, CI enforces:
+
+- `uv lock --check` — `uv.lock` must be in sync with `pyproject.toml` (run `uv lock` after editing deps).
+- actionlint + `uvx zizmor==1.25.2 .github/workflows/` — the workflows themselves are lint- and security-audited. All actions stay SHA-pinned and every checkout sets `persist-credentials: false`; zizmor fails the build otherwise.
+- `uvx codespell==2.4.2 src/ docs/ README.md CHANGELOG.md` — spelling.
+- `uvx yamllint==1.38.0 -c .yamllint src/beetroot/templates/compose.yaml .github/workflows/ examples/` — YAML style (policy lives in `.yamllint`).
+- `uvx deptry==0.25.1 .` — dependency hygiene: undeclared imports and declared-but-unused deps (config in `[tool.deptry]` in `pyproject.toml`; add exceptions only for genuine false positives like the optional `frida-tools` extra).
+- `shfmt -i 4 -d docker/*.sh` — boot-helper formatting (CI downloads a checksum-verified pinned release binary; install `shfmt` locally to replicate).
+- Packaging gate: `uv build`, `uvx twine==6.2.0 check dist/*`, then the wheel is installed into a clean venv and `beetroot --help` must run.
+
+Every gate is version-pinned in the workflow (release binaries are checksum-verified); to replicate a gate locally, run the same command with the same pin.
 
 ## What stays gitignored
 
