@@ -33,8 +33,8 @@ if [ -d "$MODULES_DIR" ]; then
             # is sourced under the entrypoint's `set -e`, so a bare
             # non-zero exit here would skip launch-frida.sh and the
             # trailing `wait`, killing the container.
-            magisk --install-module "$zip" \
-                || echo "[!] Module $zip failed to install — continuing."
+            magisk --install-module "$zip" ||
+                echo "[!] Module $zip failed to install — continuing."
         fi
     done
 else
