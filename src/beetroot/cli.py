@@ -965,7 +965,7 @@ def module(
         ),
     ] = False,
 ) -> None:
-    """Append a module to beetroot.yaml and re-stage. Caller restarts."""
+    """Install a Magisk module — append + re-stage (redroid), push (adb), or root --auto-install."""
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
     digests = sha256 or []
