@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from beetroot import api, compose, config, paths, registry, snapshot
 
@@ -78,8 +79,23 @@ class TestInstanceCreate:
         # already verifies; the OOP path must match.
         inst = api.Instance.create("alpha")
         assert paths.instance_yaml(inst.root).read_bytes() == (
-            b"api_version: 3\nandroid:\n  version: 14\n"
-        )
+            f"api_version: {config.SUPPORTED_API_VERSION}\n"
+            "android:\n  version: 14\n"
+        ).encode()
+
+    def test_create_yaml_loads_without_auto_bump(
+        self, cli_root: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Regression for #11: the minimal YAML must pin the CURRENT
+        # SUPPORTED_API_VERSION so a freshly-created instance loads without
+        # config.load_yaml emitting the spurious "auto-upgraded" warning.
+        inst = api.Instance.create("alpha")
+        capsys.readouterr()  # drop any output from create itself
+        yaml_path = paths.instance_yaml(inst.root)
+        raw = yaml.safe_load(yaml_path.read_text())
+        assert raw["api_version"] == config.SUPPORTED_API_VERSION
+        config.load_yaml(yaml_path)
+        assert "auto-upgraded" not in capsys.readouterr().err
 
     def test_create_with_explicit_cfg_serialises_full_model(
         self, cli_root: Path

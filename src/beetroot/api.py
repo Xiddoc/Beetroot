@@ -48,7 +48,12 @@ from pydantic import BaseModel, ConfigDict
 from . import compose, config, frida_download, modules_download, paths, ports, registry
 from . import snapshot as _snapshot_mod
 
-_MINIMAL_BEETROOT_YAML = "api_version: 3\nandroid:\n  version: 14\n"
+# Derived from ``config.SUPPORTED_API_VERSION`` rather than hardcoded so the
+# pinned version can never drift behind the schema. A fresh create must load
+# without triggering the auto-bump warning in ``config.load_yaml``.
+_MINIMAL_BEETROOT_YAML = (
+    f"api_version: {config.SUPPORTED_API_VERSION}\nandroid:\n  version: 14\n"
+)
 
 # ``adb devices`` lines are ``<serial>\t<state>`` (two whitespace-separated
 # columns). Anything with fewer columns is a header line or blank —

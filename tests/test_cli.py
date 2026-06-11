@@ -232,8 +232,9 @@ class TestCmdCreate:
         assert result.exit_code == 0, result.stderr
         root = registry.instance_path("alpha")
         assert paths.instance_yaml(root).read_bytes() == (
-            b"api_version: 3\nandroid:\n  version: 14\n"
-        )
+            f"api_version: {config.SUPPORTED_API_VERSION}\n"
+            "android:\n  version: 14\n"
+        ).encode()
 
     def test_create_default_no_frida(self, cli_root: Path) -> None:
         # v0.3 (T2): the default minimal YAML omits the `frida:` block, so
