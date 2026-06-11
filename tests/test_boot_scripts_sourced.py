@@ -54,6 +54,23 @@ def test_flash_modules_sourced_with_existing_dir(tmp_path: Path) -> None:
     assert "POST" in out, f"parent shell died — full stdout: {out!r}"
 
 
+def test_flash_modules_sourced_failing_install_does_not_kill_parent_shell(tmp_path: Path) -> None:
+    # A zip is staged but `magisk` is absent from the pinned PATH, so
+    # `magisk --install-module` fails. Under the inherited `set -e` the
+    # original loop body aborted the parent shell here, skipping
+    # launch-frida.sh and the trailing `wait` (issue #13). The fix logs
+    # a [!] warning and falls through.
+    modules = tmp_path / "modules"
+    modules.mkdir()
+    (modules / "bad-module.zip").write_bytes(b"PK\x03\x04")
+    out = _source_and_post(
+        "flash-modules.sh",
+        env={"BEETROOT_MODULES_DIR": str(modules)},
+    )
+    assert "POST" in out, f"parent shell died — full stdout: {out!r}"
+    assert "failed to install" in out, f"missing [!] warning — full stdout: {out!r}"
+
+
 def test_launch_frida_sourced_missing_binary(tmp_path: Path) -> None:
     # Mirror the flash-modules test for launch-frida. The helper's
     # binary-missing branch has historically been safe (no `exit`),
