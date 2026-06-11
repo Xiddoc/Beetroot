@@ -328,3 +328,35 @@ class TestModuleDownloadProgress:
 
         assert len(staged) == 1
         assert staged[0].read_bytes() == FAKE_ZIP_CONTENT
+
+
+class TestVerifySha256:
+    """The public verifier shared with AdbDevice.auto_install_modules."""
+
+    def test_matching_digest_passes(self, tmp_path: Path) -> None:
+        f = tmp_path / "mod.zip"
+        f.write_bytes(FAKE_ZIP_CONTENT)
+        modules_download.verify_sha256(f, _sha256(FAKE_ZIP_CONTENT))
+
+    def test_matching_digest_is_case_insensitive(self, tmp_path: Path) -> None:
+        f = tmp_path / "mod.zip"
+        f.write_bytes(FAKE_ZIP_CONTENT)
+        modules_download.verify_sha256(f, _sha256(FAKE_ZIP_CONTENT).upper())
+
+    def test_mismatch_raises_with_both_digests(self, tmp_path: Path) -> None:
+        f = tmp_path / "mod.zip"
+        f.write_bytes(FAKE_ZIP_CONTENT)
+        with pytest.raises(ValueError, match="sha256 mismatch") as exc_info:
+            modules_download.verify_sha256(f, "deadbeef")
+        assert "deadbeef" in str(exc_info.value)
+        assert _sha256(FAKE_ZIP_CONTENT) in str(exc_info.value)
+
+    def test_mismatch_does_not_delete_the_file(self, tmp_path: Path) -> None:
+        # Unlike the staging path (which evicts a poisoned cache entry),
+        # the bare verifier must never delete the caller's file — the adb
+        # auto-install path hands it a user-owned local zip.
+        f = tmp_path / "mod.zip"
+        f.write_bytes(FAKE_ZIP_CONTENT)
+        with pytest.raises(ValueError, match="sha256 mismatch"):
+            modules_download.verify_sha256(f, "deadbeef")
+        assert f.exists()
