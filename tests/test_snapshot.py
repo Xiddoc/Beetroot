@@ -331,10 +331,13 @@ class TestRestoreErrors:
         other = _make_instance(tmp_path / "preexisting" / "beta")
         registry.add_allocating("beta", other)
 
-        with pytest.raises(snapshot.SnapshotError, match="already registered"):
+        with pytest.raises(snapshot.SnapshotError, match="already registered") as excinfo:
             snapshot.restore(
                 archive, dest_name="beta", dest_path=tmp_path / "new-beta"
             )
+        message = str(excinfo.value)
+        assert "--name" in message
+        assert "--as" not in message
 
     def test_restore_refuses_port_collision_with_peer(
         self, isolated_registry: Path, tmp_path: Path
