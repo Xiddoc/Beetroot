@@ -7,7 +7,9 @@ the exact ``adb -s <serial> ...`` shape that AdbDevice constructs.
 """
 from __future__ import annotations
 
+import contextlib
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 
@@ -403,8 +405,13 @@ class TestHealth:
         # AdbDevice.health() delegates to api.adb_device_health which
         # shells out via subprocess.run; stub shutil.which so all the
         # PATH probes report present, and stub subprocess.run for the
-        # adb/nc/magisk calls to a successful response.
+        # adb/magisk calls to a successful response. The frida.handshake
+        # check uses socket.create_connection, so stub that too to keep
+        # the suite hermetic — no real network connection.
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(
+            socket, "create_connection", lambda *a, **k: contextlib.nullcontext(),
+        )
 
         def _ok(cmd: list[str], *args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
             del args, kwargs
