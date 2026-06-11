@@ -65,7 +65,11 @@ class TestStatusAdb:
 
     def test_emits_serial_omits_absolute_path(self, cli_root: Path) -> None:
         self._seed_adb_instance(cli_root)
-        result = runner.invoke(cli.app, ["status", "phone"])
+        # The adb status path probes availability via subprocess.run([adb,
+        # "devices"]); stub it so the row renders hermetically without a
+        # real adb binary on PATH.
+        with patch("subprocess.run", return_value=_ok_proc()):
+            result = runner.invoke(cli.app, ["status", "phone"])
         assert result.exit_code == 0, result.stderr
         row = json.loads(result.stdout)
         assert row["name"] == "phone"
@@ -88,7 +92,10 @@ class TestStatusAdb:
         # index-0 default (27042). This distinguishes a real fix from code
         # that only happened to pass because the test seeded index 0.
         self._seed_adb_instance(cli_root, name="phone1", index=1, serial="emulator-5564")
-        result = runner.invoke(cli.app, ["status", "phone1"])
+        # Stub the availability probe so the row renders without a real
+        # adb binary (see test_emits_serial_omits_absolute_path).
+        with patch("subprocess.run", return_value=_ok_proc()):
+            result = runner.invoke(cli.app, ["status", "phone1"])
         assert result.exit_code == 0, result.stderr
         row = json.loads(result.stdout)
         # adb_address is the raw serial, not a host:port pair.
