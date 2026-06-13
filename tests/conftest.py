@@ -1,10 +1,32 @@
 """Shared fixtures for the beetroot test suite."""
 from __future__ import annotations
 
-from collections.abc import Iterator
+import subprocess
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Protocol
 
 import pytest
+
+
+class StubRunFailures(Protocol):
+    """Call signature of the ``stub_run_failures`` factory fixture.
+
+    A precise, keyword-aware alias so test signatures can type the
+    fixture without ``Callable[..., ...]`` (which mypy's ``explicit-any``
+    rule forbids under the project's strict config).
+    """
+
+    def __call__(
+        self,
+        should_fail: Callable[[list[str]], bool],
+        *,
+        stdout: str = ...,
+        stderr: str = ...,
+        devices_stdout: str = ...,
+    ) -> list[list[str]]:
+        """Patch adb subprocess.run with selective failures; return captured argvs."""
+        ...
 
 
 @pytest.fixture(autouse=True)
@@ -126,6 +148,69 @@ def isolated_instance(
     (root / "beetroot.yaml").write_text("api_version: 3\nandroid:\n  version: 14\n")
     monkeypatch.chdir(root)
     return root
+
+
+@pytest.fixture
+def preflight_argv() -> list[list[str]]:
+    """The issue-#38 pre-flight probe argvs auto-install emits before any push.
+
+    Root via ``su -c true``, then magisk via ``su -c 'command -v magisk'`` —
+    quoted per the same dual-parse model as the install command. Shared by
+    the AdbDevice unit tests and the ``module --auto-install`` CLI tests so
+    both pin the identical probe sequence.
+    """
+    return [
+        ["adb", "-s", "emulator-5554", "shell", "su", "-c", "true"],
+        ["adb", "-s", "emulator-5554", "shell", "su", "-c", "'command -v magisk'"],
+    ]
+
+
+@pytest.fixture
+def stub_run_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> StubRunFailures:
+    """Factory fixture: stub adb subprocess.run with selective failures.
+
+    The returned callable patches ``beetroot.backends.adb.subprocess.run``
+    so that argvs matching ``should_fail`` exit 1 with the given output and
+    everything else exits 0. A bare ``adb devices`` call (the
+    ``serial_is_available`` connectivity re-probe) is answered separately
+    with ``devices_stdout`` — defaulting to ``emulator-5554`` listed as
+    available — so tests control the authoritative connectivity answer
+    independently of any probe/install failure text. Returns the list of
+    captured argvs.
+    """
+
+    def _stub(
+        should_fail: Callable[[list[str]], bool],
+        *,
+        stdout: str = "",
+        stderr: str = "",
+        devices_stdout: str = "List of devices attached\nemulator-5554\tdevice\n",
+    ) -> list[list[str]]:
+        captured: list[list[str]] = []
+
+        def _fake_run(
+            cmd: list[str], *args: object, **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            del args, kwargs
+            captured.append(list(cmd))
+            if cmd == ["adb", "devices"]:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout=devices_stdout, stderr="",
+                )
+            failing = should_fail(cmd)
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=1 if failing else 0,
+                stdout=stdout if failing else "",
+                stderr=stderr if failing else "",
+            )
+
+        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
+        return captured
+
+    return _stub
 
 
 @pytest.fixture

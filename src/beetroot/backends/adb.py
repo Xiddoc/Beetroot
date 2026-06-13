@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Literal, Self
 from beetroot import frida_download, modules_download, ports, registry
 from beetroot.api import (
     AdbNotInstalledError,
+    DevicePreflightError,
     FridaNotInstalledError,
     ModuleInstallResult,
     adb_device_health,
@@ -86,11 +87,13 @@ def serial_is_available(serial: str) -> bool:
     """
     Return True iff ``adb devices`` lists ``serial`` in state ``"device"``.
 
-    Shared between :attr:`AdbDevice.is_available` and the ``--verify``
-    flag on ``beetroot adopt`` so both call sites use identical parsing
-    logic. Serials in ``offline`` / ``unauthorized`` / ``no permissions``
-    state return False — the user needs to re-plug, accept the RSA prompt,
-    or fix udev rules first.
+    Shared between :attr:`AdbDevice.is_available`, the ``--verify``
+    flag on ``beetroot adopt``, and the auto-install failure classifier
+    (:meth:`AdbDevice.auto_install_modules` re-probes connectivity with
+    this instead of sniffing untrusted error text) so every call site
+    uses identical parsing logic. Serials in ``offline`` /
+    ``unauthorized`` / ``no permissions`` state return False — the user
+    needs to re-plug, accept the RSA prompt, or fix udev rules first.
 
     Args:
         serial: The adb serial / endpoint identifier to look up.
@@ -411,9 +414,33 @@ class AdbDevice:
         pushed temp zip is removed afterwards, even when the install
         step fails.
 
+        Before anything is pushed, a cheap pre-flight probe (issue #38)
+        diagnoses whole-device problems that would otherwise surface as
+        N identical opaque failed rows: ``su -c true`` checks for usable
+        root and ``su -c 'command -v magisk'`` checks for the ``magisk``
+        binary, each quoted exactly like the install command itself.
+        A failed probe raises :class:`beetroot.api.DevicePreflightError`
+        with a single friendly diagnosis and nothing is pushed. Failures
+        are never classified by sniffing probe/install output (host
+        paths and module-controlled stderr are untrusted text): instead
+        the device's connectivity is re-checked authoritatively via
+        :func:`serial_is_available` (``adb devices``, serial-scoped),
+        which routes offline / unauthorized / no-permissions devices to
+        the connectivity diagnosis and everything else to the root /
+        magisk one.
+
         A failing module never aborts the batch: every source gets its
         own :class:`beetroot.api.ModuleInstallResult` row, in request
-        order, and the caller decides the aggregate exit status.
+        order, and the caller decides the aggregate exit status. The one
+        exception is a device that goes offline mid-batch: an adb-level
+        failure triggers the same :func:`serial_is_available` re-probe,
+        and if the device is genuinely gone the remaining modules would
+        all fail identically, so the batch aborts with
+        :class:`beetroot.api.DevicePreflightError` carrying the rows
+        completed so far in its ``results`` attribute. Host-side
+        validation failures (missing zip, sha256 mismatch) keep the
+        per-module row contract unconditionally — they can never mean
+        the device is offline.
 
         Args:
             sources: Host paths to local ``.zip`` modules.
@@ -429,6 +456,9 @@ class AdbDevice:
             AdbNotInstalledError: If the ``adb`` binary is not on PATH.
             ValueError: If ``sha256s`` is given with a length different
                 from ``sources``.
+            DevicePreflightError: If the device is offline, has no
+                usable root, or has no ``magisk`` binary (pre-flight),
+                or if it goes offline mid-batch.
         """
         import shutil  # noqa: PLC0415  # local to avoid pulling shutil at module import
 
@@ -442,6 +472,7 @@ class AdbDevice:
                 "pass one digest per source (use None for unpinned entries).",
             )
         digests = sha256s if sha256s is not None else [None] * len(sources)
+        self._preflight_root_and_magisk()
         results: list[ModuleInstallResult] = []
         for index, (source, digest) in enumerate(zip(sources, digests, strict=True)):
             try:
@@ -449,11 +480,75 @@ class AdbDevice:
                 results.append(
                     ModuleInstallResult(source=source, ok=True, detail=detail),
                 )
-            except (ValueError, RuntimeError) as e:
+            except ValueError as e:
+                # Host-side validation failure (missing zip, non-zip
+                # path, sha256 mismatch). The message embeds the
+                # untrusted host path and can never mean the device is
+                # offline — keep the per-module row unconditionally.
+                results.append(
+                    ModuleInstallResult(source=source, ok=False, detail=str(e)),
+                )
+            except RuntimeError as e:
+                # An adb-level failure. Its text (argv + stderr) is
+                # untrusted — `magisk --install-module` runs the
+                # module's own scripts as root, so stderr can spoof any
+                # signature. Re-probe connectivity authoritatively
+                # instead of sniffing the message: only a genuinely
+                # unavailable device aborts the batch.
+                if not serial_is_available(self._config.serial):
+                    skipped = len(sources) - index - 1
+                    raise DevicePreflightError(
+                        self._offline_message(skipped=skipped),
+                        results,
+                    ) from e
                 results.append(
                     ModuleInstallResult(source=source, ok=False, detail=str(e)),
                 )
         return results
+
+    def _preflight_root_and_magisk(self) -> None:
+        # Probe commands go through the same dual-parse quoting as the
+        # install command itself (shlex.quote for the inner MagiskSU
+        # `sh -c` re-join; both payloads are metacharacter-free
+        # constants, so the outer device-shell parse is already safe).
+        root = self._adb_unchecked("shell", "su", "-c", shlex.quote("true"))
+        if root.returncode != 0:
+            self._abort_if_unavailable(root.stderr)
+            raise DevicePreflightError(
+                f"device {self._config.serial!r} has no usable root "
+                "(su missing or denied root — check the device is rooted and "
+                "approve the Magisk superuser prompt)",
+            )
+        magisk = self._adb_unchecked("shell", "su", "-c", shlex.quote("command -v magisk"))
+        if magisk.returncode != 0:
+            self._abort_if_unavailable(magisk.stderr)
+            raise DevicePreflightError(
+                f"device {self._config.serial!r} has root but no usable magisk binary "
+                "(install or repair the Magisk app, then retry)",
+            )
+
+    def _abort_if_unavailable(self, probe_stderr: str) -> None:
+        # Connectivity is determined by re-probing `adb devices` for
+        # THIS serial (spoof-proof against host paths and on-device
+        # output), never by substring-matching the probe's text. The
+        # probe's trimmed stderr is appended to the diagnosis so the
+        # underlying adb error (offline / unauthorized / ...) isn't lost.
+        if not serial_is_available(self._config.serial):
+            raise DevicePreflightError(self._offline_message(adb_error=probe_stderr))
+
+    def _offline_message(self, *, adb_error: str = "", skipped: int = 0) -> str:
+        msg = (
+            f"device {self._config.serial!r} is offline or not connected "
+            "(reconnect it, accept its USB-debugging authorization prompt "
+            "if one is shown, and check `adb devices`)"
+        )
+        error = adb_error.strip()
+        if error:
+            msg = f"{msg} — last adb error: {error}"
+        if skipped:
+            noun = "module" if skipped == 1 else "modules"
+            msg = f"{msg} ({skipped} remaining {noun} skipped)"
+        return msg
 
     def _auto_install_one(self, source: str, sha256: str | None, index: int) -> str:
         src = _validated_zip_source(source)
@@ -509,18 +604,22 @@ class AdbDevice:
 
     # ---- internals --------------------------------------------------------
 
-    def _adb(self, *argv: str) -> subprocess.CompletedProcess[str]:
-        """Run ``adb -s <serial> <argv...>`` with capture; raise on non-zero."""
+    def _adb_unchecked(self, *argv: str) -> subprocess.CompletedProcess[str]:
+        """Run ``adb -s <serial> <argv...>`` with capture; never raise on non-zero."""
         full = [_ADB, "-s", self._config.serial, *argv]
-        res = subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv built from validated config + caller-pinned strings
+        return subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv built from validated config + caller-pinned strings
             full,
             check=False,
             capture_output=True,
             text=True,
         )
+
+    def _adb(self, *argv: str) -> subprocess.CompletedProcess[str]:
+        """Run ``adb -s <serial> <argv...>`` with capture; raise on non-zero."""
+        res = self._adb_unchecked(*argv)
         if res.returncode != 0:
             raise RuntimeError(
-                f"adb command {full!r} failed (rc={res.returncode}): {res.stderr.strip()}",
+                f"adb command {res.args!r} failed (rc={res.returncode}): {res.stderr.strip()}",
             )
         return res
 

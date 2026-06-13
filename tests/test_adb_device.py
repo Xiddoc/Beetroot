@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import StubRunFailures
 
 from beetroot import api, frida_download, registry
 from beetroot.backends import adb as adb_backend
@@ -354,6 +355,7 @@ class TestAutoInstallModules:
     def test_emits_push_install_rm_sequence(
         self,
         captured_adb: list[list[str]],
+        preflight_argv: list[list[str]],
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
@@ -364,6 +366,7 @@ class TestAutoInstallModules:
             [str(zip_path)]
         )
         assert captured_adb == [
+            *preflight_argv,
             [
                 "adb", "-s", "emulator-5554", "push",
                 str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
@@ -392,6 +395,7 @@ class TestAutoInstallModules:
     def test_remote_path_with_spaces_is_shell_quoted(
         self,
         captured_adb: list[list[str]],
+        preflight_argv: list[list[str]],
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
@@ -406,6 +410,7 @@ class TestAutoInstallModules:
         results = _make_device().auto_install_modules([str(zip_path)])
         assert results[0].ok is True
         assert captured_adb == [
+            *preflight_argv,
             [
                 "adb", "-s", "emulator-5554", "push",
                 str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
@@ -424,6 +429,7 @@ class TestAutoInstallModules:
     def test_hostile_basename_never_reaches_the_device_shell(
         self,
         captured_adb: list[list[str]],
+        preflight_argv: list[list[str]],
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
@@ -441,9 +447,10 @@ class TestAutoInstallModules:
         zip_path.write_bytes(b"PK\x03\x04fake")
         results = _make_device().auto_install_modules([str(zip_path)])
         assert results[0].ok is True
-        remote = captured_adb[0][-1]
+        remote = captured_adb[2][-1]  # the push target (after the two probes)
         assert re.fullmatch(r"(/[A-Za-z0-9._-]+)+", remote)
         assert captured_adb == [
+            *preflight_argv,
             [
                 "adb", "-s", "emulator-5554", "push",
                 str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
@@ -459,13 +466,16 @@ class TestAutoInstallModules:
             ],
         ]
         assert "$(boom)" not in remote
-        for cmd in captured_adb[1:]:  # the two device-shell invocations
+        # Every device-shell invocation (probes + install + rm) — only the
+        # push argv may carry the hostile substring, in its host-local path.
+        for cmd in (*captured_adb[:2], *captured_adb[3:]):
             for element in cmd:
                 assert "$(boom)" not in element
 
     def test_matching_sha256_installs(
         self,
         captured_adb: list[list[str]],
+        preflight_argv: list[list[str]],
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
@@ -480,11 +490,12 @@ class TestAutoInstallModules:
             [str(zip_path)], sha256s=[sha]
         )
         assert results[0].ok is True
-        assert len(captured_adb) == 3
+        assert len(captured_adb) == len(preflight_argv) + 3
 
     def test_sha256_mismatch_refuses_to_push(
         self,
         captured_adb: list[list[str]],
+        preflight_argv: list[list[str]],
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
@@ -494,43 +505,34 @@ class TestAutoInstallModules:
         results = _make_device().auto_install_modules(
             [str(zip_path)], sha256s=["0" * 64]
         )
-        assert captured_adb == []
+        # The pre-flight probes ran, but nothing was pushed.
+        assert captured_adb == preflight_argv
         assert results[0].ok is False
         assert "sha256 mismatch" in results[0].detail
         assert zip_path.exists()
 
     def test_failed_install_reports_and_continues(
         self,
+        stub_run_failures: StubRunFailures,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
         # First module's magisk --install-module exits non-zero; the
-        # second module must still be processed and succeed. The temp
-        # zip of the failed module must still be rm'd.
+        # device is still listed by `adb devices`, so the re-probe keeps
+        # the batch going — the second module is still processed and
+        # succeeds. The temp zip of the failed module must still be rm'd.
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         bad = tmp_path / "Bad.zip"
         bad.write_bytes(b"PK\x03\x04bad")
         good = tmp_path / "Good.zip"
         good.write_bytes(b"PK\x03\x04good")
-        captured: list[list[str]] = []
-
-        def _fake_run(
-            cmd: list[str], *args: object, **kwargs: object
-        ) -> subprocess.CompletedProcess[str]:
-            del args, kwargs
-            captured.append(list(cmd))
-            failing = (
+        captured = stub_run_failures(
+            lambda cmd: (
                 "magisk --install-module" in cmd[-1]
                 and "beetroot-module-0.zip" in cmd[-1]
-            )
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=1 if failing else 0,
-                stdout="",
-                stderr="! Unable to install" if failing else "",
-            )
-
-        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
+            ),
+            stderr="! Unable to install",
+        )
         results = _make_device().auto_install_modules([str(bad), str(good)])
         assert [r.ok for r in results] == [False, True]
         assert "Unable to install" in results[0].detail
@@ -543,43 +545,38 @@ class TestAutoInstallModules:
 
     def test_failed_push_skips_rm_and_continues_to_next_module(
         self,
+        stub_run_failures: StubRunFailures,
+        preflight_argv: list[list[str]],
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
         # When `adb push` itself fails there is nothing on the device to
         # clean up: the failed module gets a failed row with NO install
         # and NO rm attempt, and the batch continues to the next module.
+        # The device is still listed by `adb devices`, so the re-probe
+        # keeps the batch going — its only extra call is that re-probe.
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         bad = tmp_path / "Bad.zip"
         bad.write_bytes(b"PK\x03\x04bad")
         good = tmp_path / "Good.zip"
         good.write_bytes(b"PK\x03\x04good")
-        captured: list[list[str]] = []
-
-        def _fake_run(
-            cmd: list[str], *args: object, **kwargs: object
-        ) -> subprocess.CompletedProcess[str]:
-            del args, kwargs
-            captured.append(list(cmd))
-            failing = cmd[3] == "push" and cmd[4] == str(bad)
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=1 if failing else 0,
-                stdout="",
-                stderr="adb: error: failed to copy" if failing else "",
-            )
-
-        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
+        captured = stub_run_failures(
+            lambda cmd: cmd[3] == "push" and cmd[4] == str(bad),
+            stderr="adb: error: failed to copy",
+        )
         results = _make_device().auto_install_modules([str(bad), str(good)])
         assert [r.ok for r in results] == [False, True]
         assert "failed to copy" in results[0].detail
         # No install and no rm for the failed push — only the failed push
-        # itself, then the full sequence for the second module.
+        # itself plus the connectivity re-probe, then the full sequence
+        # for the second module.
         assert captured == [
+            *preflight_argv,
             [
                 "adb", "-s", "emulator-5554", "push",
                 str(bad), "/data/local/tmp/beetroot-module-0.zip",
             ],
+            ["adb", "devices"],
             [
                 "adb", "-s", "emulator-5554", "push",
                 str(good), "/data/local/tmp/beetroot-module-1.zip",
@@ -627,6 +624,8 @@ class TestAutoInstallModules:
     ) -> None:
         # Both the install AND the cleanup rm fail: the row must carry
         # the install error, never the rm error from the finally block.
+        # The `adb devices` re-probe lists the device as available, so
+        # the adb-level install failure becomes a per-module row.
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         zip_path = tmp_path / "M.zip"
         zip_path.write_bytes(b"PK\x03\x04fake")
@@ -635,6 +634,13 @@ class TestAutoInstallModules:
             cmd: list[str], *args: object, **kwargs: object
         ) -> subprocess.CompletedProcess[str]:
             del args, kwargs
+            if cmd == ["adb", "devices"]:
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=0,
+                    stdout="List of devices attached\nemulator-5554\tdevice\n",
+                    stderr="",
+                )
             if "magisk --install-module" in cmd[-1]:
                 stderr = "! Unable to install"
             elif "rm -f" in cmd[-1]:
@@ -656,6 +662,7 @@ class TestAutoInstallModules:
     def test_missing_zip_becomes_failed_result(
         self,
         captured_adb: list[list[str]],
+        preflight_argv: list[list[str]],
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
@@ -663,7 +670,9 @@ class TestAutoInstallModules:
         results = _make_device().auto_install_modules(
             [str(tmp_path / "missing.zip")]
         )
-        assert captured_adb == []
+        # The pre-flight probes ran, but nothing was pushed — and the
+        # host-side ValueError never triggers an `adb devices` re-probe.
+        assert captured_adb == preflight_argv
         assert results[0].ok is False
         assert "does not exist" in results[0].detail
 
@@ -699,6 +708,273 @@ class TestAutoInstallModules:
         results = _make_device().auto_install_modules([str(first), str(second)])
         assert [r.source for r in results] == [str(first), str(second)]
         assert all(r.ok for r in results)
+
+
+_OFFLINE_DEVICES = "List of devices attached\n"  # serial absent → unavailable
+
+
+class TestAutoInstallPreflight:
+    """Issue #38: whole-device failures abort with one friendly error.
+
+    Connectivity is decided authoritatively by an ``adb devices``
+    re-probe (``serial_is_available``), never by sniffing the probe's
+    stderr — so every failure path here also emits ``["adb", "devices"]``,
+    and the captured-argv assertions account for it.
+    """
+
+    def test_unrooted_device_fails_fast_before_any_push(
+        self,
+        stub_run_failures: StubRunFailures,
+        preflight_argv: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        zip_path = tmp_path / "M.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+        # Root probe fails but `adb devices` still lists the serial, so
+        # the re-probe routes it to the no-usable-root diagnosis.
+        captured = stub_run_failures(
+            lambda cmd: cmd[-1] == "true",
+            stdout="su: inaccessible or not found\n",
+        )
+        with pytest.raises(
+            api.DevicePreflightError,
+            match=r"device 'emulator-5554' has no usable root "
+            r"\(su missing or denied root — check the device is rooted and "
+            r"approve the Magisk superuser prompt\)",
+        ) as exc_info:
+            _make_device().auto_install_modules([str(zip_path)])
+        # Only the root probe ran (then the connectivity re-probe) —
+        # no magisk probe, no push.
+        assert captured == [preflight_argv[0], ["adb", "devices"]]
+        assert exc_info.value.results == []
+
+    def test_missing_magisk_fails_fast_before_any_push(
+        self,
+        stub_run_failures: StubRunFailures,
+        preflight_argv: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        zip_path = tmp_path / "M.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+        captured = stub_run_failures(lambda cmd: cmd[-1] == "'command -v magisk'")
+        with pytest.raises(
+            api.DevicePreflightError,
+            match=r"device 'emulator-5554' has root but no usable magisk binary "
+            r"\(install or repair the Magisk app, then retry\)",
+        ) as exc_info:
+            _make_device().auto_install_modules([str(zip_path)])
+        # Both probes ran (root passed, magisk failed), then the
+        # connectivity re-probe — no push.
+        assert captured == [*preflight_argv, ["adb", "devices"]]
+        assert exc_info.value.results == []
+
+    def test_device_offline_during_root_probe(
+        self,
+        stub_run_failures: StubRunFailures,
+        preflight_argv: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        zip_path = tmp_path / "M.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+        # Root probe fails AND the serial is absent from `adb devices` →
+        # offline diagnosis, with the probe's stderr appended.
+        captured = stub_run_failures(
+            lambda cmd: cmd[-1] == "true",
+            stderr="adb: device offline\n",
+            devices_stdout=_OFFLINE_DEVICES,
+        )
+        with pytest.raises(
+            api.DevicePreflightError,
+            match=r"device 'emulator-5554' is offline or not connected "
+            r"\(reconnect it, accept its USB-debugging authorization prompt "
+            r"if one is shown, and check `adb devices`\) "
+            r"— last adb error: adb: device offline",
+        ):
+            _make_device().auto_install_modules([str(zip_path)])
+        assert captured == [preflight_argv[0], ["adb", "devices"]]
+
+    def test_root_probe_stderr_cannot_force_offline_misclassification(
+        self,
+        stub_run_failures: StubRunFailures,
+        preflight_argv: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # Device-controlled probe stderr says "adb: device offline", but
+        # `adb devices` still lists the serial as available. Connectivity
+        # is decided by the re-probe, NOT the text, so this must be the
+        # no-usable-root diagnosis — never offline.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        zip_path = tmp_path / "M.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+        captured = stub_run_failures(
+            lambda cmd: cmd[-1] == "true",
+            stderr="adb: device offline\n",  # default devices_stdout lists the serial
+        )
+        with pytest.raises(api.DevicePreflightError, match="has no usable root"):
+            _make_device().auto_install_modules([str(zip_path)])
+        assert captured == [preflight_argv[0], ["adb", "devices"]]
+
+    def test_device_offline_during_magisk_probe(
+        self,
+        stub_run_failures: StubRunFailures,
+        preflight_argv: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # Root passes; the magisk probe fails AND the serial is absent
+        # from `adb devices` → offline, never blamed on a missing magisk
+        # binary.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        zip_path = tmp_path / "M.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+        captured = stub_run_failures(
+            lambda cmd: cmd[-1] == "'command -v magisk'",
+            stderr="adb: device offline\n",
+            devices_stdout=_OFFLINE_DEVICES,
+        )
+        with pytest.raises(
+            api.DevicePreflightError,
+            match=r"is offline or not connected .* — last adb error: adb: device offline",
+        ):
+            _make_device().auto_install_modules([str(zip_path)])
+        assert captured == [*preflight_argv, ["adb", "devices"]]
+
+    def test_mid_batch_offline_aborts_with_partial_results(
+        self,
+        stub_run_failures: StubRunFailures,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # First module installs; the device drops before the second's
+        # push. The second push fails (RuntimeError) and `adb devices` no
+        # longer lists the serial → the batch aborts with the friendly
+        # offline error carrying the first module's ok row. The third is
+        # never pushed.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        first = tmp_path / "First.zip"
+        first.write_bytes(b"PK\x03\x04a")
+        second = tmp_path / "Second.zip"
+        second.write_bytes(b"PK\x03\x04b")
+        third = tmp_path / "Third.zip"
+        third.write_bytes(b"PK\x03\x04c")
+        captured = stub_run_failures(
+            lambda cmd: cmd[3] == "push" and cmd[4] == str(second),
+            stderr="adb: error: device offline\n",
+            devices_stdout=_OFFLINE_DEVICES,
+        )
+        with pytest.raises(
+            api.DevicePreflightError,
+            match=r"is offline or not connected .* \(1 remaining module skipped\)",
+        ) as exc_info:
+            _make_device().auto_install_modules(
+                [str(first), str(second), str(third)]
+            )
+        assert [(r.source, r.ok) for r in exc_info.value.results] == [
+            (str(first), True),
+        ]
+        # The failed second push, then the connectivity re-probe, are the
+        # last two adb calls — the third module is never pushed.
+        assert captured[-2:] == [
+            [
+                "adb", "-s", "emulator-5554", "push",
+                str(second), "/data/local/tmp/beetroot-module-1.zip",
+            ],
+            ["adb", "devices"],
+        ]
+        assert str(third) not in [arg for cmd in captured for arg in cmd]
+
+
+class TestAutoInstallConnectivityReprobe:
+    """Issue #38 regression: untrusted text must never decide connectivity."""
+
+    def test_hostile_host_path_keeps_per_module_contract(
+        self,
+        stub_run_failures: StubRunFailures,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # A nonexistent source whose NAME embeds "device offline" raises a
+        # host-side ValueError. It must become a per-module failed row and
+        # let the batch continue to a valid second module — and crucially
+        # it must NEVER trigger an `adb devices` re-probe (the ValueError
+        # branch can't mean the device is offline).
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        hostile = tmp_path / "device offline.zip"  # never created → ValueError
+        good = tmp_path / "Good.zip"
+        good.write_bytes(b"PK\x03\x04good")
+        captured = stub_run_failures(lambda cmd: False)  # nothing on-device fails
+        results = _make_device().auto_install_modules([str(hostile), str(good)])
+        assert [(r.source, r.ok) for r in results] == [
+            (str(hostile), False),
+            (str(good), True),
+        ]
+        assert "does not exist" in results[0].detail
+        # The ValueError path must never re-probe connectivity.
+        assert ["adb", "devices"] not in captured
+
+    def test_hostile_sha256_mismatch_keeps_per_module_contract(
+        self,
+        stub_run_failures: StubRunFailures,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # A real zip whose name embeds "device offline" but whose sha256
+        # mismatches (host-side ValueError) must also stay a per-module
+        # row and never re-probe.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        hostile = tmp_path / "device offline.zip"
+        hostile.write_bytes(b"PK\x03\x04fake")
+        good = tmp_path / "Good.zip"
+        good.write_bytes(b"PK\x03\x04good")
+        captured = stub_run_failures(lambda cmd: False)
+        results = _make_device().auto_install_modules(
+            [str(hostile), str(good)], sha256s=["0" * 64, None]
+        )
+        assert [(r.source, r.ok) for r in results] == [
+            (str(hostile), False),
+            (str(good), True),
+        ]
+        assert "sha256 mismatch" in results[0].detail
+        assert ["adb", "devices"] not in captured
+
+    def test_hostile_install_stderr_cannot_abort_the_batch(
+        self,
+        stub_run_failures: StubRunFailures,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # The first module's install fails with module-controlled stderr
+        # spoofing "adb: device offline", but `adb devices` still lists
+        # the serial → the failure stays a per-module row and the batch
+        # continues to the (succeeding) second module. No abort.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        bad = tmp_path / "Bad.zip"
+        bad.write_bytes(b"PK\x03\x04bad")
+        good = tmp_path / "Good.zip"
+        good.write_bytes(b"PK\x03\x04good")
+        captured = stub_run_failures(
+            lambda cmd: (
+                "magisk --install-module" in cmd[-1]
+                and "beetroot-module-0.zip" in cmd[-1]
+            ),
+            stderr="adb: device offline (spoofed by the module)",
+        )
+        results = _make_device().auto_install_modules([str(bad), str(good)])
+        assert [(r.source, r.ok) for r in results] == [
+            (str(bad), False),
+            (str(good), True),
+        ]
+        assert "device offline (spoofed by the module)" in results[0].detail
+        # The adb-level failure DID re-probe (and found the device
+        # available), so the batch kept going.
+        assert ["adb", "devices"] in captured
 
 
 class TestCapabilityGating:

@@ -96,6 +96,17 @@ The v0.3 OOP surface (`Instance`, `Manager`, `DeviceBackend`,
   slot (T4 plumbing for a future release's stealth-path work). Locked +
   atomic-replaced via the same `_write` pattern the rest of `registry.py`
   uses. Rejects unknown names and adb-kind rows.
+* **`DevicePreflightError(RuntimeError)`** (issue #38) — raised by
+  `AdbDevice.auto_install_modules()` when a whole-device problem (offline
+  / unauthorized, no usable root, or no `magisk` binary) would otherwise
+  surface as N identical failed rows, and again mid-batch if an adb-level
+  failure plus an `adb devices` re-probe confirms the device went away.
+  Carries the per-module rows completed before the abort in its
+  `results` attribute. Connectivity is always decided by that re-probe,
+  never by matching probe/install error text (host paths and
+  module-controlled stderr are untrusted) — host-side validation
+  failures (bad zip, sha256 mismatch) stay per-module rows and never
+  raise it.
 
 ::: beetroot.api
 
@@ -137,7 +148,7 @@ The v0.3 OOP surface (`Instance`, `Manager`, `DeviceBackend`,
 
 ## `beetroot.backends.adb` — the `AdbDevice` backend
 
-T5's real-device backend. Drives a rooted Android device (real phone, third-party emulator, `adb connect`-ed network device) via the host `adb` CLI. Satisfies the `DeviceBackend` Protocol so every universal CLI verb (`shell`, `frida`, `module`, `status`) works uniformly against an adopted instance; lifecycle verbs (`up`, `down`, `restart`, `apply`, `destroy`, `snapshot`) raise `BackendCapabilityError` cleanly because there's no on-disk container to manage. Implements the `AutoModuleInstaller` capability: `auto_install_modules()` backs `beetroot module --auto-install` (push to a synthesized `/data/local/tmp/beetroot-module-<N>.zip` temp name + `su -c magisk --install-module`, sha256 enforced, per-module `ModuleInstallResult` rows).
+T5's real-device backend. Drives a rooted Android device (real phone, third-party emulator, `adb connect`-ed network device) via the host `adb` CLI. Satisfies the `DeviceBackend` Protocol so every universal CLI verb (`shell`, `frida`, `module`, `status`) works uniformly against an adopted instance; lifecycle verbs (`up`, `down`, `restart`, `apply`, `destroy`, `snapshot`) raise `BackendCapabilityError` cleanly because there's no on-disk container to manage. Implements the `AutoModuleInstaller` capability: `auto_install_modules()` backs `beetroot module --auto-install` (push to a synthesized `/data/local/tmp/beetroot-module-<N>.zip` temp name + `su -c magisk --install-module`, sha256 enforced, per-module `ModuleInstallResult` rows; whole-device problems — offline, no usable root, no `magisk` binary — raise `DevicePreflightError` from a pre-flight probe instead of producing N identical failed rows).
 
 ```python
 from beetroot.backends.adb import AdbDevice
