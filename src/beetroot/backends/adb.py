@@ -87,11 +87,13 @@ def serial_is_available(serial: str) -> bool:
     """
     Return True iff ``adb devices`` lists ``serial`` in state ``"device"``.
 
-    Shared between :attr:`AdbDevice.is_available` and the ``--verify``
-    flag on ``beetroot adopt`` so both call sites use identical parsing
-    logic. Serials in ``offline`` / ``unauthorized`` / ``no permissions``
-    state return False — the user needs to re-plug, accept the RSA prompt,
-    or fix udev rules first.
+    Shared between :attr:`AdbDevice.is_available`, the ``--verify``
+    flag on ``beetroot adopt``, and the auto-install failure classifier
+    (:meth:`AdbDevice.auto_install_modules` re-probes connectivity with
+    this instead of sniffing untrusted error text) so every call site
+    uses identical parsing logic. Serials in ``offline`` /
+    ``unauthorized`` / ``no permissions`` state return False — the user
+    needs to re-plug, accept the RSA prompt, or fix udev rules first.
 
     Args:
         serial: The adb serial / endpoint identifier to look up.
@@ -417,17 +419,28 @@ class AdbDevice:
         N identical opaque failed rows: ``su -c true`` checks for usable
         root and ``su -c 'command -v magisk'`` checks for the ``magisk``
         binary, each quoted exactly like the install command itself.
-        A failed probe — or an adb error carrying a device-offline
-        signature — raises :class:`beetroot.api.DevicePreflightError`
-        with a single friendly diagnosis and nothing is pushed.
+        A failed probe raises :class:`beetroot.api.DevicePreflightError`
+        with a single friendly diagnosis and nothing is pushed. Failures
+        are never classified by sniffing probe/install output (host
+        paths and module-controlled stderr are untrusted text): instead
+        the device's connectivity is re-checked authoritatively via
+        :func:`serial_is_available` (``adb devices``, serial-scoped),
+        which routes offline / unauthorized / no-permissions devices to
+        the connectivity diagnosis and everything else to the root /
+        magisk one.
 
         A failing module never aborts the batch: every source gets its
         own :class:`beetroot.api.ModuleInstallResult` row, in request
         order, and the caller decides the aggregate exit status. The one
-        exception is a device that goes offline mid-batch: the remaining
-        modules would all fail identically, so the batch aborts with
+        exception is a device that goes offline mid-batch: an adb-level
+        failure triggers the same :func:`serial_is_available` re-probe,
+        and if the device is genuinely gone the remaining modules would
+        all fail identically, so the batch aborts with
         :class:`beetroot.api.DevicePreflightError` carrying the rows
-        completed so far in its ``results`` attribute.
+        completed so far in its ``results`` attribute. Host-side
+        validation failures (missing zip, sha256 mismatch) keep the
+        per-module row contract unconditionally — they can never mean
+        the device is offline.
 
         Args:
             sources: Host paths to local ``.zip`` modules.
@@ -467,9 +480,27 @@ class AdbDevice:
                 results.append(
                     ModuleInstallResult(source=source, ok=True, detail=detail),
                 )
-            except (ValueError, RuntimeError) as e:
-                if self._is_offline_failure(str(e)):
-                    raise DevicePreflightError(self._offline_message(), results) from e
+            except ValueError as e:
+                # Host-side validation failure (missing zip, non-zip
+                # path, sha256 mismatch). The message embeds the
+                # untrusted host path and can never mean the device is
+                # offline — keep the per-module row unconditionally.
+                results.append(
+                    ModuleInstallResult(source=source, ok=False, detail=str(e)),
+                )
+            except RuntimeError as e:
+                # An adb-level failure. Its text (argv + stderr) is
+                # untrusted — `magisk --install-module` runs the
+                # module's own scripts as root, so stderr can spoof any
+                # signature. Re-probe connectivity authoritatively
+                # instead of sniffing the message: only a genuinely
+                # unavailable device aborts the batch.
+                if not serial_is_available(self._config.serial):
+                    skipped = len(sources) - index - 1
+                    raise DevicePreflightError(
+                        self._offline_message(skipped=skipped),
+                        results,
+                    ) from e
                 results.append(
                     ModuleInstallResult(source=source, ok=False, detail=str(e)),
                 )
@@ -482,37 +513,42 @@ class AdbDevice:
         # constants, so the outer device-shell parse is already safe).
         root = self._adb_unchecked("shell", "su", "-c", shlex.quote("true"))
         if root.returncode != 0:
-            if self._is_offline_failure(root.stdout + root.stderr):
-                raise DevicePreflightError(self._offline_message())
+            self._abort_if_unavailable(root.stderr)
             raise DevicePreflightError(
                 f"device {self._config.serial!r} has no usable root "
-                "(su not found — is the device rooted?)",
+                "(su missing or denied root — check the device is rooted and "
+                "approve the Magisk superuser prompt)",
             )
         magisk = self._adb_unchecked("shell", "su", "-c", shlex.quote("command -v magisk"))
         if magisk.returncode != 0:
-            if self._is_offline_failure(magisk.stdout + magisk.stderr):
-                raise DevicePreflightError(self._offline_message())
+            self._abort_if_unavailable(magisk.stderr)
             raise DevicePreflightError(
                 f"device {self._config.serial!r} has root but no usable magisk binary "
                 "(install or repair the Magisk app, then retry)",
             )
 
-    def _is_offline_failure(self, text: str) -> bool:
-        # adb's own failure shapes for an unreachable device: `adb:
-        # device offline` and `adb: device '<serial>' not found`. The
-        # serial is included in the second match so an on-device
-        # `su: not found` / `magisk: not found` never false-positives.
-        lowered = text.lower()
-        return (
-            "device offline" in lowered
-            or f"device '{self._config.serial.lower()}' not found" in lowered
-        )
+    def _abort_if_unavailable(self, probe_stderr: str) -> None:
+        # Connectivity is determined by re-probing `adb devices` for
+        # THIS serial (spoof-proof against host paths and on-device
+        # output), never by substring-matching the probe's text. The
+        # probe's trimmed stderr is appended to the diagnosis so the
+        # underlying adb error (offline / unauthorized / ...) isn't lost.
+        if not serial_is_available(self._config.serial):
+            raise DevicePreflightError(self._offline_message(adb_error=probe_stderr))
 
-    def _offline_message(self) -> str:
-        return (
+    def _offline_message(self, *, adb_error: str = "", skipped: int = 0) -> str:
+        msg = (
             f"device {self._config.serial!r} is offline or not connected "
-            "(reconnect it and check `adb devices`)"
+            "(reconnect it, accept its USB-debugging authorization prompt "
+            "if one is shown, and check `adb devices`)"
         )
+        error = adb_error.strip()
+        if error:
+            msg = f"{msg} — last adb error: {error}"
+        if skipped:
+            noun = "module" if skipped == 1 else "modules"
+            msg = f"{msg} ({skipped} remaining {noun} skipped)"
+        return msg
 
     def _auto_install_one(self, source: str, sha256: str | None, index: int) -> str:
         src = _validated_zip_source(source)

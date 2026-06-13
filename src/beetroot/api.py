@@ -328,9 +328,12 @@ class DevicePreflightError(RuntimeError):
     the device before pushing anything (is the device reachable? does
     ``su`` work? is ``magisk`` on the root PATH?) and raises this with a
     single friendly diagnosis instead of emitting N identical failed
-    rows. It is also raised mid-batch when an adb call fails with a
-    device-offline signature — the remaining modules are skipped because
-    they would all fail identically.
+    rows. It is also raised mid-batch when an adb call fails and a
+    serial-scoped ``adb devices`` re-probe confirms the device is no
+    longer available — the remaining modules are skipped because they
+    would all fail identically. (Connectivity is always determined by
+    that re-probe, never by matching failure text, which can embed
+    untrusted host paths or module-controlled stderr.)
 
     The CLI catches it, reports any per-module rows completed before the
     abort, and renders ``error: <message>`` + exit 1 (the standard
