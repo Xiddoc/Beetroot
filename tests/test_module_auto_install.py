@@ -11,10 +11,10 @@ from __future__ import annotations
 import hashlib
 import subprocess
 import sys
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from conftest import StubRunFailures
 from typer.testing import CliRunner
 
 from beetroot import cli
@@ -56,44 +56,13 @@ def _write_zip(directory: Path, name: str, payload: bytes = b"PK\x03\x04fake") -
     return zip_path
 
 
-# The issue-#38 pre-flight probes emitted before any push: root via
-# `su -c true`, then magisk via `su -c 'command -v magisk'`.
-_PREFLIGHT_ARGV = [
-    ["adb", "-s", "emulator-5554", "shell", "su", "-c", "true"],
-    ["adb", "-s", "emulator-5554", "shell", "su", "-c", "'command -v magisk'"],
-]
-
-
-def _stub_run_failures(
-    monkeypatch: pytest.MonkeyPatch,
-    should_fail: Callable[[list[str]], bool],
-    *,
-    stdout: str = "",
-    stderr: str = "",
-) -> list[list[str]]:
-    """Stub adb subprocess.run: rc 1 + the given output for matching argvs."""
-    captured: list[list[str]] = []
-
-    def _fake_run(
-        cmd: list[str], *args: object, **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        del args, kwargs
-        captured.append(list(cmd))
-        failing = should_fail(cmd)
-        return subprocess.CompletedProcess(
-            args=cmd,
-            returncode=1 if failing else 0,
-            stdout=stdout if failing else "",
-            stderr=stderr if failing else "",
-        )
-
-    monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
-    return captured
-
-
 class TestAutoInstallHappyPath:
     def test_single_zip_full_argv_sequence_report_and_exit_code(
-        self, cli_root: Path, stub_adb: list[list[str]], tmp_path: Path
+        self,
+        cli_root: Path,
+        stub_adb: list[list[str]],
+        preflight_argv: list[list[str]],
+        tmp_path: Path,
     ) -> None:
         # The behavior-test mandate: user input (CLI invocation) → final
         # artifact (adb argv sequence + report lines + exit code).
@@ -104,7 +73,7 @@ class TestAutoInstallHappyPath:
         )
         assert result.exit_code == 0, result.stderr
         assert stub_adb == [
-            *_PREFLIGHT_ARGV,
+            *preflight_argv,
             [
                 "adb", "-s", "emulator-5554", "push",
                 str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
@@ -123,7 +92,11 @@ class TestAutoInstallHappyPath:
         assert "magisk --install-module" in result.output
 
     def test_matching_sha256_end_to_end(
-        self, cli_root: Path, stub_adb: list[list[str]], tmp_path: Path
+        self,
+        cli_root: Path,
+        stub_adb: list[list[str]],
+        preflight_argv: list[list[str]],
+        tmp_path: Path,
     ) -> None:
         _adopt_phone()
         payload = b"PK\x03\x04pinned"
@@ -134,7 +107,7 @@ class TestAutoInstallHappyPath:
             ["module", "phone", str(zip_path), "--auto-install", "--sha256", sha],
         )
         assert result.exit_code == 0, result.stderr
-        assert len(stub_adb) == len(_PREFLIGHT_ARGV) + 3
+        assert len(stub_adb) == len(preflight_argv) + 3
 
     def test_multiple_zips_each_get_an_ok_line(
         self, cli_root: Path, stub_adb: list[list[str]], tmp_path: Path
@@ -157,30 +130,19 @@ class TestAutoInstallFailureReporting:
     def test_one_failure_reports_all_and_exits_nonzero(
         self,
         cli_root: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        stub_run_failures: StubRunFailures,
         tmp_path: Path,
     ) -> None:
-        # Bad.zip's magisk install fails; Good.zip must still be
-        # installed and reported ok, and the verb must exit 1.
-        captured: list[list[str]] = []
-
-        def _fake_run(
-            cmd: list[str], *args: object, **kwargs: object
-        ) -> subprocess.CompletedProcess[str]:
-            del args, kwargs
-            captured.append(list(cmd))
-            failing = (
+        # Bad.zip's magisk install fails; the device is still listed by
+        # `adb devices`, so the re-probe keeps the batch going — Good.zip
+        # must still be installed and reported ok, and the verb exits 1.
+        captured = stub_run_failures(
+            lambda cmd: (
                 "magisk --install-module" in cmd[-1]
                 and "beetroot-module-0.zip" in cmd[-1]
-            )
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=1 if failing else 0,
-                stdout="",
-                stderr="! Unable to install" if failing else "",
-            )
-
-        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
+            ),
+            stderr="! Unable to install",
+        )
         _adopt_phone()
         bad = _write_zip(tmp_path, "Bad.zip")
         good = _write_zip(tmp_path, "Good.zip")
@@ -196,7 +158,11 @@ class TestAutoInstallFailureReporting:
         ]
 
     def test_sha256_mismatch_refuses_push_and_exits_nonzero(
-        self, cli_root: Path, stub_adb: list[list[str]], tmp_path: Path
+        self,
+        cli_root: Path,
+        stub_adb: list[list[str]],
+        preflight_argv: list[list[str]],
+        tmp_path: Path,
     ) -> None:
         _adopt_phone()
         zip_path = _write_zip(tmp_path, "Tampered.zip")
@@ -208,8 +174,9 @@ class TestAutoInstallFailureReporting:
             ],
         )
         assert result.exit_code == 1
-        # The pre-flight probes ran, but the mismatching zip was never pushed.
-        assert stub_adb == _PREFLIGHT_ARGV
+        # Host-side sha256 failure: the pre-flight probes ran, the zip was
+        # never pushed, and no `adb devices` re-probe happened.
+        assert stub_adb == preflight_argv
         assert "sha256 mismatch" in result.stderr
         assert f"[beetroot] failed: {zip_path}" in result.stderr
 
@@ -289,14 +256,15 @@ class TestPreflightTaxonomy:
     def test_unrooted_device_is_a_single_friendly_error(
         self,
         cli_root: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        stub_run_failures: StubRunFailures,
         tmp_path: Path,
     ) -> None:
         _adopt_phone()
         first = _write_zip(tmp_path, "First.zip")
         second = _write_zip(tmp_path, "Second.zip")
-        captured = _stub_run_failures(
-            monkeypatch,
+        # Root probe fails but `adb devices` still lists the serial → the
+        # re-probe routes it to the no-usable-root diagnosis.
+        captured = stub_run_failures(
             lambda cmd: cmd[-1] == "true",
             stdout="su: inaccessible or not found\n",
         )
@@ -306,23 +274,22 @@ class TestPreflightTaxonomy:
         assert result.exit_code == 1
         assert (
             "error: device 'emulator-5554' has no usable root "
-            "(su not found — is the device rooted?)" in result.stderr
+            "(su missing or denied root — check the device is rooted and "
+            "approve the Magisk superuser prompt)" in result.stderr
         )
         # One diagnosis, not N identical failed rows — and nothing pushed.
         assert "[beetroot] failed:" not in result.stderr
-        assert [cmd for cmd in captured if cmd[3] == "push"] == []
+        assert [cmd for cmd in captured if len(cmd) > 3 and cmd[3] == "push"] == []
 
     def test_missing_magisk_is_a_single_friendly_error(
         self,
         cli_root: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        stub_run_failures: StubRunFailures,
         tmp_path: Path,
     ) -> None:
         _adopt_phone()
         zip_path = _write_zip(tmp_path, "M.zip")
-        captured = _stub_run_failures(
-            monkeypatch, lambda cmd: cmd[-1] == "'command -v magisk'"
-        )
+        captured = stub_run_failures(lambda cmd: cmd[-1] == "'command -v magisk'")
         result = runner.invoke(
             cli.app, ["module", "phone", str(zip_path), "--auto-install"]
         )
@@ -332,20 +299,22 @@ class TestPreflightTaxonomy:
             "(install or repair the Magisk app, then retry)" in result.stderr
         )
         assert "[beetroot] failed:" not in result.stderr
-        assert [cmd for cmd in captured if cmd[3] == "push"] == []
+        assert [cmd for cmd in captured if len(cmd) > 3 and cmd[3] == "push"] == []
 
     def test_offline_device_is_a_single_friendly_error(
         self,
         cli_root: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        stub_run_failures: StubRunFailures,
         tmp_path: Path,
     ) -> None:
         _adopt_phone()
         zip_path = _write_zip(tmp_path, "M.zip")
-        captured = _stub_run_failures(
-            monkeypatch,
+        # Root probe fails AND the serial is absent from `adb devices` →
+        # offline diagnosis.
+        captured = stub_run_failures(
             lambda cmd: cmd[-1] == "true",
             stderr="adb: device offline\n",
+            devices_stdout="List of devices attached\n",
         )
         result = runner.invoke(
             cli.app, ["module", "phone", str(zip_path), "--auto-install"]
@@ -353,27 +322,51 @@ class TestPreflightTaxonomy:
         assert result.exit_code == 1
         assert (
             "error: device 'emulator-5554' is offline or not connected "
-            "(reconnect it and check `adb devices`)" in result.stderr
+            "(reconnect it, accept its USB-debugging authorization prompt "
+            "if one is shown, and check `adb devices`)" in result.stderr
         )
         assert "[beetroot] failed:" not in result.stderr
-        assert [cmd for cmd in captured if cmd[3] == "push"] == []
+        assert [cmd for cmd in captured if len(cmd) > 3 and cmd[3] == "push"] == []
+
+    def test_hostile_nonexistent_module_still_reports_a_failed_row(
+        self,
+        cli_root: Path,
+        stub_run_failures: StubRunFailures,
+        tmp_path: Path,
+    ) -> None:
+        # A nonexistent module whose NAME embeds "device offline" is a
+        # host-side validation failure — it must produce a per-module
+        # `failed:` row + exit 1, NEVER an offline abort.
+        _adopt_phone()
+        hostile = tmp_path / "device offline.zip"  # never created
+        captured = stub_run_failures(lambda cmd: False)
+        result = runner.invoke(
+            cli.app, ["module", "phone", str(hostile), "--auto-install"]
+        )
+        assert result.exit_code == 1
+        assert f"[beetroot] failed: {hostile}" in result.stderr
+        assert "does not exist" in result.stderr
+        assert "is offline or not connected" not in result.stderr
+        # The ValueError path must never re-probe connectivity.
+        assert ["adb", "devices"] not in captured
 
     def test_mid_batch_offline_reports_completed_rows_then_error(
         self,
         cli_root: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        stub_run_failures: StubRunFailures,
         tmp_path: Path,
     ) -> None:
         # First module installs and keeps its ok row; the device drops
-        # before the second's push, which aborts the batch with the
+        # before the second's push (the push fails AND `adb devices` no
+        # longer lists the serial), which aborts the batch with the
         # friendly offline error — the second module gets NO row.
         _adopt_phone()
         first = _write_zip(tmp_path, "First.zip")
         second = _write_zip(tmp_path, "Second.zip")
-        _stub_run_failures(
-            monkeypatch,
+        stub_run_failures(
             lambda cmd: cmd[3] == "push" and cmd[4] == str(second),
-            stderr="adb: device 'emulator-5554' not found\n",
+            stderr="adb: error: device offline\n",
+            devices_stdout="List of devices attached\n",
         )
         result = runner.invoke(
             cli.app, ["module", "phone", str(first), str(second), "--auto-install"]
@@ -382,7 +375,8 @@ class TestPreflightTaxonomy:
         assert f"[beetroot] ok: {first}" in result.output
         assert (
             "error: device 'emulator-5554' is offline or not connected "
-            "(reconnect it and check `adb devices`)" in result.stderr
+            "(reconnect it, accept its USB-debugging authorization prompt "
+            "if one is shown, and check `adb devices`)" in result.stderr
         )
         assert str(second) not in result.output
         assert "[beetroot] failed:" not in result.stderr
