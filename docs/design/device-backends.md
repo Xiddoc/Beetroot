@@ -290,10 +290,16 @@ shape.
   ships with it — one `ok:` / `failed:` line per module, batch
   continues past failures, non-zero exit if any module failed.
   Issue #38 layered a pre-flight probe on top: whole-device problems
-  (offline / not connected, no usable root, no `magisk` binary) raise
-  `DevicePreflightError` with a single friendly diagnosis before
-  anything is pushed, instead of producing N identical failed rows;
-  a mid-batch offline aborts the remaining modules the same way.
+  (offline / not connected / unauthorized, no usable root, no `magisk`
+  binary) raise `DevicePreflightError` with a single friendly diagnosis
+  before anything is pushed, instead of producing N identical failed
+  rows; a mid-batch disconnect aborts the remaining modules the same
+  way. Connectivity is decided authoritatively by re-running
+  `adb devices` for the serial (`serial_is_available`), never by
+  matching the probe's or install's error text — host paths and
+  module-controlled stderr are untrusted and could otherwise spoof an
+  offline signature. Host-side validation failures (bad zip, sha256
+  mismatch) stay per-module rows and never abort.
 * **PR5: CLI integration — `beetroot adopt <serial>`.** **DONE in v0.4
   (T5).** New verb registers an `AdbBackendConfig` row in the
   user-global registry so subsequent `beetroot shell <name>` /

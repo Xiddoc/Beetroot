@@ -96,6 +96,17 @@ The v0.3 OOP surface (`Instance`, `Manager`, `DeviceBackend`,
   slot (T4 plumbing for a future release's stealth-path work). Locked +
   atomic-replaced via the same `_write` pattern the rest of `registry.py`
   uses. Rejects unknown names and adb-kind rows.
+* **`DevicePreflightError(RuntimeError)`** (issue #38) — raised by
+  `AdbDevice.auto_install_modules()` when a whole-device problem (offline
+  / unauthorized, no usable root, or no `magisk` binary) would otherwise
+  surface as N identical failed rows, and again mid-batch if an adb-level
+  failure plus an `adb devices` re-probe confirms the device went away.
+  Carries the per-module rows completed before the abort in its
+  `results` attribute. Connectivity is always decided by that re-probe,
+  never by matching probe/install error text (host paths and
+  module-controlled stderr are untrusted) — host-side validation
+  failures (bad zip, sha256 mismatch) stay per-module rows and never
+  raise it.
 
 ::: beetroot.api
 
