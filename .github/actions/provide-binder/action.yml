@@ -1,0 +1,22 @@
+name: Provide binder driver
+description: >-
+  Best-effort setup of the host binder driver so redroid can boot on a hosted
+  runner. Loads the binder_linux module (shipped in linux-modules-extra) and/or
+  mounts binderfs. Never hard-fails — the caller's boot-wait is the real gate.
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -uxo pipefail
+        sudo apt-get update || true
+        sudo apt-get install -y "linux-modules-extra-$(uname -r)" || true
+        sudo modprobe binder_linux devices=binder,hwbinder,vndbinder || true
+        if [ ! -e /dev/binder ]; then
+          sudo mkdir -p /dev/binderfs
+          sudo mount -t binder binder /dev/binderfs || true
+        fi
+        echo "binder device nodes / binderfs:"
+        ls -l /dev/binder /dev/hwbinder /dev/vndbinder /dev/binderfs 2>/dev/null || true
+        grep -i binder /proc/filesystems || true

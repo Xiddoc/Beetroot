@@ -373,6 +373,50 @@ class TestCmdUp:
         assert result.exit_code == 0, result.stderr
         assert mock_run.called
 
+    def test_up_warns_when_binder_unavailable(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # When the host can't provide binder, `up` still starts the
+        # container (compose up -d succeeds) but warns loudly on stderr.
+        from beetroot import hostcheck
+
+        monkeypatch.setattr(
+            hostcheck,
+            "binder_status",
+            lambda: hostcheck.BinderStatus(
+                state="unsupported",
+                reason="binder compiled out",
+                remedy="use beetroot adopt",
+            ),
+        )
+        runner.invoke(cli.app, ["create", "alpha"])
+        with _patched_subprocess() as mock_run:
+            result = runner.invoke(cli.app, ["up", "alpha"])
+        assert result.exit_code == 0, result.stderr
+        assert mock_run.called
+        assert "warning: redroid needs the kernel binder driver" in result.stderr
+        assert "use beetroot adopt" in result.stderr
+
+    def test_up_all_warns_about_binder_only_once(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The advisory dedupes across a multi-instance fan-out.
+        from beetroot import hostcheck
+
+        monkeypatch.setattr(
+            hostcheck,
+            "binder_status",
+            lambda: hostcheck.BinderStatus(
+                state="loadable", reason="not loaded", remedy="modprobe it"
+            ),
+        )
+        runner.invoke(cli.app, ["create", "alpha"])
+        runner.invoke(cli.app, ["create", "bravo"])
+        with _patched_subprocess():
+            result = runner.invoke(cli.app, ["up", "--all"])
+        assert result.exit_code == 0, result.stderr
+        assert result.stderr.count("warning: redroid needs the kernel binder driver") == 1
+
     def test_up_does_not_pass_build_flag(self, cli_root: Path) -> None:
         """`beetroot up` never adds `--build` to the compose argv (T5)."""
         runner.invoke(cli.app, ["create", "alpha"])

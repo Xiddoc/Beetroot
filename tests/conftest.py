@@ -117,6 +117,38 @@ def _reset_consoles() -> Iterator[None]:
         console._stderr_console = saved_stderr
 
 
+@pytest.fixture(autouse=True)
+def _assume_binder_ready(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default every test to a binder-capable host unless it opts out.
+
+    The ``up`` preflight and the redroid ``doctor`` host check both call
+    ``hostcheck.binder_status()``. On a CI runner (or this sandbox) the
+    real probe reports binder *unavailable*, which would otherwise inject
+    a spurious warning into every ``up`` test and flip the ``host.binder``
+    doctor row to ``fail`` — coupling unrelated assertions to the host
+    kernel. This autouse fixture pins the result to ``ready`` so existing
+    tests see the pre-feature behaviour; tests that want to drive a
+    specific binder state either re-``monkeypatch`` ``binder_status``
+    themselves or mark ``@pytest.mark.real_binder`` to test the real
+    probe (used by ``tests/test_hostcheck.py``).
+    """
+    if request.node.get_closest_marker("real_binder"):
+        return
+    from beetroot import hostcheck
+
+    monkeypatch.setattr(
+        hostcheck,
+        "binder_status",
+        lambda: hostcheck.BinderStatus(
+            state="ready",
+            reason="binder is available (test default)",
+            remedy="",
+        ),
+    )
+
+
 @pytest.fixture
 def isolated_registry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

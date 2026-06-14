@@ -4,29 +4,50 @@ Common problems and their solutions. If your issue isn't listed here, check `bee
 
 ---
 
-## `docker compose up` fails with binder / ashmem errors
+## `beetroot up` warns about the kernel binder driver / container runs but ADB never connects
 
-**Symptom:** Container exits immediately with kernel errors mentioning `binder` or `ashmem`.
+**Symptom:** `beetroot up <name>` prints
 
-**Cause:** Your host kernel is missing the modules redroid requires.
+```
+[beetroot] warning: redroid needs the kernel binder driver, but ... The container may start but Android will not boot.
+```
 
-**Fix:**
+or the container shows as `running` in `beetroot ls` but `adb connect` / `beetroot shell` never succeed.
 
-=== "Ubuntu / Debian"
+**Cause:** redroid is a *container*, not an emulator — it runs Android's userspace against the **host** kernel and has no kernel of its own. Android's `init`, `servicemanager`, and `zygote` all block on `/dev/binder` at boot, so the host kernel **must** provide the binder driver. `docker compose up -d` returns success the moment the container is *created*, so a missing-binder host produces a container that starts but never boots Android — the only outward symptom is ADB never connecting.
+
+This requirement is independent of `privileged: true`: binder is a kernel feature, not a permission you can grant from Docker.
+
+**Diagnose:** `beetroot doctor <name>` includes a `host.binder` row that tells you exactly which case you're in:
+
+```bash
+beetroot doctor alpha
+# host.binder: fail this kernel has binder compiled out (CONFIG_ANDROID_BINDER_IPC is not set) ...
+```
+
+**Fix:** depends on what the kernel supports.
+
+=== "Module present but not loaded"
+
+    The kernel supports binder (`CONFIG_ANDROID_BINDER_IPC=m`) but it isn't loaded yet — common on fresh hosts and GitHub-hosted CI runners.
 
     ```bash
-    sudo apt install linux-modules-extra-$(uname -r)
-    sudo modprobe binder_linux ashmem_linux
+    sudo apt install linux-modules-extra-$(uname -r)   # Debian/Ubuntu, if needed
+    sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
     ```
 
-=== "Arch Linux"
+    Verify: `ls /dev/binder*` (or `lsmod | grep binder`) should now show the nodes.
+
+=== "Binder compiled out / no kernel access"
+
+    If `host.binder` reports `CONFIG_ANDROID_BINDER_IPC is not set` (or you're in a sandbox/PaaS container with no module-loading path and no `/dev/binder`), **no Docker flag can make redroid boot** on that host. Either move to a host whose kernel provides binder, or drive a device that lives elsewhere over ADB — see [Running in CI / without kernel access](guides/running-in-ci.md):
 
     ```bash
-    yay -S binder_linux-dkms ashmem-dkms
-    sudo modprobe binder_linux ashmem_linux
+    # Point Beetroot at a remote rooted device/emulator — no kernel access needed.
+    adb connect 192.168.1.10:5555
+    beetroot adopt 192.168.1.10:5555 --name phone --verify
+    beetroot shell phone
     ```
-
-Verify: `lsmod | grep -E 'binder|ashmem'` should show both modules.
 
 ---
 

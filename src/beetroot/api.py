@@ -47,7 +47,7 @@ from typing import Final, Literal, Protocol, Self, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
-from . import compose, config, frida_download, modules_download, paths, ports, registry
+from . import compose, config, frida_download, hostcheck, modules_download, paths, ports, registry
 from . import snapshot as _snapshot_mod
 
 # Derived from ``config.SUPPORTED_API_VERSION`` rather than hardcoded so the
@@ -1157,6 +1157,11 @@ class Instance:
             if live_status == "running"
             else CheckResult(status="fail", reason=str(live_status))
         )
+        # Host-level: redroid needs the kernel binder driver. A failing
+        # row here explains an otherwise-baffling "container running but
+        # adb never connects" — the container started but Android never
+        # booted (see :mod:`beetroot.hostcheck`).
+        checks["host.binder"] = _check_host_binder()
         checks["adb.connect"] = _check_adb_connect(f"localhost:{adb_port}")
         checks["frida.handshake"] = _check_frida_socket(
             "localhost",
@@ -1467,6 +1472,23 @@ class Manager:
                 "process via beetroot.backends.register_backend)."
             ) from e
         return cls.from_meta(name, backend)
+
+
+def _check_host_binder() -> CheckResult:
+    """
+    Map :func:`hostcheck.binder_status` onto a doctor :class:`CheckResult`.
+
+    ``ready`` → ``pass``; ``loadable`` / ``unsupported`` → ``fail`` (with
+    the remedy folded into the reason so the doctor line is
+    self-contained); ``unknown`` → ``skip`` (binder couldn't be
+    determined — e.g. on macOS — so we don't cry wolf).
+    """
+    status = hostcheck.binder_status()
+    if status.state == "ready":
+        return CheckResult(status="pass")
+    if status.state == "unknown":
+        return CheckResult(status="skip", reason=status.reason)
+    return CheckResult(status="fail", reason=f"{status.reason}. {status.remedy}")
 
 
 def _check_adb_connect(target: str) -> CheckResult:

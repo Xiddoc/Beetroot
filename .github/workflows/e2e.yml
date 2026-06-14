@@ -1,0 +1,183 @@
+name: e2e
+
+# End-to-end tests that boot a real Android on a hosted runner. These are the
+# behavioural counterpart to the (fast, kernel-less) unit suite in ci.yml:
+# they prove the deployment + boot + in-device behaviour that only a running
+# Android can exercise.
+#
+# Two tiers (see docs/guides/running-in-ci.md):
+#   * Tier 1 (implemented): boot the upstream stock redroid image and drive it
+#     through Beetroot's adb backend. Light (~1-2 min), reliable. Covers the
+#     adopt / ls / shell / doctor(adb-side) paths against a real device.
+#   * Tier 2 (scaffold, WIP): `beetroot build` the real Magisk image, `beetroot
+#     up` it, and assert root / Zygisk / denylist / Frida / modules. Heavy and
+#     still being hardened, so it is non-blocking (continue-on-error) and runs
+#     only on the nightly schedule or an explicit dispatch.
+#
+# Triggers: manual dispatch, a nightly schedule (master), and pull requests
+# carrying the `e2e` label (so the heavy boots don't run on every push).
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_tier2:
+        description: "Also run the heavy Tier 2 (beetroot build + boot the Magisk image)"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 6 * * *"
+  pull_request:
+    types: [labeled, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tier1-stock-redroid:
+    # Runs on dispatch / schedule always; on a PR only when it carries `e2e`.
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'e2e')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+      - uses: ./.github/actions/provide-binder
+
+      - name: Install adb
+        run: sudo apt-get install -y android-tools-adb
+
+      - name: Boot stock redroid (Android 14, headless, software GPU)
+        run: |
+          set -euxo pipefail
+          docker run -d --privileged --name redroid \
+            -p 5555:5555 \
+            redroid/redroid:14.0.0_64only-latest \
+            androidboot.redroid_gpu_mode=guest \
+            androidboot.redroid_fps=15
+
+      - name: Wait for Android boot to complete
+        run: |
+          set -uxo pipefail
+          adb connect 127.0.0.1:5555
+          adb -s 127.0.0.1:5555 wait-for-device
+          booted=
+          for _ in $(seq 1 100); do
+            booted="$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+            if [ "$booted" = "1" ]; then
+              break
+            fi
+            sleep 3
+          done
+          if [ "$booted" != "1" ]; then
+            echo "::error::Android did not finish booting within the timeout"
+            exit 1
+          fi
+          echo "Android release: $(adb -s 127.0.0.1:5555 shell getprop ro.build.version.release | tr -d '\r')"
+
+      - name: Drive the booted device with Beetroot and assert
+        run: |
+          set -euxo pipefail
+          adb connect 127.0.0.1:5555
+          uv run beetroot adopt 127.0.0.1:5555 --name ci --verify
+          uv run beetroot ls --json | tee /tmp/ls.json
+          test "$(jq -r '.ci.kind' /tmp/ls.json)" = "adb"
+          test "$(jq -r '.ci.is_available' /tmp/ls.json)" = "true"
+          # Drive a one-shot command through Beetroot's shell verb.
+          boot_prop="$(uv run beetroot shell ci getprop sys.boot_completed | tr -d '\r')"
+          test "$boot_prop" = "1"
+          # doctor's adb-side check must pass against a real device. The
+          # magisk / frida rows fail on stock redroid (no root, no frida-server),
+          # so the verb exits non-zero — assert only the adb.serial row here.
+          doctor_out="$(uv run beetroot doctor ci || true)"
+          echo "$doctor_out"
+          echo "$doctor_out" | grep -q 'adb.serial: pass'
+
+      - name: redroid container logs (always, for diagnosis)
+        if: always()
+        run: docker logs redroid 2>&1 | tail -n 200 || true
+
+      - name: Teardown
+        if: always()
+        run: docker rm -f redroid || true
+
+  tier2-beetroot-image:
+    # WIP scaffold: builds the real Magisk image and boots it via `beetroot up`,
+    # then asserts the in-device deployment (root, Zygisk, denylist, Frida).
+    # The build is heavy and still being hardened, so this is non-blocking and
+    # runs only nightly or on an explicit `run_tier2` dispatch.
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_tier2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+      - uses: ./.github/actions/provide-binder
+
+      - name: Install adb
+        run: sudo apt-get install -y android-tools-adb
+
+      - name: Build the Beetroot Magisk image (no gapps — lightest variant)
+        run: uv run beetroot build none
+
+      - name: Create and boot a Beetroot instance
+        run: |
+          set -euxo pipefail
+          uv run beetroot create e2e-phone
+          uv run beetroot up e2e-phone
+
+      - name: Wait for Android boot + Magisk daemon
+        run: |
+          set -uxo pipefail
+          # Index 0 → host ADB port 5555 (see src/beetroot/ports.py).
+          adb connect 127.0.0.1:5555
+          adb -s 127.0.0.1:5555 wait-for-device
+          booted=
+          for _ in $(seq 1 120); do
+            booted="$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+            if [ "$booted" = "1" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ "$booted" != "1" ]; then
+            echo "::error::Android did not finish booting within the timeout"
+            exit 1
+          fi
+          # Wait for MagiskSU to grant root (entrypoint.sh enables it post-boot).
+          for _ in $(seq 1 60); do
+            if adb -s 127.0.0.1:5555 shell su -c id 2>/dev/null | grep -q 'uid=0'; then
+              break
+            fi
+            sleep 5
+          done
+
+      - name: Assert the in-device deployment
+        run: |
+          set -euxo pipefail
+          # Root via MagiskSU.
+          adb -s 127.0.0.1:5555 shell su -c id | grep -q 'uid=0'
+          # Zygisk enabled + GMS denylisted + frida reachable — exactly what
+          # `beetroot doctor` checks. On the real image every row should pass.
+          uv run beetroot doctor e2e-phone
+
+      - name: Beetroot + container logs (always, for diagnosis)
+        if: always()
+        run: |
+          uv run beetroot logs e2e-phone 2>&1 | tail -n 200 || true
+
+      - name: Teardown
+        if: always()
+        run: uv run beetroot destroy e2e-phone -y || true
