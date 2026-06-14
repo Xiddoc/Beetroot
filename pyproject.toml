@@ -195,6 +195,12 @@ filterwarnings = [
 # (deadlocked flock, stuck subprocess) fails fast instead of eating
 # the whole CI job's time budget.
 timeout = 30
+# ``--strict-markers`` (above) rejects unregistered marks. ``real_binder``
+# opts a test out of the autouse binder-ready stub in ``conftest.py`` so
+# it can exercise the real ``hostcheck`` host probe.
+markers = [
+    "real_binder: test the real hostcheck binder probe (skip the autouse binder-ready stub)",
+]
 
 [tool.coverage.run]
 source = ["beetroot"]

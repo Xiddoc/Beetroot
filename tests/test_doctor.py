@@ -55,6 +55,7 @@ class TestDoctorRedroid:
             result = runner.invoke(cli.app, ["doctor", "alpha"])
         assert result.exit_code == 0, (result.stdout, result.stderr)
         assert "compose.status: pass" in result.stdout
+        assert "host.binder: pass" in result.stdout
         assert "adb.connect: pass" in result.stdout
         assert "magisk.zygisk: pass" in result.stdout
         # Frida is opt-out by default since v0.3 — minimal-default
@@ -101,6 +102,27 @@ class TestDoctorRedroid:
         assert "compose.status: fail" in result.stdout
         assert "adb.connect: fail" in result.stdout
         assert "magisk.zygisk: fail" in result.stdout
+
+    def test_binder_unavailable_fails_host_check(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A kernel without binder flips host.binder to fail (and counts
+        # toward the exit code) even when every other probe is healthy.
+        from beetroot import hostcheck
+
+        runner.invoke(cli.app, ["create", "alpha"])
+        monkeypatch.setattr(
+            hostcheck,
+            "binder_status",
+            lambda: hostcheck.BinderStatus(
+                state="unsupported", reason="binder compiled out", remedy="use beetroot adopt"
+            ),
+        )
+        with patch("subprocess.run", side_effect=_healthy_subprocess):
+            result = runner.invoke(cli.app, ["doctor", "alpha"])
+        assert result.exit_code == 1, (result.stdout, result.stderr)
+        assert "host.binder: fail binder compiled out" in result.stdout
+        assert "use beetroot adopt" in result.stdout
 
     def test_frida_disabled_skips_handshake(self, cli_root: Path) -> None:
         # Default InstanceConfig has frida=None — the skip path.

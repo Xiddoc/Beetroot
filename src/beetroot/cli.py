@@ -25,7 +25,7 @@ from typing import Annotated, cast
 import typer
 from rich.console import Console as _RichConsole
 
-from . import api, builder, compose, console, modules_download, paths, ports, registry
+from . import api, builder, compose, console, hostcheck, modules_download, paths, ports, registry
 from . import snapshot as snapshot_mod
 from .backends import adb as adb_backend
 
@@ -367,6 +367,28 @@ def apply(
     typer.echo(f"[beetroot] restart with: beetroot down {name} && beetroot up {name}")
 
 
+def _warn_if_binder_unavailable() -> bool:
+    """
+    Emit a stderr advisory when the host can't satisfy redroid's binder need.
+
+    Returns True iff a warning was printed (so the ``up`` fan-out can
+    dedupe and warn at most once). A ``ready`` host prints nothing and
+    returns False. The advisory names the precise reason and remedy from
+    :func:`hostcheck.binder_status` and points at ``beetroot doctor``.
+    """
+    status = hostcheck.binder_status()
+    if status.available:
+        return False
+    remedy = f" Remedy: {status.remedy}." if status.remedy else ""
+    typer.echo(
+        f"[beetroot] warning: redroid needs the kernel binder driver, but {status.reason}. "
+        f"The container may start but Android will not boot.{remedy} "
+        "Run `beetroot doctor <name>` to recheck.",
+        err=True,
+    )
+    return True
+
+
 @app.command()
 def up(
     names: Annotated[
@@ -396,10 +418,18 @@ def up(
             "'beetroot up --build' was removed in v0.3 — "
             "run 'beetroot build' separately first to rebuild the image."
         )
+    binder_warned = False
     for instance_name in _resolve_lifecycle_names(list(names or []), all_, "up"):
         _ensure_exists(instance_name)
         backend = api.Manager.resolve(instance_name)
         lc = cast(api.Lifecycle, _require(backend, api.Lifecycle, "up"))
+        # redroid containers need the host's binder driver to boot. Warn
+        # once (not per instance) when it's missing — `docker compose up
+        # -d` still "succeeds" by creating the container, so without this
+        # the only symptom is adb never connecting. adb-backed instances
+        # don't need binder, so the warning is gated on the redroid kind.
+        if isinstance(backend, api.Instance) and not binder_warned:
+            binder_warned = _warn_if_binder_unavailable()
         lc.up()
         if isinstance(backend, api.Instance):
             p = backend.ports

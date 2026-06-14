@@ -63,7 +63,10 @@ Install Docker Engine (not Docker Desktop) and the Compose plugin:
 Verify: `docker compose version` should print a version string.
 
 !!! note "Privileged containers"
-    Beetroot's containers run with `privileged: true`. This is required for Android init and Magisk to function correctly.
+    Beetroot's containers run with `privileged: true`. This is required for Android init and Magisk to function correctly. Note that `privileged` does **not** substitute for the binder kernel driver — binder is a host-kernel feature, so a host without it can't run redroid even with full privileges. `beetroot doctor <name>` reports a `host.binder` row that tells you whether the kernel is ready.
+
+!!! tip "No kernel access? (CI, cloud sandboxes)"
+    If you can't load `binder_linux` on your host (a locked-down PaaS container, a kernel built without `CONFIG_ANDROID_BINDER_IPC`, macOS/Windows), redroid can't run there at all. You can still use the rest of Beetroot against a rooted device that lives **elsewhere** via `beetroot adopt` — see [Running in CI / without kernel access](../guides/running-in-ci.md).
 
 ## uv (Python runtime)
 

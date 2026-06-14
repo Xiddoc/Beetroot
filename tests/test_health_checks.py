@@ -12,11 +12,43 @@ from unittest.mock import patch
 
 import pytest
 
-from beetroot import api
+from beetroot import api, hostcheck
 
 
 def _proc(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+class TestCheckHostBinder:
+    def _pin(self, monkeypatch: pytest.MonkeyPatch, status: hostcheck.BinderStatus) -> None:
+        monkeypatch.setattr(hostcheck, "binder_status", lambda: status)
+
+    def test_ready_is_pass(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._pin(monkeypatch, hostcheck.BinderStatus(state="ready", reason="ok", remedy=""))
+        result = api._check_host_binder()
+        assert result.status == "pass"
+        assert result.reason is None
+
+    def test_unknown_is_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._pin(
+            monkeypatch,
+            hostcheck.BinderStatus(state="unknown", reason="cannot tell", remedy="try x"),
+        )
+        result = api._check_host_binder()
+        assert result.status == "skip"
+        assert result.reason == "cannot tell"
+
+    def test_unsupported_is_fail_with_remedy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._pin(
+            monkeypatch,
+            hostcheck.BinderStatus(
+                state="unsupported", reason="compiled out", remedy="use adb"
+            ),
+        )
+        result = api._check_host_binder()
+        assert result.status == "fail"
+        assert "compiled out" in (result.reason or "")
+        assert "use adb" in (result.reason or "")
 
 
 class TestCheckAdbConnect:

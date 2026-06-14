@@ -4,6 +4,26 @@
 
 ### Features
 
+- **Host binder preflight + `host.binder` doctor check** — redroid runs
+  Android's userspace against the *host* kernel and has no kernel of its
+  own, so the binder driver is a hard, non-negotiable requirement
+  (independent of `privileged: true`, which is a Docker permission, not a
+  kernel feature). A new `beetroot.hostcheck` module probes the host
+  (`/dev/binder*` nodes, binderfs in `/proc/filesystems`, and
+  `CONFIG_ANDROID_BINDER_IPC` in the kernel config) and classifies it as
+  `ready` / `loadable` / `unsupported` / `unknown`. `beetroot up` now
+  emits a one-line advisory (once per fan-out) when the host can't
+  satisfy binder — previously `docker compose up -d` "succeeded" by
+  creating a container that never booted Android, with no symptom but
+  ADB failing to connect. `beetroot doctor <name>` gains a `host.binder`
+  row: `pass` when ready, `skip` when undeterminable (e.g. macOS),
+  `fail` with the exact remedy otherwise (load `binder_linux` on a
+  capable host, or adopt a remote device on a kernel-less one).
+- **Docs: running in CI / without kernel access.** New guide covering the
+  binder-capable path (load the module on GitHub-hosted runners, then
+  `beetroot up` normally) and the kernel-less path (drive a remote device
+  with `beetroot adopt`). The prerequisites and troubleshooting pages now
+  spell out that binder is a kernel feature `privileged` can't substitute.
 - **`beetroot module --auto-install`** — root-driven Magisk-module install
   for adb-adopted devices (#7; the variant deferred from v0.4 T5 / v0.5).
   Each zip is pushed to a synthesized temp name under `/data/local/tmp/`
