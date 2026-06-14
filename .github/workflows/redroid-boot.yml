@@ -63,7 +63,7 @@ jobs:
           set -euxo pipefail
           docker run -d --privileged --name redroid \
             -p 5555:5555 \
-            redroid/redroid:14.0.0 \
+            redroid/redroid:14.0.0_64only-latest \
             androidboot.redroid_gpu_mode=guest \
             androidboot.redroid_fps=15
 
