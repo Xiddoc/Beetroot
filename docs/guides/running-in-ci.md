@@ -100,9 +100,24 @@ matrix.
 
 ## What about this project's own CI?
 
-Beetroot's test suite never touches a real kernel: every Docker, ADB, and
+Beetroot's **unit** suite never touches a real kernel: every Docker, ADB, and
 network call is stubbed (`tests/conftest.py`), and the `docker-build-smoke`
 job in `.github/workflows/ci.yml` proves the image's `COPY` layers compile
-against a lightweight `busybox` stand-in base — it does **not** boot
-Android. So the CI gate runs fine on stock hosted runners without binder;
-only an end-to-end *boot* test would need Option A.
+against a lightweight `busybox` stand-in base — it does **not** boot Android.
+So the PR gate runs fine on stock hosted runners without binder.
+
+On top of that, a separate **`e2e.yml`** workflow boots a real Android on a
+hosted runner (the Option A path above) in two tiers:
+
+* **Tier 1** boots the upstream stock redroid image and drives it through
+  Beetroot's adb backend (`adopt --verify` / `ls` / `shell` / the adb-side
+  `doctor` row). Light (~1-2 min) and reliable.
+* **Tier 2** (WIP) `beetroot build`s the real Magisk image, `beetroot up`s it,
+  and asserts the in-device deployment (root, Zygisk, GMS denylist, Frida). It
+  is heavy and non-blocking while it's hardened.
+
+Because real boots are slow, `e2e.yml` does **not** run on every push. Trigger
+it by adding the **`e2e`** label to a pull request, running it manually from
+the Actions tab (**Run workflow** → optionally tick *run_tier2*), or via the
+nightly schedule on `master`.
+

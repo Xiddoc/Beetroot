@@ -4,6 +4,18 @@
 
 ### Features
 
+- **End-to-end CI that boots a real Android (`e2e.yml`).** A new workflow
+  boots Android on a hosted runner — the behavioural counterpart to the
+  kernel-less unit suite — in two tiers: **Tier 1** boots the upstream stock
+  redroid image and drives it through Beetroot's adb backend (`beetroot adopt
+  --verify`, `beetroot ls --json`, `beetroot shell`, the adb-side `beetroot
+  doctor` row); **Tier 2** (WIP, non-blocking) `beetroot build`s the real
+  Magisk image, `beetroot up`s it, and asserts root / Zygisk / GMS denylist /
+  Frida in-device. Real boots are slow, so the workflow runs on the `e2e` PR
+  label, manual dispatch, or a nightly schedule — not on every push. A shared
+  `provide-binder` composite action loads the host binder driver
+  (`modprobe binder_linux` / binderfs) on the runner. See
+  [Running in CI](https://xiddoc.github.io/Beetroot/guides/running-in-ci/).
 - **Host binder preflight + `host.binder` doctor check** — redroid runs
   Android's userspace against the *host* kernel and has no kernel of its
   own, so the binder driver is a hard, non-negotiable requirement
