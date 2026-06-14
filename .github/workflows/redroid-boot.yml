@@ -92,7 +92,7 @@ jobs:
           adb connect localhost:5555
           uv run beetroot adopt localhost:5555 --name ci --verify
           uv run beetroot ls
-          uv run beetroot shell ci -c 'getprop sys.boot_completed'
+          uv run beetroot shell ci getprop sys.boot_completed
 
       - name: redroid container logs (always, for diagnosis)
         if: always()
