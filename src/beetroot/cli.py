@@ -1146,8 +1146,30 @@ def build(
         _GappsVariant,
         typer.Argument(help="GMS variant to bake into the base image."),
     ] = _GappsVariant.lite,
+    vm_kernel: Annotated[
+        bool,
+        typer.Option(
+            "--vm-kernel",
+            help=(
+                "Build the binder: vm micro-VM guest kernel + rootfs instead "
+                "of the redroid base image (for hosts with no kernel binder)."
+            ),
+        ),
+    ] = False,
 ) -> None:
-    """Build the redroid base image and Beetroot layer for a gapps variant."""
+    """Build the redroid base image, or (with --vm-kernel) the micro-VM artifacts."""
+    if vm_kernel:
+        try:
+            artifacts = builder.build_vm_kernel()
+        except builder.BootstrapError as e:
+            raise _error(str(e)) from e
+        typer.echo(f"[beetroot] micro-VM kernel built: {artifacts.kernel}")
+        typer.echo(f"[beetroot] micro-VM rootfs built: {artifacts.rootfs}")
+        typer.echo(
+            "[beetroot] next: point vm.kernel / vm.rootfs (or BEETROOT_VM_KERNEL "
+            "/ BEETROOT_VM_ROOTFS) at these paths and set binder: vm."
+        )
+        return
     tag = builder.build_image(gapps=gapps.value)
     typer.echo(f"[beetroot] base image built: {tag}")
 

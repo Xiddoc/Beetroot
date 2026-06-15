@@ -177,7 +177,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/shfmt"
 
       - name: shfmt diff gate (4-space indent, matching the tree)
-        run: '"$RUNNER_TEMP/shfmt" -i 4 -d docker/*.sh'
+        run: '"$RUNNER_TEMP/shfmt" -i 4 -d docker/*.sh docker/vm/*.sh'
 
   hadolint:
     runs-on: ubuntu-latest
