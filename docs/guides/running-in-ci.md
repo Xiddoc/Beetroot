@@ -72,7 +72,7 @@ jobs:
 
 When you can't provide binder — a sandboxed CI container, a kernel built
 without `CONFIG_ANDROID_BINDER_IPC`, or any host where you can't
-`modprobe` — redroid simply can't run there. Beetroot's **adb backend**
+`modprobe` — redroid can't run *directly* on that host. Beetroot's **adb backend**
 needs no kernel access at all: it drives a rooted Android device that
 lives *somewhere else* (a physical phone on a self-hosted runner, a cloud
 device farm, a redroid container running on a separate binder-capable
@@ -97,6 +97,14 @@ Lifecycle verbs that only make sense for a managed container (`up`,
 against an adb-adopted device — it's managed outside Beetroot. See
 [Adding a backend](adding-a-backend.md) for the full backend capability
 matrix.
+
+!!! note "Emerging: run redroid *locally* on a binderless host (micro-VM)"
+    A validated proof-of-concept boots redroid inside a QEMU micro-VM
+    whose **own** kernel provides binder — so a host with no binder (and
+    even no `/dev/kvm`) can still run a *local* redroid, at an emulation
+    speed cost. This is not yet wired into the CLI; the rationale,
+    reproducible recipe, and proposed `vm` backend / fallback design live
+    in [Binderless hosts (QEMU/TCG)](../design/binderless-hosts-qemu-tcg.md).
 
 ## What about this project's own CI?
 

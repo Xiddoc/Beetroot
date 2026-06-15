@@ -20,3 +20,10 @@ the design doc is archived from the nav.
   surface, and v0.4 PR roadmap for the `DeviceBackend` abstraction
   that lets Beetroot drive an `adb`-connected real-world Magisk phone
   (`AdbDeviceBackend`) alongside the v0.3 Redroid container backend.
+- **[Binderless hosts (QEMU/TCG)](binderless-hosts-qemu-tcg.md)** —
+  validated proof-of-concept and proposed `vm` backend for running
+  redroid on a host whose kernel lacks binder, by booting it inside a
+  QEMU micro-VM that brings its own binder-enabled kernel. Includes the
+  reproducible recipe, the full debugging log, and the auto-detect /
+  fallback design (use host binder when present; opt into the slow
+  emulated path explicitly).
