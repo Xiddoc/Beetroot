@@ -10,7 +10,9 @@
 #
 # Runs under busybox sh in the guest rootfs — keep it POSIX. shfmt -i 4 clean.
 #
-# ADB reachability (the VmDeviceBackend's whole point) — hard-won Stage B notes:
+# ADB reachability (the VmDeviceBackend's whole point) — PROVEN end-to-end in
+# Stage C (host `adb shell getprop sys.boot_completed` returns 1; see §C of
+# vm-rnd-log.md for the full transcript). The working model:
 #   * redroid's adbd is USB-gadget-only by default; TCP needs the prop
 #     `service.adb.tcp.port=5555` set AND adbd restarted. adbd then binds the
 #     IPv6 wildcard (:::5555) and (with net.ipv6.bindv6only=0) accepts IPv4 too.
@@ -20,13 +22,17 @@
 #     minimal kernel (docker-proxy RESETs the relayed connection; the pure-DNAT
 #     `--userland-proxy=false` fallback needs CONFIG_BRIDGE_NETFILTER, which the
 #     kernel lacks). See vm-rnd-log.md §B for the per-hop isolation evidence.
-#   * Therefore ADB is bridged with socat OUTSIDE docker's port machinery: a
-#     relay enters redroid's network namespace (nsenter) and forwards the QEMU
-#     user-net hostfwd target (guest :5555) to adbd. CAVEAT: this relay is not
-#     yet end-to-end-confirmed from the host under TCG (the in-netns hop to adbd
-#     was proven; the cross-process socat chain still needs hardening). The Python
-#     `build_qemu_argv` hostfwd `tcp::<port>-:5555` assumption is correct for the
-#     guest side; the open item is purely the guest→container last hop.
+#   * So ADB is bridged with socat OUTSIDE docker's port machinery: an outer
+#     socat in the guest MAIN netns listens on the QEMU user-net hostfwd target
+#     (guest :5555); each connection spawns an inner socat that nsenter's into
+#     redroid's netns and connects to adbd. TWO things made this carry bytes:
+#     (a) the EXEC wrapper-script fix below (socat's EXEC: chokes on commas in
+#     an inline command), and (b) bringing up eth0 with the user-net address
+#     10.0.2.15 — the hostfwd delivers to the guest's eth0 IP, not loopback, so
+#     a down eth0 silently dropped every host SYN. Both are handled here.
+#   * The Python `build_qemu_argv` hostfwd `tcp:127.0.0.1:<port>-:5555` is
+#     correct for the guest side; no Python change is needed (the relay + eth0
+#     bring-up are entirely in this init).
 
 set -u
 
@@ -66,8 +72,26 @@ mount_pseudo_filesystems() {
     mount -t cgroup2 cgroup2 /sys/fs/cgroup
     mkdir -p /dev/binderfs
     mount -t binder binder /dev/binderfs || die "binderfs mount failed"
-    # lo up is enough for the socat ADB relay; bring it up before docker.
     ip link set lo up 2>/dev/null || true
+    bring_up_eth0
+}
+
+bring_up_eth0() {
+    # The QEMU user-net hostfwd (tcp:127.0.0.1:<host>-:5555) delivers host
+    # traffic to the GUEST'S eth0 ADDRESS (the user-net default 10.0.2.15), NOT
+    # to guest loopback. If eth0 is left down the SYN is silently dropped and the
+    # host `adb connect` times out even though the in-guest relay is healthy.
+    # This was the true last-hop blocker (the relay itself was already fine).
+    #
+    # QEMU's built-in user-net (SLIRP) DHCP hands out 10.0.2.15/24, gw 10.0.2.2.
+    # We assign it statically — deterministic, no udhcpc lease wait, and the
+    # relay only needs eth0 to have *an* address the hostfwd target can reach.
+    _eth="$(ip -o link 2>/dev/null | awk -F': ' '/^[0-9]+: e/{print $2; exit}')"
+    [ -n "$_eth" ] || _eth=eth0
+    log "bringing up $_eth (static 10.0.2.15/24 for QEMU user-net hostfwd)"
+    ip link set "$_eth" up 2>/dev/null || true
+    ip addr add 10.0.2.15/24 dev "$_eth" 2>/dev/null || true
+    ip route add default via 10.0.2.2 dev "$_eth" 2>/dev/null || true
 }
 
 wait_for_socket() {
@@ -160,20 +184,79 @@ enable_adb_tcp() {
 }
 
 start_adb_relay() {
-    # redroid runs with --network none, so its adbd lives in an isolated netns.
-    # docker's own port-publish is broken on this kernel (see header), so we
-    # bridge ADB with socat: a relay that enters redroid's netns (nsenter -n) and
-    # forwards the QEMU user-net hostfwd target (guest :${ADB_TCP_PORT}) to adbd.
+    # redroid runs with --network none, so its adbd lives in an isolated netns
+    # with only `lo`. docker's own port-publish is broken on this minimal kernel
+    # (docker-proxy RESETs; --userland-proxy=false needs CONFIG_BRIDGE_NETFILTER),
+    # so we bridge ADB with socat OUTSIDE docker's port machinery.
+    #
+    # The relay is a single socat in the guest MAIN netns listening on the QEMU
+    # user-net hostfwd target (guest :${ADB_TCP_PORT}); for each accepted
+    # connection it spawns an inner socat that nsenter's into redroid's netns and
+    # connects to adbd on loopback. adbd binds the IPv6 wildcard (:::5555) and,
+    # with bindv6only=0, accepts IPv4 too; we target 127.0.0.1 inside the netns,
+    # which the Stage B hop-isolation proved replies with a valid CNXN.
+    #
+    # CRITICAL: socat's EXEC: address parses commas as option separators, so the
+    # inner command line (`nsenter -t PID -n socat STDIO TCP4:...`) must NOT be
+    # passed inline — commas in any socat option there trigger `EXEC: wrong
+    # number of parameters` (the bug that stalled every Stage B relay run).
+    # Instead we write the inner command to a parameterless wrapper script and
+    # EXEC that. Fixing this made the relay carry a full ADB CNXN end-to-end
+    # (Stage C, vm-rnd-log.md §C).
     _rpid="$(docker inspect -f '{{.State.Pid}}' redroid 2>/dev/null)"
     [ -n "$_rpid" ] || {
         log "WARN: could not resolve redroid pid; ADB relay not started"
-        return 0
+        return 1
     }
-    log "starting ADB relay: guest :${ADB_TCP_PORT} -> redroid netns adbd (pid $_rpid)"
+    log "starting ADB relay: guest :${ADB_TCP_PORT} -> nsenter(redroid netns, pid $_rpid) -> adbd"
+
+    # Parameterless wrapper: one inner socat per connection, entering the
+    # container netns and bridging stdio<->adbd. socat EXEC hands the accepted
+    # socket to the child on fd 0/1, so STDIO there IS the host-side connection.
+    # Target IPv4 loopback (dual-stack adbd accepts it) to avoid v6-scope quirks.
+    # Write to /run (a tmpfs we mount unconditionally) rather than assuming a
+    # /usr/local/bin exists in the rootfs — and mkdir BEFORE the heredoc.
+    _inner=/run/adb-relay-inner.sh
+    mkdir -p /run
+    cat >"$_inner" <<EOF
+#!/bin/sh
+exec nsenter -t ${_rpid} -n socat STDIO "TCP4:127.0.0.1:${ADB_TCP_PORT}"
+EOF
+    chmod 0755 "$_inner"
+
+    # reuseaddr: survive relay restarts. fork: one child per connection.
+    # EXEC defaults to fork+pipe, handing the accepted socket to a dedicated
+    # nsenter'd socat.
     socat "TCP4-LISTEN:${ADB_TCP_PORT},fork,reuseaddr" \
-        "EXEC:/bin/nsenter -t $_rpid -n /bin/socat - TCP6:[::1]:${ADB_TCP_PORT}" \
+        "EXEC:$_inner" \
         >/var/log/adb-relay.log 2>&1 &
     sleep 2
+
+    verify_adb_relay
+}
+
+verify_adb_relay() {
+    # In-guest end-to-end self-probe of the full relay chain
+    # (guest main-netns :PORT -> outer socat -> nsenter -> inner socat -> adbd).
+    # adbd does NOT banner unprompted: the client must send a CNXN first, then
+    # adbd replies CNXN. So a meaningful probe must SPEAK the handshake — the
+    # optional static /usr/bin/adbprobe (an R&D tool, see vm-rnd-log.md §C) does
+    # exactly that and a 'first4=CNXN' reply proves the byte path carries ADB
+    # both ways. This is the in-guest mirror of the host-side `adb connect` proof.
+    # Best-effort: if adbprobe is not staged, skip silently (the relay still runs).
+    log "guest listeners: $(netstat -ltn 2>/dev/null | grep ":${ADB_TCP_PORT} " | head -1)"
+    if [ -x /usr/bin/adbprobe ]; then
+        _out="$(/usr/bin/adbprobe 4 127.0.0.1 "${ADB_TCP_PORT}" 2>&1)"
+        case "$_out" in
+        *"first4=CNXN"*)
+            log "ADB_RELAY_OK: self-probe through relay got adbd CNXN ($_out)"
+            ;;
+        *)
+            log "ADB_RELAY_WARN: self-probe through relay: $_out; see /var/log/adb-relay.log"
+            tail -8 /var/log/adb-relay.log 2>/dev/null | sed 's/^/  relay: /'
+            ;;
+        esac
+    fi
 }
 
 main() {

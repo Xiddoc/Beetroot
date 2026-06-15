@@ -114,7 +114,7 @@ build_tree() {
     mkdir -p "$ROOT"/bin "$ROOT"/sbin "$ROOT"/proc "$ROOT"/sys "$ROOT"/dev \
         "$ROOT"/run "$ROOT"/var/run "$ROOT"/var/log "$ROOT"/var/lib \
         "$ROOT"/sys/fs/cgroup "$ROOT"/dev/binderfs "$ROOT"/etc "$ROOT"/tmp \
-        "$ROOT"/usr/sbin "$ROOT"/lib/x86_64-linux-gnu "$ROOT"/lib64 \
+        "$ROOT"/usr/sbin "$ROOT"/usr/bin "$ROOT"/lib/x86_64-linux-gnu "$ROOT"/lib64 \
         "$ROOT"/usr/lib/x86_64-linux-gnu
     chmod 1777 "$ROOT"/tmp
 
@@ -152,6 +152,23 @@ build_tree() {
     for lib in $(ldd /usr/bin/socat | awk '{print $3}' | grep -E '^/'); do
         cp -L "$lib" "$ROOT/lib/x86_64-linux-gnu/" 2>/dev/null || true
     done
+
+    log "staging adbprobe (optional ADB CNXN self-test; see vm-rnd-log.md §C)"
+    # A tiny static helper that SENDS an ADB CNXN and reads the reply — the only
+    # honest in-guest reachability test, since adbd does not banner unprompted.
+    # guest-init's verify_adb_relay uses it when present and skips otherwise, so
+    # this is best-effort: build it from docker/vm/adbprobe.c if a C compiler is
+    # available, else leave it out. ADBPROBE_BIN overrides with a prebuilt one.
+    if [ -n "${ADBPROBE_BIN:-}" ] && [ -x "${ADBPROBE_BIN}" ]; then
+        cp "$ADBPROBE_BIN" "$ROOT/usr/bin/adbprobe"
+        chmod 0755 "$ROOT/usr/bin/adbprobe"
+    elif [ -f "$SCRIPT_DIR/adbprobe.c" ] && command -v cc >/dev/null 2>&1; then
+        cc -static -O2 -o "$ROOT/usr/bin/adbprobe" "$SCRIPT_DIR/adbprobe.c" 2>/dev/null &&
+            chmod 0755 "$ROOT/usr/bin/adbprobe" ||
+            log "WARN: adbprobe build failed; guest will skip the relay self-test"
+    else
+        log "note: no adbprobe (no ADBPROBE_BIN, no cc); guest skips relay self-test"
+    fi
 
     log "baking the redroid image into /var/lib/docker (offline boot)"
     fetch_static_bundle_done=1
