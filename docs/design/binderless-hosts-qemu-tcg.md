@@ -3,10 +3,12 @@
 !!! success "Status: proof-of-concept validated (2026-06)"
     redroid (Android 11) was booted to `sys.boot_completed=1` inside a
     QEMU **TCG** guest (no KVM, no host binder) on a locked-down
-    Firecracker host. This doc records the *why*, the reproducible
-    recipe, the debugging log, and the proposed backend/fallback
-    design. Nothing here has shipped in the CLI yet — it is the spec a
-    future `vm` backend should build against. See also
+    Firecracker host, **and held a stable 5-minute idle** (no process
+    flapping, no reboot) once `CONFIG_PSI=y` was added. This doc records
+    the *why*, the reproducible recipe, the debugging log, and the
+    proposed backend/fallback design. Nothing here has shipped in the
+    CLI yet — it is the spec a future `vm` backend should build against.
+    See also
     [Running in CI / without kernel access](../guides/running-in-ci.md)
     and [Device backends](device-backends.md).
 
@@ -198,13 +200,15 @@ This is the most reusable knowledge — the failure→fix chain:
 | 7 | "container name /redroid already in use" | prior boot left a `created` container on disk | `docker rm -f` before run |
 | → | **`sys.boot_completed=1`** | — | ✅ |
 
-!!! note "Known wrinkle: lmkd flapping"
-    Post-boot, `lmkd` (low-memory-killer daemon) crash-loops
-    (*"critical process 'lmkd' exited 4 times"*) because it wants
-    pressure-stall info. `boot_completed` is still reached, but left
-    unaddressed lmkd restarts can eventually trigger an Android reboot.
-    **`CONFIG_PSI=y`** (added in §4.1) is the fix to validate next for a
-    *stable* idle, not just a successful boot.
+!!! success "Resolved: lmkd flapping → `CONFIG_PSI=y`"
+    Before PSI, `lmkd` (low-memory-killer daemon) crash-looped
+    (*"critical process 'lmkd' exited 4 times"*) because it opens
+    `/proc/pressure/memory` and arms PSI triggers. `boot_completed` was
+    still reached, but unaddressed those restarts can eventually trigger
+    an Android reboot. **Adding `CONFIG_PSI=y`** fixed it: a re-run
+    confirmed `/proc/pressure/{cpu,io,memory}` present, `lmkd` stayed
+    `running` across a 5-minute idle, **zero** critical-exits, and the
+    container never rebooted (`POC_RESULT: STABLE_IDLE_OK`).
 
 !!! tip "Debugging methodology that worked"
     * **Never `tail -1` an error stream** — it hid the real docker
@@ -321,9 +325,9 @@ expensive step.
 
 ## 8. Roadmap
 
-1. **Stabilize** — rebuild with `CONFIG_PSI=y`, confirm a clean
-   multi-minute idle (no lmkd flapping); pin a kernel version + config
-   fragment in-tree.
+1. **Stabilize** — ✅ done: `CONFIG_PSI=y` gives a clean 5-minute idle
+   (no lmkd flapping, no reboot). Next: pin this kernel version + config
+   fragment in-tree so the build is reproducible.
 2. **Package** — ship a prebuilt guest kernel + minimal rootfs builder
    (or a `beetroot build --vm-kernel` step wrapping the kernel build).
 3. **`VmDeviceBackend`** — implement against the
