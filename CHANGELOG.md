@@ -4,6 +4,24 @@
 
 ### Features
 
+- **`binder` config switch (`auto` / `host` / `vm`).** A new top-level
+  `binder:` key on `beetroot.yaml` selects how redroid obtains the kernel
+  binder driver it needs to boot. `auto` (default) keeps the historical
+  behaviour — use the host binder, and on a host that can't provide it
+  `beetroot up` warns once and starts anyway. `host` is the strict
+  variant: `beetroot up` fails fast (exit 1) rather than leave a
+  container that silently never boots Android — better for CI. `vm` opts
+  into running redroid inside an emulated QEMU micro-VM that ships its own
+  binder kernel, for hosts with no host binder at all; the micro-VM
+  engine is a tracked follow-up, so selecting `vm` today fails fast with a
+  pointer to the design doc rather than silently doing nothing. The slow
+  emulated path is never engaged automatically — it is always an explicit
+  opt-in. `beetroot doctor` reflects the mode: the `host.binder` row is
+  skipped under `vm` and fails (not warns) under strict `host`. A
+  validated proof-of-concept (booting redroid on a binderless,
+  KVM-less host) and the full backend/fallback design live in
+  [Binderless hosts (QEMU/TCG)](https://xiddoc.github.io/Beetroot/design/binderless-hosts-qemu-tcg/).
+
 - **End-to-end CI that boots a real Android (`e2e.yml`).** A new workflow
   boots Android on a hosted runner — the behavioural counterpart to the
   kernel-less unit suite — in two tiers: **Tier 1** boots the upstream stock

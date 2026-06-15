@@ -237,6 +237,20 @@ This is the most reusable knowledge — the failure→fix chain:
 This is the design question this PoC unblocks: **how should Beetroot
 choose between using the host's binder and falling back to the VM?**
 
+!!! success "Shipped: the `binder` config switch"
+    The config switch landed as a top-level `binder: auto | host | vm`
+    key on `InstanceConfig` (see [config reference](../reference/config.md#binder)),
+    wired into the `beetroot up` preflight and the `host.binder` doctor
+    row. The naming below predates that work — read `redroid_backend` as
+    the shipped **`binder`** key (`native` ≈ the `auto`/`host` host-binder
+    path). The refinements that shipped: `auto` keeps the lenient
+    warn-and-proceed behaviour, `host` is the strict fail-fast variant,
+    and `vm` is the explicit opt-in. The micro-VM **engine** itself
+    (everything `vm` needs to actually boot) is the tracked optimization
+    sprint — **issue #44**; selecting `vm` today fails fast with a pointer
+    to this doc. Module-loading and KVM detection are runtime concerns,
+    so no separate `vm_accel` config key shipped.
+
 ### 7.1 Principle
 
 > Silent automation is a gift when it is **cheap and correct**; it is a

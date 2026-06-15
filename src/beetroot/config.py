@@ -383,6 +383,21 @@ class InstanceConfig(BaseModel):
         magisk: Magisk denylist / root-hiding settings.
         ports: Optional per-instance port overrides. Absent fields fall
             back to the stride-of-10 allocator on the instance's index.
+        binder: How redroid obtains the kernel ``binder`` driver it needs
+            to boot. ``"auto"`` (default) uses the host kernel's binder
+            and *warns* (without aborting) when the host can't provide it
+            — preserving the historical behaviour. ``"host"`` is the
+            strict variant: ``beetroot up`` refuses to start unless the
+            host binder is ready (useful in CI, where a container that
+            silently never boots Android is worse than a fast failure).
+            ``"vm"`` opts into running redroid inside an emulated QEMU
+            micro-VM that ships its own binder-enabled kernel — the path
+            for hosts with no host binder at all. The micro-VM *engine*
+            is not yet wired into the CLI (tracked as the optimization
+            sprint); selecting ``"vm"`` today fails fast with a pointer
+            to ``docs/design/binderless-hosts-qemu-tcg.md`` rather than
+            silently doing nothing. Never silently falls back to the
+            slow emulated path — that choice is always explicit.
     """
 
     api_version: int = SUPPORTED_API_VERSION
@@ -393,6 +408,7 @@ class InstanceConfig(BaseModel):
     modules: list[Module] = Field(default_factory=list)
     magisk: Magisk = Field(default_factory=Magisk)
     ports: Ports = Field(default_factory=Ports)
+    binder: Literal["auto", "host", "vm"] = "auto"
 
     @model_validator(mode="before")
     @classmethod

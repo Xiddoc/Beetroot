@@ -417,6 +417,55 @@ class TestCmdUp:
         assert result.exit_code == 0, result.stderr
         assert result.stderr.count("warning: redroid needs the kernel binder driver") == 1
 
+    def test_up_host_mode_blocks_when_binder_unavailable(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `binder: host` is the strict variant: refuse to start (exit 1)
+        # rather than leave a container that never boots Android.
+        from beetroot import hostcheck
+
+        monkeypatch.setattr(
+            hostcheck,
+            "binder_status",
+            lambda: hostcheck.BinderStatus(
+                state="unsupported", reason="binder compiled out", remedy="use beetroot adopt"
+            ),
+        )
+        runner.invoke(cli.app, ["create", "alpha"])
+        config.write_yaml(
+            cli_root / "alpha" / "beetroot.yaml", config.InstanceConfig(binder="host")
+        )
+        with _patched_subprocess() as mock_run:
+            result = runner.invoke(cli.app, ["up", "alpha"])
+        assert result.exit_code == 1, result.stderr
+        assert "binder compiled out" in result.stderr
+        # preflight aborts before compose ever runs
+        assert not mock_run.called
+
+    def test_up_host_mode_proceeds_when_binder_ready(self, cli_root: Path) -> None:
+        # The autouse fixture pins binder_status to "ready"; host mode then proceeds.
+        runner.invoke(cli.app, ["create", "alpha"])
+        config.write_yaml(
+            cli_root / "alpha" / "beetroot.yaml", config.InstanceConfig(binder="host")
+        )
+        with _patched_subprocess() as mock_run:
+            result = runner.invoke(cli.app, ["up", "alpha"])
+        assert result.exit_code == 0, result.stderr
+        assert mock_run.called
+
+    def test_up_vm_mode_errors_with_design_doc_pointer(self, cli_root: Path) -> None:
+        # `binder: vm` is recognised but the micro-VM engine isn't wired in yet;
+        # it must fail fast pointing at the design doc, never silently no-op.
+        runner.invoke(cli.app, ["create", "alpha"])
+        config.write_yaml(
+            cli_root / "alpha" / "beetroot.yaml", config.InstanceConfig(binder="vm")
+        )
+        with _patched_subprocess() as mock_run:
+            result = runner.invoke(cli.app, ["up", "alpha"])
+        assert result.exit_code == 1, result.stderr
+        assert "binderless-hosts-qemu-tcg.md" in result.stderr
+        assert not mock_run.called
+
     def test_up_does_not_pass_build_flag(self, cli_root: Path) -> None:
         """`beetroot up` never adds `--build` to the compose argv (T5)."""
         runner.invoke(cli.app, ["create", "alpha"])
