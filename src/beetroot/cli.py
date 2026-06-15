@@ -367,25 +367,47 @@ def apply(
     typer.echo(f"[beetroot] restart with: beetroot down {name} && beetroot up {name}")
 
 
-def _warn_if_binder_unavailable() -> bool:
+def _binder_preflight(mode: hostcheck.BinderMode, *, warned: bool) -> bool:
     """
-    Emit a stderr advisory when the host can't satisfy redroid's binder need.
+    Apply a redroid instance's configured binder mode before starting it.
 
-    Returns True iff a warning was printed (so the ``up`` fan-out can
-    dedupe and warn at most once). A ``ready`` host prints nothing and
-    returns False. The advisory names the precise reason and remedy from
-    :func:`hostcheck.binder_status` and points at ``beetroot doctor``.
+    Folds the instance's ``binder`` mode against the live host probe via
+    :func:`hostcheck.plan_binder_runtime` and acts on the resulting plan:
+
+    * ``proceed`` — silent; the host can satisfy binder.
+    * ``warn`` (lenient ``auto`` mode, host can't provide binder) — print
+      the one-line advisory at most once across an ``up`` fan-out and
+      start anyway (``docker compose up -d`` succeeds but Android may not
+      boot — the advisory is the only symptom otherwise).
+    * ``block`` (strict ``host`` mode, host can't provide binder) and
+      ``vm`` (engine not wired yet) — ``raise _error`` so the user gets a
+      fast, actionable failure instead of a container that never boots.
+
+    Args:
+        mode: The instance's configured binder mode (``cfg.binder``).
+        warned: Whether the advisory already printed earlier in this
+            fan-out (dedup across multiple instances).
+
+    Returns:
+        The updated ``warned`` flag (True once the advisory has printed).
+
+    Raises:
+        typer.Exit: For the ``block`` and ``vm`` plans (via :func:`_error`).
     """
-    status = hostcheck.binder_status()
-    if status.available:
-        return False
-    remedy = f" Remedy: {status.remedy}." if status.remedy else ""
-    typer.echo(
-        f"[beetroot] warning: redroid needs the kernel binder driver, but {status.reason}. "
-        f"The container may start but Android will not boot.{remedy} "
-        "Run `beetroot doctor <name>` to recheck.",
-        err=True,
-    )
+    plan = hostcheck.plan_binder_runtime(mode, hostcheck.binder_status())
+    if plan.action == "proceed":
+        return warned
+    if plan.action in ("block", "vm"):
+        remedy = f" Remedy: {plan.remedy}." if plan.remedy else ""
+        raise _error(f"{plan.reason}.{remedy}")
+    if not warned:
+        remedy = f" Remedy: {plan.remedy}." if plan.remedy else ""
+        typer.echo(
+            f"[beetroot] warning: redroid needs the kernel binder driver, but {plan.reason}. "
+            f"The container may start but Android will not boot.{remedy} "
+            "Run `beetroot doctor <name>` to recheck.",
+            err=True,
+        )
     return True
 
 
@@ -423,13 +445,16 @@ def up(
         _ensure_exists(instance_name)
         backend = api.Manager.resolve(instance_name)
         lc = cast(api.Lifecycle, _require(backend, api.Lifecycle, "up"))
-        # redroid containers need the host's binder driver to boot. Warn
-        # once (not per instance) when it's missing — `docker compose up
-        # -d` still "succeeds" by creating the container, so without this
-        # the only symptom is adb never connecting. adb-backed instances
-        # don't need binder, so the warning is gated on the redroid kind.
-        if isinstance(backend, api.Instance) and not binder_warned:
-            binder_warned = _warn_if_binder_unavailable()
+        # redroid containers need the host's binder driver to boot. The
+        # per-instance ``binder`` mode decides what happens when the host
+        # can't provide it: ``auto`` warns once (the container starts but
+        # Android may not boot — `docker compose up -d` "succeeds"
+        # regardless, so without this the only symptom is adb never
+        # connecting); ``host`` fails fast; ``vm`` opts into the (not-yet
+        # -wired) emulated micro-VM. adb-backed instances don't need
+        # binder, so the preflight is gated on the redroid kind.
+        if isinstance(backend, api.Instance):
+            binder_warned = _binder_preflight(backend.config.binder, warned=binder_warned)
         lc.up()
         if isinstance(backend, api.Instance):
             p = backend.ports

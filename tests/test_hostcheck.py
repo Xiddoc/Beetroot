@@ -172,3 +172,53 @@ class TestBinderStatusIntegration:
         status = hostcheck.BinderStatus(state="ready", reason="x", remedy="")
         with pytest.raises(pydantic.ValidationError):
             status.state = "unsupported"  # type: ignore[misc]  # asserting frozen behaviour
+
+
+class TestPlanBinderRuntime:
+    """Pure policy fold: configured binder mode + host status -> plan."""
+
+    def _status(
+        self, state: hostcheck.BinderState, *, reason: str = "r", remedy: str = "rem"
+    ) -> hostcheck.BinderStatus:
+        return hostcheck.BinderStatus(state=state, reason=reason, remedy=remedy)
+
+    def test_vm_mode_always_returns_vm_even_on_ready_host(self) -> None:
+        # vm is an explicit opt-in: honoured regardless of host capability.
+        plan = hostcheck.plan_binder_runtime("vm", self._status("ready", remedy=""))
+        assert plan.action == "vm"
+        assert "binderless-hosts-qemu-tcg.md" in plan.reason
+        assert plan.remedy == ""
+
+    def test_ready_host_proceeds_under_auto(self) -> None:
+        plan = hostcheck.plan_binder_runtime("auto", self._status("ready", remedy=""))
+        assert plan.action == "proceed"
+        assert plan.remedy == ""
+
+    def test_ready_host_proceeds_under_host(self) -> None:
+        plan = hostcheck.plan_binder_runtime("host", self._status("ready", remedy=""))
+        assert plan.action == "proceed"
+
+    def test_host_mode_blocks_when_unavailable(self) -> None:
+        plan = hostcheck.plan_binder_runtime(
+            "host", self._status("unsupported", reason="compiled out", remedy="use adb")
+        )
+        assert plan.action == "block"
+        assert plan.reason == "compiled out"
+        assert plan.remedy == "use adb"
+
+    def test_auto_mode_warns_and_appends_vm_hint(self) -> None:
+        plan = hostcheck.plan_binder_runtime(
+            "auto", self._status("loadable", reason="not loaded", remedy="modprobe it")
+        )
+        assert plan.action == "warn"
+        assert plan.reason == "not loaded"
+        assert "modprobe it" in plan.remedy
+        assert "binder: vm" in plan.remedy
+
+    def test_auto_mode_warn_with_empty_status_remedy_still_hints_vm(self) -> None:
+        plan = hostcheck.plan_binder_runtime(
+            "auto", self._status("unknown", reason="cannot tell", remedy="")
+        )
+        assert plan.action == "warn"
+        assert "binder: vm" in plan.remedy
+        assert not plan.remedy.startswith(".")

@@ -50,6 +50,36 @@ class TestCheckHostBinder:
         assert "compiled out" in (result.reason or "")
         assert "use adb" in (result.reason or "")
 
+    def test_vm_mode_is_skip_without_probing_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # vm mode must not depend on host binder — binder_status must not even be called.
+        def _boom() -> hostcheck.BinderStatus:
+            raise AssertionError("binder_status must not be probed for binder: vm")
+
+        monkeypatch.setattr(hostcheck, "binder_status", _boom)
+        result = api._check_host_binder("vm")
+        assert result.status == "skip"
+        assert "micro-VM" in (result.reason or "")
+
+    def test_host_mode_unknown_is_fail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._pin(
+            monkeypatch,
+            hostcheck.BinderStatus(state="unknown", reason="cannot tell", remedy="try x"),
+        )
+        result = api._check_host_binder("host")
+        assert result.status == "fail"
+        assert "cannot tell" in (result.reason or "")
+
+    def test_host_mode_unsupported_is_fail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._pin(
+            monkeypatch,
+            hostcheck.BinderStatus(state="unsupported", reason="compiled out", remedy="adb"),
+        )
+        assert api._check_host_binder("host").status == "fail"
+
+    def test_ready_is_pass_under_host_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._pin(monkeypatch, hostcheck.BinderStatus(state="ready", reason="ok", remedy=""))
+        assert api._check_host_binder("host").status == "pass"
+
 
 class TestCheckAdbConnect:
     def test_skips_when_adb_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:

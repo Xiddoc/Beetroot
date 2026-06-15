@@ -1161,7 +1161,7 @@ class Instance:
         # row here explains an otherwise-baffling "container running but
         # adb never connects" — the container started but Android never
         # booted (see :mod:`beetroot.hostcheck`).
-        checks["host.binder"] = _check_host_binder()
+        checks["host.binder"] = _check_host_binder(self._cfg.binder)
         checks["adb.connect"] = _check_adb_connect(f"localhost:{adb_port}")
         checks["frida.handshake"] = _check_frida_socket(
             "localhost",
@@ -1474,19 +1474,41 @@ class Manager:
         return cls.from_meta(name, backend)
 
 
-def _check_host_binder() -> CheckResult:
+def _check_host_binder(mode: hostcheck.BinderMode = "auto") -> CheckResult:
     """
     Map :func:`hostcheck.binder_status` onto a doctor :class:`CheckResult`.
 
-    ``ready`` → ``pass``; ``loadable`` / ``unsupported`` → ``fail`` (with
-    the remedy folded into the reason so the doctor line is
-    self-contained); ``unknown`` → ``skip`` (binder couldn't be
-    determined — e.g. on macOS — so we don't cry wolf).
+    The instance's configured ``binder`` mode shapes the verdict so the
+    doctor row matches what ``beetroot up`` would actually do:
+
+    * ``vm`` → ``skip`` — host binder is irrelevant (the emulated
+      micro-VM ships its own), so flagging its absence would mislead.
+    * otherwise ``ready`` → ``pass``.
+    * ``unknown`` → ``skip`` under ``auto`` (binder couldn't be
+      determined — e.g. on macOS — so we don't cry wolf) but ``fail``
+      under strict ``host`` (the user demanded host binder and we can't
+      confirm it).
+    * ``loadable`` / ``unsupported`` → ``fail`` (with the remedy folded
+      into the reason so the doctor line is self-contained).
+
+    Args:
+        mode: The instance's configured binder mode (``cfg.binder``).
+            Defaults to ``"auto"`` so callers that don't care about the
+            mode (and the existing unit tests) keep the historical
+            behaviour.
+
+    Returns:
+        The :class:`CheckResult` for the ``host.binder`` doctor row.
     """
+    if mode == "vm":
+        return CheckResult(
+            status="skip",
+            reason="binder: vm — host binder not required (emulated micro-VM provides its own)",
+        )
     status = hostcheck.binder_status()
     if status.state == "ready":
         return CheckResult(status="pass")
-    if status.state == "unknown":
+    if status.state == "unknown" and mode != "host":
         return CheckResult(status="skip", reason=status.reason)
     return CheckResult(status="fail", reason=f"{status.reason}. {status.remedy}")
 

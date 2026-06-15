@@ -855,3 +855,25 @@ class TestDockerComposeConfig:
             f"docker compose config failed with explicit reservation.\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
+
+
+class TestBinderMode:
+    """The `binder` runtime-selection knob (auto | host | vm)."""
+
+    def test_default_is_auto(self) -> None:
+        assert InstanceConfig().binder == "auto"
+
+    def test_accepts_host_and_vm(self) -> None:
+        assert InstanceConfig(binder="host").binder == "host"
+        assert InstanceConfig(binder="vm").binder == "vm"
+
+    def test_rejects_unknown_value(self) -> None:
+        with pytest.raises(ValidationError):
+            InstanceConfig(binder="qemu")  # type: ignore[arg-type]  # deliberately invalid literal
+
+    def test_round_trips_through_yaml(self, tmp_path: Path) -> None:
+        from beetroot.config import write_yaml
+
+        yaml_path = tmp_path / "beetroot.yaml"
+        write_yaml(yaml_path, InstanceConfig(binder="vm"))
+        assert load_yaml(yaml_path).binder == "vm"

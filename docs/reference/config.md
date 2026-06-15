@@ -17,6 +17,7 @@ frida: ...   # optional / opt-in
 modules: [...]
 magisk: ...
 ports: ...
+binder: auto   # auto | host | vm
 ```
 
 ---
@@ -244,6 +245,29 @@ magisk:
     ```
 
     Rename the key and bump `api_version` to `4` to fix it.
+
+---
+
+## `binder`
+
+Selects how redroid obtains the kernel **binder** driver it needs to boot. redroid is a container, not an emulator — it runs Android's userspace against the *host* kernel — so binder must come from somewhere.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `binder` | string | `auto` | One of `auto`, `host`, `vm`. See the table below. |
+
+| Value | Behaviour |
+|-------|-----------|
+| `auto` | Use the host kernel's binder. If the host can't provide it, `beetroot up` prints a one-line advisory (once) and starts anyway — the container comes up but Android may not boot. This is the historical behaviour and the default. |
+| `host` | Strict: `beetroot up` **refuses to start** (exit 1) unless the host binder is ready. Prefer this in CI, where a container that silently never boots Android is worse than a fast, clear failure. |
+| `vm` | Opt into running redroid inside an emulated QEMU micro-VM that ships its own binder-enabled kernel — the path for hosts with no host binder at all (hardened CI, `nomodule` cloud sandboxes). |
+
+```yaml
+binder: host
+```
+
+!!! warning "`binder: vm` is not wired in yet"
+    The micro-VM *engine* is a tracked optimization sprint. A proof-of-concept already boots redroid this way (see [Binderless hosts (QEMU/TCG)](../design/binderless-hosts-qemu-tcg.md)), but `beetroot up` does not yet launch it — selecting `vm` today fails fast with a pointer to that design doc rather than silently doing nothing. The slow emulated path is **never** engaged automatically; it is always an explicit opt-in.
 
 ---
 

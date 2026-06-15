@@ -234,3 +234,99 @@ def binder_status() -> BinderStatus:
         binderfs=_binderfs_supported(),
         kconfig=_kernel_config_binder(),
     )
+
+
+# The configured binder strategy from ``InstanceConfig.binder`` (kept here,
+# next to the probes it consumes, so :func:`plan_binder_runtime` and the
+# config schema share one vocabulary).
+BinderMode = Literal["auto", "host", "vm"]
+
+# What ``beetroot up`` should do once the configured mode is folded against
+# the live host probe:
+#
+# * ``proceed`` — start the container; the host can satisfy binder.
+# * ``warn``    — start anyway, but print a one-line advisory (the host
+#                 can't satisfy binder and the mode is the lenient
+#                 ``auto``; the container starts but Android may not boot).
+# * ``block``   — refuse to start (strict ``host`` mode on a host that
+#                 can't provide binder).
+# * ``vm``      — the user opted into the emulated micro-VM path.
+BinderAction = Literal["proceed", "warn", "block", "vm"]
+
+# Appended to the ``auto``-mode advisory so a stuck user discovers the
+# explicit escape hatch. Phrased as a suggestion, not a default — the slow
+# emulated path is never engaged without the user asking for it.
+_VM_HINT: Final = (
+    "Or set `binder: vm` in beetroot.yaml to run redroid inside an "
+    "emulated micro-VM that ships its own binder kernel (slower; no host "
+    "binder required)"
+)
+
+# Selecting ``binder: vm`` before the micro-VM engine is wired into the
+# CLI surfaces this, rather than silently doing nothing. The validated
+# recipe + roadmap live in the design doc.
+_VM_NOT_WIRED: Final = (
+    "binder: vm selected, but the emulated micro-VM backend is not yet "
+    "wired into the CLI — it is the tracked optimization sprint. A "
+    "proof-of-concept already boots redroid this way; see "
+    "docs/design/binderless-hosts-qemu-tcg.md. For now use `binder: host` "
+    "(or `binder: auto`) on a host that provides the kernel binder driver"
+)
+
+
+class BinderPlan(BaseModel):
+    """
+    The decision for ``beetroot up`` given a configured mode + host probe.
+
+    Produced by :func:`plan_binder_runtime` — a pure fold of the
+    :class:`BinderStatus` against the instance's configured
+    :data:`BinderMode`. Kept separate from :class:`BinderStatus` (which
+    only describes the *host*) so the policy (what to do about it) is
+    unit-testable without a Typer runner.
+
+    Attributes:
+        action: What ``up`` should do — see :data:`BinderAction`.
+        reason: One-line human-readable explanation for the action.
+        remedy: One-line actionable next step, or ``""`` when none
+            applies (``proceed``).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    action: BinderAction
+    reason: str
+    remedy: str
+
+
+def plan_binder_runtime(mode: BinderMode, status: BinderStatus) -> BinderPlan:
+    """
+    Fold a configured binder mode against the live host probe into a plan.
+
+    Pure (no I/O) so every branch is unit-testable. Implements the
+    "auto-use the cheap/correct path, gate the expensive path behind an
+    explicit opt-in" policy:
+
+    * ``vm`` always returns ``action="vm"`` (the user asked for the
+      emulated path explicitly — the caller decides whether the engine
+      is available yet).
+    * a binder-ready host always returns ``proceed`` for ``auto`` /
+      ``host``.
+    * ``host`` on a non-ready host returns ``block`` (fail fast).
+    * ``auto`` on a non-ready host returns ``warn`` (start anyway, advise)
+      and appends the ``binder: vm`` hint to the remedy so the user
+      discovers the escape hatch — but it is **never** auto-engaged.
+
+    Args:
+        mode: The instance's configured :data:`BinderMode`.
+        status: The live host :class:`BinderStatus`.
+
+    Returns:
+        The :class:`BinderPlan` describing what ``up`` should do.
+    """
+    if mode == "vm":
+        return BinderPlan(action="vm", reason=_VM_NOT_WIRED, remedy="")
+    if status.available:
+        return BinderPlan(action="proceed", reason=status.reason, remedy="")
+    if mode == "host":
+        return BinderPlan(action="block", reason=status.reason, remedy=status.remedy)
+    remedy = f"{status.remedy}. {_VM_HINT}" if status.remedy else _VM_HINT
+    return BinderPlan(action="warn", reason=status.reason, remedy=remedy)
