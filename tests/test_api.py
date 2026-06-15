@@ -116,6 +116,19 @@ class TestInstanceCreate:
         assert "16.4.10" in text
         assert "resources:" in text
 
+    def test_create_with_vm_binder_registers_vm_kind(self, cli_root: Path) -> None:
+        cfg = config.InstanceConfig(binder="vm")
+        api.Instance.create("alpha", cfg=cfg)
+        meta = registry.get("alpha")
+        assert meta is not None
+        assert meta.backend.kind == "vm"
+
+    def test_create_default_binder_registers_redroid_kind(self, cli_root: Path) -> None:
+        api.Instance.create("alpha")
+        meta = registry.get("alpha")
+        assert meta is not None
+        assert meta.backend.kind == "redroid"
+
     def test_create_stages_env_and_frida_placeholder(self, cli_root: Path) -> None:
         inst = api.Instance.create("alpha")
         assert paths.instance_env(inst.root).is_file()

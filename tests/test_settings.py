@@ -71,3 +71,20 @@ def test_settings_construction_inside_instance_dir(
     # Construction must not raise.
     s = settings.Settings()
     assert s.docker_bin == "docker"
+
+
+def test_settings_vm_defaults() -> None:
+    s = settings.Settings()
+    assert s.qemu_bin == "qemu-system-x86_64"
+    assert s.vm_kernel == ""
+    assert s.vm_rootfs == ""
+
+
+def test_settings_vm_overrides_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BEETROOT_QEMU_BIN", "/opt/qemu")
+    monkeypatch.setenv("BEETROOT_VM_KERNEL", "/img/bzImage")
+    monkeypatch.setenv("BEETROOT_VM_ROOTFS", "/img/rootdisk.img")
+    s = settings.Settings()
+    assert s.qemu_bin == "/opt/qemu"
+    assert s.vm_kernel == "/img/bzImage"
+    assert s.vm_rootfs == "/img/rootdisk.img"
