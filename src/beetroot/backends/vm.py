@@ -78,6 +78,33 @@ def _resolve_artifact(configured: str | None, env_default: str, label: str) -> P
     return path
 
 
+def _check_port_collisions(name: str, new_ports: dict[str, int]) -> None:
+    """
+    Raise ``ValueError`` if ``new_ports`` collide with any other instance.
+
+    Mirrors ``beetroot.api._check_port_collisions`` (kept local to avoid
+    reaching into the api module's private surface) so a ``beetroot apply``
+    on a VM instance catches a port clash the same way the redroid backend
+    does.
+
+    Args:
+        name: This instance's registry name (excluded from the comparison).
+        new_ports: The resolved port dict to validate.
+
+    Raises:
+        ValueError: On the first colliding port.
+    """
+    others = {n: p for n, p in registry.all_resolved_ports().items() if n != name}
+    collision = registry.find_port_collision(new_ports, others)
+    if collision is None:
+        return
+    port, other_name, port_kind = collision
+    raise ValueError(
+        f"port {port} ({port_kind}) collides with instance {other_name!r} "
+        f"(which also uses {port}). Pin or remove one."
+    )
+
+
 class VmDeviceBackend:
     """
     Backend that boots redroid inside a QEMU micro-VM with its own binder kernel.
@@ -334,6 +361,66 @@ class VmDeviceBackend:
         """Terminate then re-launch the micro-VM."""
         self.down()
         self.up()
+
+    def apply(self) -> None:
+        """
+        Re-load ``beetroot.yaml`` and re-stage the derived ``.env`` + dirs.
+
+        Mirrors :meth:`beetroot.api.Instance.apply` for the redroid backend:
+        re-reads the on-disk config (external edits picked up), re-renders
+        the ``.env`` and re-stages Frida + modules so the guest's redroid
+        boots with the new config on the next :meth:`restart`. If the config
+        flips ``binder`` away from ``vm`` the registry row is reconciled back
+        to the redroid kind.
+
+        Raises:
+            ValueError: If the re-resolved ports collide with another
+                registered instance.
+        """
+        self._cfg = config.load_yaml(paths.instance_yaml(self._root))
+        new_ports = ports.resolve_ports(self._index, self._cfg.ports)
+        _check_port_collisions(self._name, new_ports)
+        self._stage()
+        registry.reconcile_backend_kind(self._name, self._cfg.binder)
+
+    def _stage(self) -> None:
+        """Render the ``.env`` + create dirs + stage Frida and modules."""
+        from beetroot import modules_download  # noqa: PLC0415  # avoid import cycle
+
+        paths.instance_data(self._root).mkdir(parents=True, exist_ok=True)
+        paths.instance_modules(self._root).mkdir(parents=True, exist_ok=True)
+        paths.instance_env(self._root).write_text(
+            config.render_env(self._name, self._cfg, self.ports)
+        )
+        frida_download.stage_empty(self._root)
+        if self._cfg.frida is not None:
+            frida_download.stage_for_instance(
+                self._root,
+                self._cfg.frida.version,
+                expected_sha256=self._cfg.frida.sha256,
+            )
+        modules_download.stage_for_instance(self._root, self._cfg)
+
+    def destroy(self, *, yes: bool = False) -> None:
+        """
+        Terminate the micro-VM and permanently delete the instance directory.
+
+        Args:
+            yes: Must be ``True`` to proceed (the CLI confirms before calling
+                with ``yes=True``). Passing ``False`` raises ``ValueError``.
+
+        Raises:
+            ValueError: If called with ``yes=False``.
+        """
+        if not yes:
+            raise ValueError(
+                "VmDeviceBackend.destroy() requires yes=True to proceed; "
+                "confirm the destructive operation in the calling code first."
+            )
+        qemu.QemuProcess(self._root).terminate()
+        registry.remove(self._name)
+        if self._root.exists():
+            shutil.rmtree(self._root)
 
     # ---- health-check ----------------------------------------------------
 
