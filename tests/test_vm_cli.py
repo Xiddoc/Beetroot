@@ -92,6 +92,26 @@ class TestVmDispatch:
         assert meta.backend.kind == "vm"
 
 
+@pytest.fixture
+def _stub_adb_connect_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Make ``up()``/``restart()`` skip the real ``adb connect`` poll.
+
+    :meth:`VmDeviceBackend._wait_for_adb_connect` loops ``adb connect``
+    against the freshly-launched guest until ``settings.vm_adb_connect_timeout``
+    (default 60s) elapses, short-circuiting only when ``adb`` is absent from
+    PATH. Any CLI test that drives a successful ``up``/``restart`` would
+    otherwise poll a nonexistent guest and hit the 30s pytest-timeout whenever
+    ``adb`` happens to be installed (e.g. in CI). Stub the wait to an instant
+    success so these tests are deterministic and fast regardless of adb
+    presence.
+    """
+    monkeypatch.setattr(
+        vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None
+    )
+
+
+@pytest.mark.usefixtures("_stub_adb_connect_wait")
 class TestVmUp:
     def test_up_tcg_prints_loud_banner_and_launches(
         self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -225,6 +245,7 @@ class TestVmUp:
         assert "vm1 down" in result.stdout
 
 
+@pytest.mark.usefixtures("_stub_adb_connect_wait")
 class TestVmRestart:
     def test_restart_prints_banner_and_relaunches(
         self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
