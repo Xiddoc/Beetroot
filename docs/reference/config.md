@@ -269,6 +269,9 @@ binder: host
 !!! tip "`binder: vm` boots an emulated micro-VM"
     Selecting `vm` dispatches `beetroot up` to a QEMU micro-VM that ships its own binder-enabled kernel. Build the guest artifacts once with `beetroot build --vm-kernel`, point `vm.kernel` / `vm.rootfs` at them (or set `BEETROOT_VM_KERNEL` / `BEETROOT_VM_ROOTFS`), and run `beetroot apply` then `beetroot up`. On a host with `/dev/kvm` this is near-native; without it the backend falls back to TCG (~5-20x slower — a slow first boot is expected, not a hang). The slow path is **never** engaged automatically; `binder: vm` is always an explicit opt-in. See [Binderless hosts (QEMU/TCG)](../design/binderless-hosts-qemu-tcg.md).
 
+!!! warning "Frida is not yet supported under `binder: vm`"
+    The micro-VM guest is network-isolated, so the `vm` backend is scoped to ADB forwarding (`beetroot shell`) only. `beetroot frida <vm-instance>` raises a friendly "not yet supported on the 'vm' backend" error, `beetroot doctor` omits the `frida.handshake` row, and `ls` / `status` report the Frida address as `unsupported`. Any `frida:` block in a `binder: vm` config is ignored (no `frida-server` is staged). For Frida, use `binder: auto` / `host` (redroid) or `beetroot adopt` an external rooted device. Tracked as a follow-up to [#44](https://github.com/Xiddoc/Beetroot/issues/44).
+
 ---
 
 ## `vm`
