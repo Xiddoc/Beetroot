@@ -286,6 +286,8 @@ QEMU micro-VM tunables. Consulted **only** when `binder: vm`; ignored otherwise.
 | `vm.smp` | int | `4` | Guest vCPUs (`-smp`). Must be >= 1. |
 | `vm.memory_mib` | int | `8192` | Guest RAM in MiB (`-m`). Must be >= 256. |
 
+After launching QEMU, `beetroot up` polls `adb connect` against the guest until the forwarded ADB endpoint accepts a connection — the guest restarts `adbd` to enable TCP a few seconds *after* `sys.boot_completed=1`, so a single immediate connect would race that late bind. The poll deadline is the `BEETROOT_VM_ADB_CONNECT_TIMEOUT` environment variable (seconds, default `60`); raise it for slow TCG first boots. If the guest never exposes ADB within the deadline, `up` fails with an actionable error (try `beetroot logs <name>` to watch the boot, or pin `vm.accel: kvm`) rather than a traceback.
+
 ```yaml
 binder: vm
 vm:

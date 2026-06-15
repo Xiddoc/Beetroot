@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
@@ -41,6 +42,14 @@ if TYPE_CHECKING:
     from beetroot.api import CheckResult
 
 _ADB = "adb"
+
+# How often ``up`` re-tries ``adb connect`` against the freshly-launched
+# guest, and the per-attempt subprocess timeout. The deadline itself is the
+# configurable ``settings.vm_adb_connect_timeout`` — the guest restarts adbd
+# to enable TCP a few seconds *after* ``sys.boot_completed=1``, so the first
+# connect almost always races that late bind and must be retried.
+_ADB_CONNECT_POLL_SECONDS = 1.0
+_ADB_CONNECT_ATTEMPT_TIMEOUT = 5
 
 # Frida is not yet wired through the QEMU micro-VM (issue #44 scopes the
 # vm backend to ADB forwarding only): the guest runs redroid with
@@ -349,7 +358,7 @@ class VmDeviceBackend:
 
     def up(self) -> None:
         """
-        Boot the micro-VM: resolve accel, build argv, launch QEMU detached.
+        Boot the micro-VM: resolve accel, build argv, launch QEMU, attach adb.
 
         Re-checks ``cfg.binder == "vm"`` first: a vm-registry row whose
         ``beetroot.yaml`` was hand-edited back to ``binder: host``/``auto``
@@ -357,11 +366,17 @@ class VmDeviceBackend:
         Fail fast with a ``beetroot apply`` pointer instead (mirrors the
         up-verb's redroid-row-but-yaml-vm guard).
 
+        After QEMU is launched, ``adb connect`` is retried with backoff
+        (:meth:`_wait_for_adb_connect`): the guest restarts adbd to enable
+        TCP a few seconds *after* ``sys.boot_completed=1``, so a single
+        connect right after launch races that late bind and fails.
+
         Raises:
             BackendCapabilityError: If the on-disk config no longer sets
                 ``binder: vm`` (the row is out of sync — run ``apply``).
             qemu.QemuLaunchError: On a missing accelerator, missing
-                kernel/rootfs, or a launch failure.
+                kernel/rootfs, a launch failure, or if the guest does not
+                expose ADB within ``settings.vm_adb_connect_timeout`` seconds.
         """
         if self._cfg.binder != "vm":
             raise BackendCapabilityError(
@@ -373,6 +388,71 @@ class VmDeviceBackend:
         accel = self.resolved_accel()
         argv = self.build_argv(accel)
         qemu.QemuProcess(self._root).start(argv)
+        self._wait_for_adb_connect()
+
+    def _wait_for_adb_connect(self) -> None:
+        """
+        Poll ``adb connect`` against the guest until it accepts or times out.
+
+        The guest forwards adbd to a host loopback port, but redroid restarts
+        adbd to switch it into TCP mode a few seconds *after* boot completes,
+        so the endpoint refuses connections briefly. Retry ``adb connect``
+        every :data:`_ADB_CONNECT_POLL_SECONDS` until the host adb reports a
+        successful attach or ``settings.vm_adb_connect_timeout`` elapses. The
+        happy path (endpoint already up) succeeds on the first attempt and
+        never sleeps.
+
+        Raises:
+            AdbNotInstalledError: If the ``adb`` binary is not on PATH.
+            qemu.QemuLaunchError: If no attempt succeeds within the deadline —
+                a friendly, actionable message (not a traceback).
+        """
+        if shutil.which(_ADB) is None:
+            raise AdbNotInstalledError("adb not found on PATH (install android-tools)")
+        target = self.adb_address
+        deadline = time.monotonic() + settings.vm_adb_connect_timeout
+        while True:
+            if self._adb_connect_ok(target):
+                return
+            if time.monotonic() >= deadline:
+                raise qemu.QemuLaunchError(
+                    f"the QEMU micro-VM for {self._name!r} did not expose ADB at "
+                    f"{target} within {settings.vm_adb_connect_timeout}s of launch. "
+                    "Under TCG software emulation first boot is slow (minutes) — "
+                    f"run `beetroot logs {self._name}` to watch the guest boot, give "
+                    "it longer (raise BEETROOT_VM_ADB_CONNECT_TIMEOUT), or pin "
+                    "`vm.accel: kvm` on a host with /dev/kvm for a faster boot."
+                )
+            time.sleep(_ADB_CONNECT_POLL_SECONDS)
+
+    @staticmethod
+    def _adb_connect_ok(target: str) -> bool:
+        """
+        Run a single ``adb connect <target>`` and report whether it attached.
+
+        ``adb connect`` exits 0 even on a refused connection in some adb
+        versions, so the stdout/stderr is re-scanned for ``failed`` /
+        ``cannot connect`` as a safety net (mirrors
+        :func:`beetroot.api._check_adb_connect`).
+
+        Args:
+            target: The ``host:port`` argument for ``adb connect``.
+
+        Returns:
+            True iff the attach succeeded.
+        """
+        try:
+            res = subprocess.run(  # noqa: S603  # adb is a host CLI resolved via PATH; target is localhost:<port>
+                [_ADB, "connect", target],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=_ADB_CONNECT_ATTEMPT_TIMEOUT,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        combined = f"{res.stdout}\n{res.stderr}".lower()
+        return res.returncode == 0 and "cannot connect" not in combined and "failed" not in combined
 
     def down(self) -> None:
         """Terminate the micro-VM (SIGTERM); a no-op if it isn't running."""

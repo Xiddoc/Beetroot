@@ -260,6 +260,9 @@ class TestLifecycle:
             return 1234
 
         monkeypatch.setattr(qemu.QemuProcess, "start", _start)
+        monkeypatch.setattr(
+            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None
+        )
         backend.up()
         assert launched["argv"][0] == "qemu-system-x86_64"
 
@@ -305,6 +308,9 @@ class TestLifecycle:
             return 1
 
         monkeypatch.setattr(qemu.QemuProcess, "start", _start)
+        monkeypatch.setattr(
+            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None
+        )
         backend.up()
         argv = launched["argv"]
         assert argv[0] == "qemu-system-x86_64"
@@ -345,6 +351,112 @@ class TestLifecycle:
         monkeypatch.setattr(backend, "up", lambda: order.append("up"))
         backend.restart()
         assert order == ["down", "up"]
+
+
+class TestWaitForAdbConnect:
+    def _connect_result(self, *, ok: bool) -> subprocess.CompletedProcess[str]:
+        if ok:
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="connected", stderr="")
+        return subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="cannot connect to localhost:5555"
+        )
+
+    def test_retries_until_connect_succeeds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # adbd binds its TCP port a few seconds after boot, so the first
+        # connects are refused; up() must retry and ultimately attach.
+        backend = _make_backend(tmp_path)
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        attempts: list[list[str]] = []
+
+        def _run(cmd: list[str], **_k: object) -> subprocess.CompletedProcess[str]:
+            attempts.append(list(cmd))
+            return self._connect_result(ok=len(attempts) >= 3)
+
+        sleeps: list[float] = []
+        monkeypatch.setattr("beetroot.backends.vm.subprocess.run", _run)
+        monkeypatch.setattr("beetroot.backends.vm.time.sleep", sleeps.append)
+        backend._wait_for_adb_connect()
+        assert len(attempts) == 3
+        assert attempts[0] == ["adb", "connect", "localhost:5555"]
+        # Two refusals → two backoff sleeps before the third (winning) attempt.
+        assert len(sleeps) == 2
+
+    def test_happy_path_first_try_does_not_sleep(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = _make_backend(tmp_path)
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        attempts: list[list[str]] = []
+
+        def _run(cmd: list[str], **_k: object) -> subprocess.CompletedProcess[str]:
+            attempts.append(list(cmd))
+            return self._connect_result(ok=True)
+
+        def _no_sleep(_s: float) -> None:
+            raise AssertionError("happy path must not sleep — endpoint accepted first try")
+
+        monkeypatch.setattr("beetroot.backends.vm.subprocess.run", _run)
+        monkeypatch.setattr("beetroot.backends.vm.time.sleep", _no_sleep)
+        backend._wait_for_adb_connect()
+        assert len(attempts) == 1
+
+    def test_never_connects_raises_friendly_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = _make_backend(tmp_path)
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(
+            "beetroot.backends.vm.subprocess.run",
+            lambda *_a, **_k: self._connect_result(ok=False),
+        )
+        # Advance a synthetic clock past the deadline on the second read so
+        # the loop exits without real waiting.
+        ticks = iter([0.0, 0.0, 999.0])
+        monkeypatch.setattr("beetroot.backends.vm.time.monotonic", lambda: next(ticks))
+        monkeypatch.setattr("beetroot.backends.vm.time.sleep", lambda _s: None)
+        with pytest.raises(qemu.QemuLaunchError, match="did not expose ADB"):
+            backend._wait_for_adb_connect()
+
+    def test_subprocess_error_treated_as_not_connected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An adb connect that times out / fails to spawn is "not connected",
+        # not a crash — the poll keeps trying until the deadline.
+        def _boom(*_a: object, **_k: object) -> subprocess.CompletedProcess[str]:
+            raise subprocess.TimeoutExpired(cmd="adb", timeout=5)
+
+        monkeypatch.setattr("beetroot.backends.vm.subprocess.run", _boom)
+        assert vm_backend.VmDeviceBackend._adb_connect_ok("localhost:5555") is False
+
+    def test_without_adb_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = _make_backend(tmp_path)
+        monkeypatch.setattr(shutil, "which", lambda _n: None)
+        with pytest.raises(api.AdbNotInstalledError):
+            backend._wait_for_adb_connect()
+
+    def test_up_full_path_launches_then_waits_for_adb(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Full composition: on-disk binder: vm → up() launches QEMU → then
+        # polls adb connect, retrying past the early refusals to attach.
+        _stage_artifacts(monkeypatch, tmp_path)
+        backend = _make_backend(tmp_path)
+        monkeypatch.setattr(qemu, "detect_accel", lambda _req: "tcg")
+        monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 4321)
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        attempts: list[list[str]] = []
+
+        def _run(cmd: list[str], **_k: object) -> subprocess.CompletedProcess[str]:
+            attempts.append(list(cmd))
+            return self._connect_result(ok=len(attempts) >= 2)
+
+        monkeypatch.setattr("beetroot.backends.vm.subprocess.run", _run)
+        monkeypatch.setattr("beetroot.backends.vm.time.sleep", lambda _s: None)
+        backend.up()
+        assert attempts[0] == ["adb", "connect", "localhost:5555"]
+        assert len(attempts) == 2
 
 
 # ---------------------------------------------------------------------------
