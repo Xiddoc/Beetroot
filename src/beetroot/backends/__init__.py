@@ -168,6 +168,13 @@ def _register_builtin_backends() -> None:
         import importlib  # noqa: PLC0415  # local-import is intentional; see above
 
         importlib.import_module("beetroot.backends.adb")
+    # VmDeviceBackend (issue #44) — same side-effect-import idiom as adb
+    # above: importing the module runs its module-level
+    # ``register_backend("vm", VmDeviceBackend)``.
+    if "vm" not in _BACKEND_REGISTRY:
+        import importlib  # noqa: PLC0415  # local-import is intentional; see above
+
+        importlib.import_module("beetroot.backends.vm")
 
 
 _register_builtin_backends()

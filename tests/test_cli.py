@@ -1,4 +1,5 @@
 """Tests for cli.py — Typer dispatch and every verb handler."""
+
 from __future__ import annotations
 
 import json
@@ -231,10 +232,10 @@ class TestCmdCreate:
         result = runner.invoke(cli.app, ["create", "alpha"])
         assert result.exit_code == 0, result.stderr
         root = registry.instance_path("alpha")
-        assert paths.instance_yaml(root).read_bytes() == (
-            f"api_version: {config.SUPPORTED_API_VERSION}\n"
-            "android:\n  version: 14\n"
-        ).encode()
+        assert (
+            paths.instance_yaml(root).read_bytes()
+            == (f"api_version: {config.SUPPORTED_API_VERSION}\nandroid:\n  version: 14\n").encode()
+        )
 
     def test_create_default_no_frida(self, cli_root: Path) -> None:
         # v0.3 (T2): the default minimal YAML omits the `frida:` block, so
@@ -257,10 +258,7 @@ class TestCmdCreate:
         assert result.exit_code == 0, result.stderr
         root = registry.instance_path("alpha")
         paths.instance_yaml(root).write_text(
-            "api_version: 3\n"
-            "android:\n"
-            "  version: 14\n"
-            'frida:\n  version: "16.4.10"\n'
+            'api_version: 3\nandroid:\n  version: 14\nfrida:\n  version: "16.4.10"\n'
         )
         result = runner.invoke(cli.app, ["apply", "alpha"])
         assert result.exit_code == 0, result.stderr
@@ -453,17 +451,16 @@ class TestCmdUp:
         assert result.exit_code == 0, result.stderr
         assert mock_run.called
 
-    def test_up_vm_mode_errors_with_design_doc_pointer(self, cli_root: Path) -> None:
-        # `binder: vm` is recognised but the micro-VM engine isn't wired in yet;
-        # it must fail fast pointing at the design doc, never silently no-op.
+    def test_up_redroid_with_vm_binder_errors_until_applied(self, cli_root: Path) -> None:
+        # `binder: vm` hand-edited into a redroid-registered instance's yaml
+        # (without re-applying) is a registry/config mismatch: `up` must fail
+        # fast with the `apply` fix, never silently start a redroid container.
         runner.invoke(cli.app, ["create", "alpha"])
-        config.write_yaml(
-            cli_root / "alpha" / "beetroot.yaml", config.InstanceConfig(binder="vm")
-        )
+        config.write_yaml(cli_root / "alpha" / "beetroot.yaml", config.InstanceConfig(binder="vm"))
         with _patched_subprocess() as mock_run:
             result = runner.invoke(cli.app, ["up", "alpha"])
         assert result.exit_code == 1, result.stderr
-        assert "binderless-hosts-qemu-tcg.md" in result.stderr
+        assert "beetroot apply alpha" in result.stderr
         assert not mock_run.called
 
     def test_up_does_not_pass_build_flag(self, cli_root: Path) -> None:
@@ -526,18 +523,14 @@ class TestCmdUp:
         # The healthy instance was acted on.
         assert "bravo up" in result.stdout
 
-    def test_up_all_skips_unresolvable_kind_and_acts_on_healthy(
-        self, cli_root: Path
-    ) -> None:
+    def test_up_all_skips_unresolvable_kind_and_acts_on_healthy(self, cli_root: Path) -> None:
         # An unknown backend kind resolves to UnresolvedBackendConfig, which
         # Manager.resolve raises InstanceNotFoundError for. --all must skip
         # it (with advisory) and still act on the healthy redroid row.
         runner.invoke(cli.app, ["create", "alpha"])
         registry.add_allocating(
             "ghost",
-            backend=registry.UnresolvedBackendConfig(
-                kind="cloud", raw={"kind": "cloud"}
-            ),
+            backend=registry.UnresolvedBackendConfig(kind="cloud", raw={"kind": "cloud"}),
         )
         with _patched_subprocess() as mock_run:
             result = runner.invoke(cli.app, ["up", "--all"])
@@ -583,9 +576,7 @@ class TestDownRestartAllSkipUnresolvable:
         assert "skipped alpha" in result.stderr
         assert "bravo down" in result.stdout
 
-    def test_restart_all_skips_orphan_and_acts_on_healthy(
-        self, cli_root: Path
-    ) -> None:
+    def test_restart_all_skips_orphan_and_acts_on_healthy(self, cli_root: Path) -> None:
         import shutil
 
         runner.invoke(cli.app, ["create", "alpha"])
@@ -692,9 +683,7 @@ class TestCmdLs:
         assert result.exit_code == 0, result.stderr
         assert "no instances" in result.stdout
 
-    def test_ls_human_with_entries(
-        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_ls_human_with_entries(self, cli_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Wide console so rich never truncates the cells we assert on.
         monkeypatch.setenv("COLUMNS", "200")
         runner.invoke(cli.app, ["create", "alpha"])
@@ -745,9 +734,7 @@ class TestCmdLsAdoptedDevices:
             cmd: list[str], *args: object, **kwargs: object
         ) -> subprocess.CompletedProcess[str]:
             if cmd[:2] == ["adb", "devices"]:
-                return _adb_devices_proc(
-                    "List of devices attached\nemulator-5554\tdevice\n"
-                )
+                return _adb_devices_proc("List of devices attached\nemulator-5554\tdevice\n")
             return _ok_proc()
 
         with patch("subprocess.run", side_effect=_run):
@@ -814,9 +801,7 @@ class TestCmdLsAdoptedDevices:
         class _Ghost:
             name = "ghost"
 
-        monkeypatch.setattr(
-            api.Manager, "all", staticmethod(lambda: [_Ghost()])
-        )
+        monkeypatch.setattr(api.Manager, "all", staticmethod(lambda: [_Ghost()]))
         result = runner.invoke(cli.app, ["ls"])
         assert result.exit_code == 0, result.stderr
         assert "(no instances" in result.stdout
@@ -863,9 +848,7 @@ class TestCmdShell:
         assert cmds[1][0] == "adb"
         assert "shell" in cmds[1]
 
-    def test_shell_no_adb_exits(
-        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_shell_no_adb_exits(self, cli_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
         import shutil
 
@@ -888,8 +871,7 @@ class TestCmdShell:
             # adb connect returns 0, adb -s ... shell returns 7.
             cmd = args[0]
             if isinstance(cmd, list) and "shell" in cmd:
-                return subprocess.CompletedProcess(args=[], returncode=7,
-                                                   stdout="", stderr="")
+                return subprocess.CompletedProcess(args=[], returncode=7, stdout="", stderr="")
             return _ok_proc()
 
         with patch("subprocess.run", side_effect=_proc):
@@ -914,9 +896,7 @@ class TestCmdFrida:
         assert "localhost:27042" in cmd
         assert "com.app" in cmd
 
-    def test_frida_no_frida_exits(
-        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_frida_no_frida_exits(self, cli_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
         import shutil
 
@@ -937,9 +917,7 @@ class TestCmdFrida:
         runner.invoke(cli.app, ["create", "alpha"])
         with patch(
             "subprocess.run",
-            return_value=subprocess.CompletedProcess(
-                args=[], returncode=7, stdout="", stderr=""
-            ),
+            return_value=subprocess.CompletedProcess(args=[], returncode=7, stdout="", stderr=""),
         ):
             result = runner.invoke(cli.app, ["frida", "alpha", "-n", "com.app"])
         assert result.exit_code == 7
@@ -955,9 +933,7 @@ class TestCmdFrida:
         """
         runner.invoke(cli.app, ["create", "alpha"])
         with patch("subprocess.run", return_value=_ok_proc()) as mock_run:
-            result = runner.invoke(
-                cli.app, ["frida", "alpha", "--", "-l", "script.js"]
-            )
+            result = runner.invoke(cli.app, ["frida", "alpha", "--", "-l", "script.js"])
         assert result.exit_code == 0, result.stderr
         cmd = mock_run.call_args[0][0]
         # Beetroot prepends frida -H localhost:<port>, then the user args.
@@ -987,9 +963,7 @@ class TestCmdModule:
             return r
 
         with patch("urllib.request.urlopen", side_effect=_resp):
-            result = runner.invoke(
-                cli.app, ["module", "alpha", "https://example.com/mod.zip"]
-            )
+            result = runner.invoke(cli.app, ["module", "alpha", "https://example.com/mod.zip"])
         assert result.exit_code == 0, result.stderr
         cfg = config.load_yaml(paths.instance_yaml(registry.instance_path("alpha")))
         assert len(cfg.modules) == 1
@@ -1015,9 +989,7 @@ class TestCmdModule:
         import hashlib
 
         sha = hashlib.sha256(local.read_bytes()).hexdigest()
-        result = runner.invoke(
-            cli.app, ["module", "alpha", "local-mod.zip", "--sha256", sha]
-        )
+        result = runner.invoke(cli.app, ["module", "alpha", "local-mod.zip", "--sha256", sha])
         assert result.exit_code == 0, result.stderr
         cfg = config.load_yaml(paths.instance_yaml(root))
         assert cfg.modules[0].sha256 == sha
@@ -1087,9 +1059,7 @@ class TestTopLevelApp:
 
 
 class TestMain:
-    def test_main_dispatches_create(
-        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_main_dispatches_create(self, cli_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("sys.argv", ["beetroot", "create", "alpha"])
         # Typer's standalone-mode app() exits via SystemExit even on success.
         with pytest.raises(SystemExit) as exc:
@@ -1186,8 +1156,14 @@ class TestCmdRestore:
 
         result = runner.invoke(
             cli.app,
-            ["restore", str(cli_root / "alpha.tar.zst"), "--as", "beta",
-             "--path", str(cli_root / "beta-dir")],
+            [
+                "restore",
+                str(cli_root / "alpha.tar.zst"),
+                "--as",
+                "beta",
+                "--path",
+                str(cli_root / "beta-dir"),
+            ],
         )
         assert result.exit_code == 0, result.stderr
         beta = registry.get("beta")
@@ -1209,18 +1185,14 @@ class TestCmdRestore:
         assert snap.exit_code == 0, snap.stderr
         runner.invoke(cli.app, ["destroy", "-y", "alpha"])
 
-        result = runner.invoke(
-            cli.app, ["restore", str(cli_root / "alpha.tar.zst")]
-        )
+        result = runner.invoke(cli.app, ["restore", str(cli_root / "alpha.tar.zst")])
         assert result.exit_code == 0, result.stderr
         assert registry.get("alpha") is not None
 
     def test_restore_invalid_archive_exits(self, cli_root: Path) -> None:
         bogus = cli_root / "garbage.tar.zst"
         bogus.write_bytes(b"this is not a zstd stream")
-        result = runner.invoke(
-            cli.app, ["restore", str(bogus), "--as", "beta"]
-        )
+        result = runner.invoke(cli.app, ["restore", str(bogus), "--as", "beta"])
         assert result.exit_code == 1
         assert "error:" in result.stderr
 
@@ -1231,8 +1203,7 @@ class TestCmdRestore:
         snap = runner.invoke(cli.app, ["snapshot", "alpha"])
         assert snap.exit_code == 0, snap.stderr
 
-        def _boom(archive: Path, *, dest_name: str, dest_path: Path,
-                  force: bool = False) -> Path:
+        def _boom(archive: Path, *, dest_name: str, dest_path: Path, force: bool = False) -> Path:
             raise snapshot.SnapshotError("registry locked")
 
         monkeypatch.setattr(snapshot, "restore", _boom)
@@ -1255,8 +1226,15 @@ class TestCmdRestore:
 
         result = runner.invoke(
             cli.app,
-            ["restore", str(cli_root / "alpha.tar.zst"), "--as", "alpha",
-             "--path", str(target), "--force"],
+            [
+                "restore",
+                str(cli_root / "alpha.tar.zst"),
+                "--as",
+                "alpha",
+                "--path",
+                str(target),
+                "--force",
+            ],
         )
         assert result.exit_code == 0, result.stderr
         assert not (target / "stale.txt").exists()

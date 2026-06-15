@@ -28,6 +28,8 @@ from rich.console import Console as _RichConsole
 from . import api, builder, compose, console, hostcheck, modules_download, paths, ports, registry
 from . import snapshot as snapshot_mod
 from .backends import adb as adb_backend
+from .backends import vm as vm_backend
+from .vm import qemu as vm_qemu
 
 # Instance-name regex mirrors ``api._INSTANCE_NAME_RE`` — used to
 # validate names auto-derived from adb serials in :func:`adopt` before
@@ -379,9 +381,15 @@ def _binder_preflight(mode: hostcheck.BinderMode, *, warned: bool) -> bool:
       the one-line advisory at most once across an ``up`` fan-out and
       start anyway (``docker compose up -d`` succeeds but Android may not
       boot — the advisory is the only symptom otherwise).
-    * ``block`` (strict ``host`` mode, host can't provide binder) and
-      ``vm`` (engine not wired yet) — ``raise _error`` so the user gets a
-      fast, actionable failure instead of a container that never boots.
+    * ``block`` (strict ``host`` mode, host can't provide binder) —
+      ``raise _error`` so the user gets a fast, actionable failure instead
+      of a container that never boots.
+
+    The ``vm`` plan action is handled by the VM backend's own banner in the
+    ``up`` verb, not here: a ``binder: vm`` instance resolves to
+    :class:`beetroot.backends.vm.VmDeviceBackend`, never an
+    :class:`api.Instance`, so this redroid-only preflight only ever sees the
+    ``auto`` / ``host`` modes.
 
     Args:
         mode: The instance's configured binder mode (``cfg.binder``).
@@ -392,12 +400,12 @@ def _binder_preflight(mode: hostcheck.BinderMode, *, warned: bool) -> bool:
         The updated ``warned`` flag (True once the advisory has printed).
 
     Raises:
-        typer.Exit: For the ``block`` and ``vm`` plans (via :func:`_error`).
+        typer.Exit: For the ``block`` plan (via :func:`_error`).
     """
     plan = hostcheck.plan_binder_runtime(mode, hostcheck.binder_status())
     if plan.action == "proceed":
         return warned
-    if plan.action in ("block", "vm"):
+    if plan.action == "block":
         remedy = f" Remedy: {plan.remedy}." if plan.remedy else ""
         raise _error(f"{plan.reason}.{remedy}")
     if not warned:
@@ -409,6 +417,44 @@ def _binder_preflight(mode: hostcheck.BinderMode, *, warned: bool) -> bool:
             err=True,
         )
     return True
+
+
+def _vm_up_banner(backend: vm_backend.VmDeviceBackend) -> None:
+    """
+    Print the capability-ladder banner for a ``binder: vm`` instance.
+
+    Implements the design doc §7 UX: ONE banner when KVM-accelerated, a
+    LOUD banner (noting the ~5-20x slowdown — slow first boot is expected,
+    not a hang) when the host falls back to TCG. An explicit ``accel: kvm``
+    on a host without ``/dev/kvm`` raises here (via :meth:`resolved_accel`)
+    so the user gets the actionable error before QEMU is even spawned.
+
+    Args:
+        backend: The resolved VM backend about to be started.
+
+    Raises:
+        typer.Exit: If ``accel: kvm`` was demanded but ``/dev/kvm`` is
+            unavailable (via :func:`_error`).
+    """
+    try:
+        accel = backend.resolved_accel()
+    except vm_qemu.QemuLaunchError as e:
+        raise _error(str(e)) from e
+    if accel == "kvm":
+        typer.echo(
+            "[beetroot] backend: emulated micro-VM (no host binder) — "
+            "acceleration: KVM (near-native).",
+            err=True,
+        )
+        return
+    typer.echo(
+        "[beetroot] backend: emulated micro-VM (no host binder) — "
+        "acceleration: TCG (software): /dev/kvm not available. "
+        "First boot is SLOW (~5-20x; minutes, not seconds) — this is "
+        "expected, not a hang. Pin `vm.accel: kvm` on a host with nested "
+        "virt for near-native speed.",
+        err=True,
+    )
 
 
 @app.command()
@@ -450,13 +496,30 @@ def up(
         # can't provide it: ``auto`` warns once (the container starts but
         # Android may not boot — `docker compose up -d` "succeeds"
         # regardless, so without this the only symptom is adb never
-        # connecting); ``host`` fails fast; ``vm`` opts into the (not-yet
-        # -wired) emulated micro-VM. adb-backed instances don't need
-        # binder, so the preflight is gated on the redroid kind.
+        # connecting); ``host`` fails fast; ``vm`` dispatches to the QEMU
+        # micro-VM backend (a separate registry kind, handled below). adb-
+        # backed instances don't need binder, so the preflight is gated on
+        # the redroid kind.
         if isinstance(backend, api.Instance):
+            if backend.config.binder == "vm":
+                # Registry says redroid but the yaml was hand-edited to
+                # ``binder: vm`` without re-applying — the two are out of
+                # sync. Fail fast with the fix rather than silently starting
+                # a redroid container that can't honour the vm intent.
+                raise _error(
+                    f"instance {instance_name!r} sets binder: vm but is still "
+                    "registered as a redroid backend. Run "
+                    f"`beetroot apply {instance_name}` to switch it to the "
+                    "micro-VM engine, then retry `beetroot up`."
+                )
             binder_warned = _binder_preflight(backend.config.binder, warned=binder_warned)
-        lc.up()
-        if isinstance(backend, api.Instance):
+        if isinstance(backend, vm_backend.VmDeviceBackend):
+            _vm_up_banner(backend)
+        try:
+            lc.up()
+        except vm_qemu.QemuLaunchError as e:
+            raise _error(str(e)) from e
+        if isinstance(backend, api.Instance | vm_backend.VmDeviceBackend):
             p = backend.ports
             typer.echo(
                 f"[beetroot] {backend.name} up — "
@@ -804,9 +867,10 @@ def _adb_json_row(
         "stealth_paths": {},
     }
     # For adb-kind backends, include the serial so scripts that check
-    # row["serial"] can distinguish this row from a redroid instance.
+    # row["serial"] can distinguish this row from a redroid instance. The
+    # vm-kind backend reaches here too (it has no serial → the None branch).
     serial = getattr(meta.backend, "serial", None)
-    if serial is not None:  # pragma: no branch  # only AdbBackendConfig reaches here today
+    if serial is not None:
         row["serial"] = serial
     return row
 

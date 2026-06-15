@@ -113,6 +113,26 @@ class AdbBackendConfig(BackendConfigBase):
     serial: str
 
 
+class VmBackendConfig(BackendConfigBase):
+    """
+    Backend config for the QEMU micro-VM backend (``binder: vm``).
+
+    A directory-backed backend, like :class:`RedroidBackendConfig`: the
+    instance directory holds the ``beetroot.yaml`` (which carries the
+    ``vm:`` tunables) plus the QEMU pidfile written at ``up`` time. The
+    guest kernel + rootfs images are host paths referenced from the config
+    / settings, not stored in the registry.
+
+    Attributes:
+        kind: Discriminator tag — always ``"vm"``.
+        absolute_path: Absolute path to the instance directory (the
+            directory containing ``beetroot.yaml``).
+    """
+
+    kind: Literal["vm"] = "vm"  # type: ignore[mutable-override]  # Literal narrows the base str; required for pydantic discriminated dispatch
+    absolute_path: str
+
+
 class UnresolvedBackendConfig(BackendConfigBase):
     """
     Opaque placeholder for an unknown backend kind.
@@ -152,6 +172,7 @@ class UnresolvedBackendConfig(BackendConfigBase):
 _BACKEND_CONFIG_REGISTRY: dict[str, type[BackendConfigBase]] = {
     "redroid": RedroidBackendConfig,
     "adb": AdbBackendConfig,
+    "vm": VmBackendConfig,
 }
 
 # Type alias for back-compat: callers that imported ``BackendConfig``
@@ -632,6 +653,53 @@ def set_stealth_paths(name: str, stealth_paths: dict[str, str]) -> None:
         _write(path, data)
 
 
+def reconcile_backend_kind(name: str, binder: str) -> bool:
+    """
+    Sync a directory-backed row's kind to its config's ``binder`` mode.
+
+    ``binder: vm`` instances must be registered as :class:`VmBackendConfig`
+    so :meth:`beetroot.api.Manager.resolve` dispatches to the QEMU micro-VM
+    engine; every other mode is the redroid-over-compose backend. When a
+    user hand-edits ``binder`` in ``beetroot.yaml`` after creation, the next
+    ``beetroot apply`` calls this to flip the registry kind to match —
+    preserving ``absolute_path`` and the allocated index.
+
+    Only the redroid ↔ vm pair is reconciled (both are directory-backed and
+    share the ``absolute_path`` field); adb and third-party rows are left
+    untouched.
+
+    Args:
+        name: Instance name to reconcile.
+        binder: The instance config's ``binder`` value (``auto`` / ``host``
+            / ``vm``).
+
+    Returns:
+        True if the row's kind was changed, False if it already matched (or
+        the row isn't a directory-backed redroid/vm kind).
+    """
+    want_vm = binder == "vm"
+    path = paths.user_registry_file()
+    with _locked(path):
+        data = _read(path)
+        meta = data.instances.get(name)
+        if meta is None:
+            return False
+        backend = meta.backend
+        if not isinstance(backend, RedroidBackendConfig | VmBackendConfig):
+            return False
+        is_vm = isinstance(backend, VmBackendConfig)
+        if is_vm == want_vm:
+            return False
+        abs_path = backend.absolute_path
+        meta.backend = (
+            VmBackendConfig(absolute_path=abs_path)
+            if want_vm
+            else RedroidBackendConfig(absolute_path=abs_path)
+        )
+        _write(path, data)
+        return True
+
+
 def instance_path(name: str) -> Path:
     """
     Return the absolute path to an instance's directory, from the registry.
@@ -655,7 +723,7 @@ def instance_path(name: str) -> Path:
     if meta is None:
         raise RegistryError(f"unknown instance {name!r}; not in registry")
     backend = meta.backend
-    if not isinstance(backend, RedroidBackendConfig):
+    if not isinstance(backend, RedroidBackendConfig | VmBackendConfig):
         raise RegistryError(
             f"instance {name!r} is a {backend.kind!r} backend; it has no on-disk directory"
         )
@@ -685,7 +753,7 @@ def all_resolved_ports() -> dict[str, dict[str, int]]:
     out: dict[str, dict[str, int]] = {}
     for name, meta in list_instances().items():
         backend = meta.backend
-        if isinstance(backend, RedroidBackendConfig):
+        if isinstance(backend, RedroidBackendConfig | VmBackendConfig):
             try:
                 cfg = load_yaml(paths.instance_yaml(Path(backend.absolute_path)))
             except FileNotFoundError:

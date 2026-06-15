@@ -539,10 +539,16 @@ class Instance:
         else:
             config.write_yaml(yaml_path, effective_cfg)
         # Atomic allocation + registration under one file lock. Two
-        # parallel create() calls cannot grab the same stride slot.
-        index = registry.add_allocating(
-            name, backend=registry.RedroidBackendConfig(absolute_path=str(target_root))
+        # parallel create() calls cannot grab the same stride slot. The
+        # ``binder: vm`` opt-in registers the QEMU micro-VM backend kind so
+        # ``Manager.resolve`` dispatches to ``VmDeviceBackend`` (issue #44);
+        # every other binder mode is the redroid-over-compose backend.
+        backend_cfg: registry.BackendConfigBase = (
+            registry.VmBackendConfig(absolute_path=str(target_root))
+            if effective_cfg.binder == "vm"
+            else registry.RedroidBackendConfig(absolute_path=str(target_root))
         )
+        index = registry.add_allocating(name, backend=backend_cfg)
         new_ports = ports.resolve_ports(index, effective_cfg.ports)
         inst = cls(name=name, root=target_root, cfg=effective_cfg)
         try:
@@ -585,11 +591,14 @@ class Instance:
         if registry.get(resolved_name) is not None:
             raise ValueError(f"instance {resolved_name!r} already in registry")
         cfg = config.load_yaml(yaml_path)
-        # Atomic allocation + registration under one file lock.
-        index = registry.add_allocating(
-            resolved_name,
-            backend=registry.RedroidBackendConfig(absolute_path=str(target_root)),
+        # Atomic allocation + registration under one file lock. ``binder: vm``
+        # registers the QEMU micro-VM backend kind (issue #44).
+        backend_cfg: registry.BackendConfigBase = (
+            registry.VmBackendConfig(absolute_path=str(target_root))
+            if cfg.binder == "vm"
+            else registry.RedroidBackendConfig(absolute_path=str(target_root))
         )
+        index = registry.add_allocating(resolved_name, backend=backend_cfg)
         new_ports = ports.resolve_ports(index, cfg.ports)
         inst = cls(name=resolved_name, root=target_root, cfg=cfg)
         try:
@@ -803,6 +812,11 @@ class Instance:
         re-stages Frida + modules. A subsequent :meth:`restart` is
         required for the container to pick up the new config.
 
+        If the reloaded config now sets ``binder: vm`` (a hand-edit after
+        ``create`` registered the redroid kind), the registry row is flipped
+        to the QEMU micro-VM backend kind so the next resolution dispatches
+        to ``VmDeviceBackend`` (issue #44).
+
         Raises:
             ValueError: If the re-resolved ports collide with another
                 registered instance.
@@ -811,6 +825,7 @@ class Instance:
         new_ports = ports.resolve_ports(self.index, self._cfg.ports)
         _check_port_collisions(self._name, new_ports)
         self._stage()
+        registry.reconcile_backend_kind(self._name, self._cfg.binder)
 
     def destroy(self, *, yes: bool = False) -> None:
         """
