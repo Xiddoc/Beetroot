@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -172,6 +173,194 @@ class TestVmUp:
         assert result.exit_code == 1
         assert "beetroot apply alpha" in result.stderr
         assert not mock_run.called
+
+    def test_up_vm_row_with_host_yaml_demands_apply(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # vm-registry row, but yaml hand-edited back to binder: host →
+        # the up() guard fails fast with BackendCapabilityError (mapped to
+        # exit 2 by cli.main; CliRunner surfaces it as result.exception)
+        # rather than booting QEMU.
+        _stage_vm_artifacts(monkeypatch, cli_root)
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(root / "beetroot.yaml", config.InstanceConfig(binder="vm"))
+        api.Instance.register(root, name="vm1")
+        config.write_yaml(root / "beetroot.yaml", config.InstanceConfig(binder="host"))
+
+        def _no_launch(_self: object, _argv: list[str]) -> int:
+            raise AssertionError("QEMU must not launch")
+
+        monkeypatch.setattr(qemu.QemuProcess, "start", _no_launch)
+        result = runner.invoke(cli.app, ["up", "vm1"])
+        assert isinstance(result.exception, api.BackendCapabilityError)
+        assert "beetroot apply vm1" in str(result.exception)
+
+    def test_double_up_friendly_error(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An already-running VM → friendly error (not a traceback) via the
+        # QemuLaunchError "already running" guard surfaced through the CLI.
+        _stage_vm_artifacts(monkeypatch, cli_root)
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(root / "beetroot.yaml", config.InstanceConfig(binder="vm"))
+        api.Instance.register(root, name="vm1")
+        monkeypatch.setattr(qemu, "detect_accel", lambda _r: "tcg")
+        monkeypatch.setattr(qemu.QemuProcess, "is_running", lambda _self: True)
+        result = runner.invoke(cli.app, ["up", "vm1"])
+        assert result.exit_code == 1
+        assert "already running" in result.stderr
+
+    def test_down_when_stopped_is_noop(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(root / "beetroot.yaml", config.InstanceConfig(binder="vm"))
+        api.Instance.register(root, name="vm1")
+        monkeypatch.setattr(qemu.QemuProcess, "terminate", lambda _self: False)
+        result = runner.invoke(cli.app, ["down", "vm1"])
+        assert result.exit_code == 0, result.stderr
+        assert "vm1 down" in result.stdout
+
+
+class TestVmRestart:
+    def test_restart_prints_banner_and_relaunches(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # restart re-launches QEMU, so it must print the same TCG banner up
+        # prints — and launch the VM.
+        _stage_vm_artifacts(monkeypatch, cli_root)
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(root / "beetroot.yaml", config.InstanceConfig(binder="vm"))
+        api.Instance.register(root, name="vm1")
+        monkeypatch.setattr(qemu, "detect_accel", lambda _r: "tcg")
+        monkeypatch.setattr(qemu.QemuProcess, "terminate", lambda _self: True)
+        launched: list[list[str]] = []
+
+        def _start(_self: object, argv: list[str]) -> int:
+            launched.append(argv)
+            return 1
+
+        monkeypatch.setattr(qemu.QemuProcess, "start", _start)
+        result = runner.invoke(cli.app, ["restart", "vm1"])
+        assert result.exit_code == 0, result.stderr
+        assert "TCG (software)" in result.stderr
+        assert "5-20x" in result.stderr
+        assert launched
+        assert "vm1 restarted" in result.stdout
+
+    def test_restart_missing_artifact_raises_launch_error(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # restart on a vm instance with no kernel/rootfs raises
+        # QemuLaunchError from up() (not the accel-banner path). cli.main()
+        # maps it to a friendly error (covered separately); here we assert
+        # the verb does not swallow it into a redroid-shaped path.
+        monkeypatch.setattr(vm_backend, "settings", Settings(vm_kernel="", vm_rootfs=""))
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(root / "beetroot.yaml", config.InstanceConfig(binder="vm"))
+        api.Instance.register(root, name="vm1")
+        monkeypatch.setattr(qemu, "detect_accel", lambda _r: "tcg")
+        monkeypatch.setattr(qemu.QemuProcess, "terminate", lambda _self: True)
+        result = runner.invoke(cli.app, ["restart", "vm1"])
+        assert isinstance(result.exception, qemu.QemuLaunchError)
+        assert "no VM kernel configured" in str(result.exception)
+
+    def test_restart_missing_artifact_friendly_via_main(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # B3: a non-`up` path to QEMU launch (restart) must surface as
+        # `error: ...` + exit 1 via cli.main(), never a raw traceback.
+        monkeypatch.setattr(vm_backend, "settings", Settings(vm_kernel="", vm_rootfs=""))
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(root / "beetroot.yaml", config.InstanceConfig(binder="vm"))
+        api.Instance.register(root, name="vm1")
+        monkeypatch.setattr(qemu, "detect_accel", lambda _r: "tcg")
+        monkeypatch.setattr(qemu.QemuProcess, "terminate", lambda _self: True)
+        monkeypatch.setattr(sys, "argv", ["beetroot", "restart", "vm1"])
+        stderr: list[str] = []
+        monkeypatch.setattr(
+            "beetroot.cli.typer.echo",
+            lambda msg, *, err=False, **_k: stderr.append(msg) if err else None,
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+        joined = "\n".join(stderr)
+        assert "error: no VM kernel configured" in joined
+        assert "Traceback" not in joined
+
+    def test_restart_explicit_kvm_without_dev_kvm_is_friendly_error(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # accel: kvm without /dev/kvm → the banner's resolved_accel raises,
+        # surfaced as a friendly error before any relaunch.
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(
+            root / "beetroot.yaml",
+            config.InstanceConfig(binder="vm", vm={"accel": "kvm"}),  # type: ignore[arg-type]
+        )
+        api.Instance.register(root, name="vm1")
+        monkeypatch.setattr(qemu, "_dev_kvm_usable", lambda: False)
+
+        def _no_launch(_self: object, _argv: list[str]) -> int:
+            raise AssertionError("QEMU must not relaunch when kvm is demanded but absent")
+
+        monkeypatch.setattr(qemu.QemuProcess, "start", _no_launch)
+        monkeypatch.setattr(qemu.QemuProcess, "terminate", lambda _self: True)
+        result = runner.invoke(cli.app, ["restart", "vm1"])
+        assert result.exit_code == 1
+        assert "/dev/kvm is absent" in result.stderr
+
+
+class TestVmDestroyOrphan:
+    def test_vm_orphan_can_be_destroyed(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # vm-kind row whose beetroot.yaml is gone (orphan) can still be
+        # destroyed via the directory-backed orphan fallback.
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(root / "beetroot.yaml", config.InstanceConfig(binder="vm"))
+        api.Instance.register(root, name="vm1")
+        # Remove the yaml → Manager.resolve now raises InstanceNotFoundError.
+        (root / "beetroot.yaml").unlink()
+        terminated: list[str] = []
+
+        def _terminate(_self: object) -> bool:
+            terminated.append("t")
+            return True
+
+        monkeypatch.setattr(qemu.QemuProcess, "terminate", _terminate)
+        result = runner.invoke(cli.app, ["destroy", "vm1", "-y"])
+        assert result.exit_code == 0, result.stderr
+        assert "destroyed vm1" in result.stdout
+        assert registry.get("vm1") is None
+        assert not root.exists()
+        # The orphan path terminated the QEMU process (no compose project).
+        assert terminated == ["t"]
+
+    def test_vm_orphan_dir_gone_cleans_registry(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # vm-kind row whose entire directory is gone → just clean the
+        # registry row (no QEMU terminate, no rmtree).
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(root / "beetroot.yaml", config.InstanceConfig(binder="vm"))
+        api.Instance.register(root, name="vm1")
+        import shutil as _shutil
+
+        _shutil.rmtree(root)
+        result = runner.invoke(cli.app, ["destroy", "vm1", "-y"])
+        assert result.exit_code == 0, result.stderr
+        assert registry.get("vm1") is None
 
 
 # ---------------------------------------------------------------------------
