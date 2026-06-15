@@ -81,7 +81,8 @@ class TestProtocolSurface:
     def test_addresses_use_resolved_ports(self, tmp_path: Path) -> None:
         backend = _make_backend(tmp_path, index=1)
         assert backend.adb_address == "localhost:5565"
-        assert backend.frida_address == "localhost:27052"
+        # Frida is unsupported on the vm backend (#44) — no working endpoint.
+        assert backend.frida_address == "unsupported"
         assert backend.config.binder == "vm"
 
     def test_is_available_reflects_process(
@@ -100,36 +101,28 @@ class TestProtocolSurface:
 
 
 class TestInstallFrida:
-    def test_uses_config_version(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_install_frida_is_unsupported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Frida is not wired through the network-isolated guest (issue
+        # #44): install_frida raises a friendly, actionable error and never
+        # stages a binary.
         backend = _make_backend(
             tmp_path, cfg=config.InstanceConfig(binder="vm", frida=config.Frida(version="16.4.10")),
         )
-        seen: dict[str, object] = {}
-        monkeypatch.setattr(
-            frida_download,
-            "stage_for_instance",
-            lambda root, version: seen.update(root=root, version=version),
-        )
-        backend.install_frida()
-        assert seen["version"] == "16.4.10"
 
-    def test_explicit_version_overrides(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        backend = _make_backend(tmp_path)
-        seen: dict[str, object] = {}
-        monkeypatch.setattr(
-            frida_download,
-            "stage_for_instance",
-            lambda root, version: seen.update(version=version),
-        )
-        backend.install_frida("16.5.0")
-        assert seen["version"] == "16.5.0"
+        def _boom(*_a: object, **_k: object) -> None:
+            raise AssertionError("vm install_frida must not stage a frida-server")
 
-    def test_no_frida_block_and_no_version_errors(self, tmp_path: Path) -> None:
-        backend = _make_backend(tmp_path)  # default cfg has no frida block
-        with pytest.raises(ValueError, match="no frida: block"):
+        monkeypatch.setattr(frida_download, "stage_for_instance", _boom)
+        monkeypatch.setattr(frida_download, "stage_empty", _boom)
+        with pytest.raises(api.BackendCapabilityError, match="not yet supported on the 'vm'"):
             backend.install_frida()
+
+    def test_install_frida_unsupported_even_with_explicit_version(self, tmp_path: Path) -> None:
+        backend = _make_backend(tmp_path)
+        with pytest.raises(api.BackendCapabilityError, match="network-isolated"):
+            backend.install_frida("16.5.0")
 
 
 class TestShell:
@@ -160,27 +153,24 @@ class TestShell:
 
 
 class TestFridaCli:
-    def test_frida_cli_prepends_host(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        backend = _make_backend(tmp_path)
-        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-        captured: list[list[str]] = []
-
-        def _run(cmd: list[str], **_k: object) -> subprocess.CompletedProcess[str]:
-            captured.append(list(cmd))
-            return subprocess.CompletedProcess(args=cmd, returncode=3)
-
-        monkeypatch.setattr("beetroot.backends.vm.subprocess.run", _run)
-        rc = backend.frida_cli(["-n", "com.app"])
-        assert rc == 3
-        assert captured[0] == ["frida", "-H", "localhost:27042", "-n", "com.app"]
-
-    def test_frida_cli_without_frida_raises(
+    def test_frida_cli_is_unsupported(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # The guest never exposes a Frida port, so frida_cli raises rather
+        # than spawning a `frida` that hangs against a dead endpoint.
         backend = _make_backend(tmp_path)
-        monkeypatch.setattr(shutil, "which", lambda _n: None)
-        with pytest.raises(api.FridaNotInstalledError):
+
+        def _boom(*_a: object, **_k: object) -> object:
+            raise AssertionError("vm frida_cli must not spawn the frida CLI")
+
+        monkeypatch.setattr("beetroot.backends.vm.subprocess.run", _boom)
+        with pytest.raises(api.BackendCapabilityError, match="not yet supported on the 'vm'"):
             backend.frida_cli(["-n", "com.app"])
+
+    def test_frida_address_reports_unsupported(self, tmp_path: Path) -> None:
+        # No working endpoint is ever advertised in ls/status rows.
+        backend = _make_backend(tmp_path)
+        assert backend.frida_address == "unsupported"
 
 
 # ---------------------------------------------------------------------------
@@ -270,8 +260,65 @@ class TestLifecycle:
             return 1234
 
         monkeypatch.setattr(qemu.QemuProcess, "start", _start)
+        monkeypatch.setattr(
+            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None
+        )
         backend.up()
         assert launched["argv"][0] == "qemu-system-x86_64"
+
+    def test_up_rejects_non_vm_binder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A vm-registry row whose yaml was hand-edited back to binder: host
+        # must fail fast (run `apply`) rather than boot QEMU anyway.
+        backend = _make_backend(tmp_path, cfg=config.InstanceConfig(binder="host"))
+
+        def _no_launch(_self: object, _argv: list[str]) -> int:
+            raise AssertionError("QEMU must not launch when the yaml is no longer binder: vm")
+
+        monkeypatch.setattr(qemu.QemuProcess, "start", _no_launch)
+        with pytest.raises(api.BackendCapabilityError, match="run `beetroot apply"):
+            backend.up()
+
+    def test_up_full_composition_argv_contents(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Full path: on-disk yaml (binder: vm, non-default smp/memory) →
+        # resolve artifacts → up() → assert the captured QEMU argv carries
+        # the resolved hostfwd port, -smp, -m, and the TCG accel flags.
+        kernel = tmp_path / "bzImage"
+        rootfs = tmp_path / "rootdisk.img"
+        kernel.write_bytes(b"k")
+        rootfs.write_bytes(b"r")
+        cfg = config.InstanceConfig(
+            binder="vm",
+            vm={
+                "kernel": str(kernel),
+                "rootfs": str(rootfs),
+                "accel": "tcg",
+                "smp": 6,
+                "memory_mib": 3072,
+            },  # type: ignore[arg-type]
+        )
+        backend = _make_backend(tmp_path, cfg=cfg, index=3)  # index 3 → adb 5585
+        launched: dict[str, list[str]] = {}
+
+        def _start(_self: object, argv: list[str]) -> int:
+            launched["argv"] = argv
+            return 1
+
+        monkeypatch.setattr(qemu.QemuProcess, "start", _start)
+        monkeypatch.setattr(
+            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None
+        )
+        backend.up()
+        argv = launched["argv"]
+        assert argv[0] == "qemu-system-x86_64"
+        assert "hostfwd=tcp:127.0.0.1:5585-:5555" in argv[argv.index("-netdev") + 1]
+        assert argv[argv.index("-smp") + 1] == "6"
+        assert argv[argv.index("-m") + 1] == "3072"
+        assert argv[argv.index("-accel") + 1] == "tcg,thread=multi,tb-size=1024"
+        assert argv[argv.index("-cpu") + 1] == "max"
 
     def test_up_propagates_accel_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -306,6 +353,112 @@ class TestLifecycle:
         assert order == ["down", "up"]
 
 
+class TestWaitForAdbConnect:
+    def _connect_result(self, *, ok: bool) -> subprocess.CompletedProcess[str]:
+        if ok:
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="connected", stderr="")
+        return subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="cannot connect to localhost:5555"
+        )
+
+    def test_retries_until_connect_succeeds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # adbd binds its TCP port a few seconds after boot, so the first
+        # connects are refused; up() must retry and ultimately attach.
+        backend = _make_backend(tmp_path)
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        attempts: list[list[str]] = []
+
+        def _run(cmd: list[str], **_k: object) -> subprocess.CompletedProcess[str]:
+            attempts.append(list(cmd))
+            return self._connect_result(ok=len(attempts) >= 3)
+
+        sleeps: list[float] = []
+        monkeypatch.setattr("beetroot.backends.vm.subprocess.run", _run)
+        monkeypatch.setattr("beetroot.backends.vm.time.sleep", sleeps.append)
+        backend._wait_for_adb_connect()
+        assert len(attempts) == 3
+        assert attempts[0] == ["adb", "connect", "localhost:5555"]
+        # Two refusals → two backoff sleeps before the third (winning) attempt.
+        assert len(sleeps) == 2
+
+    def test_happy_path_first_try_does_not_sleep(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = _make_backend(tmp_path)
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        attempts: list[list[str]] = []
+
+        def _run(cmd: list[str], **_k: object) -> subprocess.CompletedProcess[str]:
+            attempts.append(list(cmd))
+            return self._connect_result(ok=True)
+
+        def _no_sleep(_s: float) -> None:
+            raise AssertionError("happy path must not sleep — endpoint accepted first try")
+
+        monkeypatch.setattr("beetroot.backends.vm.subprocess.run", _run)
+        monkeypatch.setattr("beetroot.backends.vm.time.sleep", _no_sleep)
+        backend._wait_for_adb_connect()
+        assert len(attempts) == 1
+
+    def test_never_connects_raises_friendly_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = _make_backend(tmp_path)
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(
+            "beetroot.backends.vm.subprocess.run",
+            lambda *_a, **_k: self._connect_result(ok=False),
+        )
+        # Advance a synthetic clock past the deadline on the second read so
+        # the loop exits without real waiting.
+        ticks = iter([0.0, 0.0, 999.0])
+        monkeypatch.setattr("beetroot.backends.vm.time.monotonic", lambda: next(ticks))
+        monkeypatch.setattr("beetroot.backends.vm.time.sleep", lambda _s: None)
+        with pytest.raises(qemu.QemuLaunchError, match="did not expose ADB"):
+            backend._wait_for_adb_connect()
+
+    def test_subprocess_error_treated_as_not_connected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An adb connect that times out / fails to spawn is "not connected",
+        # not a crash — the poll keeps trying until the deadline.
+        def _boom(*_a: object, **_k: object) -> subprocess.CompletedProcess[str]:
+            raise subprocess.TimeoutExpired(cmd="adb", timeout=5)
+
+        monkeypatch.setattr("beetroot.backends.vm.subprocess.run", _boom)
+        assert vm_backend.VmDeviceBackend._adb_connect_ok("localhost:5555") is False
+
+    def test_without_adb_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = _make_backend(tmp_path)
+        monkeypatch.setattr(shutil, "which", lambda _n: None)
+        with pytest.raises(api.AdbNotInstalledError):
+            backend._wait_for_adb_connect()
+
+    def test_up_full_path_launches_then_waits_for_adb(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Full composition: on-disk binder: vm → up() launches QEMU → then
+        # polls adb connect, retrying past the early refusals to attach.
+        _stage_artifacts(monkeypatch, tmp_path)
+        backend = _make_backend(tmp_path)
+        monkeypatch.setattr(qemu, "detect_accel", lambda _req: "tcg")
+        monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 4321)
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        attempts: list[list[str]] = []
+
+        def _run(cmd: list[str], **_k: object) -> subprocess.CompletedProcess[str]:
+            attempts.append(list(cmd))
+            return self._connect_result(ok=len(attempts) >= 2)
+
+        monkeypatch.setattr("beetroot.backends.vm.subprocess.run", _run)
+        monkeypatch.setattr("beetroot.backends.vm.time.sleep", lambda _s: None)
+        backend.up()
+        assert attempts[0] == ["adb", "connect", "localhost:5555"]
+        assert len(attempts) == 2
+
+
 # ---------------------------------------------------------------------------
 # health() checks
 # ---------------------------------------------------------------------------
@@ -322,8 +475,11 @@ class TestHealth:
         assert rows["vm.process"].status == "pass"
         assert rows["vm.accel"].status == "pass"
         assert "near-native" in (rows["vm.accel"].reason or "")
-        # Shared adb/frida rows are present (uniform check names).
+        # Shared adb/magisk rows are present (uniform check names).
         assert "magisk.zygisk" in rows
+        # Frida can never pass on the network-isolated guest (#44), so the
+        # handshake row is omitted rather than a permanent fail.
+        assert "frida.handshake" not in rows
 
     def test_health_process_down_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -390,24 +546,28 @@ class TestApplyDestroy:
         with pytest.raises(ValueError, match="collides"):
             backend.apply()
 
-    def test_apply_stages_frida_when_configured(
+    def test_apply_does_not_stage_frida(
         self, isolated_registry: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Even with a frida: block, apply()/`_stage` must NOT stage a
+        # frida-server for the vm backend — the guest can't read it (#44).
         root = isolated_registry / "inst"
         root.mkdir()
         cfg_obj = config.InstanceConfig(binder="vm", frida=config.Frida(version="16.4.10"))
         _write_yaml(root, cfg_obj)
         cfg = registry.VmBackendConfig(absolute_path=str(root))
         index = registry.add_allocating("vmphone", backend=cfg)
-        staged: dict[str, object] = {}
-        monkeypatch.setattr(
-            frida_download,
-            "stage_for_instance",
-            lambda r, version, expected_sha256=None: staged.update(version=version),
-        )
+
+        def _boom(*_a: object, **_k: object) -> None:
+            raise AssertionError("vm _stage must not touch frida staging")
+
+        monkeypatch.setattr(frida_download, "stage_for_instance", _boom)
+        monkeypatch.setattr(frida_download, "stage_empty", _boom)
         backend = vm_backend.VmDeviceBackend(name="vmphone", root=root, cfg=cfg_obj, index=index)
         backend.apply()
-        assert staged["version"] == "16.4.10"
+        # The .env still renders + modules dir is created.
+        assert "INSTANCE_NAME=vmphone" in (root / ".env").read_text()
+        assert not (root / "frida-server").exists()
 
     def test_destroy_requires_yes(self, tmp_path: Path) -> None:
         backend = _make_backend(tmp_path)

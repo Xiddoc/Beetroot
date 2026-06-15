@@ -563,7 +563,14 @@ def restart(
     for instance_name in _resolve_lifecycle_names(list(names or []), all_, "restart"):
         _ensure_exists(instance_name)
         backend = api.Manager.resolve(instance_name)
-        cast(api.Lifecycle, _require(backend, api.Lifecycle, "restart")).restart()
+        lc = cast(api.Lifecycle, _require(backend, api.Lifecycle, "restart"))
+        # A vm restart re-launches QEMU, so print the same TCG/KVM banner
+        # (and surface an explicit-kvm-without-/dev/kvm error before the
+        # restart) the ``up`` verb prints — restart shouldn't be a quieter
+        # path to the same expensive boot.
+        if isinstance(backend, vm_backend.VmDeviceBackend):
+            _vm_up_banner(backend)
+        lc.restart()
         typer.echo(f"[beetroot] {instance_name} restarted")
 
 
@@ -609,29 +616,40 @@ def destroy(
     except api.InstanceNotFoundError:
         pass  # fall through to orphan-cleanup path below
 
-    # Orphan path: redroid row whose beetroot.yaml is gone. Manager.resolve
-    # raises InstanceNotFoundError for these because Instance.load() trips
-    # on the missing yaml. We check the registry kind here: non-redroid
-    # orphans (shouldn't exist, but be safe) just get the registry row
-    # removed; redroid orphans also run the compose/dir cleanup.
+    # Orphan path: a directory-backed (redroid / vm) row whose
+    # beetroot.yaml is gone. Manager.resolve raises InstanceNotFoundError
+    # for these because the backend's loader trips on the missing yaml. We
+    # check the registry kind here: non-directory-backed orphans (shouldn't
+    # exist, but be safe) just get the registry row removed; redroid orphans
+    # also run the compose/dir cleanup, vm orphans terminate the QEMU
+    # process (no compose project to tear down).
     meta = registry.get(name)
     if meta is None:  # pragma: no cover  # _ensure_exists ran upstream; defensive net
         raise _error(f"no instance named {name!r}. Try `beetroot ls`.")
-    if not isinstance(meta.backend, registry.RedroidBackendConfig):
-        # A non-redroid row that Manager.resolve couldn't build — surface
-        # a helpful error pointing at `beetroot forget`.
+    if not isinstance(meta.backend, registry.RedroidBackendConfig | registry.VmBackendConfig):
+        # A non-directory-backed row that Manager.resolve couldn't build —
+        # surface a helpful error pointing at `beetroot forget`. The
+        # directory-backed kinds (redroid / vm — both carry absolute_path,
+        # mirroring registry.instance_path / all_resolved_ports) fall
+        # through to the dir-cleanup path below.
         raise api.BackendCapabilityError(
             f"'destroy' is not supported by the {meta.backend.kind!r} backend "
             f"for instance {name!r}."
         )
+    is_vm_orphan = isinstance(meta.backend, registry.VmBackendConfig)
     root = registry.instance_path(name)
     if root.exists():
-        try:
-            compose.down(name, root, volumes=True)
-        except compose.ComposeError as e:
-            # Surface the compose failure as a "continuing" advisory so
-            # the user knows the host-side cleanup still ran.
-            typer.echo(f"[beetroot] (compose down failed: {e}; continuing)")
+        if is_vm_orphan:
+            # No compose project for a vm instance — terminate the QEMU
+            # process via its pidfile (a no-op if it isn't running).
+            vm_qemu.QemuProcess(root).terminate()
+        else:
+            try:
+                compose.down(name, root, volumes=True)
+            except compose.ComposeError as e:
+                # Surface the compose failure as a "continuing" advisory so
+                # the user knows the host-side cleanup still ran.
+                typer.echo(f"[beetroot] (compose down failed: {e}; continuing)")
         # Remove the registry row BEFORE deleting the directory so an
         # interrupt between the two operations always leaves a clean
         # state: a registered-but-deleted instance (row first) is
@@ -1287,6 +1305,15 @@ def main() -> None:
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
     except compose.ComposeError as e:
+        typer.echo(f"error: {e}", err=True)
+        sys.exit(1)
+    except vm_qemu.QemuLaunchError as e:
+        # Any non-``up`` path to a QEMU launch (e.g. ``restart``, which
+        # calls ``up()`` after ``down()``) would otherwise dump a raw
+        # traceback. The ``up`` verb catches this inline for parity with
+        # its banner; this net covers every other verb so a missing
+        # artifact / ``accel: kvm`` without ``/dev/kvm`` maps to the same
+        # friendly ``error: ...`` + exit 1.
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
     except builder.BootstrapError as e:

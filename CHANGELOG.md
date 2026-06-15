@@ -129,6 +129,20 @@
   unchanged, including the v0.3 back-compat `path`/`adb`/`frida` keys.
   Orphan entries are still skipped with the trailing stderr advisory.
 
+### Known limitations
+
+- **Frida is not yet supported on the `binder: vm` backend** (#44 follow-up).
+  The QEMU micro-VM runs redroid with `--network none`, and nothing yet
+  forwards the guest Frida port or bind-mounts a staged `frida-server` into
+  the network-isolated guest. `beetroot frida <vm-instance>` and
+  `install_frida` therefore raise a friendly `BackendCapabilityError`
+  rather than silently no-op; `beetroot doctor` omits the `frida.handshake`
+  row for vm instances (it could never pass), and `ls` / `status` report the
+  Frida address as `unsupported`. The vm backend is scoped to ADB
+  forwarding (`beetroot shell`) only; Frida-over-VM forwarding is tracked as
+  a follow-up. Use `binder: auto`/`host` (redroid) or `beetroot adopt` an
+  external rooted device for Frida in the meantime.
+
 ### CI hardening, part 1 (#21)
 
 No schema or CLI changes — this slice hardens the quality gates and the

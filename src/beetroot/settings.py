@@ -70,6 +70,13 @@ class Settings(BaseSettings):
         vm_rootfs: Default host path to the guest ext4 rootfs image for the
             micro-VM backend when an instance's config doesn't pin one
             (empty = require an explicit ``vm.rootfs`` in ``beetroot.yaml``).
+        vm_adb_connect_timeout: Seconds ``VmDeviceBackend.up()`` polls
+            ``adb connect`` against the freshly-launched guest before giving
+            up (default: ``60``). The guest restarts adbd to enable TCP a few
+            seconds *after* ``sys.boot_completed=1``, so the first connect
+            races that late bind; ``up`` retries with backoff until the
+            endpoint accepts or this deadline elapses. Bump it for slow TCG
+            first boots.
     """
 
     model_config = SettingsConfigDict(
@@ -89,6 +96,7 @@ class Settings(BaseSettings):
     qemu_bin: str = "qemu-system-x86_64"
     vm_kernel: str = ""
     vm_rootfs: str = ""
+    vm_adb_connect_timeout: int = 60
 
 
 settings = Settings()
