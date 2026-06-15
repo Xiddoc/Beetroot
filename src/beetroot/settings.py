@@ -61,6 +61,15 @@ class Settings(BaseSettings):
         build_context: ``docker compose`` project directory used during
             ``beetroot build`` (forwarded into the bundled compose
             template's ``${BEETROOT_BUILD_CONTEXT}`` substitution).
+        qemu_bin: Path or name of the QEMU system emulator binary used by
+            the ``binder: vm`` micro-VM backend (default:
+            ``qemu-system-x86_64``).
+        vm_kernel: Default host path to the guest ``bzImage`` for the
+            micro-VM backend when an instance's config doesn't pin one
+            (empty = require an explicit ``vm.kernel`` in ``beetroot.yaml``).
+        vm_rootfs: Default host path to the guest ext4 rootfs image for the
+            micro-VM backend when an instance's config doesn't pin one
+            (empty = require an explicit ``vm.rootfs`` in ``beetroot.yaml``).
     """
 
     model_config = SettingsConfigDict(
@@ -77,6 +86,9 @@ class Settings(BaseSettings):
     modules_dir: str = "/data/adb/modules_update"
     frida_bin: str = "/data/local/tmp/frida-server"
     build_context: str = ""
+    qemu_bin: str = "qemu-system-x86_64"
+    vm_kernel: str = ""
+    vm_rootfs: str = ""
 
 
 settings = Settings()
