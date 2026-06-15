@@ -30,6 +30,7 @@ import errno
 import os
 import signal
 import subprocess
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -44,6 +45,11 @@ _GUEST_ADB_PORT = 5555
 
 # The QEMU pidfile name inside the instance directory.
 _PIDFILE_NAME = "qemu.pid"
+
+# How long ``terminate`` waits for a clean SIGTERM exit before escalating
+# to SIGKILL, and how often it polls liveness during that window.
+_TERM_GRACE_SECONDS = 5.0
+_TERM_POLL_SECONDS = 0.1
 
 
 class QemuLaunchError(RuntimeError):
@@ -262,14 +268,25 @@ class QemuProcess:
         self.pidfile.write_text(str(proc.pid))
         return proc.pid
 
+    def _pid_alive(self, pid: int) -> bool:
+        """Return True iff ``pid`` names a live process (signal-0 probe)."""
+        try:
+            os.kill(pid, 0)
+        except OSError as exc:
+            return exc.errno == errno.EPERM
+        return True
+
     def terminate(self) -> bool:
         """
         Terminate the recorded QEMU process and remove the pidfile.
 
-        Sends ``SIGTERM`` to the recorded PID (QEMU exits cleanly on
-        ``SIGTERM``). A missing pidfile or an already-dead process is a
-        no-op. The pidfile is removed regardless so a subsequent ``up``
-        starts fresh.
+        Sends ``SIGTERM`` first (QEMU exits cleanly on ``SIGTERM``), then
+        polls for up to :data:`_TERM_GRACE_SECONDS`. If the process is still
+        alive after the grace window — a wedged TCG guest can ignore
+        ``SIGTERM`` — it is force-killed with ``SIGKILL`` so ``down`` never
+        leaves a runaway emulator behind. A missing pidfile or an
+        already-dead process is a no-op. The pidfile is removed regardless
+        so a subsequent ``up`` starts fresh.
 
         Returns:
             True if a signal was delivered to a live process, False if there
@@ -284,6 +301,30 @@ class QemuProcess:
             except OSError:
                 # Process already gone (ESRCH) or unsignalable — nothing to do.
                 signalled = False
+            if signalled:
+                self._escalate_if_alive(pid)
         with contextlib.suppress(OSError):
             self.pidfile.unlink()
         return signalled
+
+    def _escalate_if_alive(self, pid: int) -> None:
+        """
+        Force-kill ``pid`` if it ignores SIGTERM past the grace window.
+
+        Polls liveness every :data:`_TERM_POLL_SECONDS` for up to
+        :data:`_TERM_GRACE_SECONDS`; the moment the process exits, returns
+        without escalating. A process still alive at the deadline gets
+        ``SIGKILL`` (best-effort — a race where it dies between the final
+        poll and the signal is harmless).
+
+        Args:
+            pid: The PID already sent ``SIGTERM``.
+        """
+        deadline = time.monotonic() + _TERM_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            if not self._pid_alive(pid):
+                return
+            time.sleep(_TERM_POLL_SECONDS)
+        if self._pid_alive(pid):
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)

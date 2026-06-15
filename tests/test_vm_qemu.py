@@ -224,9 +224,81 @@ class TestQemuProcessTerminate:
         (tmp_path / "qemu.pid").write_text("321")
         sent: list[tuple[int, int]] = []
         monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda pid, sig: sent.append((pid, sig)))
+        # Process exits promptly after SIGTERM → no SIGKILL escalation.
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_alive", lambda _self, _pid: False)
         assert qemu.QemuProcess(tmp_path).terminate() is True
         assert sent == [(321, signal.SIGTERM)]
         assert not (tmp_path / "qemu.pid").exists()
+
+    def test_terminate_escalates_to_sigkill_when_wedged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A wedged guest that never dies after SIGTERM must be SIGKILLed
+        # once the grace window elapses.
+        (tmp_path / "qemu.pid").write_text("321")
+        sent: list[tuple[int, int]] = []
+        monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda pid, sig: sent.append((pid, sig)))
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_alive", lambda _self, _pid: True)
+        # Collapse the grace window so the test doesn't burn real seconds.
+        monkeypatch.setattr("beetroot.vm.qemu._TERM_GRACE_SECONDS", 0.0)
+        monkeypatch.setattr("beetroot.vm.qemu.time.sleep", lambda _s: None)
+        assert qemu.QemuProcess(tmp_path).terminate() is True
+        assert (321, signal.SIGTERM) in sent
+        assert (321, signal.SIGKILL) in sent
+        assert not (tmp_path / "qemu.pid").exists()
+
+    def test_terminate_polls_then_exits_before_sigkill(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Process is alive on the first poll but exits before the deadline:
+        # SIGTERM is sent, the poll loop sleeps once, then the process is
+        # gone → no SIGKILL.
+        (tmp_path / "qemu.pid").write_text("321")
+        sent: list[tuple[int, int]] = []
+        monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda pid, sig: sent.append((pid, sig)))
+        alive = iter([True, False])
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_alive", lambda _self, _pid: next(alive))
+        slept: list[float] = []
+
+        def _sleep(s: float) -> None:
+            slept.append(s)
+
+        monkeypatch.setattr("beetroot.vm.qemu.time.sleep", _sleep)
+        assert qemu.QemuProcess(tmp_path).terminate() is True
+        assert sent == [(321, signal.SIGTERM)]
+        assert slept  # the poll loop slept at least once
+
+    def test_terminate_no_sigkill_if_process_gone_at_deadline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Grace window already elapsed (0s → loop body never runs), but the
+        # process has exited by the final liveness check → no SIGKILL.
+        (tmp_path / "qemu.pid").write_text("321")
+        sent: list[tuple[int, int]] = []
+        monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda pid, sig: sent.append((pid, sig)))
+        monkeypatch.setattr("beetroot.vm.qemu._TERM_GRACE_SECONDS", 0.0)
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_alive", lambda _self, _pid: False)
+        assert qemu.QemuProcess(tmp_path).terminate() is True
+        assert sent == [(321, signal.SIGTERM)]
+
+    def test_pid_alive_probes_signal_zero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc = qemu.QemuProcess(tmp_path)
+        monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda *_a: None)
+        assert proc._pid_alive(99) is True
+
+        def _esrch(_pid: int, _sig: int) -> None:
+            raise OSError(errno.ESRCH, "no such process")
+
+        monkeypatch.setattr("beetroot.vm.qemu.os.kill", _esrch)
+        assert proc._pid_alive(99) is False
+
+        def _eperm(_pid: int, _sig: int) -> None:
+            raise OSError(errno.EPERM, "operation not permitted")
+
+        monkeypatch.setattr("beetroot.vm.qemu.os.kill", _eperm)
+        assert proc._pid_alive(99) is True
 
     def test_terminate_no_pidfile_is_noop(self, tmp_path: Path) -> None:
         assert qemu.QemuProcess(tmp_path).terminate() is False
@@ -249,6 +321,8 @@ class TestQemuProcessTerminate:
         # An already-vanished pidfile (e.g. concurrent down) must not raise.
         (tmp_path / "qemu.pid").write_text("321")
         monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda *_a: None)
+        # Process exits promptly → skip the escalation poll loop.
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_alive", lambda _self, _pid: False)
 
         def _unlink(_self: Path, *_a: object, **_k: object) -> None:
             raise OSError("gone")
