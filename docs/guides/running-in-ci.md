@@ -98,13 +98,15 @@ against an adb-adopted device — it's managed outside Beetroot. See
 [Adding a backend](adding-a-backend.md) for the full backend capability
 matrix.
 
-!!! note "Emerging: run redroid *locally* on a binderless host (micro-VM)"
-    A validated proof-of-concept boots redroid inside a QEMU micro-VM
-    whose **own** kernel provides binder — so a host with no binder (and
-    even no `/dev/kvm`) can still run a *local* redroid, at an emulation
-    speed cost. This is not yet wired into the CLI; the rationale,
-    reproducible recipe, and proposed `vm` backend / fallback design live
-    in [Binderless hosts (QEMU/TCG)](../design/binderless-hosts-qemu-tcg.md).
+!!! tip "Run redroid *locally* on a binderless host with `binder: vm`"
+    On a host with no binder (and even no `/dev/kvm`), set `binder: vm` to
+    boot redroid inside a QEMU micro-VM whose **own** kernel provides
+    binder. Build the guest kernel + rootfs once with `beetroot build
+    --vm-kernel`, point `vm.kernel` / `vm.rootfs` at them, then `beetroot
+    apply` + `beetroot up`. KVM-accelerated where available; otherwise TCG
+    (~5-20x slower — a slow first boot is expected, not a hang). The
+    rationale, reproducible recipe, and backend design live in
+    [Binderless hosts (QEMU/TCG)](../design/binderless-hosts-qemu-tcg.md).
 
 ## What about this project's own CI?
 

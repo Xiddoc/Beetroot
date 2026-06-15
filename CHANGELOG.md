@@ -12,14 +12,32 @@
   variant: `beetroot up` fails fast (exit 1) rather than leave a
   container that silently never boots Android — better for CI. `vm` opts
   into running redroid inside an emulated QEMU micro-VM that ships its own
-  binder kernel, for hosts with no host binder at all; the micro-VM
-  engine is a tracked follow-up, so selecting `vm` today fails fast with a
-  pointer to the design doc rather than silently doing nothing. The slow
-  emulated path is never engaged automatically — it is always an explicit
-  opt-in. `beetroot doctor` reflects the mode: the `host.binder` row is
-  skipped under `vm` and fails (not warns) under strict `host`. A
-  validated proof-of-concept (booting redroid on a binderless,
+  binder kernel, for hosts with no host binder at all; the micro-VM engine
+  now ships (see the next entry). The slow emulated path is never engaged
+  automatically — it is always an explicit opt-in. `beetroot doctor`
+  reflects the mode: under `vm` it runs VM-specific checks (`vm.process`,
+  `vm.accel`), and under strict `host` the `host.binder` row fails (not
+  warns). A validated proof-of-concept (booting redroid on a binderless,
   KVM-less host) and the full backend/fallback design live in
+  [Binderless hosts (QEMU/TCG)](https://xiddoc.github.io/Beetroot/design/binderless-hosts-qemu-tcg/).
+
+- **`binder: vm` micro-VM engine (QEMU/TCG, KVM fast path).** Selecting
+  `binder: vm` now dispatches `beetroot up` to a real QEMU micro-VM backend
+  (`VmDeviceBackend`) instead of failing fast. The launcher detects the
+  accelerator (`/dev/kvm` -> KVM; otherwise TCG with MTTCG `thread=multi`,
+  `-cpu max`), builds the `qemu-system-x86_64` argv per the validated PoC
+  recipe, forwards the guest's ADB port to a per-instance host loopback
+  port, and manages the QEMU process via a pidfile in the instance dir.
+  The capability-ladder UX is preserved: a one-line banner on KVM, a loud
+  banner (noting the ~5-20x slowdown -- a slow first boot is expected, not
+  a hang) on TCG, and a hard, actionable error if `vm.accel: kvm` is
+  demanded on a host without `/dev/kvm`. An optional `vm:` block tunes the
+  kernel / rootfs paths, accelerator, vCPUs, and memory (with
+  `BEETROOT_QEMU_BIN`, `BEETROOT_VM_KERNEL`, `BEETROOT_VM_ROOTFS` env
+  defaults). The new `beetroot build --vm-kernel` builds the guest kernel +
+  rootfs from the vendored `docker/vm/` artifacts (kernel-config fragment,
+  rootfs builder, guest init). This is additive -- no `api_version` bump;
+  redroid stays the default. See
   [Binderless hosts (QEMU/TCG)](https://xiddoc.github.io/Beetroot/design/binderless-hosts-qemu-tcg/).
 
 - **End-to-end CI that boots a real Android (`e2e.yml`).** A new workflow
