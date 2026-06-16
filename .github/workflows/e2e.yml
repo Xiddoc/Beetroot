@@ -240,7 +240,18 @@ jobs:
           grep -q 'CONFIG_ANDROID_BINDER_IPC=y' .config
 
       - name: Assemble the guest rootfs (busybox + Docker static + redroid)
-        run: sh docker/vm/build-rootfs.sh "$VM_OUT/rootdisk.img"
+        run: |
+          uv run python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from beetroot.builder import build_rootfs
+
+          build_rootfs(
+              out_image=Path(os.environ["VM_OUT"]) / "rootdisk.img",
+              vm_dir=Path("docker/vm"),
+          )
+          PY
 
       - name: "Create + boot a binder:vm instance under QEMU/TCG"
         run: |

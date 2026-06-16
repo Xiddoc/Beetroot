@@ -216,6 +216,12 @@ internet**, so the image must be present on disk before first boot.
 
 ## B.2 Rootfs corrections (`build-rootfs.sh`)
 
+> **Note:** the rootfs builder described here was originally the shell script
+> `docker/vm/build-rootfs.sh`. It has since been ported to typed, unit-tested
+> Python as `build_rootfs` in `src/beetroot/builder.py`; every correction below
+> (the `REDROID_TAR=` escape hatch, the `cp -a` of the staged data-root, the
+> `11.0.0-latest` tag, the iptables-legacy + socat staging) is preserved there.
+
 The vendored builder was close but would not have produced a bootable stack.
 Corrections made and validated:
 

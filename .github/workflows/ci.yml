@@ -156,8 +156,8 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
-      - name: Shellcheck -S warning (POSIX sh — boot helpers run under /system/bin/sh)
-        run: shellcheck -S warning -s sh docker/*.sh
+      - name: Shellcheck -S style (POSIX sh — boot helpers + micro-VM guest init)
+        run: shellcheck -S style -s sh docker/*.sh docker/vm/*.sh
 
   shfmt:
     # Formatting gate for the boot helpers (issue #21). The binary is a

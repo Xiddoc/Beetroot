@@ -355,8 +355,9 @@ expensive step.
    (no lmkd flapping, no reboot). The kernel config fragment is now pinned
    in-tree at `docker/vm/kernel.config` so the build is reproducible.
 2. **Package** — ✅ done (issue #44): the kernel config fragment
-   (`docker/vm/kernel.config`), rootfs builder (`docker/vm/build-rootfs.sh`),
-   and guest init (`docker/vm/guest-init.sh`) are vendored in-tree, and
+   (`docker/vm/kernel.config`) and guest init (`docker/vm/guest-init.sh`) are
+   vendored in-tree; the rootfs builder is pure-Python (`build_rootfs` in
+   `src/beetroot/builder.py`, the former `docker/vm/build-rootfs.sh`), and
    `beetroot build --vm-kernel` wraps the kernel build + rootfs assembly.
 3. **`VmDeviceBackend`** — ✅ done (issue #44): implemented against the
    [`DeviceBackend` Protocol](device-backends.md). `up` boots the micro-VM
