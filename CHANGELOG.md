@@ -185,6 +185,22 @@ CI pipeline itself.
   permissions are scoped to the deploy job; every checkout across all
   workflows sets `persist-credentials: false`.
 
+### CI: `binder: vm` savevm boot-cache — design + cache key (#49)
+
+- Design note ([VM boot-cache (savevm)](https://xiddoc.github.io/Beetroot/design/vm-savevm-cache/))
+  specifying how a booted micro-VM is checkpointed once with QEMU
+  `savevm` (qcow2 internal snapshot) / `migrate`, cached, and restored
+  (seconds) in downstream jobs to skip the ~100 s TCG boot — for the
+  functional vm e2e tier (#48) and post-boot benchmark (#50), never for
+  the cold boot-speed metric.
+- The load-bearing, unit-tested piece lands now: `scripts/vm_cache_key.py`
+  computes a stable, order-independent cache key over the guest kernel +
+  rootfs (and/or the guest-defining sources) that changes the instant any
+  input does — the safety latch that stops a stale snapshot from being
+  restored against a guest it wasn't taken on. The QEMU integration
+  (qcow2 overlay + QMP `savevm`/`loadvm` launch path) is the tracked
+  follow-up.
+
 ## v0.6.0 — 2026-05-20
 
 A stability + cleanup release on the road to v1.0 — bug-fixing, OOP/CLI
