@@ -65,48 +65,66 @@ from beetroot import registry
 class DeviceBackend(Protocol):
     @property
     def name(self) -> str:
-        """Return the registry name for this backend."""
+        """
+        Return the registry name for this backend.
+        """
         ...
 
     @property
     def kind(self) -> str:
-        """Return the backend kind discriminator (e.g. "cloud-xyz")."""
+        """
+        Return the backend kind discriminator (e.g. "cloud-xyz").
+        """
         ...
 
     @property
     def adb_address(self) -> str:
-        """Return the host:port (or backend-specific identifier) that
-        adb / native shell targets."""
+        """
+        Return the host:port (or backend-specific identifier) that
+        adb / native shell targets.
+        """
         ...
 
     @property
     def frida_address(self) -> str:
-        """Return the host:port Frida control endpoint."""
+        """
+        Return the host:port Frida control endpoint.
+        """
         ...
 
     @property
     def is_available(self) -> bool:
-        """Return True iff the backend is reachable right now."""
+        """
+        Return True iff the backend is reachable right now.
+        """
         ...
 
     def install_frida(self, version: str | None = None) -> None:
-        """Make a frida-server of the requested version available."""
+        """
+        Make a frida-server of the requested version available.
+        """
         ...
 
     def shell(self, args: Sequence[str] | None = None) -> int:
-        """Open a shell into the device (``args`` forwards extra argv
-        tokens; ``None`` opens an interactive shell); return exit code."""
+        """
+        Open a shell into the device (``args`` forwards extra argv
+        tokens; ``None`` opens an interactive shell); return exit code.
+        """
         ...
 
     def frida_cli(self, args: Sequence[str]) -> int:
-        """Invoke the host frida CLI against this backend; return exit code."""
+        """
+        Invoke the host frida CLI against this backend; return exit code.
+        """
         ...
 
     @classmethod
     def from_meta(
         cls, name: str, backend: registry.BackendConfigBase,
     ) -> Self:
-        """Construct a backend from a registry meta's backend config."""
+        """
+        Construct a backend from a registry meta's backend config.
+        """
         ...
 ```
 
@@ -140,7 +158,9 @@ from typing import Literal
 
 
 class CloudBackendConfig(BaseModel):
-    """Config for the synthetic cloud-emulator backend."""
+    """
+    Config for the synthetic cloud-emulator backend.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=False)
 
@@ -173,7 +193,9 @@ from beetroot.registry import BackendConfigBase
 
 
 class CloudBackend:
-    """Drive a cloud-emulator service via its own shell CLI."""
+    """
+    Drive a cloud-emulator service via its own shell CLI.
+    """
 
     def __init__(self, name: str, config: CloudBackendConfig) -> None:
         self._name = name
