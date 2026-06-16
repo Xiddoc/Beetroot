@@ -243,6 +243,9 @@ jobs:
           set -euxo pipefail
           uv run beetroot create vmphone
           printf 'binder: vm\n' >> vmphone/beetroot.yaml
+          # `apply` switches the registered backend to the micro-VM engine;
+          # `up` refuses a binder:vm instance still registered as redroid.
+          uv run beetroot apply vmphone
           uv run beetroot up vmphone
 
       - name: "Wait for Android boot (TCG: slow, not hung)"
