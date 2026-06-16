@@ -128,16 +128,25 @@
   `adb_address`, `frida_address`, `is_available`); redroid rows are
   unchanged, including the v0.3 back-compat `path`/`adb`/`frida` keys.
   Orphan entries are still skipped with the trailing stderr advisory.
-- **`beetroot build --vm-kernel` no longer corrupts the rootfs build** —
-  `docker/vm/build-rootfs.sh`'s `stage_docker_root()` returns the staging
-  path on **stdout** via command substitution
-  (`_dockerroot="$(stage_docker_root)"`), but `log()` *and* the inner
-  `docker pull` / `docker load` also wrote to stdout. Their interleaved
-  output was captured into the path, so the subsequent `cp -a "$_dockerroot"
-  …` failed with `cannot stat` and no `rootdisk.img` was produced (caught
-  building the guest rootfs locally under TCG). All three now write to
-  stderr, keeping human/progress output off the function's value channel.
-  This also unblocks the `binder: vm` e2e tier (#48), which runs this script.
+- **`binder: vm` guest rootfs now actually builds and boots.** Two bugs in
+  `docker/vm/build-rootfs.sh`, both caught by booting the micro-VM locally
+  under TCG (the `vm` path's Stage B was never run before — see
+  `docs/design/vm-rnd-log.md`):
+    - *Corrupted build:* `stage_docker_root()` returns the staging path on
+      **stdout** via command substitution
+      (`_dockerroot="$(stage_docker_root)"`), but `log()` *and* the inner
+      `docker pull` / `docker load` also wrote to stdout. Their interleaved
+      output was captured into the path, so `cp -a "$_dockerroot" …` failed
+      with `cannot stat` and no `rootdisk.img` was produced. All three now
+      write to stderr.
+    - *Kernel panic on boot:* the rootfs shipped only `/bin/busybox` with no
+      applet symlinks — a comment claimed `guest-init.sh` ran
+      `busybox --install -s`, but it never did. `/init` is a `#!/bin/sh`
+      script, so the kernel panicked instantly (`Requested init /init failed
+      (error -2)` — no `/bin/sh`). The build now lays down every busybox
+      applet symlink (`sh`, `mount`, …) at build time.
+  Together these unblock the `binder: vm` e2e tier (#48), which runs this
+  script.
 
 ### Known limitations
 

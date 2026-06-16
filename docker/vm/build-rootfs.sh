@@ -125,12 +125,16 @@ build_tree() {
         "$ROOT"/usr/lib/x86_64-linux-gnu
     chmod 1777 "$ROOT"/tmp
 
-    log "installing busybox ($BUSYBOX_BIN)"
+    log "installing busybox ($BUSYBOX_BIN) + applet symlinks"
     cp "$BUSYBOX_BIN" "$ROOT/bin/busybox"
     chmod 0755 "$ROOT/bin/busybox"
-    # guest-init runs `busybox --install -s` to lay down ALL applet symlinks
-    # (sh, mount, poweroff, nsenter, netstat, udhcpc, ip, ...) at boot, so we
-    # only ship the single binary here.
+    # Lay down every applet symlink (sh, mount, poweroff, nsenter, ip, ...) NOW,
+    # at build time. /init is a `#!/bin/sh` script, so /bin/sh MUST exist before
+    # the kernel can exec it — there is no earlier moment to create it (nothing
+    # runs before PID 1). Enumerate applets via the same busybox we ship.
+    for _applet in $("$BUSYBOX_BIN" --list); do
+        ln -sf busybox "$ROOT/bin/$_applet"
+    done
 
     log "installing Docker static bundle binaries"
     for bin in dockerd containerd containerd-shim-runc-v2 runc docker ctr \
