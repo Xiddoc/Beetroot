@@ -126,6 +126,7 @@ nav:
     - Stealth posture: design/stealth-posture.md
     - Device backends: design/device-backends.md
     - Binderless hosts (QEMU/TCG): design/binderless-hosts-qemu-tcg.md
+    - VM R&D log (TCG recipe): design/vm-rnd-log.md
     - VM boot-cache (savevm): design/vm-savevm-cache.md
   - Troubleshooting: troubleshooting.md
   - About:

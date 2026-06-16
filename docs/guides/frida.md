@@ -35,6 +35,8 @@ frida:
   version: "16.4.10"
 ```
 
+You can optionally pin an expected `sha256` of the decompressed `frida-server` binary; if set, Beetroot verifies the cached binary against it (case-insensitive) and refuses to stage a mismatch — a guard against a hostile mirror.
+
 Changing the version and running `beetroot apply <name>` re-downloads the binary into the instance directory at `frida-server`. The old binary is overwritten. Restart the instance to pick up the new server.
 
 !!! tip "Keep versions in sync"
@@ -71,10 +73,10 @@ beetroot frida alpha -n com.target.app -l /path/to/script.js
 
 ## Connecting without the wrapper
 
-If you prefer to drive Frida directly, get the port from `beetroot status --json`:
+If you prefer to drive Frida directly, get the port from `beetroot status`:
 
 ```bash
-FRIDA_DEVICE=$(beetroot status --json alpha | python3 -c "import json,sys; print(json.load(sys.stdin)['frida_address'])")
+FRIDA_DEVICE=$(beetroot status alpha | python3 -c "import json,sys; print(json.load(sys.stdin)['frida_address'])")
 # $FRIDA_DEVICE = localhost:27042
 
 frida -H "$FRIDA_DEVICE" -n com.target.app

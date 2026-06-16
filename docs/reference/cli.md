@@ -297,7 +297,7 @@ For adb rows the ADB column shows the device serial verbatim (the value `adb -s`
 }
 ```
 
-Adb-kind rows use the same shape as `beetroot status` for an adopted device: `serial` plus the Protocol-surface fields (`adb_address`, `frida_address`, `is_available`). The v0.3 back-compat keys (`path` / `adb` / `frida`) exist only on redroid rows.
+Adb-kind rows use the same shape as `beetroot status` for an adopted device: `serial` plus the Protocol-surface fields (`adb_address`, `frida_address`, `is_available`) and an always-empty `stealth_paths` (`{}`). They omit the entire `ports` dict and the redroid-only fields; the v0.3 back-compat keys (`path` / `adb` / `frida`) exist only on redroid rows.
 
 ---
 
@@ -361,9 +361,9 @@ beetroot status <name>
 
 Output is JSON to stdout (v0.4 has no human-readable mode — pipe to `jq`). Exits `0` on success; exits `1` if `name` is not in the registry.
 
-Redroid-kind rows include `name`, `kind`, `index`, `created_at`, `ports`, `status`, `adb_address`, `frida_address`, `stealth_paths`, plus the v0.3 back-compat keys (`path`, `adb`, `frida`).
+Redroid-kind rows include `name`, `kind`, `index`, `created_at`, `ports` (a dict with `adb` / `frida` / `frida_control` keys), `status`, `adb_address`, `frida_address`, `stealth_paths`, plus the v0.3 back-compat keys (`path`, `adb`, `frida`).
 
-Adb-kind rows include `serial` instead of `absolute_path` and omit the redroid-only `ports.frida2` key.
+Adb-kind rows omit the entire `ports` dict and the redroid-only fields (`path`, `status`, `adb`, `frida`); they include `serial` and the Protocol-surface fields (`adb_address`, `frida_address`, `is_available`). They still carry a `stealth_paths` key (always empty: `{}`).
 
 ---
 
@@ -381,7 +381,7 @@ beetroot doctor <name>
 
 Output is one `<check>: pass|fail|skip [reason]` line per check. Exits `0` if every check passes; otherwise the exit code is the count of `fail` results (capped at 255). `skip` rows do not count toward the exit code.
 
-Redroid checks: `compose.status`, `adb.connect`, `frida.handshake`, `magisk.zygisk`, `magisk.denylist.com.google.android.gms` (skipped if the package isn't in `magisk.denylist`).
+Redroid checks: `compose.status`, `host.binder`, `adb.connect`, `frida.handshake`, `magisk.zygisk`, `magisk.denylist.com.google.android.gms` (skipped if the package isn't in `magisk.denylist`).
 
 Adb checks: `adb.serial`, `frida.handshake`, `magisk.zygisk`, `magisk.denylist.com.google.android.gms`. `compose.status` is not applicable.
 
@@ -468,12 +468,13 @@ beetroot down <name> && beetroot up <name>
 Build the redroid base image and Beetroot layer for a chosen GMS variant. One-time bootstrap; re-run when you want a fresh image.
 
 ```
-beetroot build [<gapps>]
+beetroot build [<gapps>] [--vm-kernel]
 ```
 
-| Argument | Type | Description |
-|----------|------|-------------|
+| Argument / Flag | Type | Description |
+|-----------------|------|-------------|
 | `gapps` | positional, optional | GMS variant to bake into the base image. One of `none`, `lite` (default), `full`, `mindthegapps`. |
+| `--vm-kernel` | flag | Build the `binder: vm` micro-VM guest kernel + rootfs instead of the redroid base image (for hosts with no kernel binder). Prints the resulting `vm.kernel` / `vm.rootfs` paths. |
 
 The verb:
 
@@ -496,7 +497,7 @@ beetroot snapshot <name> [-o <archive>]
 | Argument | Type | Description |
 |----------|------|-------------|
 | `name` | positional | Instance name to snapshot. |
-| `-o`, `--output` | flag | Archive path (default: `./<name>.tar.zst`). The `.tar.zst` extension is appended automatically if you omit it. |
+| `-o`, `--output` | path | Archive path (default: `./<name>.tar.zst`). The `.tar.zst` extension is appended automatically if you omit it. |
 
 Stop the instance first (`beetroot down <name>`) — `tar`-ing live `data/` produces an inconsistent archive. The archive excludes `.env` (it's regenerated on the next `apply`). See [Snapshots](../guides/snapshots.md) for the round-trip workflow and the `path_layout` forward-compat story.
 
@@ -513,8 +514,8 @@ beetroot restore <archive> [--name <name>] [--path <dir>] [--force]
 | Argument | Type | Description |
 |----------|------|-------------|
 | `archive` | positional | Path to a `.tar.zst` snapshot archive. |
-| `--name` | flag | Registry name for the restored instance (default: the name recorded in the manifest). |
-| `--path` | flag | Directory to extract into (default: `./<name>`). |
+| `--name` | string | Registry name for the restored instance (default: the name recorded in the manifest). |
+| `--path` | path | Directory to extract into (default: `./<name>`). |
 | `--force` | flag | Wipe a non-empty destination directory before extracting. |
 
 A fresh port index is allocated — the source's index is never reused, so the original and the restored instance can run concurrently if both directories still exist. After restore, run `beetroot apply <new-name>` to regenerate `.env`, then `beetroot up <new-name>`.

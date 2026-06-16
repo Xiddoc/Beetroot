@@ -31,7 +31,7 @@ To build (without serving):
 uv run mkdocs build --strict
 ```
 
-The build output goes to `site/` (gitignored). The GitHub Actions workflow at `.github/workflows/docs.yml` deploys to GitHub Pages on every push to `main`.
+The build output goes to `site/` (gitignored). The GitHub Actions workflow at `.github/workflows/docs.yml` deploys to GitHub Pages on every push to `master`.
 
 ## Architecture
 

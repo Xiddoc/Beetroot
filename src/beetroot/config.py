@@ -434,11 +434,12 @@ class InstanceConfig(BaseModel):
             ``"vm"`` opts into running redroid inside an emulated QEMU
             micro-VM that ships its own binder-enabled kernel — the path
             for hosts with no host binder at all. The micro-VM *engine*
-            is not yet wired into the CLI (tracked as the optimization
-            sprint); selecting ``"vm"`` today fails fast with a pointer
-            to ``docs/design/binderless-hosts-qemu-tcg.md`` rather than
-            silently doing nothing. Never silently falls back to the
-            slow emulated path — that choice is always explicit.
+            now ships: selecting ``"vm"`` boots redroid inside the QEMU
+            micro-VM (``VmDeviceBackend``); on a host with ``/dev/kvm`` it
+            is near-native, and under TCG it is slow but functional. See
+            ``docs/design/binderless-hosts-qemu-tcg.md``. Never silently
+            falls back to the slow emulated path — that choice is always
+            explicit.
         vm: QEMU micro-VM tunables (kernel/rootfs paths, accelerator,
             vCPUs, memory). Consulted only when ``binder == "vm"``; ignored
             otherwise. Defaults to an all-defaults :class:`Vm` block so a

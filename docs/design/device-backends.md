@@ -53,7 +53,7 @@ test suite already exercises this against `Instance`).
 
 ```python
 from collections.abc import Sequence
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Self, runtime_checkable
 
 
 @runtime_checkable
@@ -91,12 +91,17 @@ class DeviceBackend(Protocol):
         """Make a frida-server of the requested version available on the device."""
         ...
 
-    def shell(self) -> int:
-        """Open an interactive shell; return exit code."""
+    def shell(self, args: Sequence[str] | None = None) -> int:
+        """Open a shell (interactive when ``args`` is None); return exit code."""
         ...
 
     def frida_cli(self, args: Sequence[str]) -> int:
         """Invoke the host frida CLI against this backend; return exit code."""
+        ...
+
+    @classmethod
+    def from_meta(cls, name: str, backend: registry.BackendConfigBase) -> Self:
+        """Construct a backend from a registry meta's backend config."""
         ...
 ```
 
@@ -136,6 +141,13 @@ Whether the adapter lives in `api.py` or in a new
 `Instance` as the public construction site either way.
 
 ### 3.2 `AdbDeviceBackend(serial: str)` — v0.4
+
+!!! note "Naming: the shipped class is `AdbDevice`"
+    This and the following sections use the design-era name
+    `AdbDeviceBackend`. The shipped class dropped the `Backend` suffix —
+    it is `AdbDevice` (see [§6 PR1](#6-v04-implementation-roadmap)), for
+    symmetry with `Instance`. Read `AdbDeviceBackend` as `AdbDevice`
+    throughout the historical design text below.
 
 Wraps an arbitrary adb-connected device. Construction takes the adb
 serial (the value `adb devices` prints — e.g. `emulator-5554` or
@@ -336,8 +348,11 @@ lifecycle methods narrow with `isinstance(b, api.Lifecycle)` (or use
   `isinstance(b, Instance)` guard. `cli._require(b, cap, verb)` raises
   `BackendCapabilityError` for backends that don't satisfy the sub-protocol,
   giving a consistent `"<verb> not supported by <kind> backend"` message.
-* **`Manager.reset_for_testing()`.** Test-time helper that clears both
-  registries (backend class registry + backend config registry) for isolation.
+* **`backends.reset_for_testing()`.** Test-time helper that clears the
+  backend-class registry and resets the entry-point-loaded flag, so a test
+  can start from a clean registry state and re-register exactly the backends
+  it needs. (There is no `Manager.reset_for_testing()`; the seam lives on the
+  `backends` sub-package.)
 
 For writing a third-party backend, the step-by-step recipe lives at
 [Adding a backend](../guides/adding-a-backend.md).

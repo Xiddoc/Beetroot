@@ -225,7 +225,7 @@ the Python API switch from
 `frida.get_device_manager().add_remote_device("localhost:27042")` to
 `frida.get_usb_device().attach(target)` after running
 `adb forward tcp:27042 localfilesystem:<socket-path>` (the CLI's
-`beetroot status --json` will print the right address).
+`beetroot status` will print the right address).
 
 This is **harder than items 3.1 / 3.4** because it changes the
 host-side wire protocol and breaks the
@@ -360,7 +360,7 @@ The full env-var contract:
 |--------------------------------|--------------------------------------|---------------------|
 | `BEETROOT_FRIDA_BIN`          | `/data/local/tmp/frida-server`       | `launch-frida.sh`   |
 | `BEETROOT_FRIDA_SOCKET_PATH`   | unset (TCP mode)                     | `launch-frida.sh`   |
-| `BEETROOT_MODULES_DIR`   | `/flash_dir`                         | `flash-modules.sh`  |
+| `BEETROOT_MODULES_DIR`   | `/data/adb/modules_update`           | `flash-modules.sh`  |
 | `BEETROOT_MAGISK_DB`           | `/data/adb/magisk.db`                | `magisk-config.sh`  |
 | `BEETROOT_DENYLIST_PACKAGES`   | `com.google.android.gms,com.google.android.gms.unstable` | `magisk-config.sh` |
 | `BEETROOT_STEALTH_MODULE_ID`   | unset (legacy init.rc mode)          | (build-time only)   |

@@ -1,6 +1,6 @@
 # Prerequisites
 
-Beetroot runs Android inside a Docker container using [redroid](https://github.com/remote-android/redroid-doc). redroid works by mapping Android kernel drivers (`binder`, `ashmem`) onto the host kernel, so your host needs to satisfy a few requirements before anything else.
+Beetroot runs Android inside a Docker container using [redroid](https://github.com/remote-android/redroid-doc). redroid works by mapping the Android `binder` kernel driver onto the host kernel, so your host needs to satisfy a few requirements before anything else.
 
 !!! warning "Linux only"
     redroid relies on host kernel features that don't exist on macOS or Windows. A Linux host — physical or VM — is required. WSL2 is **not** supported.
@@ -15,30 +15,30 @@ Any modern Linux distribution works. Tested regularly on:
 
 ## Kernel modules
 
-redroid needs two kernel modules: `binder_linux` and `ashmem_linux`.
+redroid needs the `binder_linux` kernel module (Android 12+ uses memfd in place of ashmem, so no separate ashmem module is required for the default Android-14 base image).
 
 === "Ubuntu / Debian"
 
     ```bash
     sudo apt install linux-modules-extra-$(uname -r)
-    sudo modprobe binder_linux ashmem_linux
+    sudo modprobe binder_linux
     ```
 
-    To load them automatically at boot:
+    To load it automatically at boot:
 
     ```bash
-    echo -e 'binder_linux\nashmem_linux' | sudo tee /etc/modules-load.d/redroid.conf
+    echo 'binder_linux' | sudo tee /etc/modules-load.d/redroid.conf
     ```
 
 === "Arch Linux"
 
     ```bash
-    # Install the binder and ashmem modules
-    yay -S binder_linux-dkms ashmem-dkms
-    sudo modprobe binder_linux ashmem_linux
+    # Install the binder module
+    yay -S binder_linux-dkms
+    sudo modprobe binder_linux
     ```
 
-Verify with `lsmod | grep -E 'binder|ashmem'` — both should appear.
+Verify with `lsmod | grep binder` — it should appear.
 
 ## Docker
 
@@ -113,7 +113,7 @@ The Frida *server* binary is managed entirely by Beetroot — you don't need to 
 ## Summary checklist
 
 - [ ] Linux host (physical or VM)
-- [ ] `binder_linux` and `ashmem_linux` kernel modules loaded
+- [ ] `binder_linux` kernel module loaded
 - [ ] Docker Engine + Compose plugin installed; current user in `docker` group
 - [ ] `uv` installed and on `PATH`
 - [ ] `adb` on `PATH`

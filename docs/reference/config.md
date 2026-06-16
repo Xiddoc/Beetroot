@@ -72,10 +72,12 @@ Android version + image-tag derivation. Beetroot computes the redroid base image
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `version` | int | `14` | Android version. Valid: `11`, `12`, `13`, `14`. |
+| `gapps` | enum | `lite` | GMS variant baked into the base image tag. One of `none`, `lite`, `full`, `mindthegapps`. |
 
 ```yaml
 android:
   version: 14
+  gapps: lite
 ```
 
 !!! warning "Legacy `base_image` field removed"
@@ -142,6 +144,7 @@ Frida server configuration. **Opt-in starting in v0.3** — omit the block entir
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `version` | string | `"16.4.10"` | Frida server version to download from GitHub releases. Applies when the `frida:` block IS present. Must match your host-side `frida-tools` major + minor version. |
+| `sha256` | string \| null | `null` | Optional expected hex digest of the decompressed `frida-server` binary. When set, it's verified against the downloaded binary at download time (case-insensitive); a mismatch raises an error rather than staging a tampered binary. |
 
 ```yaml
 # Opt in:
@@ -173,7 +176,7 @@ modules:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `url` | string | Exclusive with `path` | HTTPS URL to a `.zip`. Downloaded and cached by the CLI. |
+| `url` | string | Exclusive with `path` | HTTP or HTTPS URL to a `.zip`. Downloaded and cached by the CLI. |
 | `path` | string | Exclusive with `url` | Path to a local `.zip`. Relative paths resolve against the instance directory. |
 | `sha256` | string | No | Expected SHA-256 hex digest. If provided, the CLI verifies the downloaded/local file before staging. |
 

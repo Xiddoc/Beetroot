@@ -104,7 +104,7 @@ For a system-wide install of your working tree (so plain `beetroot <verb>` works
 
 **CI**
 
-GitHub Actions runs the full gate set on every push to `main` and on every pull request targeting `main`. The workflow is at `.github/workflows/ci.yml`. The core jobs are exactly the commands listed above under Lint, Type checking, and Tests (ruff check, `ruff format --check src/beetroot/`, mypy, pytest with the 100% coverage gate) — CI additionally passes `--cov-report=xml -p no:cacheprovider` to pytest (stateless runs) and uploads the coverage report (XML + terminal) as a workflow artifact. On top of those, CI enforces:
+GitHub Actions runs the full gate set on every push to `master` and on every pull request targeting `master`. The workflow is at `.github/workflows/ci.yml`. The core jobs are exactly the commands listed above under Lint, Type checking, and Tests (ruff check, `ruff format --check src/beetroot/`, mypy, pytest with the 100% coverage gate) — CI additionally passes `--cov-report=xml -p no:cacheprovider` to pytest (stateless runs) and uploads the coverage report (XML + terminal) as a workflow artifact. On top of those, CI enforces:
 
 - `uv lock --check` — `uv.lock` must be in sync with `pyproject.toml` (run `uv lock` after editing deps).
 - actionlint + `uvx zizmor==1.25.2 .github/workflows/` — the workflows themselves are lint- and security-audited. All actions stay SHA-pinned and every checkout sets `persist-credentials: false`; zizmor fails the build otherwise.

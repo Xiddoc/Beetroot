@@ -27,7 +27,11 @@ The archive is rooted at the instance directory and contains:
 The manifest records the source instance's name, port index, the
 `beetroot` release that produced the snapshot, an ISO-8601 timestamp,
 and a `path_layout` field carrying the source's `stealth_paths` blob
-(see [path_layout round-trip](#path_layout-round-trip) below).
+(see [path_layout round-trip](#path_layout-round-trip) below). It also
+records a `schema_version` (the manifest format version) and a `kind`
+discriminator — snapshots are redroid-only today (`kind: "redroid"`), and
+the field exists so a future cross-backend snapshot story doesn't need a
+second schema bump.
 
 **The `.env` file is deliberately excluded.** It's regenerated from `beetroot.yaml` the next time you run `beetroot apply`, so leaving it out of the archive means the restored instance picks up its (freshly allocated) port indices and host paths cleanly. Don't commit the archive's contents — assume the next `beetroot apply` is load-bearing.
 
@@ -77,7 +81,7 @@ beetroot up alpha &   # original keeps its index 0 (ADB 5555)
 beetroot up beta      # restored copy gets index 1 (ADB 5565)
 ```
 
-You'll typically want to run `beetroot apply <new-name>` before `beetroot up` to re-render the per-instance `.env` (which wasn't in the archive). The CLI prints the exact next-step command on success.
+`restore` stages the restored instance for you — it re-renders the per-instance `.env` (which isn't in the archive) and lays down the Frida placeholder and `data/` / `modules/` directories, exactly as `beetroot create` does. So no intermediate `beetroot apply` is required; `beetroot up <new-name>` works directly. The CLI prints the exact next-step command on success (`next: beetroot up <name>`).
 
 ### Restore over an existing directory: `--force`
 
@@ -116,7 +120,6 @@ beetroot snapshot alpha -o ./baseline.tar.zst
 beetroot down alpha
 beetroot destroy -y alpha
 beetroot restore ./baseline.tar.zst --name alpha
-beetroot apply alpha
 beetroot up alpha
 ```
 

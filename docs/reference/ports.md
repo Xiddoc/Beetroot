@@ -43,7 +43,7 @@ bravo         redroid  1    localhost:5565        localhost:27052       running 
 ## Getting ports programmatically
 
 ```bash
-beetroot status --json alpha | python3 -c "
+beetroot status alpha | python3 -c "
 import json,sys; r=json.load(sys.stdin)
 print(r['adb_address'])    # localhost:5555
 print(r['frida_address'])  # localhost:27042

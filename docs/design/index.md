@@ -1,14 +1,16 @@
 # Design Notes
 
-This section collects forward-looking design documents that describe
-**how Beetroot will work** rather than how it works today. Each doc
-lands a threat model, scope, and ordered implementation roadmap so a
-future contributor can pick up the work without re-deriving the
-design.
+This section collects Beetroot's design documents — **some
+forward-looking, some recording the design behind already-shipped
+subsystems** (the device-backend abstraction and the binderless-host
+micro-VM both ship today). Each doc lands a threat model, scope, and
+ordered implementation roadmap so a future contributor can pick up the
+work without re-deriving the design, and notes inline which parts have
+landed.
 
-A doc graduates out of this section once its roadmap has shipped — at
-that point its content is rewritten as a regular reference page and
-the design doc is archived from the nav.
+A doc that describes a fully-shipped subsystem eventually graduates out
+of this section — its content is rewritten as a regular reference page
+and the design doc is archived from the nav.
 
 ## Current design docs
 

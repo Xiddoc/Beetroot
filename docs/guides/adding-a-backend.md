@@ -56,7 +56,7 @@ a meaningful test (and the synthetic third-backend test asserts it).
 
 ```python
 from collections.abc import Sequence
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Self, runtime_checkable
 
 from beetroot import registry
 
@@ -93,8 +93,9 @@ class DeviceBackend(Protocol):
         """Make a frida-server of the requested version available."""
         ...
 
-    def shell(self) -> int:
-        """Open an interactive shell into the device; return exit code."""
+    def shell(self, args: Sequence[str] | None = None) -> int:
+        """Open a shell into the device (``args`` forwards extra argv
+        tokens; ``None`` opens an interactive shell); return exit code."""
         ...
 
     def frida_cli(self, args: Sequence[str]) -> int:
@@ -104,7 +105,7 @@ class DeviceBackend(Protocol):
     @classmethod
     def from_meta(
         cls, name: str, backend: registry.BackendConfigBase,
-    ) -> "DeviceBackend":
+    ) -> Self:
         """Construct a backend from a registry meta's backend config."""
         ...
 ```
@@ -233,9 +234,10 @@ class CloudBackend:
             check=True,
         )
 
-    def shell(self) -> int:
+    def shell(self, args: Sequence[str] | None = None) -> int:
         return subprocess.run(
-            ["cloud-cli", "shell", "--endpoint", self._config.endpoint],
+            ["cloud-cli", "shell", "--endpoint", self._config.endpoint,
+             *(args or [])],
             check=False,
         ).returncode
 

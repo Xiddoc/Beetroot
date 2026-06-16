@@ -18,11 +18,13 @@ beetroot build
 
 This verb:
 
-1. Clones [`ayasa520/redroid-script`](https://github.com/ayasa520/redroid-script) into `/tmp/redroid`.
+1. Clones [`ayasa520/redroid-script`](https://github.com/ayasa520/redroid-script) into a per-user cache directory (`~/.cache/beetroot/redroid-script` by default).
 2. Runs the patcher with `uv` to produce a local Docker image tagged `redroid/redroid:14.0.0_litegapps_houdini_magisk`. The patcher bakes Magisk, LiteGapps (minimal GApps), and Houdini (ARM-on-x86\_64 translation) into the base redroid image.
 3. Runs `docker compose build` to layer `entrypoint.sh` and `stealth.rc` on top, producing the final Beetroot image.
 
 Pass a variant to pick a different GMS flavor: `beetroot build none | lite | full | mindthegapps` (default `lite`).
+
+Pass `--vm-kernel` to build the micro-VM guest kernel + rootfs instead of the redroid image — needed for `binder: vm` users on hosts where the host kernel can't provide binder.
 
 !!! warning "This takes a while"
     The patcher downloads several large artifacts (Magisk, GApps, Houdini). Budget 10–20 minutes depending on your connection. Re-running `beetroot build` reuses an existing clone when the work directory already matches the same repo URL, but otherwise re-runs the full patcher and image build.

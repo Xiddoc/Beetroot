@@ -20,7 +20,7 @@ audiences are served here:
 The recommended entry point for programmatic users. Each `Instance`
 binds a registry name to an on-disk root and a parsed
 `InstanceConfig`. `Manager` exposes the cross-instance operations
-(`list`, `get`, `resolve`, `list_orphans`). `DeviceBackend` is the
+(`list_instances`, `all`, `get`, `resolve`, `list_orphans`). `DeviceBackend` is the
 Protocol both `Instance` (Redroid-via-compose) and v0.4's `AdbDevice`
 satisfy. `Manager.resolve(name)` dispatches via the backend registry
 in `beetroot.backends`; verbs that don't generalise across backends
@@ -67,16 +67,23 @@ The v0.3 OOP surface (`Instance`, `Manager`, `DeviceBackend`,
   instead (loaded lazily on first `Manager.resolve` call), but the
   in-process registration is what tests use and what the synthetic
   third-backend test exercises.
-* **`registry.BackendConfig`** — `Annotated[RedroidBackendConfig |
-  AdbBackendConfig, Field(discriminator="kind")]`. The
-  discriminated-union shape of the `backend` field on
-  `registry.InstanceMeta`. In-tree concrete subclasses:
-  `registry.RedroidBackendConfig(absolute_path, stealth_paths)` and
-  `registry.AdbBackendConfig(serial)`. Third-party backends define
-  their own `BackendConfig` subclass with a unique `kind: Literal[...]`
-  discriminator — see the [Adding a backend guide](../guides/adding-a-backend.md)
-  for the in-process / entry-point registration split and the v0.4 →
-  v0.6 JSON-discriminator round-trip limitation.
+* **`registry.BackendConfig`** — a back-compat alias for the open
+  `registry.BackendConfigBase` hierarchy (the type of the `backend`
+  field on `registry.InstanceMeta`). It is no longer a
+  `Field(discriminator=...)` discriminated union: backend configs are
+  now resolved through an open registration-based scheme keyed on the
+  `kind` discriminator, so third-party backends register their own
+  `BackendConfigBase` subclass rather than being members of a closed
+  union. In-tree concrete subclasses:
+  `registry.RedroidBackendConfig(absolute_path, stealth_paths)`,
+  `registry.AdbBackendConfig(serial)`, and
+  `registry.VmBackendConfig(absolute_path)`. Third-party backends define
+  their own `BackendConfigBase` subclass with a unique `kind: Literal[...]`
+  discriminator and call `registry.register_backend_config(cls)` — see the
+  [Adding a backend guide](../guides/adding-a-backend.md) for the
+  in-process / entry-point registration split. Unknown kinds are
+  preserved verbatim as `UnresolvedBackendConfig` so a row never gets
+  silently wiped.
 * **`CheckResult`** — frozen pydantic model with `status: Literal["pass",
   "fail", "skip"]` and optional `reason: str | None`. Returned from
   `Instance.health()` / `AdbDevice.health()` keyed by check name.

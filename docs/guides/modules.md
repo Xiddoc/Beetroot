@@ -124,13 +124,18 @@ Whole-device problems are diagnosed up front instead of drowning you in identica
     beetroot down alpha && beetroot up alpha
     ```
 
-4. Verify in ADB:
+4. Verify the module flashed:
+
+    Open the Magisk app on the device and check the **Modules** tab —
+    Shamiko should be listed and enabled. From a shell you can confirm
+    the staged module directory exists:
 
     ```bash
     beetroot shell alpha
     # In the shell:
-    magisk --list
-    # Shamiko should appear in the list
+    ls /data/adb/modules/
+    # A directory for the installed module (e.g. `zygisk_shamiko`)
+    # should appear once it has flashed.
     ```
 
 ## Modules only flash once per boot

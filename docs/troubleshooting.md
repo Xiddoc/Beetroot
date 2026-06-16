@@ -40,14 +40,26 @@ beetroot doctor alpha
 
 === "Binder compiled out / no kernel access"
 
-    If `host.binder` reports `CONFIG_ANDROID_BINDER_IPC is not set` (or you're in a sandbox/PaaS container with no module-loading path and no `/dev/binder`), **no Docker flag can make redroid boot** on that host. Either move to a host whose kernel provides binder, or drive a device that lives elsewhere over ADB — see [Running in CI / without kernel access](guides/running-in-ci.md):
+    If `host.binder` reports `CONFIG_ANDROID_BINDER_IPC is not set` (or you're in a sandbox/PaaS container with no module-loading path and no `/dev/binder`), **no Docker flag can make redroid boot** on that host. You have three options:
 
-    ```bash
-    # Point Beetroot at a remote rooted device/emulator — no kernel access needed.
-    adb connect 192.168.1.10:5555
-    beetroot adopt 192.168.1.10:5555 --name phone --verify
-    beetroot shell phone
-    ```
+    1. Move to a host whose kernel provides binder.
+    2. Drive a device that lives elsewhere over ADB — see [Running in CI / without kernel access](guides/running-in-ci.md):
+
+        ```bash
+        # Point Beetroot at a remote rooted device/emulator — no kernel access needed.
+        adb connect 192.168.1.10:5555
+        beetroot adopt 192.168.1.10:5555 --name phone --verify
+        beetroot shell phone
+        ```
+
+    3. Opt into the emulated micro-VM backend — it ships its own binder-enabled kernel, so it needs no host binder at all. Build the guest kernel/rootfs, set `binder: vm` in `beetroot.yaml`, and boot. Without `/dev/kvm` it falls back to TCG (software emulation, ~5–20× slower), so it is slow but functional. See [Binderless hosts (QEMU/TCG)](design/binderless-hosts-qemu-tcg.md):
+
+        ```bash
+        beetroot build --vm-kernel   # build the binder-enabled guest kernel + rootfs
+        # edit alpha/beetroot.yaml:  binder: vm
+        beetroot apply alpha
+        beetroot up alpha
+        ```
 
 ---
 
