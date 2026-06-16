@@ -82,7 +82,10 @@ stage_docker_root() {
 
     if [ -z "$REDROID_TAR" ]; then
         log "pulling $REDROID_IMAGE with host docker ($DOCKER_BIN) and saving to tarball"
-        "$DOCKER_BIN" pull "$REDROID_IMAGE"
+        # stdout is the function's value channel (echo "$_stage" below is
+        # captured via command substitution), so docker's progress/status
+        # output must go to stderr or it corrupts the returned path.
+        "$DOCKER_BIN" pull "$REDROID_IMAGE" >&2
         REDROID_TAR="$WORK/redroid.tar"
         "$DOCKER_BIN" save "$REDROID_IMAGE" -o "$REDROID_TAR"
     fi
@@ -100,13 +103,13 @@ stage_docker_root() {
     while ! "$DBIN/docker" --host="unix://$WORK/stage.sock" info >/dev/null 2>&1; do
         _i=$((_i + 1))
         [ "$_i" -ge 60 ] && {
-            tail -20 "$WORK/stage-dockerd.log"
+            tail -20 "$WORK/stage-dockerd.log" >&2
             echo "[build-rootfs] staging dockerd did not start" >&2
             exit 1
         }
         sleep 1
     done
-    "$DBIN/docker" --host="unix://$WORK/stage.sock" load -i "$REDROID_TAR"
+    "$DBIN/docker" --host="unix://$WORK/stage.sock" load -i "$REDROID_TAR" >&2
     kill "$(cat "$WORK/stage.pid")" 2>/dev/null || true
     rm -f "$WORK/stage.pid"
     sleep 3
