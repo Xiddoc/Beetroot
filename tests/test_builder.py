@@ -492,3 +492,51 @@ class TestBuilderProgress:
             label in output
             for label in ["redroid-script", "Patching", "Building"]
         ), f"no progress output captured; got: {output!r}"
+
+
+class TestBuildVmKernel:
+    def test_runs_kernel_then_rootfs_steps(self, tmp_path: Path) -> None:
+        runner = FakeRunner()
+        ctx = tmp_path / "repo"
+        (ctx / "docker" / "vm").mkdir(parents=True)
+        out = tmp_path / "out"
+        artifacts = builder.build_vm_kernel(out_dir=out, build_context=ctx, runner=runner)
+        assert len(runner.calls) == 2
+        kernel_cmd = runner.calls[0].cmd
+        assert kernel_cmd[0] == "sh"
+        assert kernel_cmd[1] == "-c"
+        assert "kernel.config" in kernel_cmd[2]
+        assert "bzImage" in kernel_cmd[2]
+        rootfs_cmd = runner.calls[1].cmd
+        assert rootfs_cmd[0] == "sh"
+        assert rootfs_cmd[1].endswith("build-rootfs.sh")
+        assert rootfs_cmd[2] == str(out / "rootdisk.img")
+        assert artifacts.kernel == out / "bzImage"
+        assert artifacts.rootfs == out / "rootdisk.img"
+        assert out.is_dir()
+
+    def test_kernel_step_failure_propagates(self, tmp_path: Path) -> None:
+        runner = FakeRunner(fail_on="sh")
+        ctx = tmp_path / "repo"
+        (ctx / "docker" / "vm").mkdir(parents=True)
+        with pytest.raises(BootstrapError):
+            builder.build_vm_kernel(out_dir=tmp_path / "out", build_context=ctx, runner=runner)
+
+    def test_default_out_dir_under_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = FakeRunner()
+        ctx = tmp_path / "repo"
+        (ctx / "docker" / "vm").mkdir(parents=True)
+        cache = tmp_path / "cache" / "vm"
+        monkeypatch.setattr("beetroot.builder.paths.user_cache_dir", lambda _sub: cache)
+        artifacts = builder.build_vm_kernel(build_context=ctx, runner=runner)
+        assert artifacts.kernel == cache / "bzImage"
+
+    def test_default_build_context(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        runner = FakeRunner()
+        ctx = tmp_path / "repo"
+        (ctx / "docker" / "vm").mkdir(parents=True)
+        monkeypatch.setattr(builder, "_default_build_context", lambda: ctx)
+        builder.build_vm_kernel(out_dir=tmp_path / "out", runner=runner)
+        assert str(ctx / "docker" / "vm" / "build-rootfs.sh") in runner.calls[1].cmd[1]

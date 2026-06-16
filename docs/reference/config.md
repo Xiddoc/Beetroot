@@ -266,8 +266,37 @@ Selects how redroid obtains the kernel **binder** driver it needs to boot. redro
 binder: host
 ```
 
-!!! warning "`binder: vm` is not wired in yet"
-    The micro-VM *engine* is a tracked optimization sprint. A proof-of-concept already boots redroid this way (see [Binderless hosts (QEMU/TCG)](../design/binderless-hosts-qemu-tcg.md)), but `beetroot up` does not yet launch it — selecting `vm` today fails fast with a pointer to that design doc rather than silently doing nothing. The slow emulated path is **never** engaged automatically; it is always an explicit opt-in.
+!!! tip "`binder: vm` boots an emulated micro-VM"
+    Selecting `vm` dispatches `beetroot up` to a QEMU micro-VM that ships its own binder-enabled kernel. Build the guest artifacts once with `beetroot build --vm-kernel`, point `vm.kernel` / `vm.rootfs` at them (or set `BEETROOT_VM_KERNEL` / `BEETROOT_VM_ROOTFS`), and run `beetroot apply` then `beetroot up`. On a host with `/dev/kvm` this is near-native; without it the backend falls back to TCG (~5-20x slower — a slow first boot is expected, not a hang). The slow path is **never** engaged automatically; `binder: vm` is always an explicit opt-in. See [Binderless hosts (QEMU/TCG)](../design/binderless-hosts-qemu-tcg.md).
+
+!!! warning "Frida is not yet supported under `binder: vm`"
+    The micro-VM guest is network-isolated, so the `vm` backend is scoped to ADB forwarding (`beetroot shell`) only. `beetroot frida <vm-instance>` raises a friendly "not yet supported on the 'vm' backend" error, `beetroot doctor` omits the `frida.handshake` row, and `ls` / `status` report the Frida address as `unsupported`. Any `frida:` block in a `binder: vm` config is ignored (no `frida-server` is staged). For Frida, use `binder: auto` / `host` (redroid) or `beetroot adopt` an external rooted device. Tracked as a follow-up to [#44](https://github.com/Xiddoc/Beetroot/issues/44).
+
+---
+
+## `vm`
+
+QEMU micro-VM tunables. Consulted **only** when `binder: vm`; ignored otherwise. All fields are optional — an empty `vm:` block (or none) is valid, and the kernel/rootfs paths then fall back to the `BEETROOT_VM_KERNEL` / `BEETROOT_VM_ROOTFS` environment variables.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `vm.kernel` | string \| null | `null` | Host path to the guest `bzImage`. `null` defers to `BEETROOT_VM_KERNEL`. |
+| `vm.rootfs` | string \| null | `null` | Host path to the guest ext4 root image. `null` defers to `BEETROOT_VM_ROOTFS`. |
+| `vm.accel` | string | `auto` | QEMU accelerator: `auto` (probe `/dev/kvm`, prefer KVM, else TCG), `kvm` (force; errors if `/dev/kvm` is absent), or `tcg` (force software emulation). |
+| `vm.smp` | int | `4` | Guest vCPUs (`-smp`). Must be >= 1. |
+| `vm.memory_mib` | int | `8192` | Guest RAM in MiB (`-m`). Must be >= 256. |
+
+After launching QEMU, `beetroot up` polls `adb connect` against the guest until the forwarded ADB endpoint accepts a connection — the guest restarts `adbd` to enable TCP a few seconds *after* `sys.boot_completed=1`, so a single immediate connect would race that late bind. The poll deadline is the `BEETROOT_VM_ADB_CONNECT_TIMEOUT` environment variable (seconds, default `60`); raise it for slow TCG first boots. If the guest never exposes ADB within the deadline, `up` fails with an actionable error (try `beetroot logs <name>` to watch the boot, or pin `vm.accel: kvm`) rather than a traceback.
+
+```yaml
+binder: vm
+vm:
+  kernel: ~/.cache/beetroot/vm/bzImage
+  rootfs: ~/.cache/beetroot/vm/rootdisk.img
+  accel: auto
+  smp: 4
+  memory_mib: 8192
+```
 
 ---
 

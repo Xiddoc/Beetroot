@@ -27,6 +27,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Final, Literal, Protocol
 
+from pydantic import BaseModel, ConfigDict
+
 from . import config, console, paths
 from .settings import settings
 
@@ -292,3 +294,97 @@ def build_image(  # noqa: PLR0913  # 6 keyword-only params; each is a distinct i
         )
 
     return tag
+
+
+# The vendored micro-VM build artifacts (kernel config fragment, rootfs
+# builder, guest init) live under ``docker/vm/`` in a source / editable
+# install. ``beetroot build --vm-kernel`` resolves them relative to the
+# build context, exactly like the redroid Dockerfile.
+_VM_DIR = "vm"
+_KERNEL_CONFIG = "kernel.config"
+_ROOTFS_SCRIPT = "build-rootfs.sh"
+
+
+class VmArtifacts(BaseModel):
+    """
+    Host paths to the guest kernel + rootfs produced by ``beetroot build --vm-kernel``.
+
+    Attributes:
+        kernel: Path to the built guest ``bzImage``.
+        rootfs: Path to the built guest ext4 root image.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    kernel: Path
+    rootfs: Path
+
+
+def build_vm_kernel(
+    *,
+    out_dir: Path | None = None,
+    build_context: Path | None = None,
+    runner: SubprocessRunner | None = None,
+) -> VmArtifacts:
+    """
+    Build the micro-VM guest kernel + rootfs for the ``binder: vm`` backend.
+
+    Two steps, both delegated to the injected :class:`SubprocessRunner` so the
+    heavyweight kernel compile + rootfs assembly stay shell steps this Python
+    glue never runs directly:
+
+    1. Build the guest kernel ``bzImage`` from a ``make defconfig`` base
+       merged with the vendored ``docker/vm/kernel.config`` fragment (the
+       §4.1 binder/cgroup/bpf/PSI deltas), via the kernel tree's own
+       ``merge_config.sh`` + ``make``.
+    2. Assemble the ext4 rootfs by running ``docker/vm/build-rootfs.sh``
+       (busybox-static + Docker static bundle + ``guest-init.sh`` as
+       ``/init``).
+
+    Args:
+        out_dir: Directory the ``bzImage`` and ``rootdisk.img`` are written
+            to. Defaults to a ``vm`` subdir of the user cache.
+        build_context: Directory containing the ``docker/vm/`` artifacts.
+            Defaults to the repo root (source / editable install); pass it
+            explicitly for a ``uv tool install`` setup where ``docker/`` is
+            not bundled in the wheel.
+        runner: Inject a :class:`SubprocessRunner` for testing. Defaults to
+            :class:`DefaultRunner`.
+
+    Returns:
+        The :class:`VmArtifacts` naming the built kernel + rootfs paths.
+
+    Raises:
+        BootstrapError: If the kernel build or rootfs assembly fails.
+    """
+    ctx = build_context if build_context is not None else _default_build_context()
+    out = out_dir if out_dir is not None else paths.user_cache_dir(_VM_DIR)
+    run = runner if runner is not None else DefaultRunner()
+
+    vm_dir = ctx / "docker" / _VM_DIR
+    kernel_config = vm_dir / _KERNEL_CONFIG
+    rootfs_script = vm_dir / _ROOTFS_SCRIPT
+    kernel_out = out / "bzImage"
+    rootfs_out = out / "rootdisk.img"
+
+    out.mkdir(parents=True, exist_ok=True)
+
+    # Step 1: build the guest kernel with the binder-enabled config fragment.
+    with console.progress("Building micro-VM guest kernel (binder + cgroup + PSI)"):
+        run.run(
+            [
+                "sh",
+                "-c",
+                # merge the defconfig base with the vendored fragment, then
+                # build, then drop the bzImage where the launcher expects it.
+                "make defconfig && "
+                f"./scripts/kconfig/merge_config.sh -m .config {kernel_config} && "
+                'make olddefconfig && make -j"$(nproc)" bzImage && '
+                f"cp arch/x86/boot/bzImage {kernel_out}",
+            ],
+        )
+
+    # Step 2: assemble the ext4 rootfs (busybox + Docker static + guest init).
+    with console.progress("Assembling micro-VM guest rootfs"):
+        run.run(["sh", str(rootfs_script), str(rootfs_out)])
+
+    return VmArtifacts(kernel=kernel_out, rootfs=rootfs_out)

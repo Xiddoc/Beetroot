@@ -1,0 +1,20 @@
+# Documentation only — not loaded by the CLI. Copy this over your fresh beetroot.yaml if you want this configuration.
+# Run redroid inside an emulated QEMU micro-VM that ships its own
+# binder-enabled kernel — for hosts with no kernel binder driver (hardened
+# CI, nomodule cloud sandboxes). Build the guest artifacts once with
+# `beetroot build --vm-kernel`, then `beetroot apply` + `beetroot up`.
+#
+# accel: auto prefers KVM when /dev/kvm is available (near-native) and
+# falls back to TCG (software emulation, ~5-20x slower) otherwise. A slow
+# first boot under TCG is expected, not a hang.
+
+api_version: 4
+
+binder: vm
+
+vm:
+  kernel: ~/.cache/beetroot/vm/bzImage
+  rootfs: ~/.cache/beetroot/vm/rootdisk.img
+  accel: auto
+  smp: 4
+  memory_mib: 8192

@@ -877,3 +877,60 @@ class TestBinderMode:
         yaml_path = tmp_path / "beetroot.yaml"
         write_yaml(yaml_path, InstanceConfig(binder="vm"))
         assert load_yaml(yaml_path).binder == "vm"
+
+
+class TestVmConfig:
+    """The optional `vm:` micro-VM tunables block (consulted when binder: vm)."""
+
+    def test_defaults(self) -> None:
+        vm = InstanceConfig().vm
+        assert vm.kernel is None
+        assert vm.rootfs is None
+        assert vm.accel == "auto"
+        assert vm.smp == 4
+        assert vm.memory_mib == 8192
+
+    def test_explicit_values(self) -> None:
+        cfg = InstanceConfig(
+            vm={  # type: ignore[arg-type]
+                "kernel": "/k/bz",
+                "rootfs": "/r/disk.img",
+                "accel": "tcg",
+                "smp": 2,
+                "memory_mib": 2048,
+            }
+        )
+        assert cfg.vm.kernel == "/k/bz"
+        assert cfg.vm.rootfs == "/r/disk.img"
+        assert cfg.vm.accel == "tcg"
+        assert cfg.vm.smp == 2
+
+    def test_rejects_bad_accel(self) -> None:
+        with pytest.raises(ValidationError):
+            InstanceConfig(vm={"accel": "hax"})  # type: ignore[arg-type]
+
+    def test_rejects_zero_smp(self) -> None:
+        with pytest.raises(ValidationError):
+            InstanceConfig(vm={"smp": 0})  # type: ignore[arg-type]
+
+    def test_rejects_tiny_memory(self) -> None:
+        with pytest.raises(ValidationError):
+            InstanceConfig(vm={"memory_mib": 64})  # type: ignore[arg-type]
+
+    def test_round_trips_through_yaml(self, tmp_path: Path) -> None:
+        from beetroot.config import write_yaml
+
+        yaml_path = tmp_path / "beetroot.yaml"
+        write_yaml(
+            yaml_path,
+            InstanceConfig(binder="vm", vm={"kernel": "/k", "accel": "kvm", "smp": 8}),  # type: ignore[arg-type]
+        )
+        loaded = load_yaml(yaml_path)
+        assert loaded.vm.kernel == "/k"
+        assert loaded.vm.accel == "kvm"
+        assert loaded.vm.smp == 8
+
+    def test_empty_yaml_vm_block_uses_defaults(self) -> None:
+        # binder: vm with no vm: section is valid (env defaults apply at runtime).
+        cfg = InstanceConfig.model_validate({"api_version": 4, "binder": "vm"})
+        assert cfg.vm.accel == "auto"

@@ -360,6 +360,47 @@ class Ports(BaseModel):
         return self
 
 
+_MIN_SMP: Final = 1
+_MIN_MEMORY_MIB: Final = 256
+
+
+class Vm(BaseModel):
+    """
+    QEMU micro-VM backend settings, consulted only when ``binder: vm``.
+
+    The micro-VM boots a Beetroot-built guest kernel (``kernel``, a
+    ``bzImage`` with binder + binderfs compiled in) on top of an ext4
+    rootfs (``rootfs``) that auto-starts redroid inside Docker — the
+    proof-of-concept proven in ``docs/design/binderless-hosts-qemu-tcg.md``.
+    The host's own kernel binder driver is irrelevant in this mode: the
+    guest ships its own.
+
+    Both ``kernel`` and ``rootfs`` are optional in the schema so an empty
+    ``vm:`` block (or none at all) is valid; the launcher falls back to the
+    ``BEETROOT_VM_KERNEL`` / ``BEETROOT_VM_ROOTFS`` environment defaults
+    (see :mod:`beetroot.settings`) and only errors at ``up`` time when
+    neither the config nor the env supplies a path.
+
+    Attributes:
+        kernel: Host path to the guest ``bzImage``. ``None`` defers to the
+            ``BEETROOT_VM_KERNEL`` setting.
+        rootfs: Host path to the guest ext4 root image. ``None`` defers to
+            the ``BEETROOT_VM_ROOTFS`` setting.
+        accel: QEMU accelerator. ``"auto"`` (default) probes ``/dev/kvm``
+            and prefers KVM, falling back to TCG; ``"kvm"`` / ``"tcg"``
+            force the choice. Explicit ``"kvm"`` on a host without
+            ``/dev/kvm`` is a hard error (no silent slow fallback).
+        smp: Number of guest vCPUs (``-smp``). Must be >= 1. Default 4.
+        memory_mib: Guest RAM in MiB (``-m``). Must be >= 256. Default 8192.
+    """
+
+    kernel: str | None = None
+    rootfs: str | None = None
+    accel: Literal["auto", "kvm", "tcg"] = "auto"
+    smp: int = Field(default=4, ge=_MIN_SMP)
+    memory_mib: int = Field(default=8192, ge=_MIN_MEMORY_MIB)
+
+
 class InstanceConfig(BaseModel):
     """
     The schema of an instance directory's ``beetroot.yaml``.
@@ -398,6 +439,11 @@ class InstanceConfig(BaseModel):
             to ``docs/design/binderless-hosts-qemu-tcg.md`` rather than
             silently doing nothing. Never silently falls back to the
             slow emulated path — that choice is always explicit.
+        vm: QEMU micro-VM tunables (kernel/rootfs paths, accelerator,
+            vCPUs, memory). Consulted only when ``binder == "vm"``; ignored
+            otherwise. Defaults to an all-defaults :class:`Vm` block so a
+            YAML can opt into ``binder: vm`` without a ``vm:`` section and
+            still rely on the ``BEETROOT_VM_*`` env defaults.
     """
 
     api_version: int = SUPPORTED_API_VERSION
@@ -409,6 +455,7 @@ class InstanceConfig(BaseModel):
     magisk: Magisk = Field(default_factory=Magisk)
     ports: Ports = Field(default_factory=Ports)
     binder: Literal["auto", "host", "vm"] = "auto"
+    vm: Vm = Field(default_factory=Vm)
 
     @model_validator(mode="before")
     @classmethod

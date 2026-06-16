@@ -262,15 +262,15 @@ _VM_HINT: Final = (
     "binder required)"
 )
 
-# Selecting ``binder: vm`` before the micro-VM engine is wired into the
-# CLI surfaces this, rather than silently doing nothing. The validated
-# recipe + roadmap live in the design doc.
-_VM_NOT_WIRED: Final = (
-    "binder: vm selected, but the emulated micro-VM backend is not yet "
-    "wired into the CLI — it is the tracked optimization sprint. A "
-    "proof-of-concept already boots redroid this way; see "
-    "docs/design/binderless-hosts-qemu-tcg.md. For now use `binder: host` "
-    "(or `binder: auto`) on a host that provides the kernel binder driver"
+# ``binder: vm`` is now wired into the CLI (issue #44): selecting it
+# dispatches ``beetroot up`` to the QEMU micro-VM engine
+# (:class:`beetroot.backends.vm.VmDeviceBackend`). This reason string is the
+# one-time banner shown when the VM path is engaged, distinguishing the
+# fast KVM rung from the loud-and-slow TCG fallback at launch time.
+_VM_ENGAGED: Final = (
+    "binder: vm — booting redroid inside an emulated QEMU micro-VM that "
+    "ships its own binder kernel (no host binder required); see "
+    "docs/design/binderless-hosts-qemu-tcg.md"
 )
 
 
@@ -323,7 +323,7 @@ def plan_binder_runtime(mode: BinderMode, status: BinderStatus) -> BinderPlan:
         The :class:`BinderPlan` describing what ``up`` should do.
     """
     if mode == "vm":
-        return BinderPlan(action="vm", reason=_VM_NOT_WIRED, remedy="")
+        return BinderPlan(action="vm", reason=_VM_ENGAGED, remedy="")
     if status.available:
         return BinderPlan(action="proceed", reason=status.reason, remedy="")
     if mode == "host":

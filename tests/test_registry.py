@@ -439,3 +439,69 @@ class TestAddAllocatingBackendForms:
         registry.add_allocating("phone", backend=cfg)
         with pytest.raises(registry.RegistryError, match="adb"):
             registry.instance_path("phone")
+
+
+class TestReconcileBackendKind:
+    def test_redroid_to_vm(self, isolated_registry: Path) -> None:
+        _make_instance(isolated_registry, "alpha")
+        registry.add_allocating(
+            "alpha",
+            backend=RedroidBackendConfig(absolute_path=str(isolated_registry / "alpha")),
+        )
+        changed = registry.reconcile_backend_kind("alpha", "vm")
+        assert changed is True
+        meta = registry.get("alpha")
+        assert meta is not None
+        assert meta.backend.kind == "vm"
+        assert isinstance(meta.backend, registry.VmBackendConfig)
+        assert meta.backend.absolute_path == str(isolated_registry / "alpha")
+
+    def test_vm_to_redroid(self, isolated_registry: Path) -> None:
+        _make_instance(isolated_registry, "alpha")
+        registry.add_allocating(
+            "alpha",
+            backend=registry.VmBackendConfig(absolute_path=str(isolated_registry / "alpha")),
+        )
+        changed = registry.reconcile_backend_kind("alpha", "auto")
+        assert changed is True
+        meta = registry.get("alpha")
+        assert meta is not None
+        assert meta.backend.kind == "redroid"
+
+    def test_no_change_when_already_matching(self, isolated_registry: Path) -> None:
+        _make_instance(isolated_registry, "alpha")
+        registry.add_allocating(
+            "alpha",
+            backend=RedroidBackendConfig(absolute_path=str(isolated_registry / "alpha")),
+        )
+        assert registry.reconcile_backend_kind("alpha", "host") is False
+
+    def test_missing_row_returns_false(self, isolated_registry: Path) -> None:
+        assert registry.reconcile_backend_kind("ghost", "vm") is False
+
+    def test_non_directory_backed_left_untouched(self, isolated_registry: Path) -> None:
+        registry.add_allocating("phone", backend=registry.AdbBackendConfig(serial="x"))
+        assert registry.reconcile_backend_kind("phone", "vm") is False
+        meta = registry.get("phone")
+        assert meta is not None
+        assert meta.backend.kind == "adb"
+
+
+class TestVmBackendDirectoryBacked:
+    def test_instance_path_resolves_vm(self, isolated_registry: Path) -> None:
+        _make_instance(isolated_registry, "alpha")
+        registry.add_allocating(
+            "alpha",
+            backend=registry.VmBackendConfig(absolute_path=str(isolated_registry / "alpha")),
+        )
+        assert registry.instance_path("alpha") == isolated_registry / "alpha"
+
+    def test_all_resolved_ports_includes_vm(self, isolated_registry: Path) -> None:
+        _make_instance(isolated_registry, "alpha")
+        registry.add_allocating(
+            "alpha",
+            backend=registry.VmBackendConfig(absolute_path=str(isolated_registry / "alpha")),
+        )
+        all_ports = registry.all_resolved_ports()
+        assert "alpha" in all_ports
+        assert all_ports["alpha"]["adb"] == 5555

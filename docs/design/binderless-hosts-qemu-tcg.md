@@ -246,10 +246,13 @@ choose between using the host's binder and falling back to the VM?**
     path). The refinements that shipped: `auto` keeps the lenient
     warn-and-proceed behaviour, `host` is the strict fail-fast variant,
     and `vm` is the explicit opt-in. The micro-VM **engine** itself
-    (everything `vm` needs to actually boot) is the tracked optimization
-    sprint — **issue #44**; selecting `vm` today fails fast with a pointer
-    to this doc. Module-loading and KVM detection are runtime concerns,
-    so no separate `vm_accel` config key shipped.
+    (everything `vm` needs to actually boot) shipped in **issue #44**:
+    selecting `vm` now dispatches `beetroot up` to the QEMU launcher
+    (`VmDeviceBackend`) described in §8 below. KVM detection is a runtime
+    concern (probed live from `/dev/kvm`), so no separate `vm_accel` config
+    key was needed — the optional `vm.accel` knob (`auto`/`kvm`/`tcg`) lives
+    in the new `vm:` config block alongside `vm.kernel` / `vm.rootfs` /
+    `vm.smp` / `vm.memory_mib`.
 
 ### 7.1 Principle
 
@@ -340,14 +343,52 @@ expensive step.
 ## 8. Roadmap
 
 1. **Stabilize** — ✅ done: `CONFIG_PSI=y` gives a clean 5-minute idle
-   (no lmkd flapping, no reboot). Next: pin this kernel version + config
-   fragment in-tree so the build is reproducible.
-2. **Package** — ship a prebuilt guest kernel + minimal rootfs builder
-   (or a `beetroot build --vm-kernel` step wrapping the kernel build).
-3. **`VmDeviceBackend`** — implement against the
-   [`DeviceBackend` Protocol](device-backends.md): `up` boots the
-   micro-VM and forwards ADB; `down` powers it off; ports map through
-   to the guest's redroid `5555`.
-4. **`auto` resolver + `doctor`** — the detection ladder and messaging
-   in §7.
-5. **KVM fast path** — detect `/dev/kvm`, prefer `-accel kvm`.
+   (no lmkd flapping, no reboot). The kernel config fragment is now pinned
+   in-tree at `docker/vm/kernel.config` so the build is reproducible.
+2. **Package** — ✅ done (issue #44): the kernel config fragment
+   (`docker/vm/kernel.config`), rootfs builder (`docker/vm/build-rootfs.sh`),
+   and guest init (`docker/vm/guest-init.sh`) are vendored in-tree, and
+   `beetroot build --vm-kernel` wraps the kernel build + rootfs assembly.
+3. **`VmDeviceBackend`** — ✅ done (issue #44): implemented against the
+   [`DeviceBackend` Protocol](device-backends.md). `up` boots the micro-VM
+   and forwards ADB; `down` powers it off (SIGTERM to the pidfile'd QEMU);
+   the guest's redroid `5555` is mapped through QEMU user-net `hostfwd` to
+   the instance's stride-allocated host ADB port.
+4. **`doctor` + banners** — ✅ done (issue #44): `beetroot up` prints the
+   §7.3 capability banner (quiet on KVM, loud on TCG) and `beetroot doctor`
+   runs `vm.process` + `vm.accel` rows. `binder: auto`/`host` keep their
+   existing behaviour.
+5. **KVM fast path** — ✅ done (issue #44): `detect_accel` probes
+   `/dev/kvm` (read+write) and prefers `-accel kvm` (`-cpu host`); `auto`
+   falls back to TCG, an explicit `kvm` request on a host without `/dev/kvm`
+   errors loudly.
+
+### Usage
+
+On a host with no kernel binder driver (`beetroot doctor` shows
+`host.binder` as `unsupported`):
+
+```bash
+# 1. Build the guest kernel (binder + cgroup + bpf + PSI) and rootfs.
+beetroot build --vm-kernel
+
+# 2. Create an instance, opt into the micro-VM, point it at the artifacts.
+beetroot create alpha
+# edit alpha/beetroot.yaml:
+#   binder: vm
+#   vm:
+#     kernel: ~/.cache/beetroot/vm/bzImage
+#     rootfs: ~/.cache/beetroot/vm/rootdisk.img
+#     accel: auto      # auto | kvm | tcg
+beetroot apply alpha   # flips the registry kind to the vm backend
+
+# 3. Boot it. On a KVM host this is near-native; without /dev/kvm it falls
+#    back to TCG (~5-20x slower first boot — expected, not a hang).
+beetroot up alpha
+beetroot shell alpha
+```
+
+The kernel/rootfs paths can also come from the `BEETROOT_VM_KERNEL` /
+`BEETROOT_VM_ROOTFS` environment variables (and the QEMU binary from
+`BEETROOT_QEMU_BIN`) instead of the `vm:` block. The expensive TCG path is
+never engaged automatically — `binder: vm` is always an explicit opt-in.

@@ -12,14 +12,32 @@
   variant: `beetroot up` fails fast (exit 1) rather than leave a
   container that silently never boots Android — better for CI. `vm` opts
   into running redroid inside an emulated QEMU micro-VM that ships its own
-  binder kernel, for hosts with no host binder at all; the micro-VM
-  engine is a tracked follow-up, so selecting `vm` today fails fast with a
-  pointer to the design doc rather than silently doing nothing. The slow
-  emulated path is never engaged automatically — it is always an explicit
-  opt-in. `beetroot doctor` reflects the mode: the `host.binder` row is
-  skipped under `vm` and fails (not warns) under strict `host`. A
-  validated proof-of-concept (booting redroid on a binderless,
+  binder kernel, for hosts with no host binder at all; the micro-VM engine
+  now ships (see the next entry). The slow emulated path is never engaged
+  automatically — it is always an explicit opt-in. `beetroot doctor`
+  reflects the mode: under `vm` it runs VM-specific checks (`vm.process`,
+  `vm.accel`), and under strict `host` the `host.binder` row fails (not
+  warns). A validated proof-of-concept (booting redroid on a binderless,
   KVM-less host) and the full backend/fallback design live in
+  [Binderless hosts (QEMU/TCG)](https://xiddoc.github.io/Beetroot/design/binderless-hosts-qemu-tcg/).
+
+- **`binder: vm` micro-VM engine (QEMU/TCG, KVM fast path).** Selecting
+  `binder: vm` now dispatches `beetroot up` to a real QEMU micro-VM backend
+  (`VmDeviceBackend`) instead of failing fast. The launcher detects the
+  accelerator (`/dev/kvm` -> KVM; otherwise TCG with MTTCG `thread=multi`,
+  `-cpu max`), builds the `qemu-system-x86_64` argv per the validated PoC
+  recipe, forwards the guest's ADB port to a per-instance host loopback
+  port, and manages the QEMU process via a pidfile in the instance dir.
+  The capability-ladder UX is preserved: a one-line banner on KVM, a loud
+  banner (noting the ~5-20x slowdown -- a slow first boot is expected, not
+  a hang) on TCG, and a hard, actionable error if `vm.accel: kvm` is
+  demanded on a host without `/dev/kvm`. An optional `vm:` block tunes the
+  kernel / rootfs paths, accelerator, vCPUs, and memory (with
+  `BEETROOT_QEMU_BIN`, `BEETROOT_VM_KERNEL`, `BEETROOT_VM_ROOTFS` env
+  defaults). The new `beetroot build --vm-kernel` builds the guest kernel +
+  rootfs from the vendored `docker/vm/` artifacts (kernel-config fragment,
+  rootfs builder, guest init). This is additive -- no `api_version` bump;
+  redroid stays the default. See
   [Binderless hosts (QEMU/TCG)](https://xiddoc.github.io/Beetroot/design/binderless-hosts-qemu-tcg/).
 
 - **End-to-end CI that boots a real Android (`e2e.yml`).** A new workflow
@@ -110,6 +128,20 @@
   `adb_address`, `frida_address`, `is_available`); redroid rows are
   unchanged, including the v0.3 back-compat `path`/`adb`/`frida` keys.
   Orphan entries are still skipped with the trailing stderr advisory.
+
+### Known limitations
+
+- **Frida is not yet supported on the `binder: vm` backend** (#44 follow-up).
+  The QEMU micro-VM runs redroid with `--network none`, and nothing yet
+  forwards the guest Frida port or bind-mounts a staged `frida-server` into
+  the network-isolated guest. `beetroot frida <vm-instance>` and
+  `install_frida` therefore raise a friendly `BackendCapabilityError`
+  rather than silently no-op; `beetroot doctor` omits the `frida.handshake`
+  row for vm instances (it could never pass), and `ls` / `status` report the
+  Frida address as `unsupported`. The vm backend is scoped to ADB
+  forwarding (`beetroot shell`) only; Frida-over-VM forwarding is tracked as
+  a follow-up. Use `binder: auto`/`host` (redroid) or `beetroot adopt` an
+  external rooted device for Frida in the meantime.
 
 ### CI hardening, part 1 (#21)
 
