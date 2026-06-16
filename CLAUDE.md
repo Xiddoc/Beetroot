@@ -83,7 +83,7 @@ src/beetroot/
 ├── frida_download.py    # download frida-server.xz, decompress (lzma), cache
 ├── modules_download.py  # fetch + sha256-verify Magisk module zips
 ├── snapshot.py    # pack/unpack instances as .tar.zst with manifest
-├── builder.py     # one-time base-image build (`beetroot build`)
+├── builder.py     # one-time base-image build (`beetroot build`) + micro-VM kernel + rootfs assembly (`build_rootfs`)
 └── paths.py       # single source of truth for filesystem layout
 ```
 

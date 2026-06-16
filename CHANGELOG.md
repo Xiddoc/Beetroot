@@ -130,6 +130,22 @@
   New public API: `beetroot.api.DevicePreflightError` (carries the
   pre-abort rows in its `results` attribute).
 
+### Quality & internals
+- **The micro-VM rootfs builder is now typed, tested Python.** The former
+  `docker/vm/build-rootfs.sh` has been ported to `build_rootfs` in
+  `src/beetroot/builder.py` — same recipe (busybox-static + Docker static
+  bundle + iptables-legacy + socat, the redroid image baked into
+  `/var/lib/docker`, `guest-init.sh` as `/init`), but as strict-mypy,
+  100%-covered Python behind an injectable `RootfsRunner`. The historical
+  `IMAGE_SIZE_MB` / `DOCKER_VERSION` / `DOCKER_URL` / `REDROID_IMAGE` /
+  `REDROID_TAR` / `ADBPROBE_BIN` / `BUSYBOX_BIN` env knobs are preserved.
+- **Shell linting now covers every script at the strictest severity.** CI's
+  `shellcheck` gate moved from `-S warning` on `docker/*.sh` only to
+  `-S style` on `docker/*.sh docker/vm/*.sh`, so the micro-VM `guest-init.sh`
+  is now linted too. A new `tests/test_shell_lint.py` runs the same
+  `shellcheck` + `shfmt` checks under pytest (skipping cleanly when the tools
+  are absent), so shell regressions are caught locally before the push.
+
 ### Bug fixes
 - **Adopted adb devices are now visible to the `ls` verb** (#15). The verb
   walks every backend kind via `Manager.all()` instead of the redroid-only

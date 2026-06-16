@@ -111,7 +111,8 @@ GitHub Actions runs the full gate set on every push to `main` and on every pull 
 - `uvx codespell==2.4.2 src/ docs/ README.md CHANGELOG.md` — spelling.
 - `uvx yamllint==1.38.0 -c .yamllint src/beetroot/templates/compose.yaml .github/workflows/ examples/` — YAML style (policy lives in `.yamllint`).
 - `uvx deptry==0.25.1 .` — dependency hygiene: undeclared imports and declared-but-unused deps (config in `[tool.deptry]` in `pyproject.toml`; add exceptions only for genuine false positives like the optional `frida-tools` extra).
-- `shfmt -i 4 -d docker/*.sh` — boot-helper formatting (CI downloads a checksum-verified pinned release binary; install `shfmt` locally to replicate).
+- `shellcheck -S style -s sh docker/*.sh docker/vm/*.sh` — shell linting at the strictest severity (`style`), covering both the in-container boot helpers and the micro-VM `guest-init.sh`. POSIX `sh` mode (toybox / busybox, not bash).
+- `shfmt -i 4 -d docker/*.sh docker/vm/*.sh` — shell formatting for the same set (CI downloads a checksum-verified pinned release binary; install `shfmt` locally to replicate).
 - Packaging gate: `uv build`, `uvx twine==6.2.0 check dist/*`, then the wheel is installed into a clean venv and `beetroot --help` must run.
 
 Every gate is version-pinned in the workflow (release binaries are checksum-verified); to replicate a gate locally, run the same command with the same pin.
