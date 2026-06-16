@@ -1,0 +1,145 @@
+name: Benchmark (nightly)
+
+# Host-vs-VM performance tracking (issue #50). Measures and *trends* — never
+# gates — the cost of the capability ladder: the kernel compile, cold-boot
+# time, and a post-boot workload for the host-binder path vs the `binder: vm`
+# QEMU micro-VM path, on the same runner in the same run so the host-vs-vm
+# ratio cancels per-runner hardware noise.
+#
+# Benchmarking tracks, it does not gate: a regression over benchmarks/baseline.json
+# raises a ::warning:: annotation only (see scripts/bench.py). This is a slow,
+# noisy lane, so it runs nightly / on manual dispatch — never per-PR.
+#
+# NOTE: GitHub-hosted runners have no /dev/kvm, so the VM path runs under TCG
+# here (the ~5-20x-slower rank-4 worst case). A KVM-capable runner class would
+# add a vm-kvm column for free — detect_accel() picks KVM when /dev/kvm exists.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 05:00 UTC — between the mutation (04:00) and e2e (06:00) lanes.
+    - cron: "0 5 * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  SAMPLES: ${{ github.workspace }}/bench-out/samples.json
+  RESULTS: ${{ github.workspace }}/bench-out/results.json
+
+jobs:
+  host-vs-vm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          enable-cache: true
+      - uses: ./.github/actions/provide-binder
+
+      - name: Install adb + QEMU + jq
+        run: sudo apt-get install -y android-tools-adb qemu-system-x86 jq
+
+      - name: Install Beetroot
+        run: uv sync --frozen
+
+      - name: Compile the VM kernel + rootfs (timed)
+        # The compile is informational and only meaningful when the kernel
+        # config/version changed; the build caches its artifacts, so a no-op
+        # rebuild is cheap. ``measure`` records the wall-time only on success.
+        run: |
+          uv run python scripts/bench.py measure \
+            --backend build --metric compile_seconds --samples-file "$SAMPLES" \
+            -- uv run beetroot build --vm-kernel
+
+      - name: Pre-pull the stock redroid image (excluded from the boot timing)
+        run: docker pull redroid/redroid:14.0.0_64only-latest
+
+      - name: Measure host-binder boot + post-boot
+        run: |
+          set -euxo pipefail
+          start=$(date +%s)
+          docker run -d --privileged --name bench-host -p 5555:5555 \
+            redroid/redroid:14.0.0_64only-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_fps=15
+          adb connect 127.0.0.1:5555
+          adb -s 127.0.0.1:5555 wait-for-device
+          for _ in $(seq 1 100); do
+            booted="$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+            [ "$booted" = "1" ] && break
+            sleep 3
+          done
+          [ "$booted" = "1" ] || { echo "::error::host boot timed out"; exit 1; }
+          boot=$(( $(date +%s) - start ))
+          uv run python scripts/bench.py record \
+            --backend host --metric boot_seconds --seconds "$boot" --samples-file "$SAMPLES"
+          # Post-boot: a fixed package-manager query, the same workload run
+          # against the VM below.
+          pstart=$(date +%s)
+          adb -s 127.0.0.1:5555 shell pm list packages >/dev/null
+          uv run python scripts/bench.py record \
+            --backend host --metric postboot_seconds \
+            --seconds "$(( $(date +%s) - pstart ))" --samples-file "$SAMPLES"
+
+      - name: Teardown host
+        if: always()
+        run: docker rm -f bench-host || true
+
+      - name: Measure vm (QEMU/TCG) boot + post-boot
+        run: |
+          set -euxo pipefail
+          uv run beetroot create bench-vm
+          # binder: vm is a top-level beetroot.yaml key (see CLAUDE.md); the
+          # default instance dir is ./<name>.
+          printf 'binder: vm\n' >> bench-vm/beetroot.yaml
+          start=$(date +%s)
+          uv run beetroot up bench-vm
+          # Index 0 -> host ADB port 5555 (ports.py); the VM forwards the
+          # guest's adbd there.
+          adb connect 127.0.0.1:5555
+          adb -s 127.0.0.1:5555 wait-for-device
+          for _ in $(seq 1 200); do
+            booted="$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+            [ "$booted" = "1" ] && break
+            sleep 5
+          done
+          [ "$booted" = "1" ] || { echo "::error::vm boot timed out"; exit 1; }
+          boot=$(( $(date +%s) - start ))
+          uv run python scripts/bench.py record \
+            --backend vm-tcg --metric boot_seconds --seconds "$boot" --samples-file "$SAMPLES"
+          pstart=$(date +%s)
+          uv run beetroot shell bench-vm pm list packages >/dev/null
+          uv run python scripts/bench.py record \
+            --backend vm-tcg --metric postboot_seconds \
+            --seconds "$(( $(date +%s) - pstart ))" --samples-file "$SAMPLES"
+
+      - name: Report (step summary + regression alerts, never fails)
+        if: always()
+        run: |
+          uv run python scripts/bench.py report \
+            --samples-file "$SAMPLES" \
+            --baseline benchmarks/baseline.json \
+            --results-out "$RESULTS" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark artifacts (samples + results JSON)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: bench-results-${{ github.sha }}
+          path: bench-out/
+          retention-days: 30
+
+      - name: Teardown vm
+        if: always()
+        run: uv run beetroot destroy bench-vm -y || true
