@@ -67,7 +67,7 @@ redroid runs the Android userspace against the **host kernel**, so it needs the 
 
 The **`vm` (QEMU micro-VM) backend exists for hosts where binder is neither present nor loadable** — hardened / `nomodule` sandboxes (e.g. the Claude Code on the web execution environment). It ships its own binder-enabled kernel. See `docs/design/binderless-hosts-qemu-tcg.md` for the design and `docs/design/vm-rnd-log.md` for the validated TCG recipe + measurements.
 
-**e2e boot tests are NOT a per-PR gate.** `e2e.yml` runs only on the nightly `schedule`, manual `workflow_dispatch`, or a PR carrying the **`e2e` label**. `tier2-beetroot-image` (build the Magisk image, boot it, then assert root / Zygisk / denylist / Frida) is a WIP scaffold and `continue-on-error` (non-blocking). There is **no `binder: vm` e2e tier yet** — the vm path is currently validated only by the offline R&D in `docs/design/vm-rnd-log.md`, not in CI.
+**e2e boot tests are NOT a per-PR gate.** `e2e.yml` runs only on the nightly `schedule`, manual `workflow_dispatch`, or a PR carrying the **`e2e` label**. `tier2-beetroot-image` (build the Magisk image, boot it, then assert root / Zygisk / denylist / Frida) is a WIP scaffold and `continue-on-error` (non-blocking). The **`tier-vm-qemu`** tier builds the binder-enabled guest kernel + rootfs and boots redroid inside the `binder: vm` QEMU micro-VM, then drives it through the adb backend (asserting the `vm.process` / `vm.accel` doctor rows and the Frida-unsupported message); on hosted runners it runs under TCG (no `/dev/kvm`). The offline R&D that first validated the vm path lives in `docs/design/vm-rnd-log.md`.
 
 ## CLI internals
 
