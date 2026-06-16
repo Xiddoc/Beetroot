@@ -387,6 +387,24 @@ Adb checks: `adb.serial`, `frida.handshake`, `magisk.zygisk`, `magisk.denylist.c
 
 ---
 
+## `modes`
+
+Survey the **host** and report which Beetroot run-modes it supports — *before* you create an instance or pick a `binder` mode. Host-level and instance-independent, unlike `doctor <name>` (which health-checks one existing instance).
+
+```
+beetroot modes [--json]
+```
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `--json` | flag | Emit the support matrix as JSON instead of a table. |
+
+Probes the host binder driver, KVM, and the QEMU / Docker / adb binaries, then reports each mode as `supported` / `needs-setup` / `unsupported` / `unknown` with a reason and remedy. Always exits `0` — it reports, it does not gate.
+
+The modes reported are `redroid (binder: host / auto)`, `redroid (binder: vm, KVM accel)`, `redroid (binder: vm, TCG accel)`, and `adb backend (adopt remote device)`. See [Binder & run-modes](../how-it-works/binder-and-modes.md) for what each one needs and why.
+
+---
+
 ## `frida`
 
 Invoke the host-side `frida` CLI pre-configured for an instance.
