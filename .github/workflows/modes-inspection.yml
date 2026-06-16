@@ -1,10 +1,14 @@
 name: Modes inspection
 
-# Manual-only helper: runs `beetroot modes` on a stock GitHub-hosted runner so
-# we can see, from the horse's mouth, which Beetroot run-modes a hosted runner
-# supports out of the box (no provide-binder, no extra tooling).
+# Helper: runs `beetroot modes` on a stock GitHub-hosted runner so we can see,
+# from the horse's mouth, which Beetroot run-modes a hosted runner supports out
+# of the box (no provide-binder, no extra tooling). Scoped to the inspection
+# branch so it runs on push there without needing the file on the default branch.
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - claude/beetroot-modes-inspection-5jsuak
 
 concurrency:
   group: ${{ github.ref }}-${{ github.workflow }}
