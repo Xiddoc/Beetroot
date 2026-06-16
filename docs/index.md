@@ -27,6 +27,7 @@ bravo         redroid  1    localhost:5565        localhost:27052       running 
 | **Frida** | Opt-in per instance — declare a `frida:` block (or copy `examples/with-frida.yaml` over the generated config) and the host CLI downloads + bind-mounts a version-pinned `frida-server` |
 | **`beetroot` CLI** | Create, start, stop, snapshot, restore, and list instances |
 | **Module flashing** | Declare modules in YAML (URL or local path, optional sha256); flashed at next boot |
+| **Binderless hosts** | `binder: auto\|host\|vm` — use the host kernel's `binder`, or boot redroid in a QEMU micro-VM that ships its own binder-enabled kernel for hardened sandboxes |
 
 ## Quick start
 
