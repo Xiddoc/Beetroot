@@ -49,7 +49,9 @@ _INSTANCE_NAME_RE = api._INSTANCE_NAME_RE  # noqa: SLF001  # intentional reuse o
 
 
 class _GappsVariant(StrEnum):
-    """GMS variants accepted by ``beetroot build``."""
+    """
+    GMS variants accepted by ``beetroot build``.
+    """
 
     none = "none"
     lite = "lite"
@@ -82,7 +84,9 @@ def _ensure_exists(name: str) -> None:
 
 
 def _load(name: str) -> api.Instance:
-    """Load an instance for a verb that has already passed ``_ensure_exists``."""
+    """
+    Load an instance for a verb that has already passed ``_ensure_exists``.
+    """
     return api.Instance.load(name)
 
 
@@ -257,7 +261,9 @@ def register(
         typer.Option("--name", help="Registry name (default: basename of path)."),
     ] = None,
 ) -> None:
-    """Adopt an existing instance directory under the global registry."""
+    """
+    Adopt an existing instance directory under the global registry.
+    """
     target_root = path.resolve()
     resolved_name = name if name is not None else target_root.name
     if registry.get(resolved_name) is not None:
@@ -368,7 +374,9 @@ def adopt(
 def apply(
     name: Annotated[str, typer.Argument(help="Instance name.")],
 ) -> None:
-    """Re-render .env and re-stage files from the instance's beetroot.yaml."""
+    """
+    Re-render .env and re-stage files from the instance's beetroot.yaml.
+    """
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
     lc = cast(api.Lifecycle, _require(backend, api.Lifecycle, "apply"))
@@ -487,7 +495,9 @@ def up(
         ),
     ] = False,
 ) -> None:
-    """Start one or more instances."""
+    """
+    Start one or more instances.
+    """
     if build:
         # T5 removed --build from up (build vs. start are two concerns),
         # but Typer rejected the v0.2-shape invocation with a Rich
@@ -551,7 +561,9 @@ def down(
         typer.Option("--all", help="Act on all registered instances."),
     ] = False,
 ) -> None:
-    """Stop one or more instances, preserving data."""
+    """
+    Stop one or more instances, preserving data.
+    """
     for instance_name in _resolve_lifecycle_names(list(names or []), all_, "down"):
         _ensure_exists(instance_name)
         backend = api.Manager.resolve(instance_name)
@@ -570,7 +582,9 @@ def restart(
         typer.Option("--all", help="Act on all registered instances."),
     ] = False,
 ) -> None:
-    """Stop then start one or more instances."""
+    """
+    Stop then start one or more instances.
+    """
     for instance_name in _resolve_lifecycle_names(list(names or []), all_, "restart"):
         _ensure_exists(instance_name)
         backend = api.Manager.resolve(instance_name)
@@ -593,7 +607,9 @@ def destroy(
         typer.Option("-y", "--yes", help="Skip confirmation."),
     ] = False,
 ) -> None:
-    """Stop and permanently delete an instance including its data directory."""
+    """
+    Stop and permanently delete an instance including its data directory.
+    """
     _ensure_exists(name)
     # Prompt for confirmation here in the CLI, not in the library.
     # Instance.destroy(yes=True) is always passed once the user has
@@ -816,7 +832,9 @@ def _ls_table_row(
 
 
 def _emit_orphan_skip(orphans: list[str]) -> None:
-    """Print the trailing orphan advisory to stderr so it never pollutes JSON output."""
+    """
+    Print the trailing orphan advisory to stderr so it never pollutes JSON output.
+    """
     names = ", ".join(orphans)
     typer.echo(
         f"(skipping {len(orphans)} orphan "
@@ -912,7 +930,9 @@ def logs(
         typer.Option("-f", "--follow", help="Follow log output."),
     ] = False,
 ) -> None:
-    """Tail container logs for an instance."""
+    """
+    Tail container logs for an instance.
+    """
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
     inst = cast(api.Instance, _require(backend, api.Instance, "logs"))
@@ -1166,7 +1186,9 @@ def module(
         ),
     ] = False,
 ) -> None:
-    """Install a Magisk module — append + re-stage (redroid), push (adb), or root --auto-install."""
+    """
+    Install a Magisk module — append + re-stage (redroid), push (adb), or root --auto-install.
+    """
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
     digests = sha256 or []
@@ -1226,7 +1248,9 @@ def build(
         ),
     ] = False,
 ) -> None:
-    """Build the redroid base image, or (with --vm-kernel) the micro-VM artifacts."""
+    """
+    Build the redroid base image, or (with --vm-kernel) the micro-VM artifacts.
+    """
     if vm_kernel:
         try:
             artifacts = builder.build_vm_kernel()
@@ -1251,7 +1275,9 @@ def snapshot(
         typer.Option("-o", "--output", help="Archive path (default: ./<name>.tar.zst)."),
     ] = None,
 ) -> None:
-    """Pack an instance's host-side state into a .tar.zst archive."""
+    """
+    Pack an instance's host-side state into a .tar.zst archive.
+    """
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
     snappable = cast(api.Snapshottable, _require(backend, api.Snapshottable, "snapshot"))
@@ -1290,7 +1316,9 @@ def restore(
         typer.Option("--force", help="Overwrite the destination directory if non-empty."),
     ] = False,
 ) -> None:
-    """Unpack a snapshot archive into a new instance and register it."""
+    """
+    Unpack a snapshot archive into a new instance and register it.
+    """
     # --as is a one-release hidden back-compat alias for --name.
     # If both are given, --name wins (--as is for migration only).
     effective_name = name if name is not None else as_

@@ -267,6 +267,15 @@ frustration to design out.
 
 ### 7.2 Recommended model: auto-detect, auto-use cheap paths, gate the expensive one
 
+!!! warning "Pre-ship naming below — read against the shipped keys"
+    The `redroid_backend` / `vm_accel` / `native` / `module` names in §7.2
+    through §7.6 are **pre-ship design naming that never shipped under those
+    spellings**. The keys that actually shipped are the top-level
+    `binder: auto | host | vm` plus a `vm.accel` (`auto | kvm | tcg`) knob in
+    the `vm:` config block. Translate as you read: `redroid_backend` →
+    `binder`, `vm_accel` → `vm.accel`; the `native`/`module` discriminator
+    values collapsed into the host-binder path that `auto`/`host` select.
+
 Add a config key (see [config reference](../reference/config.md)):
 
 ```yaml

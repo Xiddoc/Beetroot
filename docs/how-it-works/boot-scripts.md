@@ -43,8 +43,8 @@ All three helpers obey the same rules:
   idempotent — Android init may re-trigger the entrypoint, so each
   helper must be safe to run multiple times against the same DB / FS
   state.
-- **Linting:** `shellcheck -s sh docker/*.sh` is enforced by CI. New
-  shellcheck findings block merge.
+- **Linting:** `shellcheck -S warning -s sh docker/*.sh` is enforced by
+  CI. New shellcheck findings block merge.
 
 ## `entrypoint.sh`
 
@@ -90,7 +90,7 @@ Four actions (v0.4 T2):
 | Env var                       | Default                                                 | Notes                                                                                                                          |
 |-------------------------------|---------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|
 | `BEETROOT_MAGISK_DB`          | `/data/adb/magisk.db`                                   | Informational only — `magisk --sqlite` always targets this path internally. Echoed in the waiting-log line.                    |
-| `BEETROOT_DENYLIST_PACKAGES`  | `com.google.android.gms,com.google.android.gms.unstable` | Comma-separated package ids. Empty list → helper skips the INSERT entirely (no SQL'inject of an empty `('', '')` row).         |
+| `BEETROOT_DENYLIST_PACKAGES`  | `(empty)`                                               | Comma-separated package ids. The **script-level** default is the empty string (enrols nothing). The GMS pair (`com.google.android.gms,com.google.android.gms.unstable`) is supplied by Beetroot's `render_env` from `magisk.denylist`'s config default — not by this script. Empty list → helper skips the INSERT entirely (no SQL'inject of an empty `('', '')` row). |
 | `BEETROOT_MAGISK_WAIT_SECS`   | `120`                                                   | Upper bound (1-second probe attempts) on the daemon wait; on timeout the helper exits 1. Script-level knob only — not passed through `compose.yaml` / `render_env`. |
 
 **Idempotency:** `REPLACE INTO` and `INSERT OR IGNORE` both no-op on
@@ -142,13 +142,14 @@ attempt's port bind anyway).
 
 ## Env-var contract summary
 
-| Env var                | Default                              | Consumer            |
-|------------------------|--------------------------------------|---------------------|
-| `BEETROOT_MAGISK_DB`   | `/data/adb/magisk.db`                | `magisk-config.sh`  |
-| `BEETROOT_MODULES_DIR` | `/data/adb/modules_update`           | `flash-modules.sh`  |
-| `BEETROOT_FRIDA_BIN`   | `/data/local/tmp/frida-server`       | `launch-frida.sh`   |
+| Env var                      | Default                              | Consumer            |
+|------------------------------|--------------------------------------|---------------------|
+| `BEETROOT_MAGISK_DB`         | `/data/adb/magisk.db`                | `magisk-config.sh`  |
+| `BEETROOT_DENYLIST_PACKAGES` | `(empty)`                            | `magisk-config.sh`  |
+| `BEETROOT_MODULES_DIR`       | `/data/adb/modules_update`           | `flash-modules.sh`  |
+| `BEETROOT_FRIDA_BIN`         | `/data/local/tmp/frida-server`       | `launch-frida.sh`   |
 
-All three are passed through `compose.yaml`'s service `environment:`
+All four are passed through `compose.yaml`'s service `environment:`
 block from the host shell, with an empty-string fallback that triggers
 each helper's bake-in default. (`BEETROOT_MAGISK_WAIT_SECS` is
 intentionally absent from this table — it never crosses compose; it's
@@ -175,7 +176,7 @@ Three reasons the helpers stay in POSIX sh:
 
 When editing any of these files:
 
-- Run `shellcheck -s sh docker/*.sh` locally before commit. CI
+- Run `shellcheck -S warning -s sh docker/*.sh` locally before commit. CI
   enforces a clean run.
 - Run `grep -E '/data/local/tmp/frida-server|/data/adb/modules_update|/data/adb/magisk.db' docker/*.sh`
   — every match should be inside a `${VAR:-/default}` expansion (or a

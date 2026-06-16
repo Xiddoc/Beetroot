@@ -85,17 +85,23 @@ class BinderStatus(BaseModel):
 
     @property
     def available(self) -> bool:
-        """Return True iff redroid can boot on this host right now (``state == "ready"``)."""
+        """
+        Return True iff redroid can boot on this host right now (``state == "ready"``).
+        """
         return self.state == "ready"
 
 
 def _dev_binder_present() -> bool:
-    """Return True iff any of the binder device nodes exists under ``/dev``."""
+    """
+    Return True iff any of the binder device nodes exists under ``/dev``.
+    """
     return any(node.exists() for node in _BINDER_DEVICE_NODES)
 
 
 def _binderfs_supported() -> bool:
-    """Return True iff the kernel lists the ``binder`` filesystem in ``/proc/filesystems``."""
+    """
+    Return True iff the kernel lists the ``binder`` filesystem in ``/proc/filesystems``.
+    """
     try:
         text = _PROC_FILESYSTEMS.read_text()
     except OSError:
@@ -108,7 +114,9 @@ def _binderfs_supported() -> bool:
 
 
 def _boot_config_path() -> Path:
-    """Return the on-disk kernel-config snapshot path (``/boot/config-<release>``)."""
+    """
+    Return the on-disk kernel-config snapshot path (``/boot/config-<release>``).
+    """
     return Path(f"/boot/config-{platform.uname().release}")
 
 

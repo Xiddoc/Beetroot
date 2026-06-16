@@ -59,7 +59,9 @@ _STATE_TO_STATUS: dict[str, ComposeStatus] = {
 
 
 class ComposeError(RuntimeError):
-    """Raised when a ``docker compose`` subcommand exits with a non-zero status."""
+    """
+    Raised when a ``docker compose`` subcommand exits with a non-zero status.
+    """
 
 
 def _ensure_docker() -> None:

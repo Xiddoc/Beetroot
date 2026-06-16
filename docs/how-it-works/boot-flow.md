@@ -51,7 +51,7 @@ At build time, `docker/stealth.rc` is copied to `/system/etc/init/stealth.rc` in
 The service runs as:
 
 ```
-exec_background u:r:magisk:s0 -- /system/bin/sh /entrypoint.sh
+exec_background u:r:magisk:s0 root root -- /system/bin/sh /entrypoint.sh
 ```
 
 The `u:r:magisk:s0` SELinux context gives the script the same permissions as Magisk itself, which is what it needs to call `magisk --sqlite` and `magisk --install-module`.
@@ -70,7 +70,7 @@ sequenceDiagram
     I->>I: start Android services, mount filesystems
     I->>M: start Zygote → Zygisk initialises
     M->>I: set sys.boot_completed=1
-    I->>E: trigger exec_background u:r:magisk:s0 /entrypoint.sh
+    I->>E: trigger exec_background u:r:magisk:s0 root root -- /system/bin/sh /entrypoint.sh
     E->>E: wait for /data/adb/magisk.db to exist
     E->>M: magisk --sqlite: enable Zygisk + denylist
     E->>M: magisk --sqlite: add denylist entries

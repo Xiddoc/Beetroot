@@ -130,7 +130,9 @@ def resolve_ports(index: int, override: Ports) -> dict[str, int]:
 
 
 def lowest_free_index(used: set[int]) -> int:
-    """Return the smallest non-negative integer not in ``used``. Reuses freed slots."""
+    """
+    Return the smallest non-negative integer not in ``used``. Reuses freed slots.
+    """
     i = 0
     while i in used:
         i += 1

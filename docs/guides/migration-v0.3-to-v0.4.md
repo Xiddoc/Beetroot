@@ -14,6 +14,16 @@ list lives at the top of
 under **Breaking changes**. This page expands each bullet into the
 exact command or edit you run.
 
+!!! warning "Current release is `api_version: 4`"
+    This page documents the v0.3 → v0.4 hop and stops at `api_version: 3`.
+    The current Beetroot release is **`api_version: 4`**, which removed the
+    top-level `stealth:` key in favour of `magisk.denylist`. A YAML that
+    still contains a `stealth:` block is now rejected at load with a
+    migration hint — move `stealth.denylist` to `magisk.denylist` and set
+    `api_version: 4`. YAMLs that merely omit `api_version` (or pin one of
+    `1`/`2`/`3` *without* a `stealth:` block) auto-bump to `4` on load.
+    See `CHANGELOG.md` for the full migration.
+
 ## 1. Schema bump: `api_version: 2` → `api_version: 3`
 
 `SUPPORTED_API_VERSION` is now `3`. v0.3 `beetroot.yaml`s that
@@ -132,7 +142,7 @@ custom paths before v0.6 ships, but the load-bearing user story is
   [`doctor` in the CLI reference](../reference/cli.md#doctor).
 
 * **`env` verb** — removed in v0.6.
-  Use `beetroot status --json` for machine-readable instance data.
+  Use `beetroot status` for machine-readable (JSON) instance data.
   See [`status` in the CLI reference](../reference/cli.md#status).
 
 ## 6. Module renames: `frida_dl` → `frida_download`, `modules_dl` → `modules_download`
@@ -388,17 +398,20 @@ in-window. Two were addressed in v0.5; the rest are tracked for v0.6.
    index)` form and the new `backend=BackendConfig(...)` keyword form,
    so existing programmatic code keeps working. v0.6 will mark the
    v0.3 positional form `@deprecated` and plan its removal.
-3. **Third-party backends can't round-trip through `RegistryFile` JSON
-   yet.** v0.4's `BackendConfig` discriminated union only knows about
-   `redroid` and `adb`; a third-party `kind` value in a saved registry
-   row currently raises `ValidationError` on the next `_read`. This
-   means in v0.4, a third-party backend can be **used in-process**
-   (via `register_backend("cloud-xyz", CloudBackend)` + an in-memory
-   `Manager.resolve` call), but its registry rows can't survive a
-   Beetroot restart. v0.6 will add a registry-side extension hook for
-   third-party `BackendConfig` subclasses to opt into JSON
-   discrimination. See [Adding a backend](adding-a-backend.md) for
-   the full "what works now vs deferred" breakdown.
+3. **Third-party backends round-tripping through `RegistryFile` JSON
+   (shipped in v0.6).** v0.4's `BackendConfig` discriminated union only
+   knew about `redroid` and `adb`; a third-party `kind` value in a saved
+   registry row raised `ValidationError` on the next `_read`, so in v0.4 a
+   third-party backend could be **used in-process** (via
+   `register_backend("cloud-xyz", CloudBackend)` + an in-memory
+   `Manager.resolve` call) but its registry rows couldn't survive a
+   Beetroot restart. v0.6 shipped the registry-side extension hook:
+   `registry.register_backend_config(CloudBackendConfig)` opts a
+   third-party `BackendConfig` subclass into JSON discrimination, and
+   unknown-`kind` rows are now preserved opaquely via
+   `UnresolvedBackendConfig` rather than faulting the read. See
+   [Adding a backend](adding-a-backend.md) for the full "what works now"
+   breakdown.
 4. **Stealth research prerequisite gates the PR1 default flip.** v0.4
    shipped the `stealth_paths` plumbing (PR6) and the
    `/data/adb/modules_update/` mount swap (PR5), but did **not** flip

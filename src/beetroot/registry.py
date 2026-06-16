@@ -55,7 +55,9 @@ _LEGACY_HINT_PRINTED = False
 
 
 class RegistryError(RuntimeError):
-    """Raised on registry consistency errors (e.g. unknown name lookups)."""
+    """
+    Raised on registry consistency errors (e.g. unknown name lookups).
+    """
 
 
 class BackendConfigBase(BaseModel):
@@ -285,7 +287,9 @@ class InstanceMeta(BaseModel):
 
     @field_serializer("backend")
     def _serialize_backend(self, v: BackendConfigBase) -> dict[str, object]:
-        """Serialize the concrete subclass fields, not just the base class fields."""
+        """
+        Serialize the concrete subclass fields, not just the base class fields.
+        """
         return _dump_backend_config(v)
 
 
@@ -510,7 +514,9 @@ def _check_v02_registry_at_cwd(xdg_path: Path) -> None:
 
 
 def list_instances() -> dict[str, InstanceMeta]:
-    """Return all known instances as name → metadata. Empty if registry is missing."""
+    """
+    Return all known instances as name → metadata. Empty if registry is missing.
+    """
     path = paths.user_registry_file()
     if not path.exists():
         # Fast-path: no registry yet → nothing to read, no need to
@@ -522,12 +528,16 @@ def list_instances() -> dict[str, InstanceMeta]:
 
 
 def get(name: str) -> InstanceMeta | None:
-    """Return the :class:`InstanceMeta` for ``name``, or ``None`` if not registered."""
+    """
+    Return the :class:`InstanceMeta` for ``name``, or ``None`` if not registered.
+    """
     return list_instances().get(name)
 
 
 def used_indices() -> set[int]:
-    """Return the set of port indices currently allocated to registered instances."""
+    """
+    Return the set of port indices currently allocated to registered instances.
+    """
     return {meta.index for meta in list_instances().values()}
 
 

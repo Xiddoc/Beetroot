@@ -32,7 +32,9 @@ _ENTRY_POINTS_LOADED = False
 
 
 class BackendRegistrationError(ValueError):
-    """Raised on duplicate or invalid backend registration."""
+    """
+    Raised on duplicate or invalid backend registration.
+    """
 
 
 def register_backend(kind: str, cls: type[DeviceBackend]) -> None:
@@ -94,7 +96,9 @@ def get_backend(kind: str) -> type[DeviceBackend]:
 
 
 def registered_kinds() -> list[str]:
-    """Return the sorted list of currently-registered backend kinds."""
+    """
+    Return the sorted list of currently-registered backend kinds.
+    """
     _load_entry_point_backends()
     return sorted(_BACKEND_REGISTRY)
 
@@ -144,7 +148,9 @@ def _load_entry_point_backends() -> None:
 
 
 def _register_builtin_backends() -> None:
-    """Register the in-tree backends. Called once at module import."""
+    """
+    Register the in-tree backends. Called once at module import.
+    """
     # Local import keeps this module free of the api import cycle at
     # collection time. ``api.py`` imports nothing from this package.
     from beetroot.api import Instance  # noqa: PLC0415

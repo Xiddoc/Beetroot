@@ -82,10 +82,10 @@ beetroot up research-clean research-stealth
 
 ## Scripting across instances
 
-Use `beetroot status --json` to get machine-readable addresses for one instance:
+Use `beetroot status` to get machine-readable addresses for one instance:
 
 ```bash
-eval $(beetroot status --json research-clean | python3 -c "
+eval $(beetroot status research-clean | python3 -c "
 import json,sys
 r=json.load(sys.stdin)
 print(f'ANDROID_DEVICE={r[\"adb_address\"]}')

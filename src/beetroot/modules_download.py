@@ -30,7 +30,9 @@ _ALLOWED_URL_SCHEMES: tuple[str, ...] = ("http://", "https://")
 
 
 class ModuleFetchError(RuntimeError):
-    """Raised when a module zip cannot be downloaded from its URL."""
+    """
+    Raised when a module zip cannot be downloaded from its URL.
+    """
 
 
 def _module_cache_dir() -> Path:
@@ -38,7 +40,9 @@ def _module_cache_dir() -> Path:
 
 
 def _filename_from_url(url: str) -> str:
-    """Return the basename of the URL path, or ``module.zip`` if empty."""
+    """
+    Return the basename of the URL path, or ``module.zip`` if empty.
+    """
     return url.rsplit("/", 1)[-1] or "module.zip"
 
 

@@ -69,7 +69,9 @@ _INSTANCE_NAME_RE: Final = re.compile(r"^[a-z0-9_-]+$")
 
 
 def _validate_instance_name(name: str) -> None:
-    """Raise ``ValueError`` if ``name`` doesn't match the instance-name grammar."""
+    """
+    Raise ``ValueError`` if ``name`` doesn't match the instance-name grammar.
+    """
     if not _INSTANCE_NAME_RE.fullmatch(name):
         raise ValueError(
             f"instance name {name!r} is invalid — must match "
@@ -79,15 +81,21 @@ def _validate_instance_name(name: str) -> None:
 
 
 class InstanceNotFoundError(LookupError):
-    """Raised when an instance name is not in the registry."""
+    """
+    Raised when an instance name is not in the registry.
+    """
 
 
 class FridaNotInstalledError(RuntimeError):
-    """Raised when ``Instance.frida_cli`` is called without the host ``frida`` CLI on PATH."""
+    """
+    Raised when ``Instance.frida_cli`` is called without the host ``frida`` CLI on PATH.
+    """
 
 
 class AdbNotInstalledError(RuntimeError):
-    """Raised when ``Instance.shell`` is called without the host ``adb`` CLI on PATH."""
+    """
+    Raised when ``Instance.shell`` is called without the host ``adb`` CLI on PATH.
+    """
 
 
 class CheckResult(BaseModel):
@@ -152,7 +160,9 @@ class DeviceBackend(Protocol):
 
     @property
     def name(self) -> str:
-        """Return the registry name for this backend."""
+        """
+        Return the registry name for this backend.
+        """
         ...
 
     @property
@@ -167,17 +177,23 @@ class DeviceBackend(Protocol):
 
     @property
     def adb_address(self) -> str:
-        """Return the ``host:port`` (or adb serial) that ``adb connect`` targets."""
+        """
+        Return the ``host:port`` (or adb serial) that ``adb connect`` targets.
+        """
         ...
 
     @property
     def frida_address(self) -> str:
-        """Return the ``host:port`` Frida control endpoint."""
+        """
+        Return the ``host:port`` Frida control endpoint.
+        """
         ...
 
     @property
     def is_available(self) -> bool:
-        """Return True iff the backend is reachable right now (no install/start required)."""
+        """
+        Return True iff the backend is reachable right now (no install/start required).
+        """
         ...
 
     def install_frida(self, version: str | None = None) -> None:
@@ -208,7 +224,9 @@ class DeviceBackend(Protocol):
         ...
 
     def frida_cli(self, args: Sequence[str]) -> int:
-        """Invoke the host ``frida`` CLI against this backend; return the exit code."""
+        """
+        Invoke the host ``frida`` CLI against this backend; return the exit code.
+        """
         ...
 
     @classmethod
@@ -248,19 +266,27 @@ class Lifecycle(Protocol):
     """
 
     def up(self) -> None:
-        """Start the backend."""
+        """
+        Start the backend.
+        """
         ...
 
     def down(self) -> None:
-        """Stop the backend (data preserved)."""
+        """
+        Stop the backend (data preserved).
+        """
         ...
 
     def restart(self) -> None:
-        """Stop then start the backend."""
+        """
+        Stop then start the backend.
+        """
         ...
 
     def apply(self) -> None:
-        """Re-load config and re-stage derived files."""
+        """
+        Re-load config and re-stage derived files.
+        """
         ...
 
     def destroy(self, *, yes: bool = False) -> None:
@@ -735,7 +761,9 @@ class Instance:
 
     @property
     def name(self) -> str:
-        """Registry name for this instance."""
+        """
+        Registry name for this instance.
+        """
         return self._name
 
     @property
@@ -750,56 +778,78 @@ class Instance:
 
     @property
     def root(self) -> Path:
-        """Absolute path to the instance directory."""
+        """
+        Absolute path to the instance directory.
+        """
         return self._root
 
     @property
     def config(self) -> config.InstanceConfig:
-        """The parsed ``beetroot.yaml`` at the time this object was constructed."""
+        """
+        The parsed ``beetroot.yaml`` at the time this object was constructed.
+        """
         return self._cfg
 
     @property
     def index(self) -> int:
-        """The instance's allocated port index (stride-of-10 base)."""
+        """
+        The instance's allocated port index (stride-of-10 base).
+        """
         return self._meta().index
 
     @property
     def ports(self) -> dict[str, int]:
-        """Resolved host ports for this instance (``adb`` / ``frida`` / ``frida2``)."""
+        """
+        Resolved host ports for this instance (``adb`` / ``frida`` / ``frida2``).
+        """
         return ports.resolve_ports(self.index, self._cfg.ports)
 
     @property
     def adb_address(self) -> str:
-        """``localhost:<adb_port>`` — what ``adb connect`` should target."""
+        """
+        ``localhost:<adb_port>`` — what ``adb connect`` should target.
+        """
         return f"localhost:{self.ports['adb']}"
 
     @property
     def frida_address(self) -> str:
-        """``localhost:<frida_port>`` — what ``frida -H`` should target."""
+        """
+        ``localhost:<frida_port>`` — what ``frida -H`` should target.
+        """
         return f"localhost:{self.ports['frida']}"
 
     @property
     def status(self) -> compose.ComposeStatus:
-        """Live one-word container status (see :data:`compose.ComposeStatus`)."""
+        """
+        Live one-word container status (see :data:`compose.ComposeStatus`).
+        """
         return compose.ps_status(self._name, self._root)
 
     @property
     def is_available(self) -> bool:
-        """True iff the underlying container is running right now."""
+        """
+        True iff the underlying container is running right now.
+        """
         return self.status == "running"
 
     # ---- lifecycle --------------------------------------------------------
 
     def up(self) -> None:
-        """Start the instance with ``docker compose up -d``."""
+        """
+        Start the instance with ``docker compose up -d``.
+        """
         compose.up(self._name, self._root)
 
     def down(self) -> None:
-        """Stop the instance with ``docker compose down`` (data preserved)."""
+        """
+        Stop the instance with ``docker compose down`` (data preserved).
+        """
         compose.down(self._name, self._root)
 
     def restart(self) -> None:
-        """Stop then start the instance in sequence."""
+        """
+        Stop then start the instance in sequence.
+        """
         compose.down(self._name, self._root)
         compose.up(self._name, self._root)
 
@@ -883,7 +933,9 @@ class Instance:
             self._teardown_under_lock()
 
     def _teardown_under_lock(self) -> None:
-        """Run ``destroy``'s steps under the assumption the lock is held."""
+        """
+        Run ``destroy``'s steps under the assumption the lock is held.
+        """
         # Order matters: compose.down → registry.remove → shutil.rmtree.
         # The CLI verb already enforces this order; the OOP path used
         # to do rmtree BEFORE registry.remove, which left a window

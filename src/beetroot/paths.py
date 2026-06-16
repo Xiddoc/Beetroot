@@ -27,7 +27,9 @@ _APP_NAME = "beetroot"
 
 
 class InstanceRootNotFoundError(FileNotFoundError):
-    """Raised when no ``beetroot.yaml`` marker is found in cwd or its ancestors."""
+    """
+    Raised when no ``beetroot.yaml`` marker is found in cwd or its ancestors.
+    """
 
 
 def instance_root(start: Path | None = None) -> Path:
@@ -62,27 +64,37 @@ def instance_root(start: Path | None = None) -> Path:
 
 
 def instance_yaml(root: Path) -> Path:
-    """Return ``<root>/beetroot.yaml`` — the instance config file."""
+    """
+    Return ``<root>/beetroot.yaml`` — the instance config file.
+    """
     return root / "beetroot.yaml"
 
 
 def instance_env(root: Path) -> Path:
-    """Return ``<root>/.env`` — the compose env file rendered by the CLI."""
+    """
+    Return ``<root>/.env`` — the compose env file rendered by the CLI.
+    """
     return root / ".env"
 
 
 def instance_data(root: Path) -> Path:
-    """Return ``<root>/data/`` — bind-mounted to ``/data`` inside the container."""
+    """
+    Return ``<root>/data/`` — bind-mounted to ``/data`` inside the container.
+    """
     return root / "data"
 
 
 def instance_modules(root: Path) -> Path:
-    """Return ``<root>/modules/`` — bind-mounted read-only to ``/data/adb/modules_update``."""
+    """
+    Return ``<root>/modules/`` — bind-mounted read-only to ``/data/adb/modules_update``.
+    """
     return root / "modules"
 
 
 def instance_frida(root: Path) -> Path:
-    """Return ``<root>/frida-server`` — the staged Frida binary for this instance."""
+    """
+    Return ``<root>/frida-server`` — the staged Frida binary for this instance.
+    """
     return root / "frida-server"
 
 

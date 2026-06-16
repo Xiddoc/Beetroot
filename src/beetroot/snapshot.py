@@ -59,7 +59,9 @@ _EXCLUDED_TOP_LEVEL = frozenset(
 
 
 class SnapshotError(RuntimeError):
-    """Raised on snapshot/restore failures (missing source, bad archive, etc.)."""
+    """
+    Raised on snapshot/restore failures (missing source, bad archive, etc.).
+    """
 
 
 class Manifest(BaseModel):
@@ -101,7 +103,9 @@ class Manifest(BaseModel):
 
 
 def _ensure_suffix(dest: Path) -> Path:
-    """Return ``dest`` with ``.tar.zst`` appended if it doesn't already end in it."""
+    """
+    Return ``dest`` with ``.tar.zst`` appended if it doesn't already end in it.
+    """
     if dest.name.endswith(_ARCHIVE_SUFFIX):
         return dest
     return dest.with_name(dest.name + _ARCHIVE_SUFFIX)
@@ -112,7 +116,9 @@ def _build_manifest(
     source_index: int,
     path_layout: dict[str, str],
 ) -> Manifest:
-    """Build a fresh manifest carrying the source's ``stealth_paths`` blob (T4)."""
+    """
+    Build a fresh manifest carrying the source's ``stealth_paths`` blob (T4).
+    """
     return Manifest(
         name=name,
         source_index=source_index,
@@ -123,7 +129,9 @@ def _build_manifest(
 
 
 def _manifest_to_json(manifest: Manifest) -> bytes:
-    """Serialise a ``Manifest`` to UTF-8 JSON bytes (sorted keys, two-space indent)."""
+    """
+    Serialise a ``Manifest`` to UTF-8 JSON bytes (sorted keys, two-space indent).
+    """
     # ``model_dump_json`` serialises in field-declaration order, which varies
     # between Python versions and pydantic builds and breaks the byte-identical
     # guarantee.  Round-tripping through ``json.dumps(sort_keys=True)`` produces
@@ -235,7 +243,9 @@ def _find_registry_entry(
 
 
 def _add_instance_tree(tar: tarfile.TarFile, instance_root: Path) -> None:
-    """Recursively add every file under ``instance_root`` except excluded names."""
+    """
+    Recursively add every file under ``instance_root`` except excluded names.
+    """
     for entry in sorted(instance_root.iterdir()):
         if entry.name in _EXCLUDED_TOP_LEVEL:
             continue
@@ -243,7 +253,9 @@ def _add_instance_tree(tar: tarfile.TarFile, instance_root: Path) -> None:
 
 
 def _add_manifest(tar: tarfile.TarFile, manifest: Manifest) -> None:
-    """Append the ``.beetroot-snapshot.json`` manifest member to the archive."""
+    """
+    Append the ``.beetroot-snapshot.json`` manifest member to the archive.
+    """
     payload = _manifest_to_json(manifest)
     info = tarfile.TarInfo(name=f"./{MANIFEST_FILENAME}")
     info.size = len(payload)
@@ -275,7 +287,9 @@ def read_manifest(archive: Path) -> Manifest:
 
 
 def _extract_manifest_bytes(archive: Path) -> bytes:
-    """Stream-read the archive and return the raw manifest bytes."""
+    """
+    Stream-read the archive and return the raw manifest bytes.
+    """
     dctx = zstandard.ZstdDecompressor()
     try:
         with (

@@ -53,7 +53,9 @@ _TERM_POLL_SECONDS = 0.1
 
 
 class QemuLaunchError(RuntimeError):
-    """Raised when QEMU cannot be launched (missing accel, binary, or artifacts)."""
+    """
+    Raised when QEMU cannot be launched (missing accel, binary, or artifacts).
+    """
 
 
 def _dev_kvm_usable() -> bool:
@@ -193,7 +195,9 @@ class QemuProcess:
 
     @property
     def pidfile(self) -> Path:
-        """Return the path to this instance's QEMU pidfile."""
+        """
+        Return the path to this instance's QEMU pidfile.
+        """
         return self._instance_dir / _PIDFILE_NAME
 
     def read_pid(self) -> int | None:
@@ -269,7 +273,9 @@ class QemuProcess:
         return proc.pid
 
     def _pid_alive(self, pid: int) -> bool:
-        """Return True iff ``pid`` names a live process (signal-0 probe)."""
+        """
+        Return True iff ``pid`` names a live process (signal-0 probe).
+        """
         try:
             os.kill(pid, 0)
         except OSError as exc:

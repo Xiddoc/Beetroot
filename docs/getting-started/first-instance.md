@@ -66,7 +66,7 @@ This `adb connect`s to the right port and drops you into an `adb shell`. You're 
 ### From your own scripts
 
 ```bash
-eval $(beetroot status --json alpha | python3 -c "
+eval $(beetroot status alpha | python3 -c "
 import json,sys
 r=json.load(sys.stdin)
 print(f'ANDROID_DEVICE={r[\"adb_address\"]}')
@@ -77,12 +77,12 @@ adb -s "$ANDROID_DEVICE" install ./target.apk
 frida -H "$FRIDA_DEVICE" -n com.target.app
 ```
 
-`beetroot status --json` prints machine-readable JSON so you can drive ADB and Frida from any script without hardcoding port numbers.
+`beetroot status` prints machine-readable JSON so you can drive ADB and Frida from any script without hardcoding port numbers.
 
 ## Install an APK
 
 ```bash
-ANDROID_DEVICE=$(beetroot status --json alpha | python3 -c "import json,sys; print(json.load(sys.stdin)['adb_address'])")
+ANDROID_DEVICE=$(beetroot status alpha | python3 -c "import json,sys; print(json.load(sys.stdin)['adb_address'])")
 adb -s "$ANDROID_DEVICE" install -r ./target.apk
 ```
 

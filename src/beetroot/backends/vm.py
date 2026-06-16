@@ -207,32 +207,44 @@ class VmDeviceBackend:
 
     @property
     def name(self) -> str:
-        """Registry name for this backend."""
+        """
+        Registry name for this backend.
+        """
         return self._name
 
     @property
     def kind(self) -> Literal["vm"]:
-        """Backend discriminator — always ``"vm"``."""
+        """
+        Backend discriminator — always ``"vm"``.
+        """
         return "vm"
 
     @property
     def root(self) -> Path:
-        """Absolute path to the instance directory."""
+        """
+        Absolute path to the instance directory.
+        """
         return self._root
 
     @property
     def config(self) -> config.InstanceConfig:
-        """The parsed ``beetroot.yaml`` for this instance."""
+        """
+        The parsed ``beetroot.yaml`` for this instance.
+        """
         return self._cfg
 
     @property
     def ports(self) -> dict[str, int]:
-        """Resolved host ports for this instance (``adb`` / ``frida`` / ``frida_control``)."""
+        """
+        Resolved host ports for this instance (``adb`` / ``frida`` / ``frida_control``).
+        """
         return ports.resolve_ports(self._index, self._cfg.ports)
 
     @property
     def adb_address(self) -> str:
-        """``localhost:<adb_port>`` — the QEMU-forwarded guest adbd port."""
+        """
+        ``localhost:<adb_port>`` — the QEMU-forwarded guest adbd port.
+        """
         return f"localhost:{self.ports['adb']}"
 
     @property
@@ -251,7 +263,9 @@ class VmDeviceBackend:
 
     @property
     def is_available(self) -> bool:
-        """True iff the QEMU process for this instance is alive."""
+        """
+        True iff the QEMU process for this instance is alive.
+        """
         return qemu.QemuProcess(self._root).is_running()
 
     def install_frida(self, version: str | None = None) -> None:
@@ -455,11 +469,15 @@ class VmDeviceBackend:
         return res.returncode == 0 and "cannot connect" not in combined and "failed" not in combined
 
     def down(self) -> None:
-        """Terminate the micro-VM (SIGTERM); a no-op if it isn't running."""
+        """
+        Terminate the micro-VM (SIGTERM); a no-op if it isn't running.
+        """
         qemu.QemuProcess(self._root).terminate()
 
     def restart(self) -> None:
-        """Terminate then re-launch the micro-VM."""
+        """
+        Terminate then re-launch the micro-VM.
+        """
         self.down()
         self.up()
 

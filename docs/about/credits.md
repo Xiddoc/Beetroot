@@ -4,7 +4,7 @@ Beetroot is a thin orchestration layer on top of several excellent open-source p
 
 ## redroid
 
-[redroid](https://github.com/remote-android/redroid-doc) — the Android-in-a-container project that makes running Android on a standard Linux host possible. redroid maps Android's kernel requirements (`binder`, `ashmem`) onto the host kernel, avoiding the full overhead of a VM while keeping the Android userland intact.
+[redroid](https://github.com/remote-android/redroid-doc) — the Android-in-a-container project that makes running Android on a standard Linux host possible. redroid maps Android's kernel requirements (`binder`) onto the host kernel, avoiding the full overhead of a VM while keeping the Android userland intact.
 
 ## ayasa520/redroid-script
 
@@ -25,7 +25,7 @@ Beetroot is a thin orchestration layer on top of several excellent open-source p
 
 ## Shamiko / LSPosed
 
-[LSPosed/Shamiko](https://github.com/LSPosed/LSPosed.github.io) — a Magisk module that upgrades the denylist from "deny root access" to "hide Magisk's existence entirely" for denylisted processes. The [`examples/stealth.yaml`](../guides/examples.md) starter config includes Shamiko by default.
+[LSPosed/Shamiko](https://github.com/LSPosed/LSPosed.github.io) — a Magisk module that upgrades the denylist from "deny root access" to "hide Magisk's existence entirely" for denylisted processes. The [`examples/stealth.yaml`](../guides/examples.md) starter config ships a commented-out Shamiko `modules:` block ready to uncomment — the release URL is left to the user to fill in because LSPosed re-tags Shamiko releases, so a hard-coded URL would go stale silently.
 
 ## LiteGapps
 

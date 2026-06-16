@@ -118,6 +118,9 @@ select = [
 extend-select = ["D213"]  # summary on line after opening """
 ignore = [
     "D212",   # multi-line summary on first line — disabled in favour of D213
+    "D200",   # one-line docstring should fit on one line — disabled so every
+              # docstring opens with a newline after """ (house style: the
+              # summary always starts on the second line, even for one-liners)
 ]
 
 [tool.ruff.lint.pydocstyle]
