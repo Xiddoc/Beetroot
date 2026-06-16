@@ -25,7 +25,18 @@ from typing import Annotated, cast
 import typer
 from rich.console import Console as _RichConsole
 
-from . import api, builder, compose, console, hostcheck, modules_download, paths, ports, registry
+from . import (
+    api,
+    builder,
+    capabilities,
+    compose,
+    console,
+    hostcheck,
+    modules_download,
+    paths,
+    ports,
+    registry,
+)
 from . import snapshot as snapshot_mod
 from .backends import adb as adb_backend
 from .backends import vm as vm_backend
@@ -1002,6 +1013,46 @@ def doctor(
         # POSIX exit codes top out at 255; clamp so a hypothetical
         # 300-check fan-out doesn't wrap to 44.
         raise typer.Exit(code=min(fail_count, 255))
+
+
+@app.command()
+def modes(
+    json_out: Annotated[
+        bool,
+        typer.Option("--json", help="Emit the support matrix as JSON instead of a table."),
+    ] = False,
+) -> None:
+    """
+    Survey the host and report which Beetroot run-modes it supports.
+
+    Host-level and instance-independent — answers "what can this machine
+    run before I create anything or pick a `binder` mode?", unlike
+    `beetroot doctor <name>` (which health-checks one existing instance).
+
+    Probes the host binder driver, KVM, and the QEMU / Docker / adb
+    binaries, then reports each mode as `supported` / `needs-setup` /
+    `unsupported` / `unknown` with a reason and remedy. See
+    `docs/how-it-works/binder-and-modes.md` for what each mode needs.
+
+    Always exits 0 — it reports, it does not gate.
+    """
+    results = capabilities.survey()
+    if json_out:
+        # Plain JSON to stdout (not through rich) so jq/pipelines get clean output.
+        print(  # noqa: T201  # plain JSON stdout — must not go through rich
+            json.dumps([r.model_dump() for r in results], indent=2, sort_keys=True)
+        )
+        return
+    _runtime_console = _RichConsole(file=sys.stdout, highlight=False)
+    old_stdout_console = console._stdout_console  # noqa: SLF001  # intentional injection for runtime sys.stdout binding
+    console.set_consoles(stdout=_runtime_console)
+    try:
+        console.table(
+            ("MODE", "STATUS", "DETAIL"),
+            [(r.mode, r.status, r.remedy or r.reason) for r in results],
+        )
+    finally:
+        console.set_consoles(stdout=old_stdout_console)
 
 
 @app.command(

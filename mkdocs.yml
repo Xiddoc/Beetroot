@@ -117,6 +117,7 @@ nav:
   - How It Works:
     - how-it-works/index.md
     - Architecture: how-it-works/architecture.md
+    - Binder & run-modes: how-it-works/binder-and-modes.md
     - Boot Flow: how-it-works/boot-flow.md
     - Boot Scripts: how-it-works/boot-scripts.md
     - Filesystem Layout: how-it-works/filesystem.md
@@ -125,6 +126,7 @@ nav:
     - Stealth posture: design/stealth-posture.md
     - Device backends: design/device-backends.md
     - Binderless hosts (QEMU/TCG): design/binderless-hosts-qemu-tcg.md
+    - VM boot-cache (savevm): design/vm-savevm-cache.md
   - Troubleshooting: troubleshooting.md
   - About:
     - Credits: about/credits.md

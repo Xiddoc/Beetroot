@@ -4,6 +4,19 @@
 
 ### Features
 
+- **`beetroot modes` — host capability survey.** A new host-level,
+  instance-independent command that probes the host binder driver, KVM, and
+  the QEMU / Docker / adb binaries and reports, for every run-mode
+  (`redroid` on host binder, `binder: vm` under KVM, `binder: vm` under TCG,
+  and the `adb` backend), whether it is `supported` / `needs-setup` /
+  `unsupported` / `unknown` — each with a reason and a remedy. Answers "what
+  can this machine run *before* I create an instance or pick a `binder`
+  mode?", complementing the per-instance `beetroot doctor <name>`. `--json`
+  for scripts; always exits 0 (reports, never gates). Crucially distinguishes
+  "no `/dev/kvm`" (KVM fast path unavailable) from "no VM support" — the
+  `binder: vm` TCG path works on binderless, KVM-less hosts. New docs:
+  [Binder & run-modes](https://xiddoc.github.io/Beetroot/how-it-works/binder-and-modes/).
+
 - **`binder` config switch (`auto` / `host` / `vm`).** A new top-level
   `binder:` key on `beetroot.yaml` selects how redroid obtains the kernel
   binder driver it needs to boot. `auto` (default) keeps the historical
@@ -128,6 +141,25 @@
   `adb_address`, `frida_address`, `is_available`); redroid rows are
   unchanged, including the v0.3 back-compat `path`/`adb`/`frida` keys.
   Orphan entries are still skipped with the trailing stderr advisory.
+- **`binder: vm` guest rootfs now actually builds and boots.** Two bugs in
+  `docker/vm/build-rootfs.sh`, both caught by booting the micro-VM locally
+  under TCG (the `vm` path's Stage B was never run before — see
+  `docs/design/vm-rnd-log.md`):
+    - *Corrupted build:* `stage_docker_root()` returns the staging path on
+      **stdout** via command substitution
+      (`_dockerroot="$(stage_docker_root)"`), but `log()` *and* the inner
+      `docker pull` / `docker load` also wrote to stdout. Their interleaved
+      output was captured into the path, so `cp -a "$_dockerroot" …` failed
+      with `cannot stat` and no `rootdisk.img` was produced. All three now
+      write to stderr.
+    - *Kernel panic on boot:* the rootfs shipped only `/bin/busybox` with no
+      applet symlinks — a comment claimed `guest-init.sh` ran
+      `busybox --install -s`, but it never did. `/init` is a `#!/bin/sh`
+      script, so the kernel panicked instantly (`Requested init /init failed
+      (error -2)` — no `/bin/sh`). The build now lays down every busybox
+      applet symlink (`sh`, `mount`, …) at build time.
+  Together these unblock the `binder: vm` e2e tier (#48), which runs this
+  script.
 
 ### Known limitations
 
@@ -188,6 +220,22 @@ CI pipeline itself.
   runner. The committed baseline is seeded from the offline R&D in
   `docs/design/vm-rnd-log.md` (see `benchmarks/README.md` for the refresh
   flow).
+
+### CI: `binder: vm` savevm boot-cache — design + cache key (#49)
+
+- Design note ([VM boot-cache (savevm)](https://xiddoc.github.io/Beetroot/design/vm-savevm-cache/))
+  specifying how a booted micro-VM is checkpointed once with QEMU
+  `savevm` (qcow2 internal snapshot) / `migrate`, cached, and restored
+  (seconds) in downstream jobs to skip the ~100 s TCG boot — for the
+  functional vm e2e tier (#48) and post-boot benchmark (#50), never for
+  the cold boot-speed metric.
+- The load-bearing, unit-tested piece lands now: `scripts/vm_cache_key.py`
+  computes a stable, order-independent cache key over the guest kernel +
+  rootfs (and/or the guest-defining sources) that changes the instant any
+  input does — the safety latch that stops a stale snapshot from being
+  restored against a guest it wasn't taken on. The QEMU integration
+  (qcow2 overlay + QMP `savevm`/`loadvm` launch path) is the tracked
+  follow-up.
 
 ## v0.6.0 — 2026-05-20
 
