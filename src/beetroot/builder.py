@@ -71,7 +71,9 @@ def _default_build_context() -> Path:
 
 
 class BootstrapError(RuntimeError):
-    """Raised when a bootstrap step (git clone, patcher, build) fails."""
+    """
+    Raised when a bootstrap step (git clone, patcher, build) fails.
+    """
 
 
 class SubprocessRunner(Protocol):
@@ -150,7 +152,9 @@ class DefaultRunner:
 
 
 def _image_tag(android_version: int, gapps: GappsVariant) -> str:
-    """Compute the base-image tag for ``(version, gapps)``, mirroring config.base_image_tag."""
+    """
+    Compute the base-image tag for ``(version, gapps)``, mirroring config.base_image_tag.
+    """
     android = config.Android(version=android_version, gapps=gapps)
     return config.base_image_tag(android)
 

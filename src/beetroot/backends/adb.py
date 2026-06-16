@@ -209,12 +209,16 @@ class AdbDevice:
 
     @property
     def name(self) -> str:
-        """Registry name for this backend."""
+        """
+        Registry name for this backend.
+        """
         return self._name
 
     @property
     def kind(self) -> Literal["adb"]:
-        """Backend discriminator — always ``"adb"``."""
+        """
+        Backend discriminator — always ``"adb"``.
+        """
         return "adb"
 
     @property
@@ -230,7 +234,9 @@ class AdbDevice:
 
     @property
     def frida_address(self) -> str:
-        """``localhost:<host_forward_port>`` — what ``frida -H`` should target."""
+        """
+        ``localhost:<host_forward_port>`` — what ``frida -H`` should target.
+        """
         return f"localhost:{self._host_forward_port}"
 
     @property
@@ -605,7 +611,9 @@ class AdbDevice:
     # ---- internals --------------------------------------------------------
 
     def _adb_unchecked(self, *argv: str) -> subprocess.CompletedProcess[str]:
-        """Run ``adb -s <serial> <argv...>`` with capture; never raise on non-zero."""
+        """
+        Run ``adb -s <serial> <argv...>`` with capture; never raise on non-zero.
+        """
         full = [_ADB, "-s", self._config.serial, *argv]
         return subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv built from validated config + caller-pinned strings
             full,
@@ -615,7 +623,9 @@ class AdbDevice:
         )
 
     def _adb(self, *argv: str) -> subprocess.CompletedProcess[str]:
-        """Run ``adb -s <serial> <argv...>`` with capture; raise on non-zero."""
+        """
+        Run ``adb -s <serial> <argv...>`` with capture; raise on non-zero.
+        """
         res = self._adb_unchecked(*argv)
         if res.returncode != 0:
             raise RuntimeError(
@@ -624,7 +634,9 @@ class AdbDevice:
         return res
 
     def _adb_shell(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
-        """Run ``adb -s <serial> shell <argv...>`` with capture; raise on non-zero."""
+        """
+        Run ``adb -s <serial> shell <argv...>`` with capture; raise on non-zero.
+        """
         return self._adb("shell", *argv)
 
 

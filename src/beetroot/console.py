@@ -218,7 +218,9 @@ class ProgressContext:
         self._task_id: TaskID | None = None
 
     def __enter__(self) -> ProgressContext:
-        """Start the progress display and register the initial task."""
+        """
+        Start the progress display and register the initial task.
+        """
         self._progress.__enter__()
         self._task_id = self._progress.add_task(self._description, total=self._total)
         return self
@@ -240,7 +242,9 @@ class ProgressContext:
         exc_val: BaseException | None,
         exc_tb: types.TracebackType | None,
     ) -> None:
-        """Stop the progress display."""
+        """
+        Stop the progress display.
+        """
         self._progress.__exit__(exc_type, exc_val, exc_tb)
 
 

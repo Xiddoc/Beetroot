@@ -52,7 +52,9 @@ def release_url(version: str) -> str:
 
 
 def frida_cache_dir() -> Path:
-    """Return the user-global Frida binary cache directory."""
+    """
+    Return the user-global Frida binary cache directory.
+    """
     return paths.user_cache_dir("frida")
 
 
