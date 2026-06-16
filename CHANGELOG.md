@@ -237,6 +237,21 @@ CI pipeline itself.
   (qcow2 overlay + QMP `savevm`/`loadvm` launch path) is the tracked
   follow-up.
 
+### CI: `binder: vm` e2e tier (#48)
+
+- New **`tier-vm-qemu`** job in `e2e.yml` that exercises the QEMU micro-VM
+  backend end-to-end (previously covered only by the mocked unit suite):
+  it builds the binder-enabled guest kernel + rootfs, boots redroid inside
+  the `binder: vm` micro-VM, and drives it through the adb backend —
+  asserting `beetroot ls --json` availability, `beetroot shell getprop
+  sys.boot_completed`, the `doctor` `vm.process` / `vm.accel` rows, and
+  that `beetroot frida` reports its "not yet supported on the vm backend"
+  message. Gated like Tier 1 (nightly `schedule` / `workflow_dispatch` /
+  PR `e2e` label). On GitHub-hosted runners there is no `/dev/kvm`, so it
+  runs under TCG — a slow (~100 s+) but real boot; the kernel + rootfs
+  build is the long pole (the savevm boot-cache, #49, is the planned
+  lever to skip it on repeat runs).
+
 ## v0.6.0 — 2026-05-20
 
 A stability + cleanup release on the road to v1.0 — bug-fixing, OOP/CLI
