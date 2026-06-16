@@ -6,7 +6,7 @@
 [![Docs](https://github.com/Xiddoc/Beetroot/actions/workflows/docs.yml/badge.svg)](https://xiddoc.github.io/Beetroot/)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/Xiddoc/Beetroot/actions/workflows/ci.yml)
 
-Beetroot is a Docker-packaged rooted Android 14 environment — Magisk, LiteGapps, Houdini ARM translation, and Frida — wrapped with a Python CLI that runs as many persistent research "phones" as your host can afford, side by side. Each phone is a self-contained directory anywhere on disk: its own `beetroot.yaml`, its own `/data`, its own ADB and Frida ports, its own resource caps. A cross-instance registry at `~/.config/beetroot/instances.json` tracks them all by name.
+Beetroot is a Docker-packaged rooted Android environment (Android 14 by default; 11, 12, and 13 also selectable) — Magisk, LiteGapps, Houdini ARM translation, and Frida — wrapped with a Python CLI that runs as many persistent research "phones" as your host can afford, side by side. Each phone is a self-contained directory anywhere on disk: its own `beetroot.yaml`, its own `/data`, its own ADB and Frida ports, its own resource caps. A cross-instance registry at `~/.config/beetroot/instances.json` tracks them all by name.
 
 ```
 $ beetroot create alpha
@@ -39,14 +39,15 @@ The host-side `frida` CLI is exposed via a `[frida]` extra. Install with `uv too
 
 ## What you get
 
-- **Android 14** (redroid base, headless, low-FPS by default)
+- **Android 14 by default** (redroid base, headless, low-FPS) — pick 11, 12, 13, or 14 via `android.version` in `beetroot.yaml`
 - **Magisk root** with Zygisk + denylist; GMS auto-denylisted
 - **LiteGapps** + **Houdini** ARM-on-x86_64 translation
 - **Frida server (opt-in, version-pinned per instance)** — declare a `frida:` block in `beetroot.yaml` (or copy [`examples/with-frida.yaml`](examples/with-frida.yaml) over the freshly-created file) and the CLI downloads, caches, and bind-mounts the matching `frida-server` into the container
 - **Drop-in Magisk module flashing** via `beetroot.yaml`
 - **`beetroot` CLI** — lifecycle (`create` / `register` / `up` / `down` / `destroy`), shell + module management, health checks (`status` / `doctor`), and a `build` bootstrap. See the [CLI reference](https://xiddoc.github.io/Beetroot/reference/cli/) for every verb.
 - **Already have a rooted phone?** `beetroot adopt <adb-serial>` registers it under the same registry — the same `beetroot shell` / `beetroot frida` / `beetroot module` verbs dispatch via the host `adb` CLI instead of compose. No on-disk container; the device is managed outside Beetroot.
-- **Pluggable backends.** Beyond the in-tree redroid + adb backends, Beetroot ships a small extension surface so a third-party package can ship a custom backend (cloud-emulator service, network-adb gateway, …) in ~30 LOC + one `[project.entry-points."beetroot.backends"]` line. See [Adding a backend](https://xiddoc.github.io/Beetroot/guides/adding-a-backend/) for the recipe.
+- **Runs on binderless hosts.** redroid needs the kernel `binder` driver; the `binder: auto|host|vm` switch picks how that's satisfied. `auto`/`host` use the host kernel's binder (loading the module if needed), while `vm` boots redroid inside a QEMU micro-VM that ships its own binder-enabled kernel — for hardened/`nomodule` sandboxes where the host can't provide it. See [`examples/vm.yaml`](examples/vm.yaml).
+- **Pluggable backends.** Beyond the in-tree redroid, adb, and vm backends, Beetroot ships a small extension surface so a third-party package can ship a custom backend (cloud-emulator service, network-adb gateway, …) in ~30 LOC + one `[project.entry-points."beetroot.backends"]` line. See [Adding a backend](https://xiddoc.github.io/Beetroot/guides/adding-a-backend/) for the recipe.
 
 ## Read the docs
 
