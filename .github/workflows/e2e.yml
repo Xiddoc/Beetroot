@@ -181,3 +181,110 @@ jobs:
       - name: Teardown
         if: always()
         run: uv run beetroot destroy e2e-phone -y || true
+
+  tier-vm-qemu:
+    # Boots the real `binder: vm` QEMU micro-VM backend and drives it through
+    # the adb backend (issue #48). This is the only path that exercises the vm
+    # engine end-to-end; the unit suite covers it only with mocks. Gated like
+    # tier1 (schedule / dispatch / PR `e2e` label) — boots are slow.
+    #
+    # GitHub-hosted runners have no /dev/kvm, so detect_accel() picks TCG here
+    # (~5-20x slower; a ~100s+ boot is expected, not a hang — see
+    # docs/design/vm-rnd-log.md). On a KVM-capable runner class accel: auto
+    # would pick KVM for free. The kernel+rootfs build is the long pole; the
+    # savevm boot-cache (#49) is the planned lever to skip it on repeat runs.
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'e2e')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # The binder-enabled guest kernel pinned by docs/design/vm-rnd-log.md.
+      KERNEL_VERSION: "6.12.9"
+      VM_OUT: ${{ github.workspace }}/vm-artifacts
+      BEETROOT_VM_KERNEL: ${{ github.workspace }}/vm-artifacts/bzImage
+      BEETROOT_VM_ROOTFS: ${{ github.workspace }}/vm-artifacts/rootdisk.img
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+
+      - name: Install QEMU, adb, the kernel toolchain, and rootfs host deps
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 android-tools-adb \
+            build-essential flex bison libelf-dev libssl-dev bc cpio \
+            busybox-static e2fsprogs xz-utils iptables socat
+
+      - name: Install Beetroot
+        run: uv sync --frozen
+
+      - name: "Build the binder-enabled guest kernel (cache via #49 later)"
+        run: |
+          set -euxo pipefail
+          mkdir -p "$VM_OUT"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz"
+          tar -xf "linux-${KERNEL_VERSION}.tar.xz"
+          cd "linux-${KERNEL_VERSION}"
+          make defconfig
+          ./scripts/kconfig/merge_config.sh -m .config "$GITHUB_WORKSPACE/docker/vm/kernel.config"
+          make olddefconfig
+          make -j"$(nproc)" bzImage
+          cp arch/x86/boot/bzImage "$VM_OUT/bzImage"
+          grep -q 'CONFIG_ANDROID_BINDER_IPC=y' .config
+
+      - name: Assemble the guest rootfs (busybox + Docker static + redroid)
+        run: sh docker/vm/build-rootfs.sh "$VM_OUT/rootdisk.img"
+
+      - name: "Create + boot a binder:vm instance under QEMU/TCG"
+        run: |
+          set -euxo pipefail
+          uv run beetroot create vmphone
+          printf 'binder: vm\n' >> vmphone/beetroot.yaml
+          uv run beetroot up vmphone
+
+      - name: "Wait for Android boot (TCG: slow, not hung)"
+        run: |
+          set -uxo pipefail
+          # Index 0 -> host ADB port 5555 (src/beetroot/ports.py); the VM
+          # forwards the guest's adbd there.
+          adb connect 127.0.0.1:5555
+          adb -s 127.0.0.1:5555 wait-for-device
+          booted=
+          for _ in $(seq 1 200); do
+            booted="$(adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+            [ "$booted" = "1" ] && break
+            sleep 5
+          done
+          [ "$booted" = "1" ] || { echo "::error::vm guest did not boot in time"; exit 1; }
+
+      - name: Drive the VM through Beetroot and assert
+        run: |
+          set -euxo pipefail
+          uv run beetroot ls --json | tee /tmp/ls.json
+          test "$(jq -r '.vmphone.is_available' /tmp/ls.json)" = "true"
+          boot_prop="$(uv run beetroot shell vmphone getprop sys.boot_completed | tr -d '\r')"
+          test "$boot_prop" = "1"
+          # doctor's vm.* rows must report the running QEMU process + accel.
+          doctor_out="$(uv run beetroot doctor vmphone || true)"
+          echo "$doctor_out"
+          echo "$doctor_out" | grep -q 'vm.process: pass'
+          echo "$doctor_out" | grep -qE 'vm.accel: (pass|skip)'
+
+      - name: Frida over the VM is intentionally unsupported (assert the message)
+        run: |
+          set -uxo pipefail
+          out="$(uv run beetroot frida vmphone 2>&1 || true)"
+          echo "$out"
+          echo "$out" | grep -qi 'not yet supported'
+
+      - name: Guest serial log (always, for diagnosis)
+        if: always()
+        run: |
+          uv run beetroot logs vmphone 2>&1 | tail -n 200 || true
+
+      - name: Teardown
+        if: always()
+        run: uv run beetroot destroy vmphone -y || true

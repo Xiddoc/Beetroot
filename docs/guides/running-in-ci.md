@@ -117,7 +117,7 @@ against a lightweight `busybox` stand-in base — it does **not** boot Android.
 So the PR gate runs fine on stock hosted runners without binder.
 
 On top of that, a separate **`e2e.yml`** workflow boots a real Android on a
-hosted runner (the Option A path above) in two tiers:
+hosted runner (the Option A path above) in three tiers:
 
 * **Tier 1** boots the upstream stock redroid image and drives it through
   Beetroot's adb backend (`adopt --verify` / `ls` / `shell` / the adb-side
@@ -125,6 +125,13 @@ hosted runner (the Option A path above) in two tiers:
 * **Tier 2** (WIP) `beetroot build`s the real Magisk image, `beetroot up`s it,
   and asserts the in-device deployment (root, Zygisk, GMS denylist, Frida). It
   is heavy and non-blocking while it's hardened.
+* **Tier-VM** builds the binder-enabled guest kernel + rootfs, boots redroid
+  inside the `binder: vm` QEMU micro-VM, and drives it through the adb backend
+  (`ls` / `shell` / the `doctor` `vm.process` + `vm.accel` rows; Frida is
+  asserted to report its "not yet supported on the vm backend" message). On a
+  GitHub-hosted runner there is no `/dev/kvm`, so it runs under TCG — a slow
+  (~100 s+) but real boot. The kernel + rootfs build is the long pole.
+
 
 Because real boots are slow, `e2e.yml` does **not** run on every push. Trigger
 it by adding the **`e2e`** label to a pull request, running it manually from
