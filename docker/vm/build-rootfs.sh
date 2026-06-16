@@ -60,7 +60,11 @@ cleanup() {
 trap cleanup EXIT
 
 log() {
-    echo "[build-rootfs] $*"
+    # Write to stderr: functions like stage_docker_root() return a path on
+    # stdout via command substitution, so a log line on stdout would be
+    # captured into the path and corrupt the caller (e.g. `cp` on a multi-line
+    # argument). Keep human-facing logs off the value channel.
+    echo "[build-rootfs] $*" >&2
 }
 
 fetch_static_bundle() {
@@ -78,7 +82,10 @@ stage_docker_root() {
 
     if [ -z "$REDROID_TAR" ]; then
         log "pulling $REDROID_IMAGE with host docker ($DOCKER_BIN) and saving to tarball"
-        "$DOCKER_BIN" pull "$REDROID_IMAGE"
+        # stdout is the function's value channel (echo "$_stage" below is
+        # captured via command substitution), so docker's progress/status
+        # output must go to stderr or it corrupts the returned path.
+        "$DOCKER_BIN" pull "$REDROID_IMAGE" >&2
         REDROID_TAR="$WORK/redroid.tar"
         "$DOCKER_BIN" save "$REDROID_IMAGE" -o "$REDROID_TAR"
     fi
@@ -96,13 +103,13 @@ stage_docker_root() {
     while ! "$DBIN/docker" --host="unix://$WORK/stage.sock" info >/dev/null 2>&1; do
         _i=$((_i + 1))
         [ "$_i" -ge 60 ] && {
-            tail -20 "$WORK/stage-dockerd.log"
+            tail -20 "$WORK/stage-dockerd.log" >&2
             echo "[build-rootfs] staging dockerd did not start" >&2
             exit 1
         }
         sleep 1
     done
-    "$DBIN/docker" --host="unix://$WORK/stage.sock" load -i "$REDROID_TAR"
+    "$DBIN/docker" --host="unix://$WORK/stage.sock" load -i "$REDROID_TAR" >&2
     kill "$(cat "$WORK/stage.pid")" 2>/dev/null || true
     rm -f "$WORK/stage.pid"
     sleep 3
@@ -118,12 +125,16 @@ build_tree() {
         "$ROOT"/usr/lib/x86_64-linux-gnu
     chmod 1777 "$ROOT"/tmp
 
-    log "installing busybox ($BUSYBOX_BIN)"
+    log "installing busybox ($BUSYBOX_BIN) + applet symlinks"
     cp "$BUSYBOX_BIN" "$ROOT/bin/busybox"
     chmod 0755 "$ROOT/bin/busybox"
-    # guest-init runs `busybox --install -s` to lay down ALL applet symlinks
-    # (sh, mount, poweroff, nsenter, netstat, udhcpc, ip, ...) at boot, so we
-    # only ship the single binary here.
+    # Lay down every applet symlink (sh, mount, poweroff, nsenter, ip, ...) NOW,
+    # at build time. /init is a `#!/bin/sh` script, so /bin/sh MUST exist before
+    # the kernel can exec it — there is no earlier moment to create it (nothing
+    # runs before PID 1). Enumerate applets via the same busybox we ship.
+    for _applet in $("$BUSYBOX_BIN" --list); do
+        ln -sf busybox "$ROOT/bin/$_applet"
+    done
 
     log "installing Docker static bundle binaries"
     for bin in dockerd containerd containerd-shim-runc-v2 runc docker ctr \
