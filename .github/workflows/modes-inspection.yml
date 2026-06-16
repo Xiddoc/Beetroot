@@ -1,0 +1,34 @@
+name: Modes inspection
+
+# Manual-only helper: runs `beetroot modes` on a stock GitHub-hosted runner so
+# we can see, from the horse's mouth, which Beetroot run-modes a hosted runner
+# supports out of the box (no provide-binder, no extra tooling).
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  modes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Install beetroot
+        run: uv sync --frozen
+
+      - name: beetroot modes (table)
+        run: uv run beetroot modes
+
+      - name: beetroot modes (JSON)
+        run: uv run beetroot modes --json
