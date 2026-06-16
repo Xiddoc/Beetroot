@@ -29,18 +29,22 @@ print a hint and leave the instance registered for the user to retry
 via ``beetroot apply``; rollback only fires for ``_stage_local``
 failures. (T2 Agent 2 B-2.)
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
+from docker_daemon import daemon_available
 
 from beetroot import api, config, modules_download, paths, registry, snapshot
 
+# Restore tests that free the source slot via ``destroy`` → ``compose down``
+# need a live Docker daemon; skip (don't fail) when there isn't one (#59).
+_needs_daemon = pytest.mark.skipif(not daemon_available(), reason="docker daemon not available")
 
-def _poison_stage_local(
-    monkeypatch: pytest.MonkeyPatch, exc: BaseException
-) -> dict[str, bool]:
+
+def _poison_stage_local(monkeypatch: pytest.MonkeyPatch, exc: BaseException) -> dict[str, bool]:
     """Replace ``Instance._stage_local`` with a stub that raises ``exc``.
 
     The local-stage step is the rollback-fatal one. Returns a one-key
@@ -57,9 +61,7 @@ def _poison_stage_local(
     return state
 
 
-def _poison_stage_network(
-    monkeypatch: pytest.MonkeyPatch, exc: BaseException
-) -> dict[str, bool]:
+def _poison_stage_network(monkeypatch: pytest.MonkeyPatch, exc: BaseException) -> dict[str, bool]:
     """Replace ``Instance._stage_network`` with a stub that raises ``exc``.
 
     The network-stage step is soft-fail. Tests assert the instance is
@@ -87,7 +89,8 @@ class TestCreateRollback:
         # A local-stage failure (filesystem error, disk full, etc.)
         # MUST roll back the registry row + the freshly-created dir.
         state = _poison_stage_local(
-            monkeypatch, OSError("disk full while writing .env"),
+            monkeypatch,
+            OSError("disk full while writing .env"),
         )
 
         target = cli_root / "alpha"
@@ -145,7 +148,8 @@ class TestCreateRollback:
         assert (target / "preexisting.txt").read_text() == "user owns me"
 
     def test_network_stage_failure_does_not_roll_back(
-        self, cli_root: Path,
+        self,
+        cli_root: Path,
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -203,7 +207,8 @@ class TestRegisterRollback:
         assert marker.read_text() == "user owns me"
 
     def test_register_network_stage_failure_does_not_roll_back(
-        self, cli_root: Path,
+        self,
+        cli_root: Path,
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -231,6 +236,7 @@ class TestRegisterRollback:
 
 
 class TestRestoreRollback:
+    @_needs_daemon
     def test_restore_local_stage_failure_rolls_back_registry_and_dir(
         self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -258,8 +264,10 @@ class TestRestoreRollback:
         # this restore — no user data to preserve).
         assert not target.exists()
 
+    @_needs_daemon
     def test_restore_network_stage_failure_does_not_roll_back(
-        self, cli_root: Path,
+        self,
+        cli_root: Path,
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -286,6 +294,7 @@ class TestRestoreRollback:
         captured = capsys.readouterr()
         assert "beetroot apply alpha-restored" in captured.err
 
+    @_needs_daemon
     def test_restore_preserves_preexisting_empty_dir_on_rollback(
         self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -311,9 +320,7 @@ class TestRestoreRollback:
         # Dir survives — we didn't create it, so we don't delete it.
         assert target.exists()
 
-    def test_restore_port_collision_rolls_back_registry_and_dir(
-        self, cli_root: Path
-    ) -> None:
+    def test_restore_port_collision_rolls_back_registry_and_dir(self, cli_root: Path) -> None:
         # Build an archive whose YAML pins ports.adb: 5555. Restore
         # against an existing instance also using 5555 → port
         # collision → rollback. The rolled-back state must have no

@@ -4,20 +4,22 @@ Runs ``docker/entrypoint.sh`` (and the three helpers it sources) inside a
 real container using a lightweight busybox base, with fake ``magisk`` and
 ``frida-server`` shims that record every invocation to a log file.
 
-Skipped when docker is unavailable (mirrors the ``shutil.which`` pattern
-used elsewhere in this test suite).  On GitHub CI (ubuntu-latest) docker is
-always present, so the test always runs.
+Skipped when no Docker **daemon** is reachable — a bare ``shutil.which``
+check is not enough, because a host can have the docker CLI installed with
+no running daemon (issue #59), and this test issues a real ``docker run``.
+On GitHub CI (ubuntu-latest) the daemon is always present, so the test
+always runs.
 """
+
 from __future__ import annotations
 
-import shutil
 import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
+from docker_daemon import daemon_available
 
-_DOCKER_AVAILABLE = shutil.which("docker") is not None
 _DOCKER_DIR = Path(__file__).parent.parent / "docker"
 
 # The fake magisk shim: logs every invocation, returns sane values for
@@ -107,7 +109,7 @@ EOF
     )
 
 
-@pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="docker not available")
+@pytest.mark.skipif(not daemon_available(), reason="docker daemon not available")
 def test_container_boot_end_to_end(tmp_path: Path) -> None:
     # log_dir is bind-mounted rw into the container; shims write magisk.log there.
     log_dir = tmp_path / "logs"
@@ -134,11 +136,14 @@ def test_container_boot_end_to_end(tmp_path: Path) -> None:
             "run",
             "--rm",
             # Boot helpers (read-only; copied to / inside the script)
-            "--volume", f"{_DOCKER_DIR}:{docker_src}:ro",
+            "--volume",
+            f"{_DOCKER_DIR}:{docker_src}:ro",
             # Modules directory (empty, but must exist so the for-loop branch runs)
-            "--volume", f"{modules_dir}:{modules_mount}:ro",
+            "--volume",
+            f"{modules_dir}:{modules_mount}:ro",
             # Writable log directory: shims write here; host reads after exit
-            "--volume", f"{log_dir}:{log_mount}:rw",
+            "--volume",
+            f"{log_dir}:{log_mount}:rw",
             "busybox",
             "sh",
             "-c",
@@ -164,30 +169,27 @@ def test_container_boot_end_to_end(tmp_path: Path) -> None:
     queries = [line for line in log_content.splitlines() if line]
 
     assert any(
-        "--sqlite" in q and "REPLACE INTO settings" in q and "zygisk" in q
-        for q in queries
+        "--sqlite" in q and "REPLACE INTO settings" in q and "zygisk" in q for q in queries
     ), f"zygisk REPLACE INTO not found in magisk log.\nqueries={queries!r}\nstdout={combined!r}"
 
     assert any(
-        "--sqlite" in q and "REPLACE INTO settings" in q and "denylist" in q
-        for q in queries
+        "--sqlite" in q and "REPLACE INTO settings" in q and "denylist" in q for q in queries
     ), f"denylist REPLACE INTO not found.\nqueries={queries!r}"
 
     # Zygisk SELECT verification must have run
     assert any(
-        "--sqlite" in q and "SELECT value FROM settings WHERE key='zygisk'" in q
-        for q in queries
+        "--sqlite" in q and "SELECT value FROM settings WHERE key='zygisk'" in q for q in queries
     ), f"zygisk post-write SELECT not found.\nqueries={queries!r}"
 
     # GMS packages must have been enrolled in the denylist
     assert any(
-        "--sqlite" in q and "INSERT OR IGNORE INTO denylist" in q
-        and "com.google.android.gms'" in q
+        "--sqlite" in q and "INSERT OR IGNORE INTO denylist" in q and "com.google.android.gms'" in q
         for q in queries
     ), f"GMS denylist INSERT not found.\nqueries={queries!r}"
 
     assert any(
-        "--sqlite" in q and "INSERT OR IGNORE INTO denylist" in q
+        "--sqlite" in q
+        and "INSERT OR IGNORE INTO denylist" in q
         and "com.google.android.gms.unstable" in q
         for q in queries
     ), f"GMS unstable denylist INSERT not found.\nqueries={queries!r}"
