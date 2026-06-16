@@ -128,6 +128,15 @@
   `adb_address`, `frida_address`, `is_available`); redroid rows are
   unchanged, including the v0.3 back-compat `path`/`adb`/`frida` keys.
   Orphan entries are still skipped with the trailing stderr advisory.
+- **`beetroot build --vm-kernel` no longer corrupts the rootfs build** —
+  `docker/vm/build-rootfs.sh`'s `log()` wrote to **stdout**, but
+  `stage_docker_root()` returns the staging path on stdout via command
+  substitution (`_dockerroot="$(stage_docker_root)"`). The interleaved log
+  lines were captured into the path, so the subsequent `cp -a "$_dockerroot"
+  …` failed with `cannot stat` and no `rootdisk.img` was produced (caught
+  building the guest rootfs locally under TCG). `log()` now writes to
+  stderr, keeping human output off the value channel. This also unblocks the
+  `binder: vm` e2e tier (#48), which runs this script.
 
 ### Known limitations
 

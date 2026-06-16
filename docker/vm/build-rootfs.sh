@@ -60,7 +60,11 @@ cleanup() {
 trap cleanup EXIT
 
 log() {
-    echo "[build-rootfs] $*"
+    # Write to stderr: functions like stage_docker_root() return a path on
+    # stdout via command substitution, so a log line on stdout would be
+    # captured into the path and corrupt the caller (e.g. `cp` on a multi-line
+    # argument). Keep human-facing logs off the value channel.
+    echo "[build-rootfs] $*" >&2
 }
 
 fetch_static_bundle() {
