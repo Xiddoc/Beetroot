@@ -4,6 +4,19 @@
 
 ### Features
 
+- **`beetroot modes` — host capability survey.** A new host-level,
+  instance-independent command that probes the host binder driver, KVM, and
+  the QEMU / Docker / adb binaries and reports, for every run-mode
+  (`redroid` on host binder, `binder: vm` under KVM, `binder: vm` under TCG,
+  and the `adb` backend), whether it is `supported` / `needs-setup` /
+  `unsupported` / `unknown` — each with a reason and a remedy. Answers "what
+  can this machine run *before* I create an instance or pick a `binder`
+  mode?", complementing the per-instance `beetroot doctor <name>`. `--json`
+  for scripts; always exits 0 (reports, never gates). Crucially distinguishes
+  "no `/dev/kvm`" (KVM fast path unavailable) from "no VM support" — the
+  `binder: vm` TCG path works on binderless, KVM-less hosts. New docs:
+  [Binder & run-modes](https://xiddoc.github.io/Beetroot/how-it-works/binder-and-modes/).
+
 - **`binder` config switch (`auto` / `host` / `vm`).** A new top-level
   `binder:` key on `beetroot.yaml` selects how redroid obtains the kernel
   binder driver it needs to boot. `auto` (default) keeps the historical
