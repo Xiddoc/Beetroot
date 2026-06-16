@@ -204,6 +204,23 @@ CI pipeline itself.
   permissions are scoped to the deploy job; every checkout across all
   workflows sets `persist-credentials: false`.
 
+### CI: host-vs-VM benchmark harness (#50)
+
+- New nightly **benchmark lane** (`.github/workflows/benchmark.yml`;
+  `schedule` + `workflow_dispatch`) that measures and **trends** — never
+  gates — the capability ladder's cost: kernel compile time, cold-boot
+  time, and a fixed post-boot workload for the host-binder path vs the
+  `binder: vm` (QEMU/TCG) path, on the same runner in the same run so the
+  host-vs-vm *ratio* cancels per-runner hardware noise. A regression over
+  `benchmarks/baseline.json` raises a `::warning::` annotation only —
+  benchmarking tracks, it does not gate.
+- The analysis is a standalone, fully unit-tested harness
+  (`scripts/bench.py` with `measure` / `record` / `report` subcommands),
+  so the aggregation, ratio, and regression logic is covered without a
+  runner. The committed baseline is seeded from the offline R&D in
+  `docs/design/vm-rnd-log.md` (see `benchmarks/README.md` for the refresh
+  flow).
+
 ### CI: `binder: vm` savevm boot-cache — design + cache key (#49)
 
 - Design note ([VM boot-cache (savevm)](https://xiddoc.github.io/Beetroot/design/vm-savevm-cache/))

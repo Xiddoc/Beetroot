@@ -1,0 +1,16 @@
+{
+  "generated_at": "2026-06-15T00:00:00+00:00",
+  "runner": "vm-rnd-log Stage A (4 cores, 15 GiB, no /dev/kvm, pure TCG)",
+  "samples": [
+    {
+      "backend": "build",
+      "metric": "compile_seconds",
+      "seconds": 450.0
+    },
+    {
+      "backend": "vm-tcg",
+      "metric": "boot_seconds",
+      "seconds": 100.0
+    }
+  ]
+}
