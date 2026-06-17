@@ -147,6 +147,23 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **A hostile or corrupt `beetroot.yaml` now surfaces as `error: …` + exit 1,
+  never a traceback** (#21, adversarial-config-corpus slice). `cli.main()`
+  caught every domain exception (`ComposeError`, `RegistryError`,
+  `InstanceRootNotFoundError`, …) but **not** the two raised by
+  `config.load_yaml`: a `pydantic.ValidationError` (wrong field types,
+  out-of-range geometry, unsupported `api_version`, the removed `stealth:`
+  section) and a `yaml.YAMLError` (syntactically broken YAML). The
+  `register`/`adopt` verbs caught `ValueError` inline — and `ValidationError`
+  subclasses it — so those two looked fine, but every **name-resolved** verb
+  (`status`, `up`, `apply`, …) let a `ValidationError` propagate as a
+  Rich-rendered traceback, and `yaml.YAMLError` (which is *not* a
+  `ValueError`) tracebacked from **every** verb, `register` included. `main()`
+  now nets both for the uniform `error: …` contract the rest of the CLI
+  upholds. Guarded by a new `tests/corpus/` of nine hostile `beetroot.yaml`
+  files driven end-to-end through the CLI (`tests/test_cli_error_contract.py`),
+  asserting each yields `error: …` + exit 1 with no `Traceback` — the
+  "behavior tests, not just line coverage" pattern from `CLAUDE.md`.
 - **Docker-dependent tests now *skip* (not *fail*) on a daemonless host** (#59).
   `test_container_boot.py` and the `destroy`-driven restore tests in
   `test_instance_invariants.py` / `test_partial_failure_rollback.py` shell out

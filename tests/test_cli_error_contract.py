@@ -22,6 +22,9 @@ from typer.testing import CliRunner
 
 from beetroot import builder, cli, compose, registry
 
+_CORPUS_DIR = Path(__file__).parent / "corpus"
+_CORPUS_FILES = sorted(_CORPUS_DIR.glob("*.yaml"))
+
 
 def _run_main_with_argv(
     argv: list[str], monkeypatch: pytest.MonkeyPatch
@@ -131,6 +134,68 @@ class TestBootstrapErrorSurfacing:
         assert code == 1
         assert "error:" in err
         assert "simulated bootstrap failure" in err
+        assert "Traceback" not in err
+
+
+class TestHostileConfigSurfacing:
+    """A corpus of hostile ``beetroot.yaml`` files must never traceback.
+
+    Issue #21 ("adversarial config corpus"): every malformed or
+    unsupported config — wrong field types, out-of-range geometry,
+    unsupported / non-numeric ``api_version``, the removed ``stealth:``
+    section, a top-level sequence, an invalid denylist package, and
+    syntactically broken YAML — must reach the user as ``error: ...`` +
+    exit 1, never a Rich-rendered traceback.
+
+    The malformed-syntax file is the regression guard for the bug this
+    slice fixed: ``yaml.YAMLError`` is *not* a ``ValueError``, so even the
+    ``register``/``adopt`` verbs (which catch ``ValueError`` inline) let it
+    propagate as a traceback until ``cli.main`` learned to catch it.
+    """
+
+    def test_corpus_is_non_empty(self) -> None:
+        # Guard against a silently-empty parametrization (e.g. the corpus
+        # dir vanishing from the wheel) making every case below a no-op.
+        assert _CORPUS_FILES, f"no corpus files under {_CORPUS_DIR}"
+
+    @pytest.mark.parametrize(
+        "corpus_file", _CORPUS_FILES, ids=[p.stem for p in _CORPUS_FILES]
+    )
+    def test_register_hostile_yaml_is_friendly(
+        self,
+        corpus_file: Path,
+        cli_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        target = cli_root / corpus_file.stem
+        target.mkdir()
+        (target / "beetroot.yaml").write_text(
+            corpus_file.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        code, err = _run_main_with_argv(
+            ["beetroot", "register", str(target), "--name", "victim"],
+            monkeypatch,
+        )
+        assert code == 1
+        assert err.startswith("error:")
+        assert "Traceback" not in err
+
+    def test_validation_error_via_name_resolved_verb_is_friendly(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A *registered* instance whose YAML is corrupted out-of-band is
+        # loaded deep in a name-resolved verb (``status``), which — unlike
+        # ``register`` — does not catch ``ValueError`` inline. Pre-fix this
+        # ``pydantic.ValidationError`` tracebacked; ``cli.main`` now nets it.
+        CliRunner().invoke(cli.app, ["create", "alpha"])
+        (cli_root / "alpha" / "beetroot.yaml").write_text(
+            'api_version: 4\nresources:\n  cpus: "lots"\n'
+        )
+        code, err = _run_main_with_argv(
+            ["beetroot", "status", "alpha"], monkeypatch
+        )
+        assert code == 1
+        assert err.startswith("error:")
         assert "Traceback" not in err
 
 
