@@ -115,8 +115,42 @@ class TestBuildQemuArgv:
         assert "-nographic" in argv
         assert "-no-reboot" in argv
         assert (
-            argv[argv.index("-append") + 1] == "console=ttyS0 root=/dev/vda rw init=/init panic=1"
+            argv[argv.index("-append") + 1]
+            == "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off"
         )
+
+    def test_disables_cpu_mitigations_on_both_accels(self) -> None:
+        # An ephemeral research sandbox doesn't need speculative-execution
+        # mitigations — they are pure (emulated under TCG / real under KVM)
+        # overhead. The lever lives on the shared kernel cmdline, so it must
+        # be present regardless of accelerator.
+        for accel in ("tcg", "kvm"):
+            argv = _argv(accel)
+            assert "mitigations=off" in argv[argv.index("-append") + 1]
+
+
+# ---------------------------------------------------------------------------
+# resolve_smp
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSmp:
+    def test_explicit_count_is_honoured_verbatim(self) -> None:
+        assert qemu.resolve_smp(6) == 6
+
+    def test_auto_sizes_to_host_usable_cpu_count(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ``auto`` tracks the host's usable CPUs (affinity/cgroup-aware) —
+        # the vm-rnd-log §B.5 measured optimum.
+        monkeypatch.setattr("beetroot.vm.qemu.os.process_cpu_count", lambda: 7)
+        assert qemu.resolve_smp("auto") == 7
+
+    def test_auto_falls_back_to_one_when_cpu_count_unknown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``os.process_cpu_count()`` can return None (undeterminable) — never
+        # emit ``-smp 0``; fall back to a single vCPU.
+        monkeypatch.setattr("beetroot.vm.qemu.os.process_cpu_count", lambda: None)
+        assert qemu.resolve_smp("auto") == qemu._SMP_AUTO_FALLBACK == 1
 
 
 # ---------------------------------------------------------------------------

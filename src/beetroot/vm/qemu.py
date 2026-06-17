@@ -32,11 +32,15 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 # Resolved accelerator — what QEMU is actually told to use, after folding
 # the configured ``auto``/``kvm``/``tcg`` against the live host probe.
 ResolvedAccel = Literal["kvm", "tcg"]
+
+# Fallback vCPU count when ``vm.smp: auto`` and the host CPU count can't be
+# determined (``os.process_cpu_count()`` returns ``None``).
+_SMP_AUTO_FALLBACK: Final = 1
 
 # The guest-side ADB port redroid listens on. The user-net ``hostfwd`` maps
 # this to a per-instance host port so ``adb connect localhost:<host>`` reaches
@@ -101,6 +105,32 @@ def detect_accel(requested: Literal["auto", "kvm", "tcg"]) -> ResolvedAccel:
     return "kvm" if _dev_kvm_usable() else "tcg"
 
 
+def resolve_smp(configured: int | Literal["auto"]) -> int:
+    """
+    Resolve a configured ``vm.smp`` into a concrete positive vCPU count.
+
+    ``"auto"`` (the schema default) sizes ``-smp`` to the host's *usable*
+    CPU count via :func:`os.process_cpu_count`, which honours CPU-affinity /
+    cgroup-cpuset limits — so it is correct inside a constrained CI
+    container, not just on bare metal. This bakes in the vm-rnd-log §B.5
+    finding that the real redroid boot scales with vCPUs up to the host core
+    count and then regresses past it (oversubscription → cross-thread TCG
+    sync overhead): matching ``-smp`` to the host is the measured optimum. An
+    explicit positive integer is honoured verbatim, so a user can still pin a
+    smaller count or override the auto-size.
+
+    Args:
+        configured: The ``vm.smp`` value from the config (an explicit vCPU
+            count or ``"auto"``).
+
+    Returns:
+        A concrete vCPU count >= 1.
+    """
+    if configured == "auto":
+        return os.process_cpu_count() or _SMP_AUTO_FALLBACK
+    return configured
+
+
 def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinct QEMU invocation parameter
     *,
     qemu_bin: str,
@@ -126,6 +156,14 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
       ``-cpu max`` (exposes SSE4/AVX that ART/bionic expect).
     * **kvm** → ``-accel kvm`` and ``-cpu host`` (pass the host CPU through
       for near-native speed).
+
+    The kernel command line also carries ``mitigations=off``: the guest is
+    an ephemeral, single-tenant research sandbox, so the CPU
+    speculative-execution mitigations (retpolines, lfence barriers, …) buy
+    nothing here — and they are pure overhead either way (extra *emulated*
+    work under TCG, real serialization under KVM). Turning them off shaves
+    boot and steady-state CPU time with no relevant security loss for a
+    throwaway VM.
 
     Args:
         qemu_bin: The QEMU binary (path or name resolved via PATH).
@@ -166,7 +204,7 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
         "-device",
         "virtio-net-pci,netdev=net0",
         "-append",
-        "console=ttyS0 root=/dev/vda rw init=/init panic=1",
+        "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off",
     ]
 
 

@@ -365,7 +365,7 @@ class VmDeviceBackend:
             accel=accel,
             kernel=kernel,
             rootfs=rootfs,
-            smp=self._cfg.vm.smp,
+            smp=qemu.resolve_smp(self._cfg.vm.smp),
             memory_mib=self._cfg.vm.memory_mib,
             host_adb_port=self.ports["adb"],
         )
