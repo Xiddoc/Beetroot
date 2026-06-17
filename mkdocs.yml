@@ -105,6 +105,7 @@ nav:
     - Frida: guides/frida.md
     - Snapshots: guides/snapshots.md
     - Running in CI / without kernel access: guides/running-in-ci.md
+    - CI integration (reusable workflow): guides/ci-reusable-workflow.md
     - Adding a backend: guides/adding-a-backend.md
     - Migrating from v0.3 to v0.4: guides/migration-v0.3-to-v0.4.md
     - Migrating from v0.2 to v0.3: guides/migration-v0.2-to-v0.3.md

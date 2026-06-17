@@ -110,65 +110,28 @@ matrix.
 
 ## Reusable workflow — boot an instance in *your* CI
 
-If you just want a rooted Android instance to run your own tests against —
-say you publish a Frida script and want CI to exercise it against a real
+If you just want a rooted Android instance to run your own tests against — say
+you publish a Frida script and want CI to exercise it against a real
 Android-14 phone — you don't have to hand-assemble the steps above. Beetroot
-ships a **reusable GitHub Actions workflow** you can call with `uses:`:
+ships a **reusable GitHub Actions workflow** you call with one `uses:` line:
 
 ```yaml
 # .github/workflows/test.yml in *your* repo
-name: test-on-beetroot
-on: [push]
-
 jobs:
   frida-hook:
     uses: Xiddoc/Beetroot/.github/workflows/beetroot-ci.yml@v0.4
     with:
       test-command: |
         uv run --with frida-tools \
-          frida -H "$FRIDA_HOST" -l hook.js -f com.example.app --runtime=v8 &
-        # your assertions here, e.g. drive the app over adb and grep logcat
-        adb -s "$ADB_SERIAL" shell input tap 200 400
+          frida -H "$FRIDA_HOST" -l hook.js -f com.example.app
 ```
 
-The workflow checks out *your* repository, builds the Beetroot image, boots an
-instance, and runs your `test-command` with the device reachable at:
+It checks out your repo, builds the image **on your runner** (nothing
+proprietary is redistributed — see below), boots an instance, and runs your
+`test-command` against the live device (`$ADB_SERIAL` / `$FRIDA_HOST`).
 
-| Env var | Value | Use |
-|---------|-------|-----|
-| `$ADB_SERIAL` | `127.0.0.1:5555` | `adb -s "$ADB_SERIAL" …` |
-| `$FRIDA_HOST` | `127.0.0.1:27042` | `frida -H "$FRIDA_HOST" …` |
-| `$BEETROOT_INSTANCE` | the instance name | `beetroot shell "$BEETROOT_INSTANCE" …` |
-| `$BEETROOT_SRC` | the Beetroot checkout | `uv run --project "$BEETROOT_SRC" beetroot …` |
-
-Useful inputs (all optional except `test-command`):
-
-| Input | Default | Meaning |
-|-------|---------|---------|
-| `test-command` | — (required) | Shell command run once the instance is up. |
-| `binder` | `host` | `host` loads `binder_linux` and boots redroid natively (fast); `vm` builds a binder-enabled guest kernel and boots redroid in a QEMU micro-VM (works without loadable binder, but slow under TCG). |
-| `gapps` | `none` | GMS variant baked in: `none`, `lite`, `full`, `mindthegapps`. |
-| `android-version` | `14` | `11`, `12`, `13`, or `14`. |
-| `frida-version` | `""` | Pin a `frida-server` version (e.g. `16.4.10`); empty boots without Frida. |
-| `instance-name` | `ci` | Instance name. |
-| `working-directory` | `.` | Directory your `test-command` runs in. |
-| `runs-on` | `ubuntu-latest` | Runner label. |
-| `beetroot-ref` | reuses the `uses:` ref | Git ref of Beetroot to build from. |
-
-!!! note "Nothing proprietary is redistributed"
-    The image (redroid + Magisk + optional GApps + Houdini) is built on **your**
-    runner by `beetroot build`, exactly as it would be on a developer's laptop —
-    the patcher fetches GApps/Houdini from their upstreams at *your* CI runtime.
-    This workflow ships only Beetroot's own MIT-licensed orchestration; it is not
-    a pre-built image and does **not** appear under GitHub Packages. That is the
-    same reason there is no published container image: Beetroot can't redistribute
-    Google's GApps or Intel's Houdini, but it can hand you the recipe to build
-    them yourself.
-
-`binder: host` works on standard GitHub-hosted `ubuntu-latest` runners today
-(they ship a loadable `binder_linux`). Choose `binder: vm` only if your runner
-can't load binder — it additionally compiles a guest kernel, so expect a much
-longer run.
+→ **Full guide, inputs, env vars, matrix usage, and gotchas:
+[CI integration — the reusable workflow](ci-reusable-workflow.md).**
 
 ## What about this project's own CI?
 

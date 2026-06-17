@@ -306,3 +306,24 @@ jobs:
       - name: Teardown
         if: always()
         run: uv run beetroot destroy vmphone -y || true
+
+  tier-reusable-workflow:
+    # Smoke-test the *product* — the reusable workflow external repos consume
+    # (.github/workflows/beetroot-ci.yml). Calls it against this repo with a
+    # trivial test-command that asserts the booted device reports
+    # sys.boot_completed=1, proving the consumer-facing path end-to-end. Gated
+    # like tier1 (schedule / dispatch / PR `e2e` label) — it runs a full host
+    # boot, so it is not a per-push gate.
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'e2e')
+    uses: ./.github/workflows/beetroot-ci.yml
+    with:
+      binder: host
+      gapps: none
+      instance-name: smoke
+      test-command: |
+        set -euo pipefail
+        booted="$(adb -s "$ADB_SERIAL" shell getprop sys.boot_completed | tr -d '\r')"
+        test "$booted" = "1"
+        echo "reusable-workflow smoke: device booted (sys.boot_completed=$booted)"
