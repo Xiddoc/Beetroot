@@ -391,13 +391,15 @@ class Vm(BaseModel):
             force the choice. Explicit ``"kvm"`` on a host without
             ``/dev/kvm`` is a hard error (no silent slow fallback).
         smp: Number of guest vCPUs (``-smp``). Either an explicit integer
-            (must be >= 1) or ``"auto"`` (the default), which sizes ``-smp``
-            to the host's *usable* CPU count at launch. The vm-rnd-log §B.5
-            sweep showed the real redroid boot scales with vCPUs up to the
-            host core count and regresses past it (oversubscription →
-            cross-thread TCG sync overhead), so ``"auto"`` is the measured
-            optimum on most hosts; pin an explicit value to leave host cores
-            free or to override the auto-size.
+            (must be >= 1) or ``"auto"`` (the default), which pins ``-smp``
+            to the host's *physical* core count at launch (HyperThread
+            siblings collapsed, capped by CPU affinity so a cgroup-limited
+            CI runner is respected). The vm-rnd-log §B.5 sweep showed the
+            real redroid boot scales with vCPUs up to the host core count and
+            regresses past it (oversubscription → cross-thread TCG sync
+            overhead); counting *physical* cores avoids the regression a
+            logical-CPU count would hit on a hyperthreaded host. Pin an
+            explicit value to leave host cores free or to override.
         memory_mib: Guest RAM in MiB (``-m``). Must be >= 256. Default 8192.
     """
 

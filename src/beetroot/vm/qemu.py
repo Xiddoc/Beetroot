@@ -32,15 +32,11 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Final, Literal
+from typing import Literal
 
 # Resolved accelerator — what QEMU is actually told to use, after folding
 # the configured ``auto``/``kvm``/``tcg`` against the live host probe.
 ResolvedAccel = Literal["kvm", "tcg"]
-
-# Fallback vCPU count when ``vm.smp: auto`` and the host CPU count can't be
-# determined (``os.process_cpu_count()`` returns ``None``).
-_SMP_AUTO_FALLBACK: Final = 1
 
 # The guest-side ADB port redroid listens on. The user-net ``hostfwd`` maps
 # this to a per-instance host port so ``adb connect localhost:<host>`` reaches
@@ -105,19 +101,91 @@ def detect_accel(requested: Literal["auto", "kvm", "tcg"]) -> ResolvedAccel:
     return "kvm" if _dev_kvm_usable() else "tcg"
 
 
+def host_physical_cores() -> int:
+    """
+    Return the host's physical core count (HyperThread siblings collapsed).
+
+    Under TCG every guest vCPU is one execution-bound host thread, so the
+    Stage B sweep in ``docs/design/vm-rnd-log.md`` §B.5 found ``-smp`` is
+    fastest pinned to the host's **physical** core count: more vCPUs than
+    physical cores oversubscribe the emulator (HT siblings share execution
+    units and cross-thread MTTCG sync becomes pure overhead — ``-smp 8``
+    regressed vs ``-smp 4`` on a 4-core host). A logical-CPU count
+    (``os.process_cpu_count``) would pick ``-smp 8`` on a 4c/8t box and hit
+    exactly that regression; counting physical cores avoids it.
+
+    Physical cores are counted from the distinct ``(physical id, core id)``
+    pairs in ``/proc/cpuinfo`` and then capped by the CPUs this process may
+    actually run on (``sched_getaffinity`` — so a cgroup/taskset-limited CI
+    container is respected). Either probe failing falls back to the logical
+    CPU count; the result is always at least 1.
+
+    Returns:
+        The host physical core count (>= 1).
+    """
+    logical = _affinity_cpu_count()
+    physical = _cpuinfo_physical_cores()
+    if physical is None:
+        return max(1, logical)
+    return max(1, min(physical, logical))
+
+
+def _affinity_cpu_count() -> int:
+    """
+    Return the number of CPUs this process may run on (>= 1).
+
+    Prefers ``os.sched_getaffinity`` (respects cgroup/taskset limits on a CI
+    container), falling back to ``os.cpu_count`` where the affinity call is
+    unavailable.
+    """
+    sched_getaffinity = getattr(os, "sched_getaffinity", None)
+    if sched_getaffinity is not None:
+        return max(1, len(sched_getaffinity(0)))
+    return max(1, os.cpu_count() or 1)
+
+
+def _cpuinfo_physical_cores() -> int | None:
+    """
+    Count distinct ``(physical id, core id)`` pairs in ``/proc/cpuinfo``.
+
+    Returns:
+        The physical core count, or ``None`` if ``/proc/cpuinfo`` is absent
+        or carries no topology fields (a non-Linux host or an exotic arch) —
+        the caller then falls back to the logical CPU count.
+    """
+    try:
+        text = Path("/proc/cpuinfo").read_text()
+    except OSError:
+        return None
+    cores: set[tuple[str, str]] = set()
+    phys = core = None
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if not sep:
+            # Blank line: end of one processor's block — record and reset.
+            if phys is not None and core is not None:
+                cores.add((phys, core))
+            phys = core = None
+            continue
+        key = key.strip()
+        if key == "physical id":
+            phys = value.strip()
+        elif key == "core id":
+            core = value.strip()
+    if phys is not None and core is not None:
+        cores.add((phys, core))
+    return len(cores) or None
+
+
 def resolve_smp(configured: int | Literal["auto"]) -> int:
     """
     Resolve a configured ``vm.smp`` into a concrete positive vCPU count.
 
-    ``"auto"`` (the schema default) sizes ``-smp`` to the host's *usable*
-    CPU count via :func:`os.process_cpu_count`, which honours CPU-affinity /
-    cgroup-cpuset limits — so it is correct inside a constrained CI
-    container, not just on bare metal. This bakes in the vm-rnd-log §B.5
-    finding that the real redroid boot scales with vCPUs up to the host core
-    count and then regresses past it (oversubscription → cross-thread TCG
-    sync overhead): matching ``-smp`` to the host is the measured optimum. An
-    explicit positive integer is honoured verbatim, so a user can still pin a
-    smaller count or override the auto-size.
+    ``"auto"`` (the schema default) pins ``-smp`` to the host's **physical**
+    core count (see :func:`host_physical_cores`) — the vm-rnd-log §B.5
+    measured optimum under TCG, where oversubscribing past physical cores
+    regresses. An explicit positive integer is honoured verbatim, so a user
+    can still pin a smaller count or override the auto-size.
 
     Args:
         configured: The ``vm.smp`` value from the config (an explicit vCPU
@@ -127,7 +195,7 @@ def resolve_smp(configured: int | Literal["auto"]) -> int:
         A concrete vCPU count >= 1.
     """
     if configured == "auto":
-        return os.process_cpu_count() or _SMP_AUTO_FALLBACK
+        return host_physical_cores()
     return configured
 
 

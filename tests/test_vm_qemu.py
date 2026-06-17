@@ -130,27 +130,64 @@ class TestBuildQemuArgv:
 
 
 # ---------------------------------------------------------------------------
-# resolve_smp
+# resolve_smp / host_physical_cores
 # ---------------------------------------------------------------------------
+
+
+_CPUINFO_4C_8T = "\n".join(
+    f"processor\t: {i}\nphysical id\t: 0\ncore id\t: {i % 4}\n" for i in range(8)
+)
 
 
 class TestResolveSmp:
     def test_explicit_count_is_honoured_verbatim(self) -> None:
         assert qemu.resolve_smp(6) == 6
+        assert qemu.resolve_smp(2) == 2
 
-    def test_auto_sizes_to_host_usable_cpu_count(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # ``auto`` tracks the host's usable CPUs (affinity/cgroup-aware) —
-        # the vm-rnd-log §B.5 measured optimum.
-        monkeypatch.setattr("beetroot.vm.qemu.os.process_cpu_count", lambda: 7)
-        assert qemu.resolve_smp("auto") == 7
+    def test_auto_uses_physical_cores(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("beetroot.vm.qemu.host_physical_cores", lambda: 4)
+        assert qemu.resolve_smp("auto") == 4
 
-    def test_auto_falls_back_to_one_when_cpu_count_unknown(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # ``os.process_cpu_count()`` can return None (undeterminable) — never
-        # emit ``-smp 0``; fall back to a single vCPU.
-        monkeypatch.setattr("beetroot.vm.qemu.os.process_cpu_count", lambda: None)
-        assert qemu.resolve_smp("auto") == qemu._SMP_AUTO_FALLBACK == 1
+
+class TestHostPhysicalCores:
+    def test_collapses_hyperthread_siblings(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 4 physical cores, 8 logical (HT): the cmdline must request 4, not 8
+        # (a logical count would pick 8 and hit the §B.5 oversubscription regression).
+        monkeypatch.setattr(Path, "read_text", lambda _self: _CPUINFO_4C_8T)
+        monkeypatch.setattr("beetroot.vm.qemu.os.sched_getaffinity", lambda _pid: set(range(8)))
+        assert qemu.host_physical_cores() == 4
+
+    def test_capped_by_affinity(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A cgroup/taskset-limited container (2 logical CPUs available) caps
+        # the result below the 4 physical cores the host reports.
+        monkeypatch.setattr(Path, "read_text", lambda _self: _CPUINFO_4C_8T)
+        monkeypatch.setattr("beetroot.vm.qemu.os.sched_getaffinity", lambda _pid: {0, 1})
+        assert qemu.host_physical_cores() == 2
+
+    def test_falls_back_to_logical_without_cpuinfo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(_self: Path) -> str:
+            raise OSError("no /proc/cpuinfo")
+
+        monkeypatch.setattr(Path, "read_text", _boom)
+        monkeypatch.setattr("beetroot.vm.qemu.os.sched_getaffinity", lambda _pid: {0, 1, 2})
+        assert qemu.host_physical_cores() == 3
+
+    def test_falls_back_when_topology_fields_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Some arches omit physical/core id — fall back to the logical count.
+        monkeypatch.setattr(Path, "read_text", lambda _self: "processor\t: 0\n\nprocessor\t: 1\n")
+        monkeypatch.setattr("beetroot.vm.qemu.os.sched_getaffinity", lambda _pid: {0, 1})
+        assert qemu.host_physical_cores() == 2
+
+    def test_affinity_falls_back_to_cpu_count(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No sched_getaffinity (non-Linux): use os.cpu_count.
+        monkeypatch.delattr("beetroot.vm.qemu.os.sched_getaffinity", raising=False)
+        monkeypatch.setattr("beetroot.vm.qemu.os.cpu_count", lambda: 6)
+        assert qemu._affinity_cpu_count() == 6
+
+    def test_affinity_cpu_count_none_clamps_to_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delattr("beetroot.vm.qemu.os.sched_getaffinity", raising=False)
+        monkeypatch.setattr("beetroot.vm.qemu.os.cpu_count", lambda: None)
+        assert qemu._affinity_cpu_count() == 1
 
 
 # ---------------------------------------------------------------------------

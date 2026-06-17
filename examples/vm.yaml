@@ -16,9 +16,10 @@ vm:
   kernel: ~/.cache/beetroot/vm/bzImage
   rootfs: ~/.cache/beetroot/vm/rootdisk.img
   accel: auto
-  # smp: auto (the default) sizes -smp to the host's usable CPU count, which
-  # the vm-rnd-log §B.5 sweep found is the optimum for the redroid boot (it
-  # scales with vCPUs up to the host core count, then regresses). Pin an
-  # explicit integer to leave host cores free or to override the auto-size.
+  # smp: auto (the default) pins -smp to the host's PHYSICAL core count (HT
+  # siblings collapsed, capped by CPU affinity). The vm-rnd-log §B.5 sweep
+  # found matching physical cores is the optimum for the redroid boot (more
+  # vCPUs than physical cores oversubscribe the emulator). Pin an integer to
+  # leave host cores free or override the auto-size.
   smp: auto
   memory_mib: 8192

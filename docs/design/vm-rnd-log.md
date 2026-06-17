@@ -351,12 +351,18 @@ redroid `--network none`. `boot_seconds` is measured inside the guest from the
   should approach native redroid speed.
 
   **Shipped as the default.** This finding is now the `vm.smp: auto` default
-  (`config.Vm.smp`): `qemu.resolve_smp("auto")` sizes `-smp` to the host's
-  usable CPU count via `os.process_cpu_count()` (affinity/cgroup-aware, so it
-  is correct inside a constrained CI container too). The validated `-smp 4`
-  runs above were on a 4-usable-CPU host, which `auto` reproduces exactly — so
-  the measured numbers still describe the shipped default on that class of
-  host, while non-4-core hosts now get the right `-smp` without hand-tuning.
+  (`config.Vm.smp`): `qemu.resolve_smp("auto")` pins `-smp` to the host's
+  **physical** core count via `qemu.host_physical_cores()` — distinct
+  `(physical id, core id)` pairs in `/proc/cpuinfo`, capped by
+  `os.sched_getaffinity` (affinity/cgroup-aware, so it is correct inside a
+  constrained CI container too). Counting *physical* cores rather than logical
+  CPUs is what makes this match the conclusion above: on a hyperthreaded host
+  a logical count (`os.process_cpu_count()`) would pick `-smp 8` on a 4c/8t
+  box and hit the very oversubscription regression §B.5 measured. The
+  validated `-smp 4` runs above were on a 4-physical-core host, which `auto`
+  reproduces exactly — so the measured numbers still describe the shipped
+  default on that class of host, while other hosts now get the right `-smp`
+  without hand-tuning.
 
 ## B.6 Artifacts (scratch — never committed)
 
