@@ -4,6 +4,23 @@
 
 ### Features
 
+- **Reusable CI workflow — boot a Beetroot instance in *your* repo's CI.**
+  A new `on: workflow_call` workflow at
+  `.github/workflows/beetroot-ci.yml` lets any other repository raise a rooted
+  Android instance and run its own tests against it with a single `uses:`
+  reference (e.g. a Frida-script author whose CI exercises a hook against a
+  real Android-14 phone). It checks out the caller's repo, builds the Beetroot
+  image on the caller's runner, boots an instance, and runs a caller-supplied
+  `test-command` with the device reachable at `$ADB_SERIAL` / `$FRIDA_HOST`.
+  Inputs cover `binder` (`host` fast path or `vm` for runners with no loadable
+  binder), `gapps`, `android-version`, `frida-version`, and more. Because the
+  image is built on the *caller's* runner — the patcher fetches GApps/Houdini
+  from their upstreams at the caller's CI runtime — Beetroot redistributes
+  nothing proprietary; this ships only Beetroot's own MIT-licensed
+  orchestration and is **not** a published container image (it does not appear
+  under GitHub Packages). New docs:
+  [Running in CI § Reusable workflow](https://xiddoc.github.io/Beetroot/guides/running-in-ci/#reusable-workflow-boot-an-instance-in-your-ci).
+
 - **`beetroot modes` — host capability survey.** A new host-level,
   instance-independent command that probes the host binder driver, KVM, and
   the QEMU / Docker / adb binaries and reports, for every run-mode

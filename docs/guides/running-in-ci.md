@@ -108,6 +108,32 @@ matrix.
     rationale, reproducible recipe, and backend design live in
     [Binderless hosts (QEMU/TCG)](../design/binderless-hosts-qemu-tcg.md).
 
+## Reusable workflow — boot an instance in *your* CI
+
+If you just want a rooted Android instance to run your own tests against — say
+you publish a Frida script and want CI to exercise it against a real
+Android-14 phone — you don't have to hand-assemble the steps above. Beetroot
+ships a **reusable GitHub Actions workflow** you call with one `uses:` line:
+
+```yaml
+# .github/workflows/test.yml in *your* repo
+jobs:
+  frida-hook:
+    uses: Xiddoc/Beetroot/.github/workflows/beetroot-ci.yml@v0.4
+    with:
+      frida-version: "16.4.10"
+      test-command: |
+        uv run --with 'frida==16.4.10' --with frida-tools \
+          frida -H "$FRIDA_HOST" -l hook.js -f com.example.app
+```
+
+It checks out your repo, builds the image **on your runner** (nothing
+proprietary is redistributed — see below), boots an instance, and runs your
+`test-command` against the live device (`$ADB_SERIAL` / `$FRIDA_HOST`).
+
+→ **Full guide, inputs, env vars, matrix usage, and gotchas:
+[CI integration — the reusable workflow](ci-reusable-workflow.md).**
+
 ## What about this project's own CI?
 
 Beetroot's **unit** suite never touches a real kernel: every Docker, ADB, and
