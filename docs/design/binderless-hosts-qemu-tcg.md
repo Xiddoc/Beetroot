@@ -182,9 +182,10 @@ qemu-system-x86_64 \
 
 `thread=multi` (MTTCG) is the single biggest TCG lever — one host
 thread per guest vCPU. `-cpu max` exposes SSE4/AVX that ART/bionic
-expect. `-smp` is sized to the host's usable CPU count (`vm.smp: auto`,
-the default — the vm-rnd-log §B.5 sweep found this is the optimum: the
-boot scales with vCPUs up to the host core count, then regresses).
+expect. `-smp` is pinned to the host's **physical** core count (`vm.smp:
+auto`, the default — the vm-rnd-log §B.5 sweep found this is the optimum:
+the boot scales with vCPUs up to the host core count, then regresses, so a
+logical-CPU count would oversubscribe on a hyperthreaded host).
 `mitigations=off` drops the guest's speculative-execution barriers —
 pure (emulated under TCG / real under KVM) overhead for a throwaway,
 single-tenant research sandbox. On a host **with** `/dev/kvm`, swap
@@ -237,11 +238,13 @@ This is the most reusable knowledge — the failure→fix chain:
   materialize** for boot. With KVM (rank 3) this should approach
   native redroid speed.
 * **Shipped boot-speed levers** (on top of MTTCG + KVM fast path): `-smp`
-  auto-sizes to the host's usable CPU count (`vm.smp: auto` default — the
-  vm-rnd-log §B.5 optimum), and the guest kernel cmdline carries `mitigations=off`,
-  dropping speculative-execution barriers that are pure overhead for an
-  ephemeral single-tenant sandbox (emulated work under TCG, real
-  serialization under KVM).
+  auto-sizes to the host's **physical** core count (`vm.smp: auto` default —
+  HT siblings collapsed, capped by CPU affinity; the vm-rnd-log §B.5 optimum,
+  since a logical-CPU count would oversubscribe a hyperthreaded host), and the
+  guest kernel cmdline carries `mitigations=off`, dropping
+  speculative-execution barriers that are pure overhead for an ephemeral
+  single-tenant sandbox (emulated work under TCG, real serialization under
+  KVM).
 
 ## 7. Proposed Beetroot integration (the backend + fallback design)
 

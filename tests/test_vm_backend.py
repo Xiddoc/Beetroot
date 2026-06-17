@@ -222,7 +222,7 @@ class TestLifecycle:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The default ``vm.smp: auto`` must resolve, through the full
-        # config → build_argv path, to the host's usable CPU count — not a
+        # config → build_argv path, to the host's physical core count — not a
         # hardcoded constant. (Behavior test: user input → final argv.)
         kernel = tmp_path / "k.img"
         rootfs = tmp_path / "r.img"
@@ -233,7 +233,7 @@ class TestLifecycle:
             vm={"kernel": str(kernel), "rootfs": str(rootfs), "accel": "tcg"},  # type: ignore[arg-type]
         )
         assert cfg.vm.smp == "auto"  # defaulted, not pinned
-        monkeypatch.setattr("beetroot.vm.qemu.os.process_cpu_count", lambda: 3)
+        monkeypatch.setattr("beetroot.vm.qemu.host_physical_cores", lambda: 3)
         backend = _make_backend(tmp_path, cfg=cfg, index=2)
         argv = backend.build_argv("tcg")
         assert argv[argv.index("-smp") + 1] == "3"

@@ -129,7 +129,7 @@ vm:
   memory_mib: 8192
 ```
 
-`smp: auto` sizes `-smp` to the host's usable CPU count — the measured optimum for the redroid boot (it scales with vCPUs up to the host core count, then regresses past it). `accel: auto` prefers KVM when `/dev/kvm` is available (near-native) and falls back to TCG (software emulation, ~5–20× slower) otherwise. A slow first boot under TCG is expected, not a hang.
+`smp: auto` pins `-smp` to the host's **physical** core count (HT siblings collapsed, capped by CPU affinity) — the measured optimum for the redroid boot (it scales with vCPUs up to the host core count, then regresses past it, so a logical-CPU count would oversubscribe on a hyperthreaded host). `accel: auto` prefers KVM when `/dev/kvm` is available (near-native) and falls back to TCG (software emulation, ~5–20× slower) otherwise. A slow first boot under TCG is expected, not a hang.
 
 ## Using an example
 

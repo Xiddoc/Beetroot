@@ -56,19 +56,22 @@
 - **Faster `binder: vm` boots: auto-sized `-smp` + `mitigations=off`.** Two
   boot-speed levers ship for the QEMU micro-VM backend, on top of the
   existing MTTCG + KVM fast path. (1) **`vm.smp` now defaults to `auto`**,
-  which sizes `-smp` to the host's *usable* CPU count
-  (`os.process_cpu_count()` — affinity/cgroup-aware, so it is correct inside
-  a constrained CI container, not just on bare metal). This bakes in the
+  which pins `-smp` to the host's *physical* core count (HyperThread siblings
+  collapsed via `/proc/cpuinfo`, capped by `sched_getaffinity` so it is
+  correct inside a constrained CI container too). This bakes in the
   vm-rnd-log §B.5 sweep finding that the real redroid boot scales with vCPUs
   up to the host core count and regresses past it (oversubscription →
-  cross-thread TCG sync overhead): matching `-smp` to the host is the
-  measured optimum, where the old hardcoded `-smp 4` left non-4-core hosts
-  mistuned. An explicit integer still pins the count. (2) The guest kernel
-  command line carries **`mitigations=off`**: the speculative-execution
-  barriers (retpolines, lfence) buy nothing for an ephemeral, single-tenant
-  research sandbox and are pure overhead — extra *emulated* work under TCG,
-  real serialization under KVM. Additive — no `api_version` bump; old
-  `vm.smp: <int>` YAMLs keep working unchanged.
+  cross-thread TCG sync overhead): matching `-smp` to the host's *physical*
+  cores is the measured optimum, where the old hardcoded `-smp 4` left
+  non-4-core hosts mistuned — and a *logical*-CPU count would oversubscribe a
+  hyperthreaded host (picking `-smp 8` on a 4c/8t box, which §B.5 measured
+  slower than `-smp 4`). An explicit integer still pins the count. (2) The
+  guest kernel command line carries **`mitigations=off`**: the
+  speculative-execution barriers (retpolines, lfence) buy nothing for an
+  ephemeral, single-tenant research sandbox and are pure overhead — extra
+  *emulated* work under TCG, real serialization under KVM (measured
+  boot-neutral under TCG, but harmless and kept). Additive — no `api_version`
+  bump; old `vm.smp: <int>` YAMLs keep working unchanged.
 
 - **End-to-end CI that boots a real Android (`e2e.yml`).** A new workflow
   boots Android on a hosted runner — the behavioural counterpart to the
