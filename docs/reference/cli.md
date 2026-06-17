@@ -468,13 +468,16 @@ beetroot down <name> && beetroot up <name>
 Build the redroid base image and Beetroot layer for a chosen GMS variant. One-time bootstrap; re-run when you want a fresh image.
 
 ```
-beetroot build [<gapps>] [--vm-kernel]
+beetroot build [<gapps>] [--vm-kernel] [--from-source]
 ```
 
 | Argument / Flag | Type | Description |
 |-----------------|------|-------------|
 | `gapps` | positional, optional | GMS variant to bake into the base image. One of `none`, `lite` (default), `full`, `mindthegapps`. |
 | `--vm-kernel` | flag | Build the `binder: vm` micro-VM guest kernel + rootfs instead of the redroid base image (for hosts with no kernel binder). Prints the resulting `vm.kernel` / `vm.rootfs` paths. |
+| `--from-source` | flag | With `--vm-kernel`: always compile the guest kernel from source (~7 min) instead of fetching the matching prebuilt `bzImage`. |
+
+With `--vm-kernel`, the guest kernel is **fetched prebuilt by default**: a ~12 MiB `bzImage` is downloaded from the repo's `vm-kernel` GitHub release, matched to the pinned kernel version *and* a fingerprint of your local `docker/vm/kernel.config`, and verified against its `.sha256`. If no asset matches (you edited the config, bumped the version, the release isn't published yet, or the network is blocked), it falls back to compiling from source. So a fresh host skips the ~7-minute compile, and the vendored config stays authoritative — you can never boot a stale prebuilt kernel. The rootfs is always assembled locally (it pulls redroid on your machine and is 2.4 GB — too large to host).
 
 The verb:
 

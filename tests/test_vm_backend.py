@@ -247,6 +247,30 @@ class TestLifecycle:
         assert argv[argv.index("-kernel") + 1] == str(kernel)
         assert argv[argv.index("-drive") + 1] == f"file={rootfs},format=raw,if=virtio"
 
+    def test_build_argv_expands_tilde_in_config_paths(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The shipped examples/vm.yaml points kernel/rootfs at
+        # ~/.cache/beetroot/vm/... — the tilde must be expanded or the
+        # documented config never boots ("does not exist on the host").
+        home = tmp_path / "home"
+        cache = home / ".cache" / "beetroot" / "vm"
+        cache.mkdir(parents=True)
+        (cache / "bzImage").write_bytes(b"k")
+        (cache / "rootdisk.img").write_bytes(b"r")
+        monkeypatch.setenv("HOME", str(home))
+        cfg = config.InstanceConfig(
+            binder="vm",
+            vm=config.Vm(
+                kernel="~/.cache/beetroot/vm/bzImage",
+                rootfs="~/.cache/beetroot/vm/rootdisk.img",
+            ),
+        )
+        backend = _make_backend(tmp_path, cfg=cfg)
+        argv = backend.build_argv("tcg")
+        assert argv[argv.index("-kernel") + 1] == str(cache / "bzImage")
+        assert argv[argv.index("-drive") + 1] == f"file={cache / 'rootdisk.img'},format=raw,if=virtio"
+
     def test_build_argv_missing_kernel_config_and_env_errors(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

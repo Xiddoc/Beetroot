@@ -10,6 +10,15 @@ instances/
 instances.json
 .cache/
 
+# Benchmark lane scratch: the host-vs-VM workflow (and local repros of it)
+# create throwaway `bench-vm` / `trim-vm` instance dirs at the repo root and a
+# `bench-out/` for samples/results JSON. All ephemeral (the instances are
+# `beetroot destroy`ed at the end); never track them.
+bench-vm/
+trim-vm/
+os-vm/
+bench-out/
+
 # Local-only sprint scaffolding (per-theme git worktrees + ad-hoc test files)
 worktrees/
 modules/

@@ -55,6 +55,10 @@ _QEMU_INSTALL = (
     "install QEMU (e.g. `apt-get install qemu-system-x86`), then `beetroot build --vm-kernel`"
 )
 _BUILD_HINT = "build artifacts with `beetroot build --vm-kernel`"
+# The adb backend boots nothing of its own — it always needs a separate rooted
+# device/emulator to drive. That's easy to miss, so it's surfaced in DETAIL in
+# both the installed and not-yet-installed states.
+_ADB_NEEDS_DEVICE = "needs an external rooted device/emulator to adopt"
 
 
 class ModeSupport(BaseModel):
@@ -189,13 +193,16 @@ def _adb_adopt(*, adb_present: bool) -> ModeSupport:
             mode=MODE_ADB,
             status="needs-setup",
             reason="the adb client was not found",
-            remedy="install platform-tools (e.g. `apt-get install android-tools-adb`)",
+            remedy=(
+                "install platform-tools (e.g. `apt-get install android-tools-adb`); "
+                f"{_ADB_NEEDS_DEVICE}"
+            ),
         )
     return ModeSupport(
         mode=MODE_ADB,
         status="supported",
         reason="drives an external rooted device over adb; needs no host kernel/binder/Docker",
-        remedy="point it at a reachable device: `beetroot adopt <serial|host:port>`",
+        remedy=f"{_ADB_NEEDS_DEVICE} — point it at one: `beetroot adopt <serial|host:port>`",
     )
 
 

@@ -49,6 +49,7 @@ class TestCheckHostBinder:
         assert result.status == "fail"
         assert "compiled out" in (result.reason or "")
         assert "use adb" in (result.reason or "")
+        assert "beetroot modes" in (result.reason or "")
 
     def test_vm_mode_is_skip_without_probing_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # vm mode must not depend on host binder — binder_status must not even be called.

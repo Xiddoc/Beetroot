@@ -1577,7 +1577,10 @@ def _check_host_binder(mode: hostcheck.BinderMode = "auto") -> CheckResult:
         return CheckResult(status="pass")
     if status.state == "unknown" and mode != "host":
         return CheckResult(status="skip", reason=status.reason)
-    return CheckResult(status="fail", reason=f"{status.reason}. {status.remedy}")
+    return CheckResult(
+        status="fail",
+        reason=f"{status.reason}. {status.remedy} Run `beetroot modes` for this host's options.",
+    )
 
 
 def _check_adb_connect(target: str) -> CheckResult:

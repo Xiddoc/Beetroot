@@ -57,6 +57,11 @@ jobs:
         # The compile is informational and only meaningful when the kernel
         # config/version changed; the build caches its artifacts, so a no-op
         # rebuild is cheap. ``measure`` records the wall-time only on success.
+        # CCACHE_DISABLE keeps this a true COLD compile: build_vm_kernel uses
+        # ccache when present, but the benchmark lane must measure from scratch
+        # (a warm cache would report a near-zero, meaningless compile time).
+        env:
+          CCACHE_DISABLE: "1"
         run: |
           uv run python scripts/bench.py measure \
             --backend build --metric compile_seconds --samples-file "$SAMPLES" \

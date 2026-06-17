@@ -40,8 +40,9 @@ class TestDetectAccel:
 
     def test_explicit_kvm_raises_when_no_dev_kvm(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("beetroot.vm.qemu.os.access", lambda *_a, **_k: False)
-        with pytest.raises(qemu.QemuLaunchError, match="/dev/kvm is absent"):
+        with pytest.raises(qemu.QemuLaunchError, match="/dev/kvm is absent") as exc:
             qemu.detect_accel("kvm")
+        assert "beetroot modes" in str(exc.value)
 
     def test_dev_kvm_usable_probes_rw(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}

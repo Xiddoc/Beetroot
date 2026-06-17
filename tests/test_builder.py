@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from beetroot import builder, config
+from beetroot import builder, config, kernel_download
 from beetroot.builder import (
     GAPPS_FLAGS,
     BootstrapError,
@@ -521,7 +521,7 @@ class TestBuildVmKernel:
         (ctx / "docker" / "vm").mkdir(parents=True)
         out = tmp_path / "out"
         artifacts = builder.build_vm_kernel(
-            out_dir=out, build_context=ctx, runner=runner, rootfs_build=rec
+            out_dir=out, build_context=ctx, runner=runner, rootfs_build=rec, from_source=True
         )
         # The kernel compile is the only remaining shell step; the rootfs is
         # assembled in pure Python via the injected build_rootfs.
@@ -536,6 +536,40 @@ class TestBuildVmKernel:
         assert artifacts.rootfs == out / "rootdisk.img"
         assert out.is_dir()
 
+    def test_uses_ccache_when_on_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = FakeRunner()
+        ctx = tmp_path / "repo"
+        (ctx / "docker" / "vm").mkdir(parents=True)
+        monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/ccache")
+        builder.build_vm_kernel(
+            out_dir=tmp_path / "out",
+            build_context=ctx,
+            runner=runner,
+            rootfs_build=_RootfsBuildRecorder(),
+            from_source=True,
+        )
+        assert 'make CC="ccache gcc" -j' in runner.calls[0].cmd[2]
+
+    def test_no_ccache_when_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = FakeRunner()
+        ctx = tmp_path / "repo"
+        (ctx / "docker" / "vm").mkdir(parents=True)
+        monkeypatch.setattr(shutil, "which", lambda _name: None)
+        builder.build_vm_kernel(
+            out_dir=tmp_path / "out",
+            build_context=ctx,
+            runner=runner,
+            rootfs_build=_RootfsBuildRecorder(),
+            from_source=True,
+        )
+        cmd = runner.calls[0].cmd[2]
+        assert 'CC="ccache gcc"' not in cmd
+        assert 'make -j"$(nproc)" bzImage' in cmd
+
     def test_kernel_step_failure_propagates(self, tmp_path: Path) -> None:
         runner = FakeRunner(fail_on="sh")
         rec = _RootfsBuildRecorder()
@@ -543,7 +577,11 @@ class TestBuildVmKernel:
         (ctx / "docker" / "vm").mkdir(parents=True)
         with pytest.raises(BootstrapError):
             builder.build_vm_kernel(
-                out_dir=tmp_path / "out", build_context=ctx, runner=runner, rootfs_build=rec
+                out_dir=tmp_path / "out",
+                build_context=ctx,
+                runner=runner,
+                rootfs_build=rec,
+                from_source=True,
             )
         assert rec.calls == []  # rootfs step never reached
 
@@ -556,7 +594,7 @@ class TestBuildVmKernel:
         cache = tmp_path / "cache" / "vm"
         monkeypatch.setattr("beetroot.builder.paths.user_cache_dir", lambda _sub: cache)
         artifacts = builder.build_vm_kernel(
-            build_context=ctx, runner=runner, rootfs_build=_RootfsBuildRecorder()
+            build_context=ctx, runner=runner, rootfs_build=_RootfsBuildRecorder(), from_source=True
         )
         assert artifacts.kernel == cache / "bzImage"
 
@@ -566,8 +604,54 @@ class TestBuildVmKernel:
         ctx = tmp_path / "repo"
         (ctx / "docker" / "vm").mkdir(parents=True)
         monkeypatch.setattr(builder, "_default_build_context", lambda: ctx)
-        builder.build_vm_kernel(out_dir=tmp_path / "out", runner=runner, rootfs_build=rec)
+        builder.build_vm_kernel(
+            out_dir=tmp_path / "out", runner=runner, rootfs_build=rec, from_source=True
+        )
         assert rec.calls[0][1] == ctx / "docker" / "vm"
+
+    def test_fetches_prebuilt_and_skips_compile(self, tmp_path: Path) -> None:
+        runner = FakeRunner()
+        rec = _RootfsBuildRecorder()
+        ctx = tmp_path / "repo"
+        (ctx / "docker" / "vm").mkdir(parents=True)
+        (ctx / "docker" / "vm" / "kernel.config").write_text("CONFIG_FOO=y\n")
+        out = tmp_path / "out"
+        fetch_calls: list[tuple[str, str, Path]] = []
+
+        def fake_fetch(*, version: str, fingerprint: str, out_path: Path) -> Path:
+            fetch_calls.append((version, fingerprint, out_path))
+            out_path.write_bytes(b"prebuilt")
+            return out_path
+
+        artifacts = builder.build_vm_kernel(
+            out_dir=out, build_context=ctx, runner=runner, rootfs_build=rec, kernel_fetch=fake_fetch
+        )
+        # Prebuilt fetched -> no source compile (no shell step), rootfs still built.
+        assert runner.calls == []
+        assert fetch_calls == [(builder.KERNEL_VERSION, fetch_calls[0][1], out / "bzImage")]
+        assert rec.calls == [(out / "rootdisk.img", ctx / "docker" / "vm")]
+        assert artifacts.kernel == out / "bzImage"
+
+    def test_falls_back_to_compile_when_no_prebuilt(self, tmp_path: Path) -> None:
+        runner = FakeRunner()
+        rec = _RootfsBuildRecorder()
+        ctx = tmp_path / "repo"
+        (ctx / "docker" / "vm").mkdir(parents=True)
+        (ctx / "docker" / "vm" / "kernel.config").write_text("CONFIG_FOO=y\n")
+
+        def failing_fetch(*, version: str, fingerprint: str, out_path: Path) -> Path:
+            raise kernel_download.KernelFetchError("HTTP 404")
+
+        builder.build_vm_kernel(
+            out_dir=tmp_path / "out",
+            build_context=ctx,
+            runner=runner,
+            rootfs_build=rec,
+            kernel_fetch=failing_fetch,
+        )
+        # Fetch failed -> compiled from source (the shell step ran).
+        assert len(runner.calls) == 1
+        assert "bzImage" in runner.calls[0].cmd[2]
 
 
 # ---------------------------------------------------------------------------
@@ -738,6 +822,7 @@ class TestRootfsAssembly:
         cfg = _make_rootfs_config(tmp_path)
         runner = FakeRootfsRunner(applets=("busybox", "sh", "mount"))
         _run_assembly(tmp_path, runner, cfg)
+
         bin_dir = tmp_path / "work" / "root" / "bin"
         assert (bin_dir / "busybox").is_file()
         assert not (bin_dir / "busybox").is_symlink()

@@ -214,17 +214,29 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
 
-      - name: Install QEMU, adb, the kernel toolchain, and rootfs host deps
+      - name: Install QEMU, adb, the kernel toolchain, ccache, and rootfs host deps
         run: |
           sudo apt-get install -y --no-install-recommends \
-            qemu-system-x86 android-tools-adb \
+            qemu-system-x86 android-tools-adb ccache \
             build-essential flex bison libelf-dev libssl-dev bc cpio \
             busybox-static e2fsprogs xz-utils iptables socat
 
       - name: Install Beetroot
         run: uv sync --frozen
 
-      - name: "Build the binder-enabled guest kernel (cache via #49 later)"
+      # ccache makes the guest-kernel re-compile near-free on repeat runs
+      # (cold ~7-9 min -> warm ~1 min). Keyed on the kernel version + config
+      # fragment, so a kernel/config bump correctly misses and recompiles.
+      - name: Cache ccache (guest-kernel compile)
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
+        with:
+          path: ~/.cache/ccache
+          key: ${{ runner.os }}-ccache-vmkernel-${{ env.KERNEL_VERSION }}-${{ hashFiles('docker/vm/kernel.config') }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-vmkernel-${{ env.KERNEL_VERSION }}-
+            ${{ runner.os }}-ccache-vmkernel-
+
+      - name: Build the binder-enabled guest kernel (ccache-accelerated)
         run: |
           set -euxo pipefail
           mkdir -p "$VM_OUT"
@@ -235,9 +247,10 @@ jobs:
           make defconfig
           ./scripts/kconfig/merge_config.sh -m .config "$GITHUB_WORKSPACE/docker/vm/kernel.config"
           make olddefconfig
-          make -j"$(nproc)" bzImage
+          make CC="ccache gcc" -j"$(nproc)" bzImage
           cp arch/x86/boot/bzImage "$VM_OUT/bzImage"
           grep -q 'CONFIG_ANDROID_BINDER_IPC=y' .config
+          ccache --show-stats | grep -iE 'hits|misses' || true
 
       - name: Assemble the guest rootfs (busybox + Docker static + redroid)
         run: |
