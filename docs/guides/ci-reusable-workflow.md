@@ -17,10 +17,18 @@ jobs:
   frida-hook:
     uses: Xiddoc/Beetroot/.github/workflows/beetroot-ci.yml@v0.4
     with:
+      frida-version: "16.4.10"
       test-command: |
-        uv run --with frida-tools \
+        uv run --with 'frida==16.4.10' --with frida-tools \
           frida -H "$FRIDA_HOST" -l hook.js -f com.example.app
 ```
+
+!!! warning "Match the host Frida core to `frida-version`"
+    The device-side `frida-server` (set by the `frida-version` input) and the
+    host-side `frida` core that `frida-tools` uses must agree on **major +
+    minor**, or the connection is refused. Pin the `frida` package to the same
+    version as `frida-version` (e.g. `--with 'frida==16.4.10'`), as above. See
+    the [Frida guide](frida.md) for the matching rule.
 
 That single `uses:` job checks out your repo, builds the Beetroot image on the
 runner, boots an instance, and runs your `test-command` against the live
@@ -52,6 +60,17 @@ selected by the `binder` input:
 Use `host` on standard GitHub-hosted runners. Reach for `vm` only when your
 runner can't load binder (a locked-down/self-hosted environment).
 
+!!! warning "What the runner must provide"
+    Both paths need a **running Docker daemon** and **passwordless `sudo
+    apt-get`** (the workflow installs `adb`, and on the `vm` path QEMU + a kernel
+    toolchain). The `vm` path additionally needs **outbound network** to
+    `cdn.kernel.org` (kernel source) and `download.docker.com` (the static
+    Docker bundle baked into the guest). GitHub-hosted `ubuntu-latest` provides
+    all of this; a custom `runs-on` may not — the `vm` path fails fast with a
+    clear message if no Docker daemon is reachable. The whole job is capped at
+    **120 minutes**; the boot wait alone allows ~16 minutes, so size your
+    `test-command` with the (slow, kernel-compiling) `vm` path in mind.
+
 ## Inputs
 
 | Input | Default | Description |
@@ -60,11 +79,11 @@ runner can't load binder (a locked-down/self-hosted environment).
 | `binder` | `host` | `host` (native, fast) or `vm` (QEMU/TCG, no binder needed). |
 | `gapps` | `none` | GMS variant baked into the image: `none`, `lite`, `full`, `mindthegapps`. Ignored when `binder: vm`. |
 | `android-version` | `14` | Android major version: `11`, `12`, `13`, `14`. Ignored when `binder: vm`. |
-| `frida-version` | `""` | Pin a `frida-server` version (e.g. `16.4.10`); empty boots without Frida. Ignored when `binder: vm` (Frida over the vm backend is [not yet supported](adding-a-backend.md)). |
+| `frida-version` | `""` | Pin a `frida-server` version (e.g. `16.4.10`); empty boots without Frida. Ignored when `binder: vm` (Frida over the vm backend is [not yet supported](../design/binderless-hosts-qemu-tcg.md)). |
 | `instance-name` | `ci` | Name of the instance to create. |
-| `working-directory` | `.` | Directory `test-command` runs in (your checked-out repo). |
+| `working-directory` | `.` | Directory the `test-command` step runs in (your checked-out repo). Scopes **only** that step — the image build always runs in the Beetroot checkout. |
 | `runs-on` | `ubuntu-latest` | Runner label for the job. |
-| `beetroot-ref` | reuses the `uses:` ref | Git ref of `Xiddoc/Beetroot` to build from. Empty (default) reuses the ref you pinned in `uses:`, so the CLI matches the workflow version. |
+| `beetroot-ref` | `master` | Git ref of `Xiddoc/Beetroot` to check out for the CLI + build context. Defaults to `master`. **If you pin an older ref in `uses:`, set this to the same ref** (see [Pinning the ref](#pinning-the-ref-do-this)). |
 
 ## What the `test-command` gets
 
@@ -104,13 +123,23 @@ jobs:
         set -euo pipefail
         # Push the target APK and install it.
         adb -s "$ADB_SERIAL" install -r ./fixtures/target.apk
-        # Run the hook; -l loads the script, -f spawns the app.
-        timeout 60 uv run --with frida-tools \
+        # Run the hook; -l loads the script, -f spawns the app. The frida core
+        # is pinned to the same version as frida-version (the matching rule).
+        timeout 60 uv run --with 'frida==16.4.10' --with frida-tools \
           frida -H "$FRIDA_HOST" -l hook.js -f com.example.app \
           --runtime=v8 -o frida.log || true
         # Assert the hook fired.
         grep -q '[+] SSL pinning bypassed' frida.log
 ```
+
+!!! tip "Persisting test output"
+    Teardown destroys the instance and only dumps the last ~200 log lines. The
+    reusable workflow can't add steps after your `test-command`, so to keep
+    artifacts (logs, screenshots, reports) handle them **from inside**
+    `test-command` — write a summary to `$GITHUB_STEP_SUMMARY`, or fail loudly
+    with the evidence printed inline. If you need full `actions/upload-artifact`,
+    call this workflow's pieces from a hand-rolled job instead (see
+    [Running in CI](running-in-ci.md)).
 
 ## Testing across a matrix
 
@@ -139,9 +168,22 @@ uses: Xiddoc/Beetroot/.github/workflows/beetroot-ci.yml@v0.4      # tag — good
 uses: Xiddoc/Beetroot/.github/workflows/beetroot-ci.yml@<40-char-sha>  # SHA — best
 ```
 
-By default the workflow checks out Beetroot at *the same ref you pinned*, so
-the CLI and image build match the workflow version. Override with the
-`beetroot-ref` input only if you deliberately want them to differ.
+The workflow file (the steps) is loaded at the ref you pin in `uses:`, but the
+Beetroot **source** it checks out for the CLI + build context defaults to
+`master`. A reusable workflow can't reliably read its own `uses:` ref from
+inside, so for an exact version match set `beetroot-ref` to the same ref:
+
+```yaml
+jobs:
+  test:
+    uses: Xiddoc/Beetroot/.github/workflows/beetroot-ci.yml@v0.4
+    with:
+      beetroot-ref: v0.4    # match the source to the workflow version
+      test-command: ...
+```
+
+If you track a moving branch (`@master`), the default already matches and you
+can omit `beetroot-ref`.
 
 ## How it works (internals)
 

@@ -75,8 +75,9 @@ on:
       beetroot-ref:
         description: >-
           Git ref of Xiddoc/Beetroot to check out for the CLI + image build.
-          Empty (default) reuses the ref this reusable workflow was called at,
-          so the CLI matches the workflow version you pinned in `uses:`.
+          Empty (default) uses the master branch for external callers. If you
+          pin an older ref in `uses:`, set this to the same ref so the CLI
+          matches the workflow version.
         type: string
         default: ""
     outputs:
@@ -104,17 +105,26 @@ jobs:
         id: ref
         env:
           REQUESTED_REF: ${{ inputs.beetroot-ref }}
-          WORKFLOW_REF: ${{ github.workflow_ref }}
+          CALLER_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # When no explicit ref is requested, reuse the ref the caller pinned
-          # this reusable workflow at. github.workflow_ref looks like
-          # "Xiddoc/Beetroot/.github/workflows/beetroot-ci.yml@refs/heads/master"
-          # — the ref is everything after the last '@'.
+          # Which ref of Xiddoc/Beetroot to check out for the CLI + build context.
+          # A reusable workflow can't reliably read its own `uses:` ref from
+          # inside (github.workflow_ref is the *caller's* top-level workflow, and
+          # job_workflow_ref isn't recognised by the pinned actionlint), so:
+          #   - explicit beetroot-ref wins;
+          #   - else, when invoked from inside this very repo (the in-repo smoke
+          #     test's local `./` call), use the checked-out commit so the test
+          #     exercises the PR's own code;
+          #   - else (external caller) default to the master branch. External
+          #     callers pinning an older `uses:` ref should set beetroot-ref to
+          #     match it (see docs/guides/ci-reusable-workflow.md).
           if [ -n "$REQUESTED_REF" ]; then
             ref="$REQUESTED_REF"
+          elif [ "$CALLER_REPO" = "Xiddoc/Beetroot" ]; then
+            ref="$GITHUB_SHA"
           else
-            ref="${WORKFLOW_REF##*@}"
+            ref="master"
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "Using Beetroot ref: $ref"
@@ -165,12 +175,29 @@ jobs:
         working-directory: .beetroot
         env:
           GAPPS: ${{ inputs.gapps }}
-        run: uv run beetroot build "$GAPPS"
+          ANDROID_VERSION: ${{ inputs.android-version }}
+        # Call build_image() directly rather than `beetroot build`: the CLI verb
+        # hardcodes Android 14, so it would mismatch a non-14 android-version
+        # input (the config pins the chosen version, the image would be 14, and
+        # `up` would fail on a missing tag). build_image() takes android_version.
+        run: |
+          uv run python - <<'PY'
+          import os
+
+          from beetroot.builder import build_image
+
+          tag = build_image(
+              gapps=os.environ["GAPPS"],
+              android_version=int(os.environ["ANDROID_VERSION"]),
+          )
+          print(f"built {tag}")
+          PY
 
       # ---- binder: vm ---------------------------------------------------------
       - name: Install QEMU + the guest-kernel/rootfs toolchain
         if: inputs.binder == 'vm'
         run: |
+          sudo apt-get update || true
           sudo apt-get install -y --no-install-recommends \
             qemu-system-x86 \
             build-essential flex bison libelf-dev libssl-dev bc cpio \
@@ -184,6 +211,14 @@ jobs:
           VM_OUT: ${{ github.workspace }}/.beetroot-vm
         run: |
           set -euxo pipefail
+          # build_rootfs bakes the redroid image into the guest /var/lib/docker,
+          # which needs a live Docker daemon (docker pull/save + a staging
+          # dockerd). Fail early with a clear message rather than deep in Python.
+          if ! docker info >/dev/null 2>&1; then
+            echo "::error::binder: vm needs a running Docker daemon (the rootfs" \
+              "bakes in the redroid image). ubuntu-latest has one; a custom runs-on may not."
+            exit 1
+          fi
           mkdir -p "$VM_OUT"
           work="$RUNNER_TEMP/linux"
           mkdir -p "$work"

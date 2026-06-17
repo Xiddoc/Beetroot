@@ -121,8 +121,9 @@ jobs:
   frida-hook:
     uses: Xiddoc/Beetroot/.github/workflows/beetroot-ci.yml@v0.4
     with:
+      frida-version: "16.4.10"
       test-command: |
-        uv run --with frida-tools \
+        uv run --with 'frida==16.4.10' --with frida-tools \
           frida -H "$FRIDA_HOST" -l hook.js -f com.example.app
 ```
 
