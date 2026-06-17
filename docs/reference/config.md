@@ -286,7 +286,7 @@ QEMU micro-VM tunables. Consulted **only** when `binder: vm`; ignored otherwise.
 | `vm.kernel` | string \| null | `null` | Host path to the guest `bzImage`. `null` defers to `BEETROOT_VM_KERNEL`. |
 | `vm.rootfs` | string \| null | `null` | Host path to the guest ext4 root image. `null` defers to `BEETROOT_VM_ROOTFS`. |
 | `vm.accel` | string | `auto` | QEMU accelerator: `auto` (probe `/dev/kvm`, prefer KVM, else TCG), `kvm` (force; errors if `/dev/kvm` is absent), or `tcg` (force software emulation). |
-| `vm.smp` | int | `4` | Guest vCPUs (`-smp`). Must be >= 1. |
+| `vm.smp` | int \| `auto` | `auto` | Guest vCPUs (`-smp`). `auto` sizes `-smp` to the host's usable CPU count (the vm-rnd-log §B.5 measured optimum — the redroid boot scales with vCPUs up to the host core count, then regresses); an explicit integer (>= 1) pins it. |
 | `vm.memory_mib` | int | `8192` | Guest RAM in MiB (`-m`). Must be >= 256. |
 
 After launching QEMU, `beetroot up` polls `adb connect` against the guest until the forwarded ADB endpoint accepts a connection — the guest restarts `adbd` to enable TCP a few seconds *after* `sys.boot_completed=1`, so a single immediate connect would race that late bind. The poll deadline is the `BEETROOT_VM_ADB_CONNECT_TIMEOUT` environment variable (seconds, default `60`); raise it for slow TCG first boots. If the guest never exposes ADB within the deadline, `up` fails with an actionable error (try `beetroot logs <name>` to watch the boot, or pin `vm.accel: kvm`) rather than a traceback.
@@ -297,7 +297,7 @@ vm:
   kernel: ~/.cache/beetroot/vm/bzImage
   rootfs: ~/.cache/beetroot/vm/rootdisk.img
   accel: auto
-  smp: 4
+  smp: auto
   memory_mib: 8192
 ```
 

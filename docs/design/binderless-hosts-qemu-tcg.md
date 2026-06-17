@@ -77,7 +77,7 @@ and — critically — routes a **real cross-process transaction**:
 
 ```
 Host: Firecracker VM — nomodule, no /dev/kvm, no host binder
- └─ QEMU 8.2 TCG (thread=multi, -cpu max, -smp 4, -m 8192)
+ └─ QEMU 8.2 TCG (thread=multi, -cpu max, -smp <host cores>, -m 8192)
      └─ Linux 6.12.9 (custom; binder + binderfs + BPF + cgroup/overlay/virtio built-in)
          └─ containerd + dockerd (static 27.5.1)
              └─ docker run --privileged redroid/redroid:11.0.0-latest
@@ -173,17 +173,22 @@ Ordered, with the hard-won correctness notes inline:
 
 ```sh
 qemu-system-x86_64 \
-  -M q35 -accel tcg,thread=multi,tb-size=1024 -cpu max -smp 4 -m 8192 \
+  -M q35 -accel tcg,thread=multi,tb-size=1024 -cpu max -smp "$(nproc)" -m 8192 \
   -nographic -display none -no-reboot \
   -kernel bzImage \
   -drive file=rootdisk.img,format=raw,if=virtio \
-  -append "console=ttyS0 root=/dev/vda rw init=/init panic=1"
+  -append "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off"
 ```
 
 `thread=multi` (MTTCG) is the single biggest TCG lever — one host
 thread per guest vCPU. `-cpu max` exposes SSE4/AVX that ART/bionic
-expect. On a host **with** `/dev/kvm`, swap `-accel tcg,thread=multi`
-for `-accel kvm` for near-native speed (rank 3).
+expect. `-smp` is sized to the host's usable CPU count (`vm.smp: auto`,
+the default — the vm-rnd-log §B.5 sweep found this is the optimum: the
+boot scales with vCPUs up to the host core count, then regresses).
+`mitigations=off` drops the guest's speculative-execution barriers —
+pure (emulated under TCG / real under KVM) overhead for a throwaway,
+single-tenant research sandbox. On a host **with** `/dev/kvm`, swap
+`-accel tcg,thread=multi` for `-accel kvm` for near-native speed (rank 3).
 
 ## 5. Debugging log (every blocker was plumbing, not physics)
 
@@ -231,6 +236,12 @@ This is the most reusable knowledge — the failure→fix chain:
 * The watchdog/ANR boot-loop risk that was feared **did not
   materialize** for boot. With KVM (rank 3) this should approach
   native redroid speed.
+* **Shipped boot-speed levers** (on top of MTTCG + KVM fast path): `-smp`
+  auto-sizes to the host's usable CPU count (`vm.smp: auto` default — the
+  vm-rnd-log §B.5 optimum), and the guest kernel cmdline carries `mitigations=off`,
+  dropping speculative-execution barriers that are pure overhead for an
+  ephemeral single-tenant sandbox (emulated work under TCG, real
+  serialization under KVM).
 
 ## 7. Proposed Beetroot integration (the backend + fallback design)
 

@@ -218,6 +218,26 @@ class TestLifecycle:
         # index 2 → adb port 5575.
         assert "hostfwd=tcp:127.0.0.1:5575-:5555" in argv[argv.index("-netdev") + 1]
 
+    def test_build_argv_auto_smp_tracks_host_cpu_count(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The default ``vm.smp: auto`` must resolve, through the full
+        # config → build_argv path, to the host's usable CPU count — not a
+        # hardcoded constant. (Behavior test: user input → final argv.)
+        kernel = tmp_path / "k.img"
+        rootfs = tmp_path / "r.img"
+        kernel.write_bytes(b"k")
+        rootfs.write_bytes(b"r")
+        cfg = config.InstanceConfig(
+            binder="vm",
+            vm={"kernel": str(kernel), "rootfs": str(rootfs), "accel": "tcg"},  # type: ignore[arg-type]
+        )
+        assert cfg.vm.smp == "auto"  # defaulted, not pinned
+        monkeypatch.setattr("beetroot.vm.qemu.os.process_cpu_count", lambda: 3)
+        backend = _make_backend(tmp_path, cfg=cfg, index=2)
+        argv = backend.build_argv("tcg")
+        assert argv[argv.index("-smp") + 1] == "3"
+
     def test_build_argv_falls_back_to_settings(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

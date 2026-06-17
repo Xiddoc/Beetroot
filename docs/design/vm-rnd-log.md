@@ -350,6 +350,14 @@ redroid `--network none`. `boot_seconds` is measured inside the guest from the
   `thread=multi` remains the right default.** On a KVM host (rank 3) this boot
   should approach native redroid speed.
 
+  **Shipped as the default.** This finding is now the `vm.smp: auto` default
+  (`config.Vm.smp`): `qemu.resolve_smp("auto")` sizes `-smp` to the host's
+  usable CPU count via `os.process_cpu_count()` (affinity/cgroup-aware, so it
+  is correct inside a constrained CI container too). The validated `-smp 4`
+  runs above were on a 4-usable-CPU host, which `auto` reproduces exactly — so
+  the measured numbers still describe the shipped default on that class of
+  host, while non-4-core hosts now get the right `-smp` without hand-tuning.
+
 ## B.6 Artifacts (scratch — never committed)
 
 * Full rootfs tree: `/home/user/vm-rnd/fullroot/` (busybox + static docker +

@@ -390,15 +390,39 @@ class Vm(BaseModel):
             and prefers KVM, falling back to TCG; ``"kvm"`` / ``"tcg"``
             force the choice. Explicit ``"kvm"`` on a host without
             ``/dev/kvm`` is a hard error (no silent slow fallback).
-        smp: Number of guest vCPUs (``-smp``). Must be >= 1. Default 4.
+        smp: Number of guest vCPUs (``-smp``). Either an explicit integer
+            (must be >= 1) or ``"auto"`` (the default), which sizes ``-smp``
+            to the host's *usable* CPU count at launch. The vm-rnd-log §B.5
+            sweep showed the real redroid boot scales with vCPUs up to the
+            host core count and regresses past it (oversubscription →
+            cross-thread TCG sync overhead), so ``"auto"`` is the measured
+            optimum on most hosts; pin an explicit value to leave host cores
+            free or to override the auto-size.
         memory_mib: Guest RAM in MiB (``-m``). Must be >= 256. Default 8192.
     """
 
     kernel: str | None = None
     rootfs: str | None = None
     accel: Literal["auto", "kvm", "tcg"] = "auto"
-    smp: int = Field(default=4, ge=_MIN_SMP)
+    smp: int | Literal["auto"] = "auto"
     memory_mib: int = Field(default=8192, ge=_MIN_MEMORY_MIB)
+
+    @field_validator("smp")
+    @classmethod
+    def _validate_smp(cls, value: int | Literal["auto"]) -> int | Literal["auto"]:
+        """
+        Accept ``"auto"`` or an explicit vCPU count >= ``_MIN_SMP``.
+
+        ``Field(ge=...)`` can't express "either a literal string or a bounded
+        int", so the lower bound on the explicit-integer case is enforced
+        here instead (mirroring the old ``Field(ge=_MIN_SMP)`` rejection of
+        ``smp: 0`` / negatives, while letting ``smp: auto`` through).
+        """
+        if value == "auto":
+            return value
+        if value < _MIN_SMP:
+            raise ValueError(f"vm.smp must be >= {_MIN_SMP} or 'auto', got {value!r}")
+        return value
 
 
 class InstanceConfig(BaseModel):

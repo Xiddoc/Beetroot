@@ -125,11 +125,11 @@ vm:
   kernel: ~/.cache/beetroot/vm/bzImage
   rootfs: ~/.cache/beetroot/vm/rootdisk.img
   accel: auto
-  smp: 4
+  smp: auto
   memory_mib: 8192
 ```
 
-`accel: auto` prefers KVM when `/dev/kvm` is available (near-native) and falls back to TCG (software emulation, ~5–20× slower) otherwise. A slow first boot under TCG is expected, not a hang.
+`smp: auto` sizes `-smp` to the host's usable CPU count — the measured optimum for the redroid boot (it scales with vCPUs up to the host core count, then regresses past it). `accel: auto` prefers KVM when `/dev/kvm` is available (near-native) and falls back to TCG (software emulation, ~5–20× slower) otherwise. A slow first boot under TCG is expected, not a hang.
 
 ## Using an example
 

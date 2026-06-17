@@ -887,8 +887,19 @@ class TestVmConfig:
         assert vm.kernel is None
         assert vm.rootfs is None
         assert vm.accel == "auto"
-        assert vm.smp == 4
+        assert vm.smp == "auto"
         assert vm.memory_mib == 8192
+
+    def test_smp_auto_is_accepted(self) -> None:
+        assert InstanceConfig(vm={"smp": "auto"}).vm.smp == "auto"  # type: ignore[arg-type]
+
+    def test_rejects_negative_smp(self) -> None:
+        with pytest.raises(ValidationError):
+            InstanceConfig(vm={"smp": -1})  # type: ignore[arg-type]
+
+    def test_rejects_non_auto_smp_string(self) -> None:
+        with pytest.raises(ValidationError):
+            InstanceConfig(vm={"smp": "all"})  # type: ignore[arg-type]
 
     def test_explicit_values(self) -> None:
         cfg = InstanceConfig(
