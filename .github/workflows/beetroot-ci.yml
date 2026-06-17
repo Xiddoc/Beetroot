@@ -1,0 +1,304 @@
+# Reusable workflow: boot a Beetroot research phone in *your* CI and run your
+# tests against it. Call it from another repository with `uses:` — for example
+# a Frida-script author whose CI wants a rooted Android-14 instance to exercise
+# their hook against.
+#
+#   jobs:
+#     test-on-beetroot:
+#       uses: Xiddoc/Beetroot/.github/workflows/beetroot-ci.yml@v0.4
+#       with:
+#         test-command: |
+#           uv run --with frida-tools \
+#             frida -H "$FRIDA_HOST" -l hook.js -f com.example.app
+#
+# Nothing proprietary is redistributed by Beetroot: the redroid + Magisk +
+# (optional) GApps + Houdini image is built on *your* runner by `beetroot
+# build`, exactly as it would be on a developer's laptop. This workflow ships
+# only Beetroot's own MIT-licensed orchestration. See
+# docs/guides/running-in-ci.md ("Reusable workflow") for the full guide.
+
+name: Beetroot CI
+
+on:
+  workflow_call:
+    inputs:
+      test-command:
+        description: >-
+          Shell command run once the instance is booted. The booted device is
+          reachable at $ADB_SERIAL (adb) and $FRIDA_HOST (frida -H); the
+          instance name is $BEETROOT_INSTANCE and the Beetroot checkout is
+          $BEETROOT_SRC (invoke the CLI as `uv run --project "$BEETROOT_SRC"
+          beetroot ...`). Runs in `working-directory` (your checked-out repo).
+        type: string
+        required: true
+      binder:
+        description: >-
+          How the host satisfies the kernel binder driver redroid needs.
+          'host' (default) loads binder_linux on a GitHub-hosted runner and
+          boots redroid natively (~1-2 min). 'vm' builds a binder-enabled guest
+          kernel and boots redroid inside a QEMU micro-VM — works on runners
+          with no loadable binder, but slow under TCG (~100s+ boot, plus the
+          kernel compile).
+        type: string
+        default: host
+      gapps:
+        description: >-
+          GMS variant baked into the image: none (default, fastest), lite,
+          full, or mindthegapps. 'none' has no Google Mobile Services — pick a
+          GApps variant if your target app needs Play services. Ignored when
+          binder: vm (the vm guest boots stock redroid).
+        type: string
+        default: none
+      android-version:
+        description: "Android major version (11, 12, 13, or 14)."
+        type: string
+        default: "14"
+      frida-version:
+        description: >-
+          frida-server version to pin (e.g. "16.4.10"). Empty (default) boots
+          without Frida. Ignored when binder: vm (Frida over the vm backend is
+          not yet supported).
+        type: string
+        default: ""
+      instance-name:
+        description: "Name of the Beetroot instance to create."
+        type: string
+        default: ci
+      working-directory:
+        description: "Directory the test-command runs in (your checked-out repo)."
+        type: string
+        default: "."
+      runs-on:
+        description: "Runner label for the job."
+        type: string
+        default: ubuntu-latest
+      beetroot-ref:
+        description: >-
+          Git ref of Xiddoc/Beetroot to check out for the CLI + image build.
+          Empty (default) reuses the ref this reusable workflow was called at,
+          so the CLI matches the workflow version you pinned in `uses:`.
+        type: string
+        default: ""
+    outputs:
+      adb-serial:
+        description: "adb serial of the booted instance (host:port)."
+        value: ${{ jobs.beetroot.outputs.adb-serial }}
+
+permissions:
+  contents: read
+
+jobs:
+  beetroot:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 120
+    env:
+      # Index 0 -> host ADB 5555, Frida 27042 (src/beetroot/ports.py).
+      ADB_SERIAL: 127.0.0.1:5555
+      FRIDA_HOST: 127.0.0.1:27042
+      BEETROOT_INSTANCE: ${{ inputs.instance-name }}
+      BEETROOT_SRC: ${{ github.workspace }}/.beetroot
+    outputs:
+      adb-serial: ${{ env.ADB_SERIAL }}
+    steps:
+      - name: Resolve the Beetroot ref to check out
+        id: ref
+        env:
+          REQUESTED_REF: ${{ inputs.beetroot-ref }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          # When no explicit ref is requested, reuse the ref the caller pinned
+          # this reusable workflow at. github.workflow_ref looks like
+          # "Xiddoc/Beetroot/.github/workflows/beetroot-ci.yml@refs/heads/master"
+          # — the ref is everything after the last '@'.
+          if [ -n "$REQUESTED_REF" ]; then
+            ref="$REQUESTED_REF"
+          else
+            ref="${WORKFLOW_REF##*@}"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Using Beetroot ref: $ref"
+
+      - name: Check out the caller's repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Check out Beetroot (CLI + docker/ build context)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          repository: Xiddoc/Beetroot
+          ref: ${{ steps.ref.outputs.ref }}
+          path: .beetroot
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+
+      - name: Install Beetroot
+        working-directory: .beetroot
+        run: uv sync --frozen
+
+      - name: Install adb
+        run: sudo apt-get install -y --no-install-recommends android-tools-adb
+
+      # ---- binder: host -------------------------------------------------------
+      - name: Provide the host binder driver
+        if: inputs.binder == 'host'
+        env:
+          # Inlined rather than `uses: ./.github/actions/provide-binder` because
+          # a local action ref would resolve against the *caller's* checkout,
+          # not Beetroot's. Mirrors .github/actions/provide-binder.
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -uxo pipefail
+          sudo apt-get update || true
+          sudo apt-get install -y "linux-modules-extra-$(uname -r)" || true
+          sudo modprobe binder_linux devices=binder,hwbinder,vndbinder || true
+          if [ ! -e /dev/binder ]; then
+            sudo mkdir -p /dev/binderfs
+            sudo mount -t binder binder /dev/binderfs || true
+          fi
+          ls -l /dev/binder* /dev/binderfs 2>/dev/null || true
+
+      - name: Build the Beetroot image
+        if: inputs.binder == 'host'
+        working-directory: .beetroot
+        env:
+          GAPPS: ${{ inputs.gapps }}
+        run: uv run beetroot build "$GAPPS"
+
+      # ---- binder: vm ---------------------------------------------------------
+      - name: Install QEMU + the guest-kernel/rootfs toolchain
+        if: inputs.binder == 'vm'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 \
+            build-essential flex bison libelf-dev libssl-dev bc cpio \
+            busybox-static e2fsprogs xz-utils iptables socat
+
+      - name: Build the binder-enabled guest kernel + rootfs
+        if: inputs.binder == 'vm'
+        working-directory: .beetroot
+        env:
+          KERNEL_VERSION: "6.12.9"
+          VM_OUT: ${{ github.workspace }}/.beetroot-vm
+        run: |
+          set -euxo pipefail
+          mkdir -p "$VM_OUT"
+          work="$RUNNER_TEMP/linux"
+          mkdir -p "$work"
+          curl -fsSL \
+            "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz" \
+            | tar -xJ -C "$work" --strip-components=1
+          cd "$work"
+          make defconfig
+          ./scripts/kconfig/merge_config.sh -m .config \
+            "$GITHUB_WORKSPACE/.beetroot/docker/vm/kernel.config"
+          make olddefconfig
+          make -j"$(nproc)" bzImage
+          grep -q 'CONFIG_ANDROID_BINDER_IPC=y' .config
+          cp arch/x86/boot/bzImage "$VM_OUT/bzImage"
+          cd "$GITHUB_WORKSPACE/.beetroot"
+          uv run python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from beetroot.builder import build_rootfs
+
+          build_rootfs(
+              out_image=Path(os.environ["VM_OUT"]) / "rootdisk.img",
+              vm_dir=Path("docker/vm"),
+          )
+          PY
+
+      # ---- common: create, configure, boot ------------------------------------
+      - name: Create and configure the instance
+        working-directory: .beetroot
+        env:
+          BINDER: ${{ inputs.binder }}
+          FRIDA_VERSION: ${{ inputs.frida-version }}
+          ANDROID_VERSION: ${{ inputs.android-version }}
+          GAPPS: ${{ inputs.gapps }}
+          # Absolute so the heredoc finds the config wherever cwd is.
+          CFG: ${{ github.workspace }}/${{ inputs.instance-name }}/beetroot.yaml
+        run: |
+          set -euxo pipefail
+          # create scaffolds ./<name>/beetroot.yaml at the workspace root.
+          ( cd "$GITHUB_WORKSPACE" && uv run --project "$BEETROOT_SRC" beetroot create "$BEETROOT_INSTANCE" )
+          # Mutate the generated config in place (PyYAML, a Beetroot dep) rather
+          # than appending — appending would duplicate the android: key. For the
+          # host path, pin android.version + gapps so config.base_image_tag()
+          # resolves to the exact tag `beetroot build` produced (the generated
+          # default gapps: lite would mismatch a none/full build).
+          uv run python - <<'PY'
+          import os
+          from pathlib import Path
+
+          import yaml
+
+          cfg_path = Path(os.environ["CFG"])
+          cfg = yaml.safe_load(cfg_path.read_text())
+
+          if os.environ["BINDER"] == "vm":
+              cfg["binder"] = "vm"
+          else:
+              cfg.setdefault("android", {})
+              cfg["android"]["version"] = int(os.environ["ANDROID_VERSION"])
+              cfg["android"]["gapps"] = os.environ["GAPPS"]
+              frida_version = os.environ.get("FRIDA_VERSION", "")
+              if frida_version:
+                  cfg["frida"] = {"version": frida_version}
+
+          cfg_path.write_text(yaml.safe_dump(cfg, sort_keys=False))
+          print(cfg_path.read_text())
+          PY
+
+      - name: Boot the instance
+        env:
+          BINDER: ${{ inputs.binder }}
+          # build_rootfs / build_vm_kernel write here; settings reads these
+          # to locate the guest artifacts (AGENTS.md: BEETROOT_VM_* overrides).
+          BEETROOT_VM_KERNEL: ${{ github.workspace }}/.beetroot-vm/bzImage
+          BEETROOT_VM_ROOTFS: ${{ github.workspace }}/.beetroot-vm/rootdisk.img
+        run: |
+          set -euxo pipefail
+          # apply switches the registered backend to match `binder:`; up refuses
+          # a mismatched backend, so apply must run first for the vm path.
+          uv run --project "$BEETROOT_SRC" beetroot apply "$BEETROOT_INSTANCE"
+          uv run --project "$BEETROOT_SRC" beetroot up "$BEETROOT_INSTANCE"
+
+      - name: Wait for Android boot to complete
+        run: |
+          set -uxo pipefail
+          adb connect "$ADB_SERIAL"
+          adb -s "$ADB_SERIAL" wait-for-device
+          booted=
+          for _ in $(seq 1 200); do
+            booted="$(adb -s "$ADB_SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+            [ "$booted" = "1" ] && break
+            sleep 5
+          done
+          if [ "$booted" != "1" ]; then
+            echo "::error::Android did not finish booting within the timeout"
+            exit 1
+          fi
+          echo "Android release: $(adb -s "$ADB_SERIAL" shell getprop ro.build.version.release | tr -d '\r')"
+
+      - name: Run the caller's test command
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: |
+          set -euo pipefail
+          adb connect "$ADB_SERIAL" || true
+          bash -c "$TEST_COMMAND"
+
+      - name: Beetroot + device logs (always, for diagnosis)
+        if: always()
+        run: |
+          uv run --project "$BEETROOT_SRC" beetroot logs "$BEETROOT_INSTANCE" 2>&1 | tail -n 200 || true
+
+      - name: Teardown
+        if: always()
+        run: |
+          uv run --project "$BEETROOT_SRC" beetroot destroy "$BEETROOT_INSTANCE" -y || true
