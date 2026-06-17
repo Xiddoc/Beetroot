@@ -522,3 +522,96 @@ not a correctness requirement; the path itself is proven.
   `debugfs -w` on the large tree, which corrupted ext4 dir checksums once after
   an unclean QEMU kill — `e2fsck -fy` repaired it). Always SIGKILL QEMU and
   `e2fsck -fy` before re-mounting.
+
+---
+
+# Micro-VM R&D log — Stage D (committed-recipe boot from scratch + cmdline A/B)
+
+!!! success "Status: Stage D validated (2026-06-17) — the *committed* code boots redroid under TCG, after fixing a boot-blocker bug"
+    Stages A–C were validated against scratch artifacts hand-assembled during
+    R&D. Stage D drove the **committed code** end-to-end on a fresh binderless,
+    KVM-less host: `beetroot build`'s kernel recipe + the typed
+    `beetroot.builder.build_rootfs` + the committed `qemu.build_qemu_argv`. It
+    surfaced a real boot-blocker (a `build_rootfs` symlink bug) that the prior
+    scratch runs had masked, and — once fixed — produced a clean
+    `sys.boot_completed=1` under pure TCG. It also A/B-tested the
+    `mitigations=off` cmdline lever (added in #66) and **measured it neutral for
+    boot time under TCG**.
+
+## D.1 Environment
+
+Same class as Stage A–C: 4 physical cores, 15 GiB RAM, **no `/dev/kvm`**, host
+kernel without `CONFIG_ANDROID_BINDER_IPC` (`beetroot modes` → `binder: vm, TCG
+accel: needs-setup`). Toolchain installed fresh (`qemu-system-x86` 8.2.x,
+`busybox-static`, `socat`, `flex`/`cpio`/`libelf-dev`). Kernel built from the
+committed `docker/vm/kernel.config` (linux-6.12.9, ~7–8 min, 14 MiB bzImage);
+rootfs from the committed `build_rootfs` (8 GiB ext4, redroid `11.0.0-latest`
+baked into `/var/lib/docker`).
+
+## D.2 Boot-blocker bug: `/bin/busybox` self-symlink → guest ELOOP panic
+
+The first boot of the committed recipe **kernel-panicked at ~4 s**:
+
+```
+Run /init as init process
+Kernel panic - not syncing: Requested init /init failed (error -40).
+```
+
+`-40` is `-ELOOP`. Root cause, confirmed via `debugfs` on the built image:
+`build_rootfs._stage_busybox` symlinked **every** applet from `busybox --list`
+to `"busybox"` — but `busybox` is itself in that list, so it replaced the real
+`/bin/busybox` binary with a self-referential symlink (`/bin/busybox →
+busybox`). That also breaks `/bin/sh` (an applet link to busybox), so the kernel
+cannot exec `/init`'s `#!/bin/sh` interpreter. **The micro-VM guest had never
+actually booted from the committed builder** — exactly the unverified-boot risk
+#57 flags, and it survived #66 (a perf change that never booted the guest). Fix:
+skip the `busybox` applet when laying down symlinks (one-line guard + regression
+test). After the fix, `debugfs` shows `/bin/busybox` as a real 2.1 MiB regular
+file and `/bin/sh → busybox` resolves.
+
+## D.3 Full boot confirmed (committed recipe, post-fix)
+
+With the fix, the committed `guest-init.sh` ran the §4.3 sequence cleanly: mount
+→ eth0 up → containerd → dockerd → `docker run … --network none redroid` → poll.
+Result, pure TCG, `-smp 4`, MTTCG, 8 GiB:
+
+```
+[guest-init] sys.boot_completed=1 — redroid is up (boot_seconds=105)
+```
+
+`boot_seconds=105` (guest-measured, `docker run` → `boot_completed`); ~123 s host
+wall (QEMU launch → marker). Matches the Stage B "~100 s" number — the committed
+code reproduces the hand-assembled result.
+
+## D.4 Kernel-cmdline A/B — `mitigations=off` is boot-neutral under TCG
+
+#66 added `mitigations=off` to the guest cmdline as a perf lever (and
+`smp: auto`). With the guest now bootable, an A/B quantified the
+`mitigations=off` effect on boot — five boots, baseline (plain cmdline) vs
+treatment (`mitigations=off`), interleaved:
+
+| launch order | arm | boot_seconds |
+| --- | --- | --- |
+| 1 | treatment | 105 |
+| 2 | baseline | 105 |
+| 3 | treatment | 110 |
+| 4 | baseline | 110 |
+| 5 | treatment | 113 |
+
+The times track **launch order, not arm** (a monotonic host-contention drift),
+so there is **no separable treatment effect**. The flag verifiably *worked* —
+baseline kernel logs show `Spectre V2 : Mitigation: Retpolines` + RSB-filling,
+treatment shows them disabled — it just **did not move boot time under TCG**:
+the mitigation instructions are a negligible fraction of TCG's per-instruction
+cost of the whole Android boot. **This does not argue for reverting #66** —
+`mitigations=off` is harmless and may genuinely help a *KVM* host (real
+retpolines/RSB-fills at native speed, unmeasured here) — but the honest record
+is that it is **not** a TCG boot-speed lever. `smp: auto` resolves to 4 on this
+4-core host, exactly the §B.5-measured optimum.
+
+## D.5 Artifacts (scratch — never committed)
+
+* Kernel source + build: `/root/vm-rnd/linux-6.12.9/`, `bzImage` (14 MiB).
+* Rootfs: `/root/vm-rnd/rootdisk.img` (8 GiB ext4, redroid baked).
+* Boot harness + per-run serial logs: `/root/vm-rnd/boot-measure.sh`,
+  `/root/vm-rnd/boot-{baseline,treatment}-*.log`.
