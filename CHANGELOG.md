@@ -151,6 +151,28 @@
   pre-abort rows in its `results` attribute).
 
 ### Quality & internals
+- **The whole CLI now speaks through one rich-rendered voice.** Every
+  user-facing line — verb outcomes, the verbose step narration, next-step
+  hints, advisories, errors, and the migration hints emitted from
+  `registry`/`config`/`adb` — now flows through `beetroot.console` instead of
+  ad-hoc `typer.echo` / `print()` calls. On a TTY you get colour (cyan brand,
+  dim narration, yellow advisories, red errors, green/red/yellow `doctor`
+  rows) plus existing progress bars; off-TTY (pipes, CI, logs) rich strips the
+  styling and emits the exact same plain text — the `[beetroot]` brand prefix
+  is preserved, so existing scripts and `grep`s keep working. Output is also
+  more verbose: slow verbs (`up`/`down`/`create`/`apply`/`destroy`/`snapshot`/
+  `restore`) narrate what they're doing (`→ starting alpha`) before printing
+  the outcome, and more verbs print a `next: …` suggestion. Two robustness
+  fixes fall out of the consolidation: long status lines no longer hard-wrap
+  at 80 columns (`soft_wrap`), and every message is markup-escaped so a stray
+  `[` in a path or exception can never crash the output path. Out-of-band
+  advisories (best-effort `compose down` failures, orphan-cleanup notes,
+  `ls` orphan-skips) now go to **stderr** so they never pollute a piped
+  stdout; machine-readable output (`--json`, `doctor` rows, `ls`/`modes`
+  tables) is unchanged on stdout. The `beetroot.console` module gains
+  `status` / `note` / `step` / `hint` / `out` helpers and its stdout/stderr
+  consoles now track the live streams, retiring the per-call console-rebind
+  shim the `ls` / `modes` tables needed.
 - **The micro-VM rootfs builder is now typed, tested Python.** The former
   `docker/vm/build-rootfs.sh` has been ported to `build_rootfs` in
   `src/beetroot/builder.py` — same recipe (busybox-static + Docker static

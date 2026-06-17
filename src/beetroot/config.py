@@ -10,12 +10,13 @@ top-level sections: ``display``, ``resources``, ``frida``, ``modules``,
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 from typing import Final, Literal, Self, override
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from . import console
 
 SUPPORTED_API_VERSION: Final = 4
 
@@ -551,11 +552,10 @@ def load_yaml(path: Path) -> InstanceConfig:
             resolved = path.resolve()
             old_version = raw["api_version"]
             if resolved not in _API_VERSION_BUMP_WARNED:
-                print(  # noqa: T201  # stderr migration hint — typer.echo is unavailable from non-CLI callers
-                    f"[beetroot] auto-upgraded api_version {old_version} → "
+                console.note(
+                    f"auto-upgraded api_version {old_version} → "
                     f"{SUPPORTED_API_VERSION} in {path}; run 'beetroot apply' "
-                    f"to rewrite the YAML.",
-                    file=sys.stderr,
+                    f"to rewrite the YAML."
                 )
                 _API_VERSION_BUMP_WARNED.add(resolved)
         raw["api_version"] = SUPPORTED_API_VERSION

@@ -152,6 +152,87 @@ def test_success_no_ansi_when_non_tty(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Branded helpers (status, note, step, hint, out)
+# ---------------------------------------------------------------------------
+
+
+def test_status_writes_branded_line_to_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
+    stdout_c, stdout_buf = _make_console()
+    stderr_c, stderr_buf = _make_console()
+    monkeypatch.setattr(console, "_stdout_console", stdout_c)
+    monkeypatch.setattr(console, "_stderr_console", stderr_c)
+    console.status("alpha up")
+    assert "[beetroot] alpha up" in stdout_buf.getvalue()
+    assert stderr_buf.getvalue() == ""
+
+
+def test_note_writes_branded_line_to_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    stdout_c, stdout_buf = _make_console()
+    stderr_c, stderr_buf = _make_console()
+    monkeypatch.setattr(console, "_stdout_console", stdout_c)
+    monkeypatch.setattr(console, "_stderr_console", stderr_c)
+    console.note("heads up")
+    assert "[beetroot] heads up" in stderr_buf.getvalue()
+    assert stdout_buf.getvalue() == ""
+
+
+def test_step_writes_narration_to_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
+    c, buf = _make_console()
+    monkeypatch.setattr(console, "_stdout_console", c)
+    console.step("starting alpha")
+    assert "starting alpha" in buf.getvalue()
+
+
+def test_hint_writes_suggestion_to_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
+    c, buf = _make_console()
+    monkeypatch.setattr(console, "_stdout_console", c)
+    console.hint("next: beetroot up alpha")
+    assert "next: beetroot up alpha" in buf.getvalue()
+
+
+def test_out_styled_and_unstyled_both_render(monkeypatch: pytest.MonkeyPatch) -> None:
+    c, buf = _make_console()
+    monkeypatch.setattr(console, "_stdout_console", c)
+    console.out("check: pass", style="green")
+    console.out("plain row")
+    out = buf.getvalue()
+    assert "check: pass" in out
+    assert "plain row" in out
+
+
+def test_status_has_ansi_when_tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    c, buf = _make_console(tty=True)
+    monkeypatch.setattr(console, "_stdout_console", c)
+    console.status("colourful")
+    assert "\x1b" in buf.getvalue()
+
+
+def test_branded_helpers_escape_markup(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A stray ``[`` in user text must render literally, never be parsed as a
+    # rich tag (which would crash the line) — same guard for status and error.
+    c, buf = _make_console()
+    monkeypatch.setattr(console, "_stdout_console", c)
+    monkeypatch.setattr(console, "_stderr_console", c)
+    console.status("path is /tmp/[weird]/dir")
+    console.error("bad token [oops] here")
+    out = buf.getvalue()
+    assert "/tmp/[weird]/dir" in out
+    assert "bad token [oops] here" in out
+
+
+def test_emit_does_not_wrap_long_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ``soft_wrap=True`` must keep a >80-column status line on a single
+    # physical line so substring matches and shell pipelines never break.
+    c, buf = _make_console()
+    monkeypatch.setattr(console, "_stdout_console", c)
+    long_msg = "created " + "x" * 200 + " done"
+    console.status(long_msg)
+    body = buf.getvalue().rstrip("\n")
+    assert "\n" not in body
+    assert long_msg in body
+
+
+# ---------------------------------------------------------------------------
 # table() — renders to stdout
 # ---------------------------------------------------------------------------
 

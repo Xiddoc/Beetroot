@@ -744,6 +744,7 @@ class TestDestroyOrphanBranches:
         with patch.object(_compose, "down", side_effect=_boom):
             result = runner.invoke(cli.app, ["destroy", "alpha", "-y"])
         assert result.exit_code == 0, result.stderr
-        assert "continuing" in result.stdout
+        # The "continuing" advisory is an out-of-band note → stderr.
+        assert "continuing" in result.stderr
         assert registry.get("alpha") is None
         assert not root.exists()

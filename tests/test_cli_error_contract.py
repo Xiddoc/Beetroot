@@ -14,13 +14,15 @@ exception, then assert the CLI's user-visible contract:
 """
 from __future__ import annotations
 
+import io
 import sys
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
-from beetroot import builder, cli, compose, registry
+from beetroot import builder, cli, compose, console, registry
 
 _CORPUS_DIR = Path(__file__).parent / "corpus"
 _CORPUS_FILES = sorted(_CORPUS_DIR.glob("*.yaml"))
@@ -31,20 +33,13 @@ def _run_main_with_argv(
 ) -> tuple[int, str]:
     """Drive cli.main() under a faked argv. Returns (exit_code, stderr)."""
     monkeypatch.setattr(sys, "argv", argv)
-    stderr_capture: list[str] = []
-    original_echo = __import__("typer").echo
-
-    def _spy(msg: str, *, err: bool = False, **kw: object) -> None:
-        if err:
-            stderr_capture.append(msg)
-        original_echo(msg, err=err, **kw)
-
-    monkeypatch.setattr("beetroot.cli.typer.echo", _spy)
+    buf = io.StringIO()
+    console.set_consoles(stderr=Console(file=buf, force_terminal=False))
     try:
         cli.main()
     except SystemExit as exc:
-        return int(exc.code or 0), "\n".join(stderr_capture)
-    return 0, "\n".join(stderr_capture)
+        return int(exc.code or 0), buf.getvalue()
+    return 0, buf.getvalue()
 
 
 class TestComposeErrorSurfacing:

@@ -27,7 +27,6 @@ import contextlib
 import fcntl
 import json
 import os
-import sys
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -36,7 +35,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
-from . import paths, ports
+from . import console, paths, ports
 from .config import load_yaml
 
 SCHEMA_VERSION = 3
@@ -377,12 +376,11 @@ def _read(path: Path) -> RegistryFile:
         backup = path.with_suffix(path.suffix + ".bak")
         path.rename(backup)
         if not _LEGACY_HINT_PRINTED:
-            print(  # noqa: T201  # stderr migration hint
-                f"[beetroot] registry at {path} could not be parsed as JSON; "
+            console.note(
+                f"registry at {path} could not be parsed as JSON; "
                 f"renamed to {backup.name}. "
                 f"Re-register your instances with "
-                f"`beetroot register <path>`.",
-                file=sys.stderr,
+                f"`beetroot register <path>`."
             )
             _LEGACY_HINT_PRINTED = True
         return RegistryFile()
@@ -393,12 +391,11 @@ def _read(path: Path) -> RegistryFile:
         backup = path.with_suffix(path.suffix + ".bak")
         path.rename(backup)
         if not _LEGACY_HINT_PRINTED:
-            print(  # noqa: T201  # stderr migration hint — typer.echo is unavailable from non-CLI callers
-                f"[beetroot] registry at {path} was schema "
+            console.note(
+                f"registry at {path} was schema "
                 f"v{version!r}; renamed to {backup.name}. "
                 f"Re-register your instances with "
-                f"`beetroot register <path>`.",
-                file=sys.stderr,
+                f"`beetroot register <path>`."
             )
             _LEGACY_HINT_PRINTED = True
         return RegistryFile()
@@ -504,11 +501,10 @@ def _check_v02_registry_at_cwd(xdg_path: Path) -> None:
     is_v1_shape = "version" not in data and "instances" not in data
     if not is_v1_shape:
         return
-    print(  # noqa: T201  # stderr migration hint — typer.echo is unavailable from non-CLI callers
-        f"[beetroot] detected v0.2 registry at {candidate} — move it to "
+    console.note(
+        f"detected v0.2 registry at {candidate} — move it to "
         f"{xdg_path} (or re-register each instance with "
-        f"'beetroot register <path>').",
-        file=sys.stderr,
+        f"'beetroot register <path>')."
     )
     _V02_HINT_PRINTED = True
 

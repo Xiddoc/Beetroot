@@ -8,6 +8,7 @@ hermetic.
 """
 from __future__ import annotations
 
+import io
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -15,9 +16,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
-from beetroot import api, cli, registry
+from beetroot import api, cli, console, registry
 from beetroot.backends import adb as adb_backend
 
 runner = CliRunner()
@@ -28,20 +30,13 @@ def _run_main_with_argv(
 ) -> tuple[int, str]:
     """Drive cli.main() under a faked argv. Returns (exit_code, stderr)."""
     monkeypatch.setattr(sys, "argv", argv)
-    stderr_capture: list[str] = []
-    original_echo = __import__("typer").echo
-
-    def _spy(msg: str, *, err: bool = False, **kw: object) -> None:
-        if err:
-            stderr_capture.append(msg)
-        original_echo(msg, err=err, **kw)
-
-    monkeypatch.setattr("beetroot.cli.typer.echo", _spy)
+    buf = io.StringIO()
+    console.set_consoles(stderr=Console(file=buf, force_terminal=False))
     try:
         cli.main()
     except SystemExit as exc:
-        return int(exc.code or 0), "\n".join(stderr_capture)
-    return 0, "\n".join(stderr_capture)
+        return int(exc.code or 0), buf.getvalue()
+    return 0, buf.getvalue()
 
 
 @pytest.fixture
