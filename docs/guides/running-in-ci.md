@@ -101,9 +101,10 @@ matrix.
 !!! tip "Run redroid *locally* on a binderless host with `binder: vm`"
     On a host with no binder (and even no `/dev/kvm`), set `binder: vm` to
     boot redroid inside a QEMU micro-VM whose **own** kernel provides
-    binder. Build the guest kernel + rootfs once with `beetroot build
-    --vm-kernel`, point `vm.kernel` / `vm.rootfs` at them, then `beetroot
-    apply` + `beetroot up`. KVM-accelerated where available; otherwise TCG
+    binder. Provision the guest once with `beetroot build --vm-kernel`
+    (downloads the prebuilt, sha256-verified kernel + assembles the rootfs),
+    point `vm.kernel` / `vm.rootfs` at them, then `beetroot apply` + `beetroot
+    up`. KVM-accelerated where available; otherwise TCG
     (~5-20x slower — a slow first boot is expected, not a hang). The
     rationale, reproducible recipe, and backend design live in
     [Binderless hosts (QEMU/TCG)](../design/binderless-hosts-qemu-tcg.md).

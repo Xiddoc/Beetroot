@@ -55,7 +55,7 @@ beetroot doctor alpha
     3. Opt into the emulated micro-VM backend — it ships its own binder-enabled kernel, so it needs no host binder at all. Build the guest kernel/rootfs, set `binder: vm` in `beetroot.yaml`, and boot. Without `/dev/kvm` it falls back to TCG (software emulation, ~5–20× slower), so it is slow but functional. See [Binderless hosts (QEMU/TCG)](design/binderless-hosts-qemu-tcg.md):
 
         ```bash
-        beetroot build --vm-kernel   # build the binder-enabled guest kernel + rootfs
+        beetroot build --vm-kernel   # download the prebuilt binder-enabled kernel + assemble the rootfs
         # edit alpha/beetroot.yaml:  binder: vm
         beetroot apply alpha
         beetroot up alpha

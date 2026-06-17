@@ -372,7 +372,11 @@ expensive step.
    (`docker/vm/kernel.config`) and guest init (`docker/vm/guest-init.sh`) are
    vendored in-tree; the rootfs builder is pure-Python (`build_rootfs` in
    `src/beetroot/builder.py`, the former `docker/vm/build-rootfs.sh`), and
-   `beetroot build --vm-kernel` wraps the kernel build + rootfs assembly.
+   `beetroot build --vm-kernel` downloads the prebuilt, sha256-verified guest
+   kernel (`kernel_download.py`, mirroring `frida_download.py`) and assembles
+   the rootfs. The from-source kernel compile lives in
+   `.github/workflows/e2e.yml` / `vm-rnd-log.md` and produces the published
+   `vm-kernel-<version>` release asset that the CLI fetches.
 3. **`VmDeviceBackend`** — ✅ done (issue #44): implemented against the
    [`DeviceBackend` Protocol](device-backends.md). `up` boots the micro-VM
    and forwards ADB; `down` powers it off (SIGTERM to the pidfile'd QEMU);
@@ -393,7 +397,7 @@ On a host with no kernel binder driver (`beetroot doctor` shows
 `host.binder` as `unsupported`):
 
 ```bash
-# 1. Build the guest kernel (binder + cgroup + bpf + PSI) and rootfs.
+# 1. Download the prebuilt binder-enabled guest kernel and assemble the rootfs.
 beetroot build --vm-kernel
 
 # 2. Create an instance, opt into the micro-VM, point it at the artifacts.

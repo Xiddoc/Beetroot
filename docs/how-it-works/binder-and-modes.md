@@ -84,7 +84,7 @@ adb binaries, then classifies each mode:
 
 | Verdict | When |
 |---------|------|
-| `supported` | `/dev/kvm` is usable **and** QEMU is installed. (You still build the guest once: `beetroot build --vm-kernel`.) |
+| `supported` | `/dev/kvm` is usable **and** QEMU is installed. (You still provision the guest once: `beetroot build --vm-kernel`.) |
 | `needs-setup` | `/dev/kvm` usable but QEMU missing → install `qemu-system-x86`. |
 | `unsupported` | no usable `/dev/kvm` — use the TCG row instead, or move to a KVM-capable host/runner. |
 
@@ -92,7 +92,7 @@ adb binaries, then classifies each mode:
 
 | Verdict | When |
 |---------|------|
-| `supported` | QEMU is installed. Works with **no** host binder and **no** KVM. Build the guest once with `beetroot build --vm-kernel`. |
+| `supported` | QEMU is installed. Works with **no** host binder and **no** KVM. Provision the guest once with `beetroot build --vm-kernel` (downloads the prebuilt kernel + assembles the rootfs). |
 | `needs-setup` | QEMU missing → install `qemu-system-x86`, then `beetroot build --vm-kernel`. |
 
 ### `adb backend (adopt remote device)`

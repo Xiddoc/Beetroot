@@ -88,7 +88,7 @@ A small set of tests *do* shell out to docker for real, and they self-gate so a 
 
     ```bash
     apt-get install -y qemu-system-x86            # the TCG (software-emulated) QEMU
-    uv run beetroot build --vm-kernel             # builds the binder-enabled guest kernel + rootfs
+    uv run beetroot build --vm-kernel             # downloads the prebuilt binder-enabled kernel + assembles the rootfs
     uv run beetroot create <name>                 # then copy examples/vm.yaml over <name>/beetroot.yaml
     uv run beetroot apply <name> && uv run beetroot up <name>
     ```

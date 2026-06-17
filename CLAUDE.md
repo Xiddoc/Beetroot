@@ -81,9 +81,10 @@ src/beetroot/
 ├── registry.py    # instances.json, fcntl.flock guards mutations
 ├── compose.py     # subprocess wrappers around `docker compose`
 ├── frida_download.py    # download frida-server.xz, decompress (lzma), cache
+├── kernel_download.py   # download + sha256-verify the prebuilt binder: vm guest kernel (bzImage)
 ├── modules_download.py  # fetch + sha256-verify Magisk module zips
 ├── snapshot.py    # pack/unpack instances as .tar.zst with manifest
-├── builder.py     # one-time base-image build (`beetroot build`) + micro-VM kernel + rootfs assembly (`build_rootfs`)
+├── builder.py     # one-time base-image build (`beetroot build`) + micro-VM provisioning (fetch kernel + `build_rootfs`)
 └── paths.py       # single source of truth for filesystem layout
 ```
 

@@ -33,7 +33,7 @@ from typing import IO, Final, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from . import config, console, paths
+from . import config, console, kernel_download, paths
 from .settings import settings
 
 GappsVariant = Literal["none", "lite", "full", "mindthegapps"]
@@ -792,12 +792,11 @@ def build_rootfs(
         return _RootfsAssembly(cfg, run, Path(work)).build()
 
 
-# The vendored micro-VM build artifacts (kernel config fragment, rootfs
-# builder, guest init) live under ``docker/vm/`` in a source / editable
-# install. ``beetroot build --vm-kernel`` resolves them relative to the
-# build context, exactly like the redroid Dockerfile.
+# The vendored micro-VM rootfs artifacts (rootfs builder, guest init) live
+# under ``docker/vm/`` in a source / editable install. ``beetroot build
+# --vm-kernel`` resolves them relative to the build context, exactly like the
+# redroid Dockerfile.
 _VM_DIR = "vm"
-_KERNEL_CONFIG = "kernel.config"
 
 
 class VmArtifacts(BaseModel):
@@ -824,26 +823,33 @@ class _RootfsBuildFn(Protocol):
         ...
 
 
+class _KernelFetchFn(Protocol):
+    """The :func:`kernel_download.download` call shape, injectable for unit tests."""
+
+    def __call__(self) -> Path:
+        """Fetch the prebuilt guest ``bzImage`` and return its cached path."""
+        ...
+
+
 def build_vm_kernel(
     *,
     out_dir: Path | None = None,
     build_context: Path | None = None,
-    runner: SubprocessRunner | None = None,
+    kernel_fetch: _KernelFetchFn = kernel_download.download,
     rootfs_build: _RootfsBuildFn = build_rootfs,
 ) -> VmArtifacts:
     """
-    Build the micro-VM guest kernel + rootfs for the ``binder: vm`` backend.
+    Provision the micro-VM guest kernel + rootfs for the ``binder: vm`` backend.
 
     Two steps:
 
-    1. Build the guest kernel ``bzImage`` from a ``make defconfig`` base
-       merged with the vendored ``docker/vm/kernel.config`` fragment (the
-       §4.1 binder/cgroup/bpf/PSI deltas), via the kernel tree's own
-       ``merge_config.sh`` + ``make``. This heavyweight compile stays a shell
-       step the injected :class:`SubprocessRunner` dispatches.
+    1. Fetch the prebuilt binder-enabled guest ``bzImage`` from the project's
+       GitHub releases via :func:`kernel_download.download` (sha256-verified,
+       cached). This replaces the old ~20-minute in-tree kernel compile — the
+       source recipe now lives in ``.github/workflows/e2e.yml`` /
+       ``docs/design/vm-rnd-log.md`` and produces the published release asset.
     2. Assemble the ext4 rootfs via :func:`build_rootfs` (busybox-static +
-       Docker static bundle + ``guest-init.sh`` as ``/init``) — pure-Python,
-       no longer a shell script.
+       Docker static bundle + ``guest-init.sh`` as ``/init``).
 
     Args:
         out_dir: Directory the ``bzImage`` and ``rootdisk.img`` are written
@@ -852,42 +858,33 @@ def build_vm_kernel(
             Defaults to the repo root (source / editable install); pass it
             explicitly for a ``uv tool install`` setup where ``docker/`` is
             not bundled in the wheel.
-        runner: Inject a :class:`SubprocessRunner` (the kernel step) for
-            testing. Defaults to :class:`DefaultRunner`.
+        kernel_fetch: Inject the prebuilt-kernel fetcher for testing. Defaults
+            to :func:`kernel_download.download`.
         rootfs_build: Inject the rootfs assembler for testing. Defaults to
             :func:`build_rootfs`.
 
     Returns:
-        The :class:`VmArtifacts` naming the built kernel + rootfs paths.
+        The :class:`VmArtifacts` naming the provisioned kernel + rootfs paths.
 
     Raises:
-        BootstrapError: If the kernel build or rootfs assembly fails.
+        BootstrapError: If the kernel download (or its sha256 check) or the
+            rootfs assembly fails.
     """
     ctx = build_context if build_context is not None else _default_build_context()
     out = out_dir if out_dir is not None else paths.user_cache_dir(_VM_DIR)
-    run = runner if runner is not None else DefaultRunner()
 
     vm_dir = ctx / "docker" / _VM_DIR
-    kernel_config = vm_dir / _KERNEL_CONFIG
     kernel_out = out / "bzImage"
     rootfs_out = out / "rootdisk.img"
 
     out.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: build the guest kernel with the binder-enabled config fragment.
-    with console.progress("Building micro-VM guest kernel (binder + cgroup + PSI)"):
-        run.run(
-            [
-                "sh",
-                "-c",
-                # merge the defconfig base with the vendored fragment, then
-                # build, then drop the bzImage where the launcher expects it.
-                "make defconfig && "
-                f"./scripts/kconfig/merge_config.sh -m .config {kernel_config} && "
-                'make olddefconfig && make -j"$(nproc)" bzImage && '
-                f"cp arch/x86/boot/bzImage {kernel_out}",
-            ],
-        )
+    # Step 1: fetch the prebuilt binder-enabled guest kernel (cached + verified).
+    try:
+        cached_kernel = kernel_fetch()
+    except (kernel_download.KernelFetchError, ValueError) as e:
+        raise BootstrapError(str(e)) from e
+    shutil.copyfile(cached_kernel, kernel_out)
 
     # Step 2: assemble the ext4 rootfs (busybox + Docker static + guest init).
     with console.progress("Assembling micro-VM guest rootfs"):

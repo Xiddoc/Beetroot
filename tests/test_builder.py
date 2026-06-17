@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from beetroot import builder, config
+from beetroot import builder, config, kernel_download
 from beetroot.builder import (
     GAPPS_FLAGS,
     BootstrapError,
@@ -513,60 +513,92 @@ class _RootfsBuildRecorder:
         return out_image
 
 
+@dataclass
+class _KernelFetchRecorder:
+    """A fake kernel_download.download: writes a stub bzImage and records calls."""
+
+    src: Path
+    calls: int = 0
+    fail: Exception | None = None
+
+    def __call__(self) -> Path:
+        self.calls += 1
+        if self.fail is not None:
+            raise self.fail
+        self.src.parent.mkdir(parents=True, exist_ok=True)
+        self.src.write_bytes(b"fake bzImage")
+        return self.src
+
+
 class TestBuildVmKernel:
-    def test_runs_kernel_then_rootfs_steps(self, tmp_path: Path) -> None:
-        runner = FakeRunner()
+    def test_fetches_kernel_then_assembles_rootfs(self, tmp_path: Path) -> None:
+        cached = tmp_path / "cache" / "bzImage-6.12.9-x86_64"
+        fetch = _KernelFetchRecorder(src=cached)
         rec = _RootfsBuildRecorder()
         ctx = tmp_path / "repo"
         (ctx / "docker" / "vm").mkdir(parents=True)
         out = tmp_path / "out"
         artifacts = builder.build_vm_kernel(
-            out_dir=out, build_context=ctx, runner=runner, rootfs_build=rec
+            out_dir=out, build_context=ctx, kernel_fetch=fetch, rootfs_build=rec
         )
-        # The kernel compile is the only remaining shell step; the rootfs is
+        # The kernel is now a downloaded prebuilt (no compile); the rootfs is
         # assembled in pure Python via the injected build_rootfs.
-        assert len(runner.calls) == 1
-        kernel_cmd = runner.calls[0].cmd
-        assert kernel_cmd[0] == "sh"
-        assert kernel_cmd[1] == "-c"
-        assert "kernel.config" in kernel_cmd[2]
-        assert "bzImage" in kernel_cmd[2]
-        assert rec.calls == [(out / "rootdisk.img", ctx / "docker" / "vm")]
+        assert fetch.calls == 1
+        # The fetched, cached bzImage is copied to the canonical out/bzImage
+        # that vm.yaml's vm.kernel references.
         assert artifacts.kernel == out / "bzImage"
+        assert artifacts.kernel.read_bytes() == b"fake bzImage"
+        assert rec.calls == [(out / "rootdisk.img", ctx / "docker" / "vm")]
         assert artifacts.rootfs == out / "rootdisk.img"
         assert out.is_dir()
 
-    def test_kernel_step_failure_propagates(self, tmp_path: Path) -> None:
-        runner = FakeRunner(fail_on="sh")
+    def test_kernel_fetch_failure_propagates_as_bootstrap_error(self, tmp_path: Path) -> None:
+        fetch = _KernelFetchRecorder(
+            src=tmp_path / "k", fail=kernel_download.KernelFetchError("HTTP 404")
+        )
         rec = _RootfsBuildRecorder()
         ctx = tmp_path / "repo"
         (ctx / "docker" / "vm").mkdir(parents=True)
-        with pytest.raises(BootstrapError):
+        with pytest.raises(BootstrapError, match="HTTP 404"):
             builder.build_vm_kernel(
-                out_dir=tmp_path / "out", build_context=ctx, runner=runner, rootfs_build=rec
+                out_dir=tmp_path / "out", build_context=ctx, kernel_fetch=fetch, rootfs_build=rec
             )
         assert rec.calls == []  # rootfs step never reached
+
+    def test_kernel_sha_mismatch_propagates_as_bootstrap_error(self, tmp_path: Path) -> None:
+        # A sha256 mismatch surfaces from kernel_download.download as a
+        # ValueError; build_vm_kernel must translate it to BootstrapError so
+        # the CLI's single except-clause catches it.
+        fetch = _KernelFetchRecorder(src=tmp_path / "k", fail=ValueError("sha256 mismatch"))
+        rec = _RootfsBuildRecorder()
+        ctx = tmp_path / "repo"
+        (ctx / "docker" / "vm").mkdir(parents=True)
+        with pytest.raises(BootstrapError, match="sha256 mismatch"):
+            builder.build_vm_kernel(
+                out_dir=tmp_path / "out", build_context=ctx, kernel_fetch=fetch, rootfs_build=rec
+            )
+        assert rec.calls == []
 
     def test_default_out_dir_under_cache(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        runner = FakeRunner()
+        cache = tmp_path / "cache" / "vm"
+        fetch = _KernelFetchRecorder(src=cache / "bzImage-6.12.9-x86_64")
         ctx = tmp_path / "repo"
         (ctx / "docker" / "vm").mkdir(parents=True)
-        cache = tmp_path / "cache" / "vm"
         monkeypatch.setattr("beetroot.builder.paths.user_cache_dir", lambda _sub: cache)
         artifacts = builder.build_vm_kernel(
-            build_context=ctx, runner=runner, rootfs_build=_RootfsBuildRecorder()
+            build_context=ctx, kernel_fetch=fetch, rootfs_build=_RootfsBuildRecorder()
         )
         assert artifacts.kernel == cache / "bzImage"
 
     def test_default_build_context(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        runner = FakeRunner()
+        fetch = _KernelFetchRecorder(src=tmp_path / "cache" / "bzImage-6.12.9-x86_64")
         rec = _RootfsBuildRecorder()
         ctx = tmp_path / "repo"
         (ctx / "docker" / "vm").mkdir(parents=True)
         monkeypatch.setattr(builder, "_default_build_context", lambda: ctx)
-        builder.build_vm_kernel(out_dir=tmp_path / "out", runner=runner, rootfs_build=rec)
+        builder.build_vm_kernel(out_dir=tmp_path / "out", kernel_fetch=fetch, rootfs_build=rec)
         assert rec.calls[0][1] == ctx / "docker" / "vm"
 
 

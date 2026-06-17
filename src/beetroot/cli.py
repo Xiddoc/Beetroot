@@ -1235,8 +1235,9 @@ def build(
         typer.Option(
             "--vm-kernel",
             help=(
-                "Build the binder: vm micro-VM guest kernel + rootfs instead "
-                "of the redroid base image (for hosts with no kernel binder)."
+                "Provision the binder: vm micro-VM (download the prebuilt "
+                "guest kernel + assemble the rootfs) instead of building the "
+                "redroid base image (for hosts with no kernel binder)."
             ),
         ),
     ] = False,

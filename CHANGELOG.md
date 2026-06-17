@@ -4,6 +4,23 @@
 
 ### Features
 
+- **`beetroot build --vm-kernel` now downloads a prebuilt guest kernel.**
+  The `binder: vm` micro-VM needs a binder/binderfs/PSI-enabled guest
+  `bzImage`. Previously `build --vm-kernel`'s first step shelled out to a
+  `make defconfig && … make bzImage` compile that only worked when the
+  current directory was already a Linux source tree — so the documented
+  standalone command failed with `make: *** No rule to make target
+  'defconfig'`. It now fetches a **prebuilt, sha256-verified** `bzImage`
+  from the `vm-kernel-<version>` GitHub release via the new
+  `src/beetroot/kernel_download.py` (mirroring `frida_download.py`: pinned
+  version + digest, `$XDG_CACHE_HOME/beetroot/vm/` cache, idempotent,
+  `KernelFetchError` on network failure), turning a ~20-minute compile into
+  a 14 MiB download and making the command work out-of-the-box on a host
+  with no kernel toolchain. The from-source recipe still lives in
+  `.github/workflows/e2e.yml` / `docs/design/vm-rnd-log.md` and produces the
+  published release asset. Bumping the kernel = publish a new
+  `vm-kernel-<version>` release and update `KERNEL_VERSION` / `KERNEL_SHA256`.
+
 - **`beetroot modes` — host capability survey.** A new host-level,
   instance-independent command that probes the host binder driver, KVM, and
   the QEMU / Docker / adb binaries and reports, for every run-mode
