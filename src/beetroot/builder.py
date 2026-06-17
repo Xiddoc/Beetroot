@@ -629,8 +629,13 @@ class _RootfsAssembly:
         shutil.copy(self.cfg.busybox_bin, busybox_dst)
         busybox_dst.chmod(0o755)
         # Lay down every applet symlink now: /init is `#!/bin/sh`, so /bin/sh
-        # must exist before the kernel can exec PID 1.
+        # must exist before the kernel can exec PID 1. Skip the `busybox` applet
+        # itself — it is in `busybox --list`, and symlinking /bin/busybox -> busybox
+        # would clobber the real binary we just copied with a self-referential
+        # link (ELOOP), breaking /bin/sh and panicking the guest on /init.
         for applet in self.runner.capture([str(self.cfg.busybox_bin), "--list"]).split():
+            if applet == "busybox":
+                continue
             self._symlink("busybox", self.root / "bin" / applet)
 
     def _stage_docker_binaries(self) -> None:
