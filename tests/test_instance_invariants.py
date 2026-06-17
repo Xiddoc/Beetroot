@@ -16,13 +16,19 @@ The bug class this catches: any operation that registers an instance
 but forgets to stage its derived files. ``Instance.register`` and
 ``snapshot.restore`` both hit this before the post-CR fix.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
+from docker_daemon import daemon_available
 
 from beetroot import api, config, paths, registry, snapshot
+
+# These restore flows free the source slot via ``destroy`` → ``compose down``,
+# which needs a live Docker daemon; skip (don't fail) when there isn't one.
+_needs_daemon = pytest.mark.skipif(not daemon_available(), reason="docker daemon not available")
 
 
 def _parse_env(text: str) -> dict[str, str]:
@@ -58,9 +64,7 @@ def _assert_invariants(name: str, *, expect_frida: bool) -> None:
         assert frida_path.stat().st_mode & 0o111 == 0
     # (c) load round-trips and ports don't collide against the rest of
     # the registry.
-    others = {
-        n: p for n, p in registry.all_resolved_ports().items() if n != name
-    }
+    others = {n: p for n, p in registry.all_resolved_ports().items() if n != name}
     assert registry.find_port_collision(inst.ports, others) is None
 
 
@@ -100,18 +104,18 @@ def test_register_with_frida_stages_executable(cli_root: Path) -> None:
     _assert_invariants("external", expect_frida=True)
 
 
+@_needs_daemon
 def test_restore_leaves_instance_ready_to_up(cli_root: Path) -> None:
     src = cli_root / "alpha"
     api.Instance.create("alpha", path=src)
     archive = snapshot.snapshot(src, cli_root / "alpha-archive")
     api.Instance.load("alpha").destroy(yes=True)
 
-    snapshot.restore(
-        archive, dest_name="alpha-restored", dest_path=cli_root / "alpha-restored"
-    )
+    snapshot.restore(archive, dest_name="alpha-restored", dest_path=cli_root / "alpha-restored")
     _assert_invariants("alpha-restored", expect_frida=False)
 
 
+@_needs_daemon
 def test_restore_with_frida_stages_executable(cli_root: Path) -> None:
     src = cli_root / "alpha"
     cfg = config.InstanceConfig(frida=config.Frida(version="16.4.10"))
@@ -119,9 +123,7 @@ def test_restore_with_frida_stages_executable(cli_root: Path) -> None:
     archive = snapshot.snapshot(src, cli_root / "alpha-archive")
     api.Instance.load("alpha").destroy(yes=True)
 
-    snapshot.restore(
-        archive, dest_name="alpha-restored", dest_path=cli_root / "alpha-restored"
-    )
+    snapshot.restore(archive, dest_name="alpha-restored", dest_path=cli_root / "alpha-restored")
     _assert_invariants("alpha-restored", expect_frida=True)
 
 

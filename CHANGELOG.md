@@ -147,6 +147,20 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **Docker-dependent tests now *skip* (not *fail*) on a daemonless host** (#59).
+  `test_container_boot.py` and the `destroy`-driven restore tests in
+  `test_instance_invariants.py` / `test_partial_failure_rollback.py` shell out
+  to a real `docker run` / `docker compose down`, but their skip guard probed
+  only `shutil.which("docker")` — true whenever the **CLI** is installed, even
+  with **no running daemon** (e.g. the Claude Code on the web sandbox, where
+  `dockerd` is opt-in). They therefore *failed* with a socket-connection error
+  instead of skipping. A new cached `tests/docker_daemon.py::daemon_available()`
+  probes `docker info` (which needs the daemon) and the affected tests gate on
+  it. CI (daemon present) still runs them, so the 100% coverage gate is
+  unaffected. `test_config.py`'s `docker compose config` tests keep the bare
+  `shutil.which` guard on purpose — `compose config` only renders YAML and never
+  touches the daemon. `AGENTS.md` gains a "What your environment can test (local
+  vs GitHub CI)" note anchored on `beetroot modes`.
 - **Adopted adb devices are now visible to the `ls` verb** (#15). The verb
   walks every backend kind via `Manager.all()` instead of the redroid-only
   `Manager.list_instances()`, so `adopt`-ed devices appear next to
