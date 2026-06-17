@@ -25,7 +25,6 @@ from typing import Annotated, cast
 import pydantic
 import typer
 import yaml
-from rich.console import Console as _RichConsole
 
 from . import (
     api,
@@ -70,13 +69,15 @@ app = typer.Typer(
 
 def _error(message: str) -> typer.Exit:
     """
-    Print ``error: <message>`` to stderr and return a ``typer.Exit(1)``.
+    Print a styled ``error: <message>`` to stderr and return a ``typer.Exit(1)``.
 
     Callers ``raise _error(...)`` so mypy keeps narrowing on the no-return
     branch and so the ``error: ...`` line lands on stderr (matching the
-    old ``sys.exit("error: ...")`` behavior, which wrote to stderr).
+    old ``sys.exit("error: ...")`` behavior, which wrote to stderr). The
+    line is rendered through :func:`console.error`, so it is red on a TTY and
+    plain ``error: <message>`` everywhere else.
     """
-    typer.echo(f"error: {message}", err=True)
+    console.error(message)
     return typer.Exit(code=1)
 
 
@@ -132,7 +133,7 @@ def _resolve_names(names: list[str], all_flag: bool) -> list[str]:
     if all_flag:
         instances = registry.list_instances()
         if not instances:
-            typer.echo("(no instances)")
+            console.hint("(no instances)")
             raise typer.Exit(code=0)
         return sorted(instances)
     if not names:
@@ -174,14 +175,13 @@ def _resolve_lifecycle_names(names: list[str], all_flag: bool, verb: str) -> lis
         try:
             backend = api.Manager.resolve(instance_name)
         except api.InstanceNotFoundError as e:
-            typer.echo(f"skipped {instance_name}: {e}", err=True)
+            console.note(f"skipped {instance_name}: {e}")
             continue
         if isinstance(backend, api.Lifecycle):
             filtered.append(instance_name)
         else:
-            typer.echo(
+            console.note(
                 f"skipped {instance_name} ({backend.kind}): {verb!r} not supported by this backend",
-                err=True,
             )
     return filtered
 
@@ -240,19 +240,20 @@ def create(
         dst = paths.instance_data(target_root)
         if dst.exists():
             shutil.rmtree(dst)
-        typer.echo(f"[beetroot] copying {src} → {dst}")
+        console.step(f"copying {src} → {dst}")
         shutil.copytree(src, dst)
 
+    console.step(f"allocating a port index and staging files for {name}")
     try:
         inst = api.Instance.create(name, path=target_root)
     except ValueError as e:
         raise _error(str(e)) from e
     p = inst.ports
-    typer.echo(
-        f"[beetroot] created {inst.name} at {inst.root} "
+    console.status(
+        f"created {inst.name} at {inst.root} "
         f"(index {inst.index}, ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"
     )
-    typer.echo(f"[beetroot] next: beetroot up {inst.name}")
+    console.hint(f"next: beetroot up {inst.name}")
 
 
 @app.command()
@@ -280,11 +281,12 @@ def register(
     except ValueError as e:
         raise _error(str(e)) from e
     p = inst.ports
-    typer.echo(
-        f"[beetroot] registered {inst.name} at {inst.root} "
+    console.status(
+        f"registered {inst.name} at {inst.root} "
         f"(index {inst.index}, ADB localhost:{p['adb']}, "
         f"Frida localhost:{p['frida']})"
     )
+    console.hint(f"next: beetroot up {inst.name}")
 
 
 def _adopt_default_name(serial: str) -> str:
@@ -365,9 +367,9 @@ def adopt(
             )
     backend_config = registry.AdbBackendConfig(serial=serial)
     index = registry.add_allocating(resolved_name, backend=backend_config)
-    typer.echo(f"[beetroot] adopted {resolved_name} → adb serial {serial} (index {index})")
-    typer.echo(
-        f"[beetroot] next: beetroot shell {resolved_name} "
+    console.status(f"adopted {resolved_name} → adb serial {serial} (index {index})")
+    console.hint(
+        f"next: beetroot shell {resolved_name} "
         f"(or `beetroot frida {resolved_name}` once frida-server is running)"
     )
 
@@ -382,12 +384,13 @@ def apply(
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
     lc = cast(api.Lifecycle, _require(backend, api.Lifecycle, "apply"))
+    console.step(f"re-rendering .env and staging files for {name} from beetroot.yaml")
     try:
         lc.apply()
     except ValueError as e:
         raise _error(str(e)) from e
-    typer.echo(f"[beetroot] re-staged {name} from beetroot.yaml")
-    typer.echo(f"[beetroot] restart with: beetroot down {name} && beetroot up {name}")
+    console.status(f"re-staged {name} from beetroot.yaml")
+    console.hint(f"restart with: beetroot down {name} && beetroot up {name}")
 
 
 def _binder_preflight(mode: hostcheck.BinderMode, *, warned: bool) -> bool:
@@ -431,11 +434,10 @@ def _binder_preflight(mode: hostcheck.BinderMode, *, warned: bool) -> bool:
         raise _error(f"{plan.reason}.{remedy}")
     if not warned:
         remedy = f" Remedy: {plan.remedy}." if plan.remedy else ""
-        typer.echo(
-            f"[beetroot] warning: redroid needs the kernel binder driver, but {plan.reason}. "
+        console.note(
+            f"warning: redroid needs the kernel binder driver, but {plan.reason}. "
             f"The container may start but Android will not boot.{remedy} "
-            "Run `beetroot doctor <name>` to recheck.",
-            err=True,
+            "Run `beetroot doctor <name>` to recheck."
         )
     return True
 
@@ -462,19 +464,16 @@ def _vm_up_banner(backend: vm_backend.VmDeviceBackend) -> None:
     except vm_qemu.QemuLaunchError as e:
         raise _error(str(e)) from e
     if accel == "kvm":
-        typer.echo(
-            "[beetroot] backend: emulated micro-VM (no host binder) — "
-            "acceleration: KVM (near-native).",
-            err=True,
+        console.note(
+            "backend: emulated micro-VM (no host binder) — acceleration: KVM (near-native)."
         )
         return
-    typer.echo(
-        "[beetroot] backend: emulated micro-VM (no host binder) — "
+    console.note(
+        "backend: emulated micro-VM (no host binder) — "
         "acceleration: TCG (software): /dev/kvm not available. "
         "First boot is SLOW (~5-20x; minutes, not seconds) — this is "
         "expected, not a hang. Pin `vm.accel: kvm` on a host with nested "
-        "virt for near-native speed.",
-        err=True,
+        "virt for near-native speed."
     )
 
 
@@ -538,18 +537,19 @@ def up(
             binder_warned = _binder_preflight(backend.config.binder, warned=binder_warned)
         if isinstance(backend, vm_backend.VmDeviceBackend):
             _vm_up_banner(backend)
+        console.step(f"starting {instance_name}")
         try:
             lc.up()
         except vm_qemu.QemuLaunchError as e:
             raise _error(str(e)) from e
         if isinstance(backend, api.Instance | vm_backend.VmDeviceBackend):
             p = backend.ports
-            typer.echo(
-                f"[beetroot] {backend.name} up — "
-                f"ADB localhost:{p['adb']}, Frida localhost:{p['frida']}"
+            console.status(
+                f"{backend.name} up — ADB localhost:{p['adb']}, Frida localhost:{p['frida']}"
             )
+            console.hint(f"next: beetroot shell {backend.name}")
         else:
-            typer.echo(f"[beetroot] {instance_name} up")
+            console.status(f"{instance_name} up")
 
 
 @app.command()
@@ -569,8 +569,9 @@ def down(
     for instance_name in _resolve_lifecycle_names(list(names or []), all_, "down"):
         _ensure_exists(instance_name)
         backend = api.Manager.resolve(instance_name)
+        console.step(f"stopping {instance_name}")
         cast(api.Lifecycle, _require(backend, api.Lifecycle, "down")).down()
-        typer.echo(f"[beetroot] {instance_name} down (data preserved)")
+        console.status(f"{instance_name} down (data preserved)")
 
 
 @app.command()
@@ -597,8 +598,9 @@ def restart(
         # path to the same expensive boot.
         if isinstance(backend, vm_backend.VmDeviceBackend):
             _vm_up_banner(backend)
+        console.step(f"restarting {instance_name}")
         lc.restart()
-        typer.echo(f"[beetroot] {instance_name} restarted")
+        console.status(f"{instance_name} restarted")
 
 
 @app.command()
@@ -622,7 +624,7 @@ def destroy(
             default=False,
         )
         if not confirmed:
-            typer.echo("[beetroot] aborted")
+            console.status("aborted")
             return
     # Try resolving the backend first so we can gate on the Lifecycle
     # sub-protocol. If resolution fails with InstanceNotFoundError AND
@@ -633,14 +635,15 @@ def destroy(
     try:
         backend = api.Manager.resolve(name)
         lc = cast(api.Lifecycle, _require(backend, api.Lifecycle, "destroy"))
+        console.step(f"tearing down {name} (stopping container, deleting data)")
         try:
             lc.destroy(yes=True)
         except compose.ComposeError as e:
             # compose.down failed but host-side teardown (registry row +
             # directory) already ran inside Instance.destroy. Surface as
             # advisory so the user knows cleanup still happened.
-            typer.echo(f"[beetroot] (compose down failed: {e}; continuing)")
-        typer.echo(f"[beetroot] destroyed {name}")
+            console.note(f"(compose down failed: {e}; continuing)")
+        console.status(f"destroyed {name}")
         return
     except api.InstanceNotFoundError:
         pass  # fall through to orphan-cleanup path below
@@ -678,7 +681,7 @@ def destroy(
             except compose.ComposeError as e:
                 # Surface the compose failure as a "continuing" advisory so
                 # the user knows the host-side cleanup still ran.
-                typer.echo(f"[beetroot] (compose down failed: {e}; continuing)")
+                console.note(f"(compose down failed: {e}; continuing)")
         # Remove the registry row BEFORE deleting the directory so an
         # interrupt between the two operations always leaves a clean
         # state: a registered-but-deleted instance (row first) is
@@ -691,9 +694,9 @@ def destroy(
         # Orphan registry entry — the on-disk dir is already gone, so
         # compose.down would FileNotFoundError on its cwd= arg.
         # Skip it and just clean the registry row.
-        typer.echo(f"[beetroot] (instance dir {root} already gone; removing orphan registry entry)")
+        console.note(f"(instance dir {root} already gone; removing orphan registry entry)")
         registry.remove(name)
-    typer.echo(f"[beetroot] destroyed {name}")
+    console.status(f"destroyed {name}")
 
 
 @app.command()
@@ -711,7 +714,7 @@ def forget(
     """
     _ensure_exists(name)
     registry.remove(name)
-    typer.echo(f"[beetroot] forgot {name} (registry row removed; host directory untouched)")
+    console.status(f"forgot {name} (registry row removed; host directory untouched)")
 
 
 @app.command(name="ls")
@@ -744,23 +747,16 @@ def ls(
         return
 
     if not rows and not orphans:
-        typer.echo("(no instances — try 'beetroot create alpha')")
+        console.hint("(no instances — try 'beetroot create alpha')")
         return
     if rows:
-        # Inject a runtime-bound Console so the table writes to the
-        # current sys.stdout (e.g. CliRunner's StringIO in tests, or the
-        # real terminal in production). The module-level singleton is
-        # bound at import time and doesn't pick up CliRunner redirections.
-        _runtime_console = _RichConsole(file=sys.stdout, highlight=False)
-        old_stdout_console = console._stdout_console  # noqa: SLF001  # intentional injection for runtime sys.stdout binding
-        console.set_consoles(stdout=_runtime_console)
-        try:
-            console.table(
-                columns=["NAME", "KIND", "IDX", "ADB", "FRIDA", "STATUS", "PATH"],
-                rows=[_ls_table_row(name, meta, backend) for name, meta, backend in rows],
-            )
-        finally:
-            console.set_consoles(stdout=old_stdout_console)
+        # The stdout console resolves ``sys.stdout`` lazily on every write, so
+        # the table lands on whatever stream is current (CliRunner's StringIO
+        # in tests, the real terminal in production) — no runtime rebind needed.
+        console.table(
+            columns=["NAME", "KIND", "IDX", "ADB", "FRIDA", "STATUS", "PATH"],
+            rows=[_ls_table_row(name, meta, backend) for name, meta, backend in rows],
+        )
     if orphans:
         _emit_orphan_skip(orphans)
 
@@ -838,11 +834,10 @@ def _emit_orphan_skip(orphans: list[str]) -> None:
     Print the trailing orphan advisory to stderr so it never pollutes JSON output.
     """
     names = ", ".join(orphans)
-    typer.echo(
+    console.note(
         f"(skipping {len(orphans)} orphan "
         f"{'entry' if len(orphans) == 1 else 'entries'}: {names}; "
-        f"clean up with 'beetroot destroy <name> -y')",
-        err=True,
+        f"clean up with 'beetroot destroy <name> -y')"
     )
 
 
@@ -1024,13 +1019,15 @@ def doctor(
     fail_count = 0
     for check_name, result in results.items():
         if result.status == "pass":
-            line = f"{check_name}: pass"
+            console.out(f"{check_name}: pass", style="green")
         else:
             reason = f" {result.reason}" if result.reason else ""
-            line = f"{check_name}: {result.status}{reason}"
+            console.out(
+                f"{check_name}: {result.status}{reason}",
+                style="red" if result.status == "fail" else "yellow",
+            )
         if result.status == "fail":
             fail_count += 1
-        typer.echo(line)
     if fail_count > 0:
         # POSIX exit codes top out at 255; clamp so a hypothetical
         # 300-check fan-out doesn't wrap to 44.
@@ -1065,16 +1062,10 @@ def modes(
             json.dumps([r.model_dump() for r in results], indent=2, sort_keys=True)
         )
         return
-    _runtime_console = _RichConsole(file=sys.stdout, highlight=False)
-    old_stdout_console = console._stdout_console  # noqa: SLF001  # intentional injection for runtime sys.stdout binding
-    console.set_consoles(stdout=_runtime_console)
-    try:
-        console.table(
-            ("MODE", "STATUS", "DETAIL"),
-            [(r.mode, r.status, r.remedy or r.reason) for r in results],
-        )
-    finally:
-        console.set_consoles(stdout=old_stdout_console)
+    console.table(
+        ("MODE", "STATUS", "DETAIL"),
+        [(r.mode, r.status, r.remedy or r.reason) for r in results],
+    )
 
 
 @app.command(
@@ -1109,9 +1100,9 @@ def frida(
 def _echo_module_rows(results: list[api.ModuleInstallResult]) -> None:
     for r in results:
         if r.ok:
-            typer.echo(f"[beetroot] ok: {r.source} — {r.detail}")
+            console.status(f"ok: {r.source} — {r.detail}")
         else:
-            typer.echo(f"[beetroot] failed: {r.source} — {r.detail}", err=True)
+            console.note(f"failed: {r.source} — {r.detail}")
 
 
 def _module_auto_install(
@@ -1202,10 +1193,10 @@ def module(
     installer = cast(api.ModuleInstaller, _require(backend, api.ModuleInstaller, "module"))
     installer.add_module(sources[0], sha256=digests[0] if digests else None)
     if isinstance(backend, api.Instance):
-        typer.echo(f"[beetroot] added module → {paths.instance_yaml(backend.root)}")
-        typer.echo(f"[beetroot] restart to flash: beetroot down {name} && beetroot up {name}")
+        console.status(f"added module → {paths.instance_yaml(backend.root)}")
+        console.hint(f"restart to flash: beetroot down {name} && beetroot up {name}")
     else:
-        typer.echo(f"[beetroot] module pushed to {name}")
+        console.status(f"module pushed to {name}")
 
 
 @app.command(name="setup", hidden=True)
@@ -1258,15 +1249,15 @@ def build(
             artifacts = builder.build_vm_kernel()
         except builder.BootstrapError as e:
             raise _error(str(e)) from e
-        typer.echo(f"[beetroot] micro-VM kernel built: {artifacts.kernel}")
-        typer.echo(f"[beetroot] micro-VM rootfs built: {artifacts.rootfs}")
-        typer.echo(
-            "[beetroot] next: point vm.kernel / vm.rootfs (or BEETROOT_VM_KERNEL "
+        console.status(f"micro-VM kernel built: {artifacts.kernel}")
+        console.status(f"micro-VM rootfs built: {artifacts.rootfs}")
+        console.hint(
+            "next: point vm.kernel / vm.rootfs (or BEETROOT_VM_KERNEL "
             "/ BEETROOT_VM_ROOTFS) at these paths and set binder: vm."
         )
         return
     tag = builder.build_image(gapps=gapps.value)
-    typer.echo(f"[beetroot] base image built: {tag}")
+    console.status(f"base image built: {tag}")
 
 
 @app.command(name="snapshot")
@@ -1284,11 +1275,12 @@ def snapshot(
     backend = api.Manager.resolve(name)
     snappable = cast(api.Snapshottable, _require(backend, api.Snapshottable, "snapshot"))
     dest = output if output is not None else Path(f"{name}.tar.zst")
+    console.step(f"packing {name} → {dest}")
     try:
         final = snappable.snapshot(dest)
     except snapshot_mod.SnapshotError as e:
         raise _error(str(e)) from e
-    typer.echo(f"[beetroot] snapshot of {name} → {final}")
+    console.status(f"snapshot of {name} → {final}")
 
 
 @app.command(name="restore")
@@ -1330,6 +1322,7 @@ def restore(
         raise _error(str(e)) from e
     dest_name = effective_name if effective_name is not None else manifest.name
     dest_path = (path if path is not None else Path(dest_name)).resolve()
+    console.step(f"unpacking {archive} → {dest_path}")
     try:
         restored = snapshot_mod.restore(
             archive,
@@ -1341,14 +1334,14 @@ def restore(
         raise _error(str(e)) from e
     inst = _load(dest_name)
     p = inst.ports
-    typer.echo(
-        f"[beetroot] restored {dest_name} at {restored} "
+    console.status(
+        f"restored {dest_name} at {restored} "
         f"(index {inst.index}, ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"
     )
     # Agent A's fix made ``snapshot.restore`` call ``_stage()``
     # itself, so an intermediate ``beetroot apply`` is no longer
     # required before ``beetroot up``. CR #3 finding 10.
-    typer.echo(f"[beetroot] next: beetroot up {dest_name}")
+    console.hint(f"next: beetroot up {dest_name}")
 
 
 def main() -> None:
@@ -1370,23 +1363,23 @@ def main() -> None:
         # "this verb doesn't apply to this backend" from "this
         # instance / file / network call failed". v0.4 introduces
         # backend-typed exit codes; the rest stay 1 for source compat.
-        typer.echo(f"error: {e}", err=True)
+        console.error(str(e))
         sys.exit(2)
     except api.InstanceNotFoundError as e:
         # Manager.resolve raises InstanceNotFoundError for unknown names
         # and for unresolvable backend kinds (e.g. package not installed).
         # v0.4 let these propagate as tracebacks; v0.6 catches them for
         # a friendly error: ... line + exit 1.
-        typer.echo(f"error: {e}", err=True)
+        console.error(str(e))
         sys.exit(1)
     except paths.InstanceRootNotFoundError as e:
-        typer.echo(f"error: {e}", err=True)
+        console.error(str(e))
         sys.exit(1)
     except ports.PortCollisionError as e:
-        typer.echo(f"error: {e}", err=True)
+        console.error(str(e))
         sys.exit(1)
     except compose.ComposeError as e:
-        typer.echo(f"error: {e}", err=True)
+        console.error(str(e))
         sys.exit(1)
     except vm_qemu.QemuLaunchError as e:
         # Any non-``up`` path to a QEMU launch (e.g. ``restart``, which
@@ -1395,13 +1388,13 @@ def main() -> None:
         # its banner; this net covers every other verb so a missing
         # artifact / ``accel: kvm`` without ``/dev/kvm`` maps to the same
         # friendly ``error: ...`` + exit 1.
-        typer.echo(f"error: {e}", err=True)
+        console.error(str(e))
         sys.exit(1)
     except builder.BootstrapError as e:
-        typer.echo(f"error: {e}", err=True)
+        console.error(str(e))
         sys.exit(1)
     except modules_download.ModuleFetchError as e:
-        typer.echo(f"error: {e}", err=True)
+        console.error(str(e))
         sys.exit(1)
     except registry.RegistryError as e:
         # T2 Agent 3 1.9: any code path that walks the registry can
@@ -1409,7 +1402,7 @@ def main() -> None:
         # adb backend, no on-disk dir") that v0.3 let propagate as
         # a Rich-rendered traceback. Catch it alongside the other
         # domain exceptions for a friendly ``error: ...`` line.
-        typer.echo(f"error: {e}", err=True)
+        console.error(str(e))
         sys.exit(1)
     except (pydantic.ValidationError, yaml.YAMLError) as e:
         # A hostile or corrupt ``beetroot.yaml`` (wrong field types,
@@ -1422,7 +1415,7 @@ def main() -> None:
         # at all, so even ``register`` tracebacked on a syntactically broken
         # file. Catch both here for the uniform ``error: ...`` + exit 1
         # contract the rest of the CLI upholds.
-        typer.echo(f"error: {e}", err=True)
+        console.error(str(e))
         sys.exit(1)
     except FileNotFoundError as e:
         # Belt-and-suspenders: an instance whose on-disk dir was
@@ -1431,7 +1424,7 @@ def main() -> None:
         # ``beetroot.yaml`` deep in the call tree. ``Manager.list``
         # filters orphans itself, but a verb that targets the orphan
         # by name still needs this safety net.
-        typer.echo(f"error: {e}", err=True)
+        console.error(str(e))
         sys.exit(1)
 
 

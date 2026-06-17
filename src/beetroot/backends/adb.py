@@ -29,12 +29,11 @@ from __future__ import annotations
 import contextlib
 import shlex
 import subprocess
-import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
 
-from beetroot import frida_download, modules_download, ports, registry
+from beetroot import console, frida_download, modules_download, ports, registry
 from beetroot.api import (
     AdbNotInstalledError,
     DevicePreflightError,
@@ -389,14 +388,13 @@ class AdbDevice:
         basename = src.name
         remote = f"{_MAGISK_MODULE_DROP}/{basename}"
         self._adb("push", str(src), remote)
-        # User-facing instruction — print() rather than typer.echo()
-        # so callers that exercise the Protocol surface directly (not
-        # via the CLI) still see the message.
-        print(  # noqa: T201  # user-facing instruction
-            f"[beetroot] pushed {basename} → {remote}. "
+        # User-facing instruction routed through the shared console layer so
+        # callers that exercise the Protocol surface directly (not via the
+        # CLI) still see the message on stderr.
+        console.note(
+            f"pushed {basename} → {remote}. "
             f"Install via the Magisk app → Modules tab → Install from "
-            f"storage; pick {remote}.",
-            file=sys.stderr,
+            f"storage; pick {remote}."
         )
 
     def auto_install_modules(

@@ -23,12 +23,12 @@ output instead.
 from __future__ import annotations
 
 import contextlib
-import sys
 import types
 from collections.abc import Generator, Sequence
 from typing import IO
 
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import (
     BarColumn,
     Progress,
@@ -41,16 +41,23 @@ from rich.table import Table
 
 # ---------------------------------------------------------------------------
 # Module-level console singletons.  Tests replace these via set_consoles().
+#
+# Both consoles are constructed *without* an explicit ``file=`` so rich
+# resolves ``sys.stdout`` / ``sys.stderr`` lazily on every write. That makes
+# the helpers track the *current* streams — Typer's ``CliRunner`` (tests) and
+# ``capsys`` both swap ``sys.stdout``/``sys.stderr`` per invocation, so binding
+# the file at import time would send all output to the wrong place. The
+# ``stderr=True`` flag tells rich to resolve ``sys.stderr`` instead of stdout.
 # ---------------------------------------------------------------------------
 
-_stdout_console: Console = Console(
-    file=sys.stdout,
-    highlight=False,
-)
-_stderr_console: Console = Console(
-    file=sys.stderr,
-    highlight=False,
-)
+_stdout_console: Console = Console(highlight=False)
+_stderr_console: Console = Console(stderr=True, highlight=False)
+
+# Styled brand tag rendered at the head of every primary status line. The
+# leading backslash escapes the ``[`` so rich emits a literal ``[beetroot]``
+# (off-TTY the markup is stripped, leaving the plain ``[beetroot]`` prefix
+# that scripts and the test-suite already match on).
+_BRAND = r"\[beetroot]"
 
 
 def set_consoles(
@@ -92,17 +99,31 @@ def set_consoles(
 # ---------------------------------------------------------------------------
 
 
+def _emit(console: Console, markup: str) -> None:
+    """
+    Print one fully-formed markup line with wrapping disabled.
+
+    ``soft_wrap=True`` stops rich from hard-wrapping a long line at the
+    console width (80 columns when the stream is not a TTY, which would inject
+    spurious newlines into a status line and break both shell pipelines and
+    substring assertions). The terminal itself still soft-wraps on display.
+    """
+    console.print(markup, soft_wrap=True)
+
+
 def error(msg: str) -> None:
     """
     Print a styled ``error: <msg>`` line to stderr.
 
     Matches the ``error: ...`` convention already used throughout ``cli.py``.
-    Rich strips ANSI codes automatically when stderr is not a TTY.
+    Rich strips ANSI codes automatically when stderr is not a TTY. The message
+    is markup-escaped so a stray ``[`` in an exception string can never be
+    misparsed as a rich tag (which would crash the error path itself).
 
     Args:
         msg: The error message text (no trailing newline needed).
     """
-    _stderr_console.print(f"[bold red]error:[/bold red] {msg}")
+    _emit(_stderr_console, f"[bold red]error:[/bold red] {escape(msg)}")
 
 
 def warn(msg: str) -> None:
@@ -112,7 +133,7 @@ def warn(msg: str) -> None:
     Args:
         msg: The warning message text.
     """
-    _stderr_console.print(f"[bold yellow]warn:[/bold yellow] {msg}")
+    _emit(_stderr_console, f"[bold yellow]warn:[/bold yellow] {escape(msg)}")
 
 
 def info(msg: str) -> None:
@@ -122,7 +143,7 @@ def info(msg: str) -> None:
     Args:
         msg: The informational message text.
     """
-    _stderr_console.print(f"[bold cyan]info:[/bold cyan] {msg}")
+    _emit(_stderr_console, f"[bold cyan]info:[/bold cyan] {escape(msg)}")
 
 
 def success(msg: str) -> None:
@@ -132,7 +153,86 @@ def success(msg: str) -> None:
     Args:
         msg: The success message text.
     """
-    _stderr_console.print(f"[bold green]ok:[/bold green] {msg}")
+    _emit(_stderr_console, f"[bold green]ok:[/bold green] {escape(msg)}")
+
+
+# ---------------------------------------------------------------------------
+# Branded helpers — the primary CLI voice.  ``status`` / ``step`` / ``hint``
+# render to stdout (the command's readable output); ``note`` renders to stderr
+# (out-of-band advisories).  All keep the ``[beetroot]`` brand so existing
+# scripts and tests that match on it keep working.
+# ---------------------------------------------------------------------------
+
+
+def status(msg: str) -> None:
+    """
+    Print a branded ``[beetroot] <msg>`` outcome line to stdout.
+
+    The primary CLI voice for the result of a verb (created, started,
+    destroyed, …). The brand is tinted cyan on a TTY; off-TTY rich strips the
+    markup, leaving the plain ``[beetroot] <msg>`` line.
+
+    Args:
+        msg: The status message text.
+    """
+    _emit(_stdout_console, f"[bold cyan]{_BRAND}[/bold cyan] {escape(msg)}")
+
+
+def note(msg: str) -> None:
+    """
+    Print a branded ``[beetroot] <msg>`` advisory line to stderr.
+
+    Used for out-of-band advisories (binder/VM banners, best-effort cleanup
+    warnings) that must not pollute a piped stdout. The brand is tinted yellow
+    on a TTY.
+
+    Args:
+        msg: The advisory message text.
+    """
+    _emit(_stderr_console, f"[bold yellow]{_BRAND}[/bold yellow] {escape(msg)}")
+
+
+def step(msg: str) -> None:
+    """
+    Print a dimmed ``→ <msg>`` narration line to stdout.
+
+    The verbose "what I'm about to do" voice that precedes a slow action so
+    the user sees forward motion. Dimmed so it recedes behind the eventual
+    :func:`status` outcome.
+
+    Args:
+        msg: The narration text.
+    """
+    _emit(_stdout_console, f"[dim]→ {escape(msg)}[/dim]")
+
+
+def hint(msg: str) -> None:
+    """
+    Print a dimmed next-step suggestion line to stdout.
+
+    Used for the "next: …" follow-up suggestions after a verb completes.
+
+    Args:
+        msg: The suggestion text (e.g. ``next: beetroot up alpha``).
+    """
+    _emit(_stdout_console, f"[dim]{escape(msg)}[/dim]")
+
+
+def out(msg: str, *, style: str = "") -> None:
+    """
+    Print a plain (un-branded) line to stdout, optionally styled.
+
+    For machine-parseable result lines (e.g. ``beetroot doctor``'s
+    ``<check>: <status>`` rows) that want a TTY tint but must stay verbatim
+    when piped — rich strips the style off-TTY, leaving the exact text.
+
+    Args:
+        msg: The line text.
+        style: An optional rich style (e.g. ``"green"``, ``"red"``) applied to
+            the whole line; empty for the terminal's default colour.
+    """
+    text = escape(msg)
+    _emit(_stdout_console, f"[{style}]{text}[/{style}]" if style else text)
 
 
 # ---------------------------------------------------------------------------

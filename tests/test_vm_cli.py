@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
-from beetroot import api, cli, config, registry
+from beetroot import api, cli, config, console, registry
 from beetroot.backends import vm as vm_backend
 from beetroot.builder import VmArtifacts
 from beetroot.settings import Settings
@@ -304,15 +306,12 @@ class TestVmRestart:
         monkeypatch.setattr(qemu, "detect_accel", lambda _r: "tcg")
         monkeypatch.setattr(qemu.QemuProcess, "terminate", lambda _self: True)
         monkeypatch.setattr(sys, "argv", ["beetroot", "restart", "vm1"])
-        stderr: list[str] = []
-        monkeypatch.setattr(
-            "beetroot.cli.typer.echo",
-            lambda msg, *, err=False, **_k: stderr.append(msg) if err else None,
-        )
+        buf = io.StringIO()
+        console.set_consoles(stderr=Console(file=buf, force_terminal=False))
         with pytest.raises(SystemExit) as exc:
             cli.main()
         assert exc.value.code == 1
-        joined = "\n".join(stderr)
+        joined = buf.getvalue()
         assert "error: no VM kernel configured" in joined
         assert "Traceback" not in joined
 

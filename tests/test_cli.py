@@ -655,7 +655,9 @@ class TestCmdDestroy:
         with patch.object(compose, "down", side_effect=_boom):
             result = runner.invoke(cli.app, ["destroy", "alpha", "-y"])
         assert result.exit_code == 0, result.stderr
-        assert "continuing" in result.stdout
+        # The "compose down failed; continuing" advisory is an out-of-band
+        # note → stderr, so it never pollutes a piped stdout.
+        assert "continuing" in result.stderr
         assert registry.get("alpha") is None
 
     def test_destroy_missing_instance_exits(self, cli_root: Path) -> None:
