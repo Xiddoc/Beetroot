@@ -22,7 +22,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, cast
 
+import pydantic
 import typer
+import yaml
 from rich.console import Console as _RichConsole
 
 from . import (
@@ -1407,6 +1409,19 @@ def main() -> None:
         # adb backend, no on-disk dir") that v0.3 let propagate as
         # a Rich-rendered traceback. Catch it alongside the other
         # domain exceptions for a friendly ``error: ...`` line.
+        typer.echo(f"error: {e}", err=True)
+        sys.exit(1)
+    except (pydantic.ValidationError, yaml.YAMLError) as e:
+        # A hostile or corrupt ``beetroot.yaml`` (wrong field types,
+        # unsupported ``api_version``, the renamed ``stealth:`` section,
+        # or malformed YAML syntax) reaches ``config.load_yaml`` deep in
+        # the call tree. ``register``/``adopt`` catch ``ValueError`` (and
+        # ``ValidationError`` subclasses it) inline, but every name-resolved
+        # verb (``status``, ``up``, ``apply``, …) let these propagate as a
+        # Rich-rendered traceback. ``yaml.YAMLError`` isn't a ``ValueError``
+        # at all, so even ``register`` tracebacked on a syntactically broken
+        # file. Catch both here for the uniform ``error: ...`` + exit 1
+        # contract the rest of the CLI upholds.
         typer.echo(f"error: {e}", err=True)
         sys.exit(1)
     except FileNotFoundError as e:
