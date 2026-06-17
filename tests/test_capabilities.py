@@ -97,11 +97,14 @@ def test_vm_tcg_with_qemu_supported() -> None:
 def test_adb_adopt_without_adb_needs_setup() -> None:
     r = capabilities._adb_adopt(adb_present=False)
     assert r.status == "needs-setup"
+    # Even before adb is installed, the DETAIL must flag the external-device need.
+    assert "external rooted device" in r.remedy
 
 
 def test_adb_adopt_with_adb_supported() -> None:
     r = capabilities._adb_adopt(adb_present=True)
     assert r.status == "supported"
+    assert "external rooted device" in r.remedy
 
 
 # ---- classify_modes -------------------------------------------------------

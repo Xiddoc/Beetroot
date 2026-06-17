@@ -1240,13 +1240,23 @@ def build(
             ),
         ),
     ] = False,
+    from_source: Annotated[
+        bool,
+        typer.Option(
+            "--from-source",
+            help=(
+                "With --vm-kernel: always compile the guest kernel from source "
+                "instead of fetching the matching prebuilt bzImage (~7 min)."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """
     Build the redroid base image, or (with --vm-kernel) the micro-VM artifacts.
     """
     if vm_kernel:
         try:
-            artifacts = builder.build_vm_kernel()
+            artifacts = builder.build_vm_kernel(from_source=from_source)
         except builder.BootstrapError as e:
             raise _error(str(e)) from e
         console.status(f"micro-VM kernel built: {artifacts.kernel}")

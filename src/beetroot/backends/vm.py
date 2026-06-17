@@ -92,7 +92,11 @@ def _resolve_artifact(configured: str | None, env_default: str, label: str) -> P
             f"the BEETROOT_VM_{label.upper()} environment variable. Build one "
             f"with `beetroot build --vm-kernel`."
         )
-    path = Path(raw)
+    # Expand a leading ``~`` — the shipped examples/vm.yaml points kernel/rootfs
+    # at ``~/.cache/beetroot/vm/...`` (where ``beetroot build --vm-kernel``
+    # writes them), and YAML carries the tilde literally. Without this the
+    # documented example config never boots ("does not exist on the host").
+    path = Path(raw).expanduser()
     if not path.exists():
         raise qemu.QemuLaunchError(
             f"VM {label} {raw!r} does not exist on the host filesystem. "

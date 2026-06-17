@@ -34,9 +34,18 @@ class TestBuildVmKernel:
             )
             result = runner.invoke(cli.app, ["build", "--vm-kernel"])
         assert result.exit_code == 0, result.stderr
-        mock_b.assert_called_once_with()
+        mock_b.assert_called_once_with(from_source=False)
         assert "/c/bzImage" in result.stdout
         assert "/c/rootdisk.img" in result.stdout
+
+    def test_vm_kernel_from_source_flag(self, cli_root: Path) -> None:
+        with patch("beetroot.cli.builder.build_vm_kernel") as mock_b:
+            mock_b.return_value = VmArtifacts(
+                kernel=Path("/c/bzImage"), rootfs=Path("/c/rootdisk.img")
+            )
+            result = runner.invoke(cli.app, ["build", "--vm-kernel", "--from-source"])
+        assert result.exit_code == 0, result.stderr
+        mock_b.assert_called_once_with(from_source=True)
 
     def test_vm_kernel_failure_surfaces_error(self, cli_root: Path) -> None:
         from beetroot.builder import BootstrapError

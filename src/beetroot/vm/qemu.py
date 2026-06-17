@@ -94,7 +94,8 @@ def detect_accel(requested: Literal["auto", "kvm", "tcg"]) -> ResolvedAccel:
                 "vm.accel: kvm was requested but /dev/kvm is absent or not "
                 "read/writable on this host. Use accel: tcg (slow, software "
                 "emulation) or accel: auto (auto-falls back to tcg), or grant "
-                "the user access to /dev/kvm (e.g. add it to the `kvm` group)."
+                "the user access to /dev/kvm (e.g. add it to the `kvm` group). "
+                "Run `beetroot modes` to see what this host supports."
             )
         return "kvm"
     # ``auto``: prefer KVM when usable, else fall back to TCG.

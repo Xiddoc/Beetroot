@@ -173,6 +173,55 @@
   `status` / `note` / `step` / `hint` / `out` helpers and its stdout/stderr
   consoles now track the live streams, retiring the per-call console-rebind
   shim the `ls` / `modes` tables needed.
+- **Friendlier capability errors + clearer `beetroot modes`.** Capability
+  *mismatch* failures now point at `beetroot modes` so you can see the host's
+  full menu: the `vm.accel: kvm`-without-`/dev/kvm` error and the doctor
+  `host.binder` fail row both append "Run `beetroot modes` …". And the `modes`
+  `adb backend` row now states it **needs an external rooted device/emulator to
+  adopt** in *both* the installed and not-yet-installed states (previously the
+  not-installed row only mentioned installing platform-tools, leaving the
+  external-device requirement implicit). The artifact-missing preflight is left
+  pointing at `beetroot build --vm-kernel` (you picked the right mode — just
+  finish setup), so the `modes` pointer stays signal, not noise.
+- **Trimmed the `binder: vm` guest kernel config (~23% faster compile, ~15%
+  smaller bzImage).** `docker/vm/kernel.config` now disables physical-hardware
+  driver classes a QEMU `q35`+virtio guest can never bind (`DRM_I915`,
+  `ETHERNET`, `WLAN`, `ATA`, `SCSI_LOWLEVEL`) — pure compile-time / image-size
+  win, no runtime change (those drivers never probe a device on our
+  `-nographic -display none` launch line). `compile_seconds` dropped 541→418
+  and the bzImage 14→12 MiB on the in-sandbox build. **Validated under TCG:**
+  redroid still boots to `sys.boot_completed=1` (~101 s, within noise of the
+  98 s full build), `screencap` returns a real 720×1280 frame, and AudioFlinger
+  is up. Sound, DRM core + `virtio-gpu`, and the generic graphics infra
+  (`dma-buf`/`sync_file`/`memfd`) are deliberately kept (Beetroot doubles as a
+  dev target — app audio and screenshots must keep working). Numbers and the
+  keep/cut rationale live in `benchmarks/README.md`.
+- **ccache for the guest-kernel build + `CONFIG_MODULES=n`.**
+  `build_vm_kernel` now injects `CC="ccache gcc"` when ccache is on PATH — a
+  no-op on a cold build, but a re-compile of unchanged source (CI build lanes,
+  local iteration) drops from ~7–9 min to **~54 s (99.8% cache hits)**. The
+  benchmark lane keeps `CCACHE_DISABLE=1` so it still times a cold compile.
+  `CONFIG_MODULES=n` matches the module-less guest (everything is built in) for
+  a small, no-downside build/image trim. **`-Os` was evaluated and rejected:**
+  it shrank the bzImage 12→10 MiB but ~doubled the TCG boot (guest-measured
+  98→201 s — the boot is CPU-bound and `-Os` trades run-time speed for size),
+  so the guest stays on the `-O2` default. The empirical comparison is in
+  `benchmarks/README.md`.
+- **Prebuilt `binder: vm` guest kernels (`beetroot build --vm-kernel` fetches a
+  ~12 MiB bzImage instead of compiling).** The cold kernel compile (~7 min) is
+  the long pole for a fresh host, and ccache only helps *re*builds — a brand-new
+  CI runner or Claude Code on the web sandbox always pays full price. The CLI
+  now downloads a prebuilt `bzImage` from the repo's `vm-kernel` GitHub release,
+  keyed on the pinned kernel version **and** a fingerprint of the local
+  `docker/vm/kernel.config` (sha256-verified via a `.sha256` sidecar). A config
+  edit / version bump / unpublished release / blocked network all miss cleanly
+  and fall back to a source compile, so the vendored config stays authoritative
+  — you can never boot a stale prebuilt kernel. `--from-source` forces a
+  compile. New `src/beetroot/kernel_download.py` (mirrors `frida_download.py`);
+  publishing handled by `.github/workflows/vm-kernel-release.yml` (builds with
+  ccache, uploads to the rolling `vm-kernel` release on config changes /
+  manual dispatch). The 2.4 GB rootfs is still assembled locally (over GitHub's
+  2 GB asset limit, and it pulls redroid on the user's machine).
 - **The micro-VM rootfs builder is now typed, tested Python.** The former
   `docker/vm/build-rootfs.sh` has been ported to `build_rootfs` in
   `src/beetroot/builder.py` — same recipe (busybox-static + Docker static
@@ -201,6 +250,13 @@
   recipe end-to-end under TCG; the full validation (kernel build → rootfs →
   `sys.boot_completed=1` in ~105 s, plus an A/B showing the #66 `mitigations=off`
   flag is boot-neutral under TCG) is recorded in `docs/design/vm-rnd-log.md` §D.
+- **`vm.kernel` / `vm.rootfs` now expand a leading `~`.** `_resolve_artifact`
+  ran `Path(raw)` directly, so the `~/.cache/beetroot/vm/...` paths shipped in
+  `examples/vm.yaml` (exactly where `beetroot build --vm-kernel` writes the
+  artifacts) were taken literally and never resolved — the documented example
+  config failed with "VM kernel '~/.cache/…' does not exist on the host". The
+  resolver now `expanduser()`s the configured/env path. Regression test:
+  `test_build_argv_expands_tilde_in_config_paths`.
 - **A hostile or corrupt `beetroot.yaml` now surfaces as `error: …` + exit 1,
   never a traceback** (#21, adversarial-config-corpus slice). `cli.main()`
   caught every domain exception (`ComposeError`, `RegistryError`,

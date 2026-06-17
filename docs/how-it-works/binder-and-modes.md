@@ -99,8 +99,8 @@ adb binaries, then classifies each mode:
 
 | Verdict | When |
 |---------|------|
-| `supported` | the `adb` client is installed. Needs **no** host kernel, binder, Docker, or KVM — it drives a device that lives elsewhere. Point it at one with `beetroot adopt <serial\|host:port>`. |
-| `needs-setup` | the `adb` client isn't installed → install platform-tools. |
+| `supported` | the `adb` client is installed. Needs **no** host kernel, binder, Docker, or KVM — but it boots nothing itself, so it always needs an **external rooted device/emulator** that lives elsewhere. Point it at one with `beetroot adopt <serial\|host:port>`. |
+| `needs-setup` | the `adb` client isn't installed → install platform-tools. Either way, this mode still needs an **external rooted device/emulator** to adopt. |
 
 ## How this relates to `beetroot doctor`
 

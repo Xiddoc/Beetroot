@@ -33,7 +33,7 @@ from typing import IO, Final, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from . import config, console, paths
+from . import config, console, kernel_download, paths
 from .settings import settings
 
 GappsVariant = Literal["none", "lite", "full", "mindthegapps"]
@@ -629,10 +629,12 @@ class _RootfsAssembly:
         shutil.copy(self.cfg.busybox_bin, busybox_dst)
         busybox_dst.chmod(0o755)
         # Lay down every applet symlink now: /init is `#!/bin/sh`, so /bin/sh
-        # must exist before the kernel can exec PID 1. Skip the `busybox` applet
-        # itself — it is in `busybox --list`, and symlinking /bin/busybox -> busybox
-        # would clobber the real binary we just copied with a self-referential
-        # link (ELOOP), breaking /bin/sh and panicking the guest on /init.
+        # must exist before the kernel can exec PID 1. Skip the ``busybox``
+        # applet itself — some builds (e.g. Ubuntu's busybox-static 1.36) list
+        # it, and symlinking ``bin/busybox -> busybox`` clobbers the real binary
+        # with a self-referential loop, so the kernel's exec of /init (→ /bin/sh
+        # → busybox) fails with -ELOOP. ``busybox --install -s`` skips it for the
+        # same reason; the build-time port must too.
         for applet in self.runner.capture([str(self.cfg.busybox_bin), "--list"]).split():
             if applet == "busybox":
                 continue
@@ -799,6 +801,12 @@ def build_rootfs(
 _VM_DIR = "vm"
 _KERNEL_CONFIG = "kernel.config"
 
+# The guest kernel version pinned by docs/design/vm-rnd-log.md. Kept in sync
+# with KERNEL_VERSION in .github/workflows/e2e.yml and vm-kernel-release.yml
+# (the publishing workflow) — a bump here means re-running that workflow so a
+# matching prebuilt bzImage exists for the new version.
+KERNEL_VERSION: Final = "6.12.9"
+
 
 class VmArtifacts(BaseModel):
     """
@@ -824,23 +832,38 @@ class _RootfsBuildFn(Protocol):
         ...
 
 
-def build_vm_kernel(
+class _KernelFetchFn(Protocol):
+    """The :func:`kernel_download.fetch_prebuilt` call shape, injectable for testing."""
+
+    def __call__(self, *, version: str, fingerprint: str, out_path: Path) -> Path:
+        """Download the prebuilt ``bzImage`` for (version, fingerprint) to ``out_path``."""
+        ...
+
+
+def build_vm_kernel(  # noqa: PLR0913  # 6 keyword-only params; each is a distinct injectable concern
     *,
     out_dir: Path | None = None,
     build_context: Path | None = None,
     runner: SubprocessRunner | None = None,
     rootfs_build: _RootfsBuildFn = build_rootfs,
+    from_source: bool = False,
+    kernel_fetch: _KernelFetchFn = kernel_download.fetch_prebuilt,
 ) -> VmArtifacts:
     """
     Build the micro-VM guest kernel + rootfs for the ``binder: vm`` backend.
 
     Two steps:
 
-    1. Build the guest kernel ``bzImage`` from a ``make defconfig`` base
-       merged with the vendored ``docker/vm/kernel.config`` fragment (the
-       §4.1 binder/cgroup/bpf/PSI deltas), via the kernel tree's own
-       ``merge_config.sh`` + ``make``. This heavyweight compile stays a shell
-       step the injected :class:`SubprocessRunner` dispatches.
+    1. Obtain the guest kernel ``bzImage``. By default this **fetches a
+       prebuilt kernel** matching the pinned version + the
+       ``docker/vm/kernel.config`` fingerprint from the repo's GitHub release
+       (~12 MiB, seconds) — so a fresh host skips the ~7-min compile. If no
+       matching prebuilt exists (config edited, version bumped, release not yet
+       published, or network blocked) it falls back to compiling from a
+       ``make defconfig`` base merged with the vendored fragment via the kernel
+       tree's ``merge_config.sh`` + ``make`` (the heavyweight compile stays a
+       shell step the injected :class:`SubprocessRunner` dispatches). Pass
+       ``from_source=True`` to skip the fetch and always compile.
     2. Assemble the ext4 rootfs via :func:`build_rootfs` (busybox-static +
        Docker static bundle + ``guest-init.sh`` as ``/init``) — pure-Python,
        no longer a shell script.
@@ -856,6 +879,9 @@ def build_vm_kernel(
             testing. Defaults to :class:`DefaultRunner`.
         rootfs_build: Inject the rootfs assembler for testing. Defaults to
             :func:`build_rootfs`.
+        from_source: Skip the prebuilt fetch and always compile the kernel.
+        kernel_fetch: Inject the prebuilt fetcher for testing. Defaults to
+            :func:`kernel_download.fetch_prebuilt`.
 
     Returns:
         The :class:`VmArtifacts` naming the built kernel + rootfs paths.
@@ -874,20 +900,39 @@ def build_vm_kernel(
 
     out.mkdir(parents=True, exist_ok=True)
 
-    # Step 1: build the guest kernel with the binder-enabled config fragment.
-    with console.progress("Building micro-VM guest kernel (binder + cgroup + PSI)"):
-        run.run(
-            [
-                "sh",
-                "-c",
-                # merge the defconfig base with the vendored fragment, then
-                # build, then drop the bzImage where the launcher expects it.
-                "make defconfig && "
-                f"./scripts/kconfig/merge_config.sh -m .config {kernel_config} && "
-                'make olddefconfig && make -j"$(nproc)" bzImage && '
-                f"cp arch/x86/boot/bzImage {kernel_out}",
-            ],
-        )
+    # Step 1: obtain the kernel — prebuilt fetch (fast) with a source-compile
+    # fallback, unless the caller forces from_source.
+    fetched = False
+    if not from_source:
+        fingerprint = kernel_download.config_fingerprint(kernel_config)
+        try:
+            kernel_fetch(version=KERNEL_VERSION, fingerprint=fingerprint, out_path=kernel_out)
+            console.success(f"fetched prebuilt guest kernel {KERNEL_VERSION} ({fingerprint})")
+            fetched = True
+        except kernel_download.KernelFetchError as e:
+            console.info(f"no matching prebuilt kernel ({e}); compiling from source")
+
+    if not fetched:
+        # Use ccache transparently when it's on PATH — a no-op on a cold build,
+        # but it turns a re-compile of unchanged source (CI build lanes, local
+        # iteration) into a near-instant cache hit. ccache keys on preprocessed
+        # source content, so it hits even across fresh checkouts when the cache
+        # dir is persisted. The benchmark lane, which intentionally times a cold
+        # compile, sets CCACHE_DISABLE=1 (ccache then just execs the real gcc).
+        cc_prefix = 'CC="ccache gcc" ' if shutil.which("ccache") is not None else ""
+        with console.progress("Building micro-VM guest kernel (binder + cgroup + PSI)"):
+            run.run(
+                [
+                    "sh",
+                    "-c",
+                    # merge the defconfig base with the vendored fragment, then
+                    # build, then drop the bzImage where the launcher expects it.
+                    "make defconfig && "
+                    f"./scripts/kconfig/merge_config.sh -m .config {kernel_config} && "
+                    f'make olddefconfig && make {cc_prefix}-j"$(nproc)" bzImage && '
+                    f"cp arch/x86/boot/bzImage {kernel_out}",
+                ],
+            )
 
     # Step 2: assemble the ext4 rootfs (busybox + Docker static + guest init).
     with console.progress("Assembling micro-VM guest rootfs"):
