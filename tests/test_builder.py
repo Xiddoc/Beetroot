@@ -730,6 +730,20 @@ class TestRootfsAssembly:
         assert runner.spawns
         assert runner.background.stopped == 1
 
+    def test_busybox_applet_does_not_clobber_real_binary(self, tmp_path: Path) -> None:
+        # `busybox --list` includes `busybox` itself; symlinking /bin/busybox ->
+        # busybox would replace the real binary with a self-referential link
+        # (ELOOP), breaking /bin/sh and panicking the guest on /init. The real
+        # binary must survive as a regular file while other applets are symlinks.
+        cfg = _make_rootfs_config(tmp_path)
+        runner = FakeRootfsRunner(applets=("busybox", "sh", "mount"))
+        _run_assembly(tmp_path, runner, cfg)
+        bin_dir = tmp_path / "work" / "root" / "bin"
+        assert (bin_dir / "busybox").is_file()
+        assert not (bin_dir / "busybox").is_symlink()
+        assert (bin_dir / "sh").is_symlink()
+        assert (bin_dir / "sh").readlink() == Path("busybox")
+
     def test_symlink_overwrites_existing(self, tmp_path: Path) -> None:
         link = tmp_path / "link"
         link.symlink_to("old-target")

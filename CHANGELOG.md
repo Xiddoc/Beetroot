@@ -164,6 +164,18 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **`binder: vm` guest no longer kernel-panics on boot (ELOOP on `/init`).**
+  `build_rootfs` symlinked *every* applet from `busybox --list` to `busybox` —
+  but `busybox` is itself in that list, so it overwrote the real `/bin/busybox`
+  binary with a self-referential symlink. In the packed image `/bin/busybox`
+  became a link to itself (ELOOP), which also breaks `/bin/sh`, so the guest
+  kernel could not exec `/init`'s `#!/bin/sh` and panicked at ~4 s
+  (`Requested init /init failed (error -40)`) — the micro-VM had never actually
+  booted from the committed builder. Fixed by skipping the `busybox` applet when
+  laying down symlinks (with a regression test). Found by booting the committed
+  recipe end-to-end under TCG; the full validation (kernel build → rootfs →
+  `sys.boot_completed=1` in ~105 s, plus an A/B showing the #66 `mitigations=off`
+  flag is boot-neutral under TCG) is recorded in `docs/design/vm-rnd-log.md` §D.
 - **A hostile or corrupt `beetroot.yaml` now surfaces as `error: …` + exit 1,
   never a traceback** (#21, adversarial-config-corpus slice). `cli.main()`
   caught every domain exception (`ComposeError`, `RegistryError`,
