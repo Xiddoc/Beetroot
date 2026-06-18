@@ -112,7 +112,7 @@ host is to not compile at all.** ccache lives in CI / on a warm host; a brand-ne
 CI runner or Claude Code on the web sandbox is always cold and pays the full
 ~7 min. So `beetroot build --vm-kernel` now **fetches a prebuilt bzImage**
 (~12 MiB, seconds) from the repo's `vm-kernel` GitHub release by default,
-matched to the kernel version + a fingerprint of `docker/vm/kernel.config` and
+matched to the kernel version + a fingerprint of `src/beetroot/templates/vm/kernel.config` and
 sha256-verified, falling back to a source compile on any mismatch. That turns
 the dominant cost from ~7 min to a few seconds for the common case. (The 2.4 GB
 rootfs stays locally assembled — it's over GitHub's 2 GB asset limit and pulls

@@ -231,7 +231,9 @@ jobs:
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
         with:
           path: ~/.cache/ccache
-          key: ${{ runner.os }}-ccache-vmkernel-${{ env.KERNEL_VERSION }}-${{ hashFiles('docker/vm/kernel.config') }}
+          key: >-
+            ${{ runner.os }}-ccache-vmkernel-${{ env.KERNEL_VERSION }}-${{
+            hashFiles('src/beetroot/templates/vm/kernel.config') }}
           restore-keys: |
             ${{ runner.os }}-ccache-vmkernel-${{ env.KERNEL_VERSION }}-
             ${{ runner.os }}-ccache-vmkernel-
@@ -245,7 +247,7 @@ jobs:
           tar -xf "linux-${KERNEL_VERSION}.tar.xz"
           cd "linux-${KERNEL_VERSION}"
           make defconfig
-          ./scripts/kconfig/merge_config.sh -m .config "$GITHUB_WORKSPACE/docker/vm/kernel.config"
+          ./scripts/kconfig/merge_config.sh -m .config "$GITHUB_WORKSPACE/src/beetroot/templates/vm/kernel.config"
           make olddefconfig
           make CC="ccache gcc" -j"$(nproc)" bzImage
           cp arch/x86/boot/bzImage "$VM_OUT/bzImage"
@@ -262,7 +264,7 @@ jobs:
 
           build_rootfs(
               out_image=Path(os.environ["VM_OUT"]) / "rootdisk.img",
-              vm_dir=Path("docker/vm"),
+              vm_dir=Path("src/beetroot/templates/vm"),
           )
           PY
 

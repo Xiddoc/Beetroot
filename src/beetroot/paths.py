@@ -124,6 +124,70 @@ def bundled_compose_file() -> Path:
     return _materialise_bundled_compose()
 
 
+_VM_ASSET_NAMES = ("kernel.config", "guest-init.sh", "adbprobe.c")
+
+
+def bundled_vm_dir() -> Path:
+    """
+    Return a directory holding the bundled micro-VM build assets.
+
+    The three text assets the ``binder: vm`` build needs — ``kernel.config``
+    (the kernel-config fragment merged via ``merge_config.sh``),
+    ``guest-init.sh`` (installed as the guest ``/init``) and ``adbprobe.c``
+    (compiled into the guest's ADB self-test) — are shipped as package data
+    under ``beetroot.templates.vm`` so ``beetroot build --vm-kernel`` works
+    from a plain ``uv tool install`` wheel, where the repo's ``docker/`` tree
+    is absent.
+
+    Mirrors :func:`bundled_compose_file`: for an editable / source install the
+    resources already live on a real filesystem path and that directory is
+    returned unchanged; for a zip / wheel install the three assets are
+    extracted into a per-user cache directory (so ``cc``, ``merge_config.sh``
+    and ``shutil.copy`` can read them off disk) and cached for the process
+    lifetime.
+
+    Returns:
+        Absolute path to a directory containing the three vm assets.
+    """
+    return _materialise_bundled_vm_dir()
+
+
+_BUNDLED_VM_DIR_CACHE: Path | None = None
+
+
+def _materialise_bundled_vm_dir() -> Path:
+    """
+    Return a stable on-disk directory holding the bundled vm assets.
+
+    Cached at module level for the program's lifetime. For a source /
+    editable install the package data already lives on a real path, so the
+    containing directory is returned directly. For a zip install each asset
+    is read out of the wheel and written into ``<cache>/vm`` so the external
+    tools that consume them (``cc``, ``merge_config.sh``) get real files.
+    """
+    global _BUNDLED_VM_DIR_CACHE  # noqa: PLW0603
+    if _BUNDLED_VM_DIR_CACHE is not None and _BUNDLED_VM_DIR_CACHE.is_dir():
+        return _BUNDLED_VM_DIR_CACHE
+    pkg = importlib.resources.files("beetroot.templates.vm")
+    first = pkg.joinpath(_VM_ASSET_NAMES[0])
+    with importlib.resources.as_file(first) as resolved:
+        if resolved.is_file():
+            # Editable / source install: the assets sit in a real directory.
+            _BUNDLED_VM_DIR_CACHE = Path(resolved).parent
+            return _BUNDLED_VM_DIR_CACHE
+    # Zip-install path: extract every asset into the user cache so the
+    # external tools that read them off disk have real files to open.
+    target = user_cache_dir("vm-assets")
+    target.mkdir(parents=True, exist_ok=True)
+    for name in _VM_ASSET_NAMES:
+        contents = pkg.joinpath(name).read_bytes()
+        dst = target / name
+        if not dst.exists() or dst.read_bytes() != contents:
+            dst.write_bytes(contents)
+    _BUNDLED_VM_DIR_CACHE = target
+    return _BUNDLED_VM_DIR_CACHE
+
+
 _BUNDLED_COMPOSE_CACHE: Path | None = None
 
 

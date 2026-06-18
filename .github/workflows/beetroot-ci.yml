@@ -228,7 +228,7 @@ jobs:
           cd "$work"
           make defconfig
           ./scripts/kconfig/merge_config.sh -m .config \
-            "$GITHUB_WORKSPACE/.beetroot/docker/vm/kernel.config"
+            "$GITHUB_WORKSPACE/.beetroot/src/beetroot/templates/vm/kernel.config"
           make olddefconfig
           make -j"$(nproc)" bzImage
           grep -q 'CONFIG_ANDROID_BINDER_IPC=y' .config
@@ -242,7 +242,7 @@ jobs:
 
           build_rootfs(
               out_image=Path(os.environ["VM_OUT"]) / "rootdisk.img",
-              vm_dir=Path("docker/vm"),
+              vm_dir=Path("src/beetroot/templates/vm"),
           )
           PY
 

@@ -475,6 +475,22 @@ class TestBuildContext:
         ctx = _default_build_context()
         assert ctx != tmp_path
 
+    def test_env_build_context_used_for_image_build(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # BEETROOT_BUILD_CONTEXT overrides the default for the redroid layer
+        # build too (not just --vm-kernel).
+        from beetroot.settings import Settings
+
+        monkeypatch.setattr(builder, "settings", Settings(build_context=str(tmp_path)))
+        runner = FakeRunner()
+        build_image(runner=runner)
+        build_call = runner.calls[-1]
+        pd_idx = build_call.cmd.index("--project-directory")
+        assert build_call.cmd[pd_idx + 1] == str(tmp_path)
+        assert build_call.env is not None
+        assert build_call.env["BEETROOT_BUILD_CONTEXT"] == str(tmp_path)
+
 
 class TestBuilderProgress:
     """Console progress bars are invoked for each long phase."""
@@ -513,12 +529,21 @@ class _RootfsBuildRecorder:
         return out_image
 
 
+def _make_vm_context(ctx: Path) -> Path:
+    """Create a ``<ctx>/docker/vm`` with the assets ``_resolve_vm_dir`` requires."""
+    vm = ctx / "docker" / "vm"
+    vm.mkdir(parents=True)
+    (vm / "kernel.config").write_text("CONFIG_FOO=y\n", encoding="utf-8")
+    (vm / "guest-init.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    return vm
+
+
 class TestBuildVmKernel:
     def test_runs_kernel_then_rootfs_steps(self, tmp_path: Path) -> None:
         runner = FakeRunner()
         rec = _RootfsBuildRecorder()
         ctx = tmp_path / "repo"
-        (ctx / "docker" / "vm").mkdir(parents=True)
+        _make_vm_context(ctx)
         out = tmp_path / "out"
         artifacts = builder.build_vm_kernel(
             out_dir=out, build_context=ctx, runner=runner, rootfs_build=rec, from_source=True
@@ -541,7 +566,7 @@ class TestBuildVmKernel:
     ) -> None:
         runner = FakeRunner()
         ctx = tmp_path / "repo"
-        (ctx / "docker" / "vm").mkdir(parents=True)
+        _make_vm_context(ctx)
         monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/ccache")
         builder.build_vm_kernel(
             out_dir=tmp_path / "out",
@@ -557,7 +582,7 @@ class TestBuildVmKernel:
     ) -> None:
         runner = FakeRunner()
         ctx = tmp_path / "repo"
-        (ctx / "docker" / "vm").mkdir(parents=True)
+        _make_vm_context(ctx)
         monkeypatch.setattr(shutil, "which", lambda _name: None)
         builder.build_vm_kernel(
             out_dir=tmp_path / "out",
@@ -574,7 +599,7 @@ class TestBuildVmKernel:
         runner = FakeRunner(fail_on="sh")
         rec = _RootfsBuildRecorder()
         ctx = tmp_path / "repo"
-        (ctx / "docker" / "vm").mkdir(parents=True)
+        _make_vm_context(ctx)
         with pytest.raises(BootstrapError):
             builder.build_vm_kernel(
                 out_dir=tmp_path / "out",
@@ -590,7 +615,7 @@ class TestBuildVmKernel:
     ) -> None:
         runner = FakeRunner()
         ctx = tmp_path / "repo"
-        (ctx / "docker" / "vm").mkdir(parents=True)
+        _make_vm_context(ctx)
         cache = tmp_path / "cache" / "vm"
         monkeypatch.setattr("beetroot.builder.paths.user_cache_dir", lambda _sub: cache)
         artifacts = builder.build_vm_kernel(
@@ -598,22 +623,75 @@ class TestBuildVmKernel:
         )
         assert artifacts.kernel == cache / "bzImage"
 
-    def test_default_build_context(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_default_uses_bundled_vm_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With no build_context and no BEETROOT_BUILD_CONTEXT, the assets come
+        # from package data via paths.bundled_vm_dir — so a wheel install with
+        # no docker/ tree still builds.
         runner = FakeRunner()
         rec = _RootfsBuildRecorder()
-        ctx = tmp_path / "repo"
-        (ctx / "docker" / "vm").mkdir(parents=True)
-        monkeypatch.setattr(builder, "_default_build_context", lambda: ctx)
+        bundled = _make_vm_context(tmp_path / "wheel").parent  # .../docker
+        bundled = bundled / "vm"
+        monkeypatch.setattr(builder, "_build_context_from_env", lambda: None)
+        monkeypatch.setattr("beetroot.builder.paths.bundled_vm_dir", lambda: bundled)
+        builder.build_vm_kernel(
+            out_dir=tmp_path / "out", runner=runner, rootfs_build=rec, from_source=True
+        )
+        assert rec.calls[0][1] == bundled
+
+    def test_env_build_context_override(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # BEETROOT_BUILD_CONTEXT supplies the build context when no explicit
+        # --build-context is passed; assets resolve from <ctx>/docker/vm.
+        from beetroot.settings import Settings
+
+        runner = FakeRunner()
+        rec = _RootfsBuildRecorder()
+        ctx = tmp_path / "checkout"
+        _make_vm_context(ctx)
+        monkeypatch.setattr(builder, "settings", Settings(build_context=str(ctx)))
+        # bundled_vm_dir must NOT be consulted when the env var is set.
+        monkeypatch.setattr(
+            "beetroot.builder.paths.bundled_vm_dir",
+            lambda: pytest.fail("bundled_vm_dir should not be used when override set"),
+        )
         builder.build_vm_kernel(
             out_dir=tmp_path / "out", runner=runner, rootfs_build=rec, from_source=True
         )
         assert rec.calls[0][1] == ctx / "docker" / "vm"
 
+    def test_missing_assets_raise_actionable_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An empty bundled dir (assets genuinely missing) raises an error that
+        # names both fixes: a source checkout and --build-context / the env var.
+        runner = FakeRunner()
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.setattr(builder, "_build_context_from_env", lambda: None)
+        monkeypatch.setattr("beetroot.builder.paths.bundled_vm_dir", lambda: empty)
+        with pytest.raises(BootstrapError) as exc:
+            builder.build_vm_kernel(
+                out_dir=tmp_path / "out",
+                runner=runner,
+                rootfs_build=_RootfsBuildRecorder(),
+                from_source=True,
+            )
+        msg = str(exc.value)
+        assert "kernel.config" in msg
+        assert "guest-init.sh" in msg
+        assert "--build-context" in msg
+        assert "BEETROOT_BUILD_CONTEXT" in msg
+        assert "source checkout" in msg
+        assert runner.calls == []  # never reached the kernel compile
+
     def test_fetches_prebuilt_and_skips_compile(self, tmp_path: Path) -> None:
         runner = FakeRunner()
         rec = _RootfsBuildRecorder()
         ctx = tmp_path / "repo"
-        (ctx / "docker" / "vm").mkdir(parents=True)
+        _make_vm_context(ctx)
         (ctx / "docker" / "vm" / "kernel.config").write_text("CONFIG_FOO=y\n")
         out = tmp_path / "out"
         fetch_calls: list[tuple[str, str, Path]] = []
@@ -636,7 +714,7 @@ class TestBuildVmKernel:
         runner = FakeRunner()
         rec = _RootfsBuildRecorder()
         ctx = tmp_path / "repo"
-        (ctx / "docker" / "vm").mkdir(parents=True)
+        _make_vm_context(ctx)
         (ctx / "docker" / "vm" / "kernel.config").write_text("CONFIG_FOO=y\n")
 
         def failing_fetch(*, version: str, fingerprint: str, out_path: Path) -> Path:

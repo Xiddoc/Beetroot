@@ -36,7 +36,7 @@ class TestBuildParser:
             mock_bs.return_value = "redroid/redroid:14.0.0_litegapps_houdini_magisk"
             result = runner.invoke(cli.app, ["build"])
         assert result.exit_code == 0
-        mock_bs.assert_called_once_with(gapps="lite")
+        mock_bs.assert_called_once_with(gapps="lite", build_context=None)
 
     @pytest.mark.parametrize("variant", ["none", "lite", "full", "mindthegapps"])
     def test_each_variant_parses(self, variant: str) -> None:
@@ -44,7 +44,7 @@ class TestBuildParser:
             mock_bs.return_value = f"redroid/redroid:14.0.0_{variant}_houdini_magisk"
             result = runner.invoke(cli.app, ["build", variant])
         assert result.exit_code == 0
-        mock_bs.assert_called_once_with(gapps=variant)
+        mock_bs.assert_called_once_with(gapps=variant, build_context=None)
 
     def test_invalid_variant_exits(self) -> None:
         result = runner.invoke(cli.app, ["build", "blah"])
@@ -67,7 +67,7 @@ class TestBuildDispatch:
         with patch("beetroot.cli.builder.build_image") as mock_bs:
             mock_bs.return_value = "redroid/redroid:14.0.0_litegapps_houdini_magisk"
             result = runner.invoke(cli.app, ["build"])
-        mock_bs.assert_called_once_with(gapps="lite")
+        mock_bs.assert_called_once_with(gapps="lite", build_context=None)
         assert result.exit_code == 0
         assert "redroid/redroid:14.0.0_litegapps_houdini_magisk" in result.stdout
 
@@ -77,7 +77,7 @@ class TestBuildDispatch:
             mock_bs.return_value = f"redroid/redroid:14.0.0_{variant}_houdini_magisk"
             result = runner.invoke(cli.app, ["build", variant])
         assert result.exit_code == 0
-        mock_bs.assert_called_once_with(gapps=variant)
+        mock_bs.assert_called_once_with(gapps=variant, build_context=None)
 
     def test_main_dispatches_build(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("sys.argv", ["beetroot", "build", "full"])
@@ -88,7 +88,7 @@ class TestBuildDispatch:
             with pytest.raises(SystemExit) as exc:
                 cli.main()
             assert exc.value.code == 0
-        mock_bs.assert_called_once_with(gapps="full")
+        mock_bs.assert_called_once_with(gapps="full", build_context=None)
 
 
 # ---------------------------------------------------------------------------

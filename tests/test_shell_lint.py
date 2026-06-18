@@ -1,7 +1,8 @@
 """Lint guardrails for the project's shell scripts.
 
 The in-container boot helpers (``docker/*.sh``) and the micro-VM guest init
-(``docker/vm/*.sh``) are POSIX ``sh`` (toybox / busybox, not bash). CI gates
+(``src/beetroot/templates/vm/*.sh``) are POSIX ``sh`` (toybox / busybox, not
+bash). CI gates
 them with ``shellcheck -S style -s sh`` and ``shfmt -i 4``; these tests run the
 same checks locally so a regression is caught before the push, and skip
 cleanly when the tools are not installed (mirroring ``test_container_boot``'s
@@ -17,7 +18,9 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).parent.parent
-_SHELL_SCRIPTS = sorted(_REPO_ROOT.glob("docker/*.sh")) + sorted(_REPO_ROOT.glob("docker/vm/*.sh"))
+_SHELL_SCRIPTS = sorted(_REPO_ROOT.glob("docker/*.sh")) + sorted(
+    _REPO_ROOT.glob("src/beetroot/templates/vm/*.sh")
+)
 
 
 def test_shell_scripts_are_discovered() -> None:

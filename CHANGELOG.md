@@ -269,6 +269,22 @@
   `https://iliketo.party/Beetroot/` directly (HTTPS, no cross-host redirect);
   the GitHub Pages deploy mechanism is unchanged. (Repo side only — the
   external host's TLS is out of scope here.)
+- **`beetroot build --vm-kernel` now works from a `uv tool install` wheel (#77).**
+  The micro-VM build assets (`kernel.config`, `guest-init.sh`, `adbprobe.c`)
+  lived under `docker/vm/`, which the wheel never ships — so a tool install
+  resolved the build context to a cache dir with no `docker/vm/` and crashed
+  with `[Errno 2] No such file or directory: '.../docker/vm/kernel.config'`.
+  The three assets are now shipped as package data under
+  `src/beetroot/templates/vm/` (the single source of truth) and resolved via
+  `importlib.resources` (`paths.bundled_vm_dir`), mirroring how `compose.yaml`
+  is bundled. The shellcheck/shfmt CI globs and the kernel-compile lanes in
+  `e2e.yml` / `beetroot-ci.yml` / `vm-kernel-release.yml` were updated to the
+  new path. New overrides: a `--build-context PATH` flag on `beetroot build`
+  and a `BEETROOT_BUILD_CONTEXT` env var point the build at a source checkout's
+  `docker/vm`; both also apply to the redroid base-image build. When the assets
+  are genuinely missing the build now raises an actionable error naming both
+  fixes (run from a checkout, or pass `--build-context` / set
+  `BEETROOT_BUILD_CONTEXT`).
 - **`binder: vm` guest no longer kernel-panics on boot (ELOOP on `/init`).**
   `build_rootfs` symlinked *every* applet from `busybox --list` to `busybox` —
   but `busybox` is itself in that list, so it overwrote the real `/bin/busybox`

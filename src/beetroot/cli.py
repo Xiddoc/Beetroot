@@ -1250,13 +1250,26 @@ def build(
             ),
         ),
     ] = False,
+    build_context: Annotated[
+        Path | None,
+        typer.Option(
+            "--build-context",
+            help=(
+                "Path to a source checkout whose docker/ tree supplies the "
+                "build assets. Overrides BEETROOT_BUILD_CONTEXT. Defaults to "
+                "the assets bundled in the installed wheel."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """
     Build the redroid base image, or (with --vm-kernel) the micro-VM artifacts.
     """
     if vm_kernel:
         try:
-            artifacts = builder.build_vm_kernel(from_source=from_source)
+            artifacts = builder.build_vm_kernel(
+                from_source=from_source, build_context=build_context
+            )
         except builder.BootstrapError as e:
             raise _error(str(e)) from e
         console.status(f"micro-VM kernel built: {artifacts.kernel}")
@@ -1266,7 +1279,7 @@ def build(
             "/ BEETROOT_VM_ROOTFS) at these paths and set binder: vm."
         )
         return
-    tag = builder.build_image(gapps=gapps.value)
+    tag = builder.build_image(gapps=gapps.value, build_context=build_context)
     console.status(f"base image built: {tag}")
 
 
