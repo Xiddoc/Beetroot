@@ -19,7 +19,7 @@
   nothing proprietary; this ships only Beetroot's own MIT-licensed
   orchestration and is **not** a published container image (it does not appear
   under GitHub Packages). New docs:
-  [Running in CI § Reusable workflow](https://xiddoc.github.io/Beetroot/guides/running-in-ci/#reusable-workflow-boot-an-instance-in-your-ci).
+  [Running in CI § Reusable workflow](https://iliketo.party/Beetroot/guides/running-in-ci/#reusable-workflow-boot-an-instance-in-your-ci).
 
 - **`beetroot modes` — host capability survey.** A new host-level,
   instance-independent command that probes the host binder driver, KVM, and
@@ -32,7 +32,7 @@
   for scripts; always exits 0 (reports, never gates). Crucially distinguishes
   "no `/dev/kvm`" (KVM fast path unavailable) from "no VM support" — the
   `binder: vm` TCG path works on binderless, KVM-less hosts. New docs:
-  [Binder & run-modes](https://xiddoc.github.io/Beetroot/how-it-works/binder-and-modes/).
+  [Binder & run-modes](https://iliketo.party/Beetroot/how-it-works/binder-and-modes/).
 
 - **`binder` config switch (`auto` / `host` / `vm`).** A new top-level
   `binder:` key on `beetroot.yaml` selects how redroid obtains the kernel
@@ -49,7 +49,7 @@
   `vm.accel`), and under strict `host` the `host.binder` row fails (not
   warns). A validated proof-of-concept (booting redroid on a binderless,
   KVM-less host) and the full backend/fallback design live in
-  [Binderless hosts (QEMU/TCG)](https://xiddoc.github.io/Beetroot/design/binderless-hosts-qemu-tcg/).
+  [Binderless hosts (QEMU/TCG)](https://iliketo.party/Beetroot/design/binderless-hosts-qemu-tcg/).
 
 - **`binder: vm` micro-VM engine (QEMU/TCG, KVM fast path).** Selecting
   `binder: vm` now dispatches `beetroot up` to a real QEMU micro-VM backend
@@ -68,7 +68,7 @@
   rootfs from the vendored `docker/vm/` artifacts (kernel-config fragment,
   rootfs builder, guest init). This is additive -- no `api_version` bump;
   redroid stays the default. See
-  [Binderless hosts (QEMU/TCG)](https://xiddoc.github.io/Beetroot/design/binderless-hosts-qemu-tcg/).
+  [Binderless hosts (QEMU/TCG)](https://iliketo.party/Beetroot/design/binderless-hosts-qemu-tcg/).
 
 - **Faster `binder: vm` boots: auto-sized `-smp` + `mitigations=off`.** Two
   boot-speed levers ship for the QEMU micro-VM backend, on top of the
@@ -101,7 +101,7 @@
   label, manual dispatch, or a nightly schedule — not on every push. A shared
   `provide-binder` composite action loads the host binder driver
   (`modprobe binder_linux` / binderfs) on the runner. See
-  [Running in CI](https://xiddoc.github.io/Beetroot/guides/running-in-ci/).
+  [Running in CI](https://iliketo.party/Beetroot/guides/running-in-ci/).
 - **Host binder preflight + `host.binder` doctor check** — redroid runs
   Android's userspace against the *host* kernel and has no kernel of its
   own, so the binder driver is a hard, non-negotiable requirement
@@ -259,6 +259,16 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **Docs links now point directly at the canonical HTTPS host (#80).** The
+  README badge, README doc table, `CLAUDE.md` "published site" link, the
+  `mkdocs.yml` `site_url`, and every CHANGELOG doc link used
+  `https://xiddoc.github.io/Beetroot/`, which 301-redirects cross-host and
+  downgrades to plain HTTP (`http://iliketo.party/Beetroot/`). Many fetchers
+  and security-conscious tools refuse to follow that redirect, so the docs
+  path dead-ended. Every human/tool-clickable link now targets
+  `https://iliketo.party/Beetroot/` directly (HTTPS, no cross-host redirect);
+  the GitHub Pages deploy mechanism is unchanged. (Repo side only — the
+  external host's TLS is out of scope here.)
 - **`binder: vm` guest no longer kernel-panics on boot (ELOOP on `/init`).**
   `build_rootfs` symlinked *every* applet from `busybox --list` to `busybox` —
   but `busybox` is itself in that list, so it overwrote the real `/bin/busybox`
@@ -401,7 +411,7 @@ CI pipeline itself.
 
 ### CI: `binder: vm` savevm boot-cache — design + cache key (#49)
 
-- Design note ([VM boot-cache (savevm)](https://xiddoc.github.io/Beetroot/design/vm-savevm-cache/))
+- Design note ([VM boot-cache (savevm)](https://iliketo.party/Beetroot/design/vm-savevm-cache/))
   specifying how a booted micro-VM is checkpointed once with QEMU
   `savevm` (qcow2 internal snapshot) / `migrate`, cached, and restored
   (seconds) in downstream jobs to skip the ~100 s TCG boot — for the

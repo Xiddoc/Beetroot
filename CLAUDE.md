@@ -16,7 +16,7 @@ The operational playbook — CLI commands, the uv-based development workflow (li
 
 ## Documentation
 
-The docs site lives under `docs/` and is built with [mkdocs-material](https://squidfunk.github.io/mkdocs-material/). The published site is at <https://xiddoc.github.io/Beetroot/>.
+The docs site lives under `docs/` and is built with [mkdocs-material](https://squidfunk.github.io/mkdocs-material/). The published site is at <https://iliketo.party/Beetroot/>.
 
 To preview locally:
 
