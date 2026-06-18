@@ -22,7 +22,8 @@ exact command or edit you run.
     migration hint — move `stealth.denylist` to `magisk.denylist` and set
     `api_version: 4`. YAMLs that merely omit `api_version` (or pin one of
     `1`/`2`/`3` *without* a `stealth:` block) auto-bump to `4` on load.
-    See `CHANGELOG.md` for the full migration.
+    The [v0.4 → v0.6 guide](migration-v0.4-to-v0.6.md) walks through that
+    hop in full.
 
 ## 1. Schema bump: `api_version: 2` → `api_version: 3`
 

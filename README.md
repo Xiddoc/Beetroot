@@ -63,7 +63,7 @@ Full documentation lives at <https://xiddoc.github.io/Beetroot/>.
 | [Filesystem layout](https://xiddoc.github.io/Beetroot/how-it-works/filesystem/) | Per-instance state, what's gitignored |
 | [Python API](https://xiddoc.github.io/Beetroot/reference/api/) | `from beetroot import Instance, Manager` — drive Beetroot programmatically |
 | [Adding a backend](https://xiddoc.github.io/Beetroot/guides/adding-a-backend/) | Ship a third-party device backend in ~30 LOC |
-| [Migrating from v0.3 to v0.4](https://xiddoc.github.io/Beetroot/guides/migration-v0.3-to-v0.4/) | Schema bump, new verbs, exit codes, known v0.6 deferred items |
+| [Migration](https://xiddoc.github.io/Beetroot/guides/migration/) | Per-release schema-migration walkthroughs (v0.2→v0.3, v0.3→v0.4, v0.4→v0.6) |
 | [Troubleshooting](https://xiddoc.github.io/Beetroot/troubleshooting/) | Common breakages and how to unstick them |
 
 Contributors should read [CLAUDE.md](CLAUDE.md) for the development workflow (uv, ruff, mypy, pytest, 100% coverage gate).
