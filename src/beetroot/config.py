@@ -47,6 +47,41 @@ _MIGRATION_REQUIRED_VERSIONS: Final = frozenset[int]()  # none yet beyond auto-b
 
 _VALID_ANDROID_VERSIONS = {11, 12, 13, 14}
 
+# Single source of truth for the Android major version a fresh ``beetroot
+# create`` defaults to. Reused by the :class:`Android` schema default AND by
+# the micro-VM rootfs baker (:func:`beetroot.builder.build_vm_kernel`) so the
+# redroid image baked into the guest matches what an all-defaults instance
+# expects — see issue #82. Bumping this changes both the config default and
+# the default VM redroid base in lock-step.
+DEFAULT_ANDROID_VERSION: Final = 14
+
+
+def validate_android_version(v: int) -> int:
+    """
+    Validate an Android major version against the supported set.
+
+    Single source of truth for the supported-version check, reused by the
+    :class:`Android` schema validator AND by callers outside the config model
+    (e.g. ``beetroot build --vm-kernel --android-version N``) that need to
+    fail fast before kicking off expensive work.
+
+    Args:
+        v: The Android major version to validate.
+
+    Returns:
+        ``v`` unchanged when it is one of the supported versions.
+
+    Raises:
+        ValueError: If ``v`` is not one of the supported Android versions.
+    """
+    if v not in _VALID_ANDROID_VERSIONS:
+        raise ValueError(
+            f"android.version {v!r} is not supported — valid values: "
+            + ", ".join(str(x) for x in sorted(_VALID_ANDROID_VERSIONS))
+        )
+    return v
+
+
 _MIN_PORT: Final = 1
 _MAX_PORT: Final = 65535
 
@@ -279,18 +314,13 @@ class Android(BaseModel):
         gapps: GApps bundle to bake into the base image.
     """
 
-    version: int = 14
+    version: int = DEFAULT_ANDROID_VERSION
     gapps: Literal["none", "lite", "full", "mindthegapps"] = "lite"
 
     @field_validator("version")
     @classmethod
     def _check_version(cls, v: int) -> int:
-        if v not in _VALID_ANDROID_VERSIONS:
-            raise ValueError(
-                f"android.version {v!r} is not supported — valid values: "
-                + ", ".join(str(x) for x in sorted(_VALID_ANDROID_VERSIONS))
-            )
-        return v
+        return validate_android_version(v)
 
     @model_validator(mode="before")
     @classmethod
@@ -323,6 +353,26 @@ def base_image_tag(android: Android) -> str:
         ``redroid/redroid:14.0.0_litegapps_houdini_magisk``.
     """
     return f"redroid/redroid:{android.version}.0.0{_GAPPS_SLUG[android.gapps]}_houdini_magisk"
+
+
+def vm_redroid_image(version: int) -> str:
+    """
+    Derive the *plain* redroid image the micro-VM guest bakes for an Android version.
+
+    Unlike :func:`base_image_tag` (which names the Magisk + GApps + Houdini
+    layered base image built by ``beetroot build``), the ``binder: vm`` guest
+    runs an unmodified upstream redroid image pulled straight from Docker Hub.
+    Those tags carry a ``-latest`` suffix (e.g. ``11.0.0-latest``); the bare
+    ``X.0.0`` tag does not exist on Docker Hub — see
+    ``docs/design/vm-rnd-log.md``.
+
+    Args:
+        version: Android major version (11, 12, 13, or 14).
+
+    Returns:
+        The plain redroid image reference, e.g. ``redroid/redroid:14.0.0-latest``.
+    """
+    return f"redroid/redroid:{version}.0.0-latest"
 
 
 class Ports(BaseModel):

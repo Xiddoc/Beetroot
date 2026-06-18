@@ -521,11 +521,18 @@ class _RootfsBuildRecorder:
     """Records build_rootfs calls so build_vm_kernel can be tested in isolation."""
 
     calls: list[tuple[Path, Path]] = field(default_factory=list)
+    android_versions: list[int] = field(default_factory=list)
 
     def __call__(
-        self, *, out_image: Path, vm_dir: Path, runner: builder.RootfsRunner | None = None
+        self,
+        *,
+        out_image: Path,
+        vm_dir: Path,
+        android_version: int = config.DEFAULT_ANDROID_VERSION,
+        runner: builder.RootfsRunner | None = None,
     ) -> Path:
         self.calls.append((out_image, vm_dir))
+        self.android_versions.append(android_version)
         return out_image
 
 
@@ -560,6 +567,36 @@ class TestBuildVmKernel:
         assert artifacts.kernel == out / "bzImage"
         assert artifacts.rootfs == out / "rootdisk.img"
         assert out.is_dir()
+
+    def test_default_android_version_threaded_to_rootfs(self, tmp_path: Path) -> None:
+        runner = FakeRunner()
+        rec = _RootfsBuildRecorder()
+        ctx = tmp_path / "repo"
+        _make_vm_context(ctx)
+        builder.build_vm_kernel(
+            out_dir=tmp_path / "out",
+            build_context=ctx,
+            runner=runner,
+            rootfs_build=rec,
+            from_source=True,
+        )
+        # An unflagged build bakes the shared default version (issue #82).
+        assert rec.android_versions == [config.DEFAULT_ANDROID_VERSION]
+
+    def test_explicit_android_version_threaded_to_rootfs(self, tmp_path: Path) -> None:
+        runner = FakeRunner()
+        rec = _RootfsBuildRecorder()
+        ctx = tmp_path / "repo"
+        _make_vm_context(ctx)
+        builder.build_vm_kernel(
+            out_dir=tmp_path / "out",
+            build_context=ctx,
+            runner=runner,
+            rootfs_build=rec,
+            from_source=True,
+            android_version=11,
+        )
+        assert rec.android_versions == [11]
 
     def test_uses_ccache_when_on_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -891,6 +928,25 @@ class TestRootfsAssembly:
         assert ["docker", "pull", cfg.redroid_image] in runner.runs
         assert runner.spawns
         assert runner.background.stopped == 1
+        # issue #82: the baked Android version is recorded beside the image,
+        # and the baked redroid tag is recorded inside the rootfs for guest-init.
+        marker = builder.rootfs_version_marker(out)
+        assert marker.read_text(encoding="utf-8").strip() == str(cfg.android_version)
+        assert (root / "etc" / "beetroot" / "redroid-image").read_text(
+            encoding="utf-8"
+        ).strip() == cfg.redroid_image
+
+    def test_baked_version_marker_tracks_configured_version(self, tmp_path: Path) -> None:
+        cfg = _make_rootfs_config(
+            tmp_path, android_version=11, redroid_image="redroid/redroid:11.0.0-latest"
+        )
+        runner = FakeRootfsRunner(applets=("sh",))
+        out = _run_assembly(tmp_path, runner, cfg)
+        assert builder.read_rootfs_version(out) == 11
+        root = tmp_path / "work" / "root"
+        assert (root / "etc" / "beetroot" / "redroid-image").read_text(
+            encoding="utf-8"
+        ).strip() == "redroid/redroid:11.0.0-latest"
 
     def test_busybox_applet_does_not_clobber_real_binary(self, tmp_path: Path) -> None:
         # `busybox --list` includes `busybox` itself; symlinking /bin/busybox ->
@@ -990,6 +1046,32 @@ class TestRootfsConfigFromEnv:
         assert cfg.adbprobe_bin is None
         assert cfg.image_size_mb == 8192
         assert cfg.busybox_bin == Path("/usr/bin/busybox")
+        # issue #82: with no REDROID_IMAGE env, the image is derived from the
+        # default Android version (NOT the old hardcoded 11).
+        assert cfg.android_version == config.DEFAULT_ANDROID_VERSION
+        assert cfg.redroid_image == config.vm_redroid_image(config.DEFAULT_ANDROID_VERSION)
+
+    def test_android_version_derives_image_when_env_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("REDROID_IMAGE", raising=False)
+        cfg = builder._RootfsConfig.from_env(
+            out_image=Path("/o.img"), vm_dir=Path("/vm"), android_version=11
+        )
+        assert cfg.android_version == 11
+        assert cfg.redroid_image == "redroid/redroid:11.0.0-latest"
+
+    def test_redroid_image_env_wins_over_android_version(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("REDROID_IMAGE", "redroid/redroid:13.0.0-latest")
+        cfg = builder._RootfsConfig.from_env(
+            out_image=Path("/o.img"), vm_dir=Path("/vm"), android_version=11
+        )
+        # The version field still tracks the requested value (the marker), but
+        # the explicit env override selects the actual image to bake.
+        assert cfg.android_version == 11
+        assert cfg.redroid_image == "redroid/redroid:13.0.0-latest"
 
     def test_env_overrides_are_honoured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("DOCKER_VERSION", "26.0.0")
@@ -1014,6 +1096,25 @@ class TestRootfsConfigFromEnv:
         cfg = builder._RootfsConfig.from_env(out_image=Path("/o.img"), vm_dir=Path("/vm"))
         assert cfg.docker_url == "http://mirror.invalid/d.tgz"
         assert cfg.redroid_tar is None
+
+
+class TestRootfsVersionMarker:
+    def test_marker_path_sits_beside_image(self, tmp_path: Path) -> None:
+        img = tmp_path / "rootdisk.img"
+        assert builder.rootfs_version_marker(img) == tmp_path / "rootdisk.img.android-version"
+
+    def test_read_returns_none_when_no_marker(self, tmp_path: Path) -> None:
+        assert builder.read_rootfs_version(tmp_path / "rootdisk.img") is None
+
+    def test_read_parses_recorded_version(self, tmp_path: Path) -> None:
+        img = tmp_path / "rootdisk.img"
+        builder.rootfs_version_marker(img).write_text("13\n", encoding="utf-8")
+        assert builder.read_rootfs_version(img) == 13
+
+    def test_read_returns_none_on_garbage_marker(self, tmp_path: Path) -> None:
+        img = tmp_path / "rootdisk.img"
+        builder.rootfs_version_marker(img).write_text("not-an-int\n", encoding="utf-8")
+        assert builder.read_rootfs_version(img) is None
 
 
 class TestBuildRootfs:
@@ -1044,6 +1145,33 @@ class TestBuildRootfs:
         assert seen["runner"] is runner
         assert seen["work_exists"] is True
         assert isinstance(seen["cfg"], builder._RootfsConfig)
+
+    def test_android_version_flows_into_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, object] = {}
+
+        class _FakeAssembly:
+            def __init__(
+                self, cfg: builder._RootfsConfig, runner: object, work: Path, **_kw: object
+            ) -> None:
+                seen["cfg"] = cfg
+
+            def build(self) -> Path:
+                return tmp_path / "rootdisk.img"
+
+        monkeypatch.delenv("REDROID_IMAGE", raising=False)
+        monkeypatch.setattr(builder, "_RootfsAssembly", _FakeAssembly)
+        builder.build_rootfs(
+            out_image=tmp_path / "rootdisk.img",
+            vm_dir=tmp_path / "vm",
+            android_version=11,
+            runner=FakeRootfsRunner(),
+        )
+        cfg = seen["cfg"]
+        assert isinstance(cfg, builder._RootfsConfig)
+        assert cfg.android_version == 11
+        assert cfg.redroid_image == "redroid/redroid:11.0.0-latest"
 
     def test_default_runner_is_constructed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

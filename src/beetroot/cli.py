@@ -31,6 +31,7 @@ from . import (
     builder,
     capabilities,
     compose,
+    config,
     console,
     hostcheck,
     modules_download,
@@ -1261,14 +1262,32 @@ def build(
             ),
         ),
     ] = None,
+    android_version: Annotated[
+        int,
+        typer.Option(
+            "--android-version",
+            help=(
+                "With --vm-kernel: Android major version to bake into the guest "
+                "rootfs (must match the instance's android.version). Defaults to "
+                "the shared default so an unflagged build matches a default "
+                "`beetroot create`."
+            ),
+        ),
+    ] = config.DEFAULT_ANDROID_VERSION,
 ) -> None:
     """
     Build the redroid base image, or (with --vm-kernel) the micro-VM artifacts.
     """
     if vm_kernel:
         try:
+            config.validate_android_version(android_version)
+        except ValueError as e:
+            raise _error(f"--android-version: {e}") from e
+        try:
             artifacts = builder.build_vm_kernel(
-                from_source=from_source, build_context=build_context
+                android_version=android_version,
+                from_source=from_source,
+                build_context=build_context,
             )
         except builder.BootstrapError as e:
             raise _error(str(e)) from e

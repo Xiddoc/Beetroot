@@ -191,7 +191,7 @@ def _clone_url_matches(work: Path, url: str) -> bool:
 def build_image(  # noqa: PLR0913  # 6 keyword-only params; each is a distinct injectable concern
     *,
     gapps: GappsVariant = "lite",
-    android_version: int = 14,
+    android_version: int = config.DEFAULT_ANDROID_VERSION,
     redroid_script_url: str = _DEFAULT_REDROID_URL,
     work_dir: Path | None = None,
     build_context: Path | None = None,
@@ -379,7 +379,59 @@ _LDD_PATH_INDEX: Final[int] = 2
 _DOCKERD_READY_ATTEMPTS: Final[int] = 60
 
 _DEFAULT_DOCKER_VERSION: Final[str] = "27.5.1"
-_DEFAULT_REDROID_IMAGE: Final[str] = "redroid/redroid:11.0.0-latest"
+
+# The default Android version the micro-VM bakes — the SAME single-source-of-
+# truth constant the redroid base-image build and the ``beetroot create``
+# config default read (issue #82). The plain upstream redroid image is derived
+# from it via :func:`config.vm_redroid_image` (e.g. ``redroid/redroid:14.0.0-
+# latest``), so a default ``beetroot create`` + ``build --vm-kernel`` yield a
+# matching Android version rather than the old hardcoded 11.
+_DEFAULT_REDROID_IMAGE: Final[str] = config.vm_redroid_image(config.DEFAULT_ANDROID_VERSION)
+
+# Marker written beside the packed rootfs recording the Android version it was
+# baked with, so ``up`` / ``apply`` can warn on a config/rootfs version skew
+# (issue #82). Suffix appended to the out-image path (``rootdisk.img`` →
+# ``rootdisk.img.android-version``).
+_ROOTFS_VERSION_MARKER_SUFFIX: Final[str] = ".android-version"
+
+
+def rootfs_version_marker(out_image: Path) -> Path:
+    """
+    Return the path of the baked-version marker that sits beside ``out_image``.
+
+    Args:
+        out_image: The packed rootfs image path (e.g. ``rootdisk.img``).
+
+    Returns:
+        ``<out_image>.android-version`` — the file
+        :func:`build_rootfs` writes (and the VM backend reads) to record the
+        Android major version the rootfs was baked with.
+    """
+    return out_image.with_name(out_image.name + _ROOTFS_VERSION_MARKER_SUFFIX)
+
+
+def read_rootfs_version(out_image: Path) -> int | None:
+    """
+    Read the Android version recorded beside a baked rootfs, if a marker exists.
+
+    Backward-compatible by design: a rootfs built before issue #82 (or one
+    whose marker the user deleted) has no marker, so this returns ``None`` and
+    the caller stays silent rather than warning on a missing-marker case.
+
+    Args:
+        out_image: The packed rootfs image path the marker sits beside.
+
+    Returns:
+        The baked Android major version, or ``None`` when no marker exists or
+        its contents are not a plain integer.
+    """
+    marker = rootfs_version_marker(out_image)
+    if not marker.is_file():
+        return None
+    try:
+        return int(marker.read_text(encoding="utf-8").strip())
+    except ValueError:
+        return None
 
 
 def _sleep(seconds: float) -> None:
@@ -522,6 +574,7 @@ class _RootfsConfig(BaseModel):
 
     out_image: Path
     vm_dir: Path
+    android_version: int = config.DEFAULT_ANDROID_VERSION
     image_size_mb: int = 8192
     docker_version: str = _DEFAULT_DOCKER_VERSION
     docker_url: str
@@ -534,7 +587,13 @@ class _RootfsConfig(BaseModel):
     ld_linux: Path = Path("/lib64/ld-linux-x86-64.so.2")
 
     @classmethod
-    def from_env(cls, *, out_image: Path, vm_dir: Path) -> _RootfsConfig:
+    def from_env(
+        cls,
+        *,
+        out_image: Path,
+        vm_dir: Path,
+        android_version: int = config.DEFAULT_ANDROID_VERSION,
+    ) -> _RootfsConfig:
         """
         Build a config from defaults overlaid with the historical ``*`` env knobs.
 
@@ -544,9 +603,17 @@ class _RootfsConfig(BaseModel):
         recipes keep working. The host docker binary comes from Beetroot's own
         :data:`settings.docker_bin` rather than a bespoke ``DOCKER_BIN``.
 
+        The redroid image is **derived from ``android_version``** (issue #82)
+        via :func:`config.vm_redroid_image` so a default ``beetroot create``
+        and ``beetroot build --vm-kernel`` agree on the Android version. An
+        explicit ``REDROID_IMAGE`` env var still wins for power users pinning a
+        specific tag.
+
         Args:
             out_image: Path the packed ext4 image is written to.
             vm_dir: Directory holding ``guest-init.sh`` and ``adbprobe.c``.
+            android_version: Android major version to bake; selects the plain
+                upstream redroid image when ``REDROID_IMAGE`` is unset.
 
         Returns:
             The resolved :class:`_RootfsConfig`.
@@ -561,10 +628,11 @@ class _RootfsConfig(BaseModel):
         return cls(
             out_image=out_image,
             vm_dir=vm_dir,
+            android_version=android_version,
             image_size_mb=int(os.environ.get("IMAGE_SIZE_MB", "8192")),
             docker_version=version,
             docker_url=url,
-            redroid_image=os.environ.get("REDROID_IMAGE", _DEFAULT_REDROID_IMAGE),
+            redroid_image=os.environ.get("REDROID_IMAGE", config.vm_redroid_image(android_version)),
             redroid_tar=Path(redroid_tar) if redroid_tar is not None else None,
             adbprobe_bin=Path(adbprobe_bin) if adbprobe_bin is not None else None,
             busybox_bin=Path(os.environ.get("BUSYBOX_BIN", "/usr/bin/busybox")),
@@ -593,11 +661,18 @@ class _RootfsAssembly:
         self.dbin = self.docker_extract / "docker"
 
     def build(self) -> Path:
-        """Fetch the static bundle, assemble the tree, and pack the ext4 image."""
+        """Fetch the static bundle, assemble the tree, pack the image, write the marker."""
         self._fetch_static_bundle()
         self._build_tree()
         self._pack_image()
+        self._write_version_marker()
         return self.cfg.out_image
+
+    def _write_version_marker(self) -> None:
+        """Record the baked Android version beside the image for up/apply skew checks."""
+        marker = rootfs_version_marker(self.cfg.out_image)
+        console.info(f"recording baked Android version {self.cfg.android_version} → {marker}")
+        marker.write_text(f"{self.cfg.android_version}\n", encoding="utf-8")
 
     def _fetch_static_bundle(self) -> None:
         console.info(f"fetching Docker static bundle {self.cfg.docker_version}")
@@ -620,6 +695,11 @@ class _RootfsAssembly:
         console.info("baking the redroid image into /var/lib/docker (offline boot)")
         stage = self._stage_docker_root()
         self.runner.run(["cp", "-a", str(stage), str(self.root / "var" / "lib" / "docker")])
+
+        console.info(f"recording baked redroid image {self.cfg.redroid_image} for guest-init")
+        beetroot_etc = self.root / "etc" / "beetroot"
+        beetroot_etc.mkdir(parents=True, exist_ok=True)
+        (beetroot_etc / "redroid-image").write_text(f"{self.cfg.redroid_image}\n", encoding="utf-8")
 
         console.info("installing guest-init.sh as /init")
         init_dst = self.root / "init"
@@ -767,6 +847,7 @@ def build_rootfs(
     *,
     out_image: Path,
     vm_dir: Path,
+    android_version: int = config.DEFAULT_ANDROID_VERSION,
     runner: RootfsRunner | None = None,
 ) -> Path:
     """
@@ -775,12 +856,18 @@ def build_rootfs(
     Stages busybox + the Docker static bundle + static iptables-legacy + socat,
     bakes the redroid image into ``/var/lib/docker`` (so the guest boots fully
     offline), installs ``guest-init.sh`` as ``/init``, and packs the tree into a
-    raw ext4 image with ``mke2fs -d`` (no loop mount, no root needed).
+    raw ext4 image with ``mke2fs -d`` (no loop mount, no root needed). The
+    Android version baked is recorded in a marker beside ``out_image`` (see
+    :func:`rootfs_version_marker`) so ``up`` / ``apply`` can warn on a
+    config/rootfs version skew (issue #82).
 
     Args:
         out_image: Path the packed ext4 image is written to.
         vm_dir: Directory holding ``guest-init.sh`` and (optionally)
             ``adbprobe.c``.
+        android_version: Android major version to bake; selects the plain
+            upstream redroid image (overridden by the ``REDROID_IMAGE`` env
+            var). Defaults to :data:`config.DEFAULT_ANDROID_VERSION`.
         runner: Inject a :class:`RootfsRunner` for testing. Defaults to
             :class:`DefaultRootfsRunner`.
 
@@ -791,7 +878,9 @@ def build_rootfs(
         BootstrapError: If any external tool (curl, tar, dockerd, docker,
             mke2fs, …) fails.
     """
-    cfg = _RootfsConfig.from_env(out_image=out_image, vm_dir=vm_dir)
+    cfg = _RootfsConfig.from_env(
+        out_image=out_image, vm_dir=vm_dir, android_version=android_version
+    )
     run = runner if runner is not None else DefaultRootfsRunner()
     with tempfile.TemporaryDirectory(prefix="beetroot-rootfs-") as work:
         return _RootfsAssembly(cfg, run, Path(work)).build()
@@ -885,7 +974,12 @@ class _RootfsBuildFn(Protocol):
     """The :func:`build_rootfs` call shape, injectable so ``build_vm_kernel`` is unit-testable."""
 
     def __call__(
-        self, *, out_image: Path, vm_dir: Path, runner: RootfsRunner | None = None
+        self,
+        *,
+        out_image: Path,
+        vm_dir: Path,
+        android_version: int = ...,
+        runner: RootfsRunner | None = None,
     ) -> Path:
         """Assemble the guest rootfs at ``out_image`` from artifacts in ``vm_dir``."""
         ...
@@ -899,10 +993,11 @@ class _KernelFetchFn(Protocol):
         ...
 
 
-def build_vm_kernel(  # noqa: PLR0913  # 6 keyword-only params; each is a distinct injectable concern
+def build_vm_kernel(  # noqa: PLR0913  # 7 keyword-only params; each is a distinct injectable concern
     *,
     out_dir: Path | None = None,
     build_context: Path | None = None,
+    android_version: int = config.DEFAULT_ANDROID_VERSION,
     runner: SubprocessRunner | None = None,
     rootfs_build: _RootfsBuildFn = build_rootfs,
     from_source: bool = False,
@@ -935,6 +1030,12 @@ def build_vm_kernel(  # noqa: PLR0913  # 6 keyword-only params; each is a distin
             ``BEETROOT_BUILD_CONTEXT`` env var is consulted, and failing that
             the assets bundled inside the wheel are used — so the build works
             from a plain ``uv tool install`` with no ``docker/`` tree on disk.
+        android_version: Android major version to bake into the guest rootfs
+            (issue #82); passed through to :func:`build_rootfs`, which selects
+            the matching plain upstream redroid image and records the version
+            in a marker beside the image. Defaults to
+            :data:`config.DEFAULT_ANDROID_VERSION` so a default-config instance
+            and an unflagged ``build --vm-kernel`` agree.
         runner: Inject a :class:`SubprocessRunner` (the kernel step) for
             testing. Defaults to :class:`DefaultRunner`.
         rootfs_build: Inject the rootfs assembler for testing. Defaults to
@@ -996,6 +1097,6 @@ def build_vm_kernel(  # noqa: PLR0913  # 6 keyword-only params; each is a distin
 
     # Step 2: assemble the ext4 rootfs (busybox + Docker static + guest init).
     with console.progress("Assembling micro-VM guest rootfs"):
-        rootfs_build(out_image=rootfs_out, vm_dir=vm_dir)
+        rootfs_build(out_image=rootfs_out, vm_dir=vm_dir, android_version=android_version)
 
     return VmArtifacts(kernel=kernel_out, rootfs=rootfs_out)

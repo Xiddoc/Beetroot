@@ -53,7 +53,10 @@ from . import snapshot as _snapshot_mod
 # Derived from ``config.SUPPORTED_API_VERSION`` rather than hardcoded so the
 # pinned version can never drift behind the schema. A fresh create must load
 # without triggering the auto-bump warning in ``config.load_yaml``.
-_MINIMAL_BEETROOT_YAML = f"api_version: {config.SUPPORTED_API_VERSION}\nandroid:\n  version: 14\n"
+_MINIMAL_BEETROOT_YAML = (
+    f"api_version: {config.SUPPORTED_API_VERSION}\n"
+    f"android:\n  version: {config.DEFAULT_ANDROID_VERSION}\n"
+)
 
 # ``adb devices`` lines are ``<serial>\t<state>`` (two whitespace-separated
 # columns). Anything with fewer columns is a header line or blank —

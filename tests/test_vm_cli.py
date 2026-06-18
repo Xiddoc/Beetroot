@@ -34,9 +34,22 @@ class TestBuildVmKernel:
             )
             result = runner.invoke(cli.app, ["build", "--vm-kernel"])
         assert result.exit_code == 0, result.stderr
-        mock_b.assert_called_once_with(from_source=False, build_context=None)
+        mock_b.assert_called_once_with(
+            android_version=14, from_source=False, build_context=None
+        )
         assert "/c/bzImage" in result.stdout
         assert "/c/rootdisk.img" in result.stdout
+
+    def test_vm_kernel_android_version_flag(self, cli_root: Path) -> None:
+        with patch("beetroot.cli.builder.build_vm_kernel") as mock_b:
+            mock_b.return_value = VmArtifacts(
+                kernel=Path("/c/bzImage"), rootfs=Path("/c/rootdisk.img")
+            )
+            result = runner.invoke(cli.app, ["build", "--vm-kernel", "--android-version", "11"])
+        assert result.exit_code == 0, result.stderr
+        mock_b.assert_called_once_with(
+            android_version=11, from_source=False, build_context=None
+        )
 
     def test_vm_kernel_from_source_flag(self, cli_root: Path) -> None:
         with patch("beetroot.cli.builder.build_vm_kernel") as mock_b:
@@ -45,7 +58,9 @@ class TestBuildVmKernel:
             )
             result = runner.invoke(cli.app, ["build", "--vm-kernel", "--from-source"])
         assert result.exit_code == 0, result.stderr
-        mock_b.assert_called_once_with(from_source=True, build_context=None)
+        mock_b.assert_called_once_with(
+            android_version=14, from_source=True, build_context=None
+        )
 
     def test_vm_kernel_build_context_flag(self, cli_root: Path) -> None:
         with patch("beetroot.cli.builder.build_vm_kernel") as mock_b:
@@ -56,7 +71,20 @@ class TestBuildVmKernel:
                 cli.app, ["build", "--vm-kernel", "--build-context", "/src/checkout"]
             )
         assert result.exit_code == 0, result.stderr
-        mock_b.assert_called_once_with(from_source=False, build_context=Path("/src/checkout"))
+        mock_b.assert_called_once_with(
+            android_version=14, from_source=False, build_context=Path("/src/checkout")
+        )
+
+    def test_vm_kernel_invalid_android_version_fails_fast(self, cli_root: Path) -> None:
+        with patch("beetroot.cli.builder.build_vm_kernel") as mock_b:
+            result = runner.invoke(cli.app, ["build", "--vm-kernel", "--android-version", "99"])
+        assert result.exit_code == 1
+        mock_b.assert_not_called()
+        assert "--android-version" in result.stderr
+        assert "is not supported" in result.stderr
+        # The canonical supported-version set is surfaced verbatim.
+        for version in sorted(config._VALID_ANDROID_VERSIONS):
+            assert str(version) in result.stderr
 
     def test_vm_kernel_failure_surfaces_error(self, cli_root: Path) -> None:
         from beetroot.builder import BootstrapError

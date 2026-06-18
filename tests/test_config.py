@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from beetroot import paths
 from beetroot.config import (
+    DEFAULT_ANDROID_VERSION,
     SUPPORTED_API_VERSION,
     Android,
     Display,
@@ -23,6 +24,7 @@ from beetroot.config import (
     base_image_tag,
     load_yaml,
     render_env,
+    vm_redroid_image,
     write_yaml,
 )
 
@@ -249,6 +251,27 @@ class TestBaseImageTag:
 
     def test_version_reflected_in_tag(self) -> None:
         assert base_image_tag(Android(version=13)) == "redroid/redroid:13.0.0_litegapps_houdini_magisk"
+
+
+class TestDefaultAndroidVersion:
+    def test_constant_is_the_schema_default(self) -> None:
+        # Single source of truth (issue #82): the schema default IS the constant.
+        assert Android().version == DEFAULT_ANDROID_VERSION
+
+    def test_constant_drives_default_base_image(self) -> None:
+        assert f":{DEFAULT_ANDROID_VERSION}.0.0" in base_image_tag(Android())
+
+
+class TestVmRedroidImage:
+    def test_derives_plain_latest_tag(self) -> None:
+        # The vm guest bakes an UNMODIFIED upstream redroid image (-latest
+        # suffix), distinct from base_image_tag's Magisk-layered tag.
+        assert vm_redroid_image(14) == "redroid/redroid:14.0.0-latest"
+        assert vm_redroid_image(11) == "redroid/redroid:11.0.0-latest"
+
+    def test_default_version_matches_create_default(self) -> None:
+        # A default `create` and a default `build --vm-kernel` agree (issue #82).
+        assert vm_redroid_image(DEFAULT_ANDROID_VERSION) == "redroid/redroid:14.0.0-latest"
 
 
 class TestResources:

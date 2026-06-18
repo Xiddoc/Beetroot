@@ -36,6 +36,14 @@
 
 set -u
 
+# The redroid image baked into /var/lib/docker is recorded here by build_rootfs
+# (issue #82) so the guest runs whatever Android version was baked, not a
+# hardcoded default. Falls back to the historical 11.0.0-latest only when the
+# marker is absent (a pre-#82 rootfs). An explicit REDROID_IMAGE env still wins.
+_BAKED_IMAGE_FILE="/etc/beetroot/redroid-image"
+if [ -z "${REDROID_IMAGE:-}" ] && [ -f "$_BAKED_IMAGE_FILE" ]; then
+    REDROID_IMAGE="$(cat "$_BAKED_IMAGE_FILE")"
+fi
 REDROID_IMAGE="${REDROID_IMAGE:-redroid/redroid:11.0.0-latest}"
 ADB_TCP_PORT="${ADB_TCP_PORT:-5555}"
 CONTAINERD_SOCK="/run/containerd/containerd.sock"

@@ -200,6 +200,15 @@ should be required to proceed — only swapping the minimal rootfs for the full
 
 ## B.1 Image acquisition (exactly how, fully offline guest)
 
+> **Note (post-#82):** `11.0.0-latest` is the Android version this R&D log
+> originally validated, and it remains `guest-init.sh`'s historical fallback.
+> The builder's **default** baked Android version is now **14** — `build_rootfs`
+> derives the redroid image from `android_version` (default
+> `config.DEFAULT_ANDROID_VERSION = 14`) via `config.vm_redroid_image`, so a
+> default `beetroot build --vm-kernel` and a default `beetroot create` agree.
+> The `11.0.0-latest` references below describe the originally-validated R&D
+> stack, not today's default.
+
 The guest boots redroid with **`--network none`** (see B.4) and has **no
 internet**, so the image must be present on disk before first boot.
 
