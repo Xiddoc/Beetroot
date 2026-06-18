@@ -3,7 +3,10 @@
 # Claude Code on the web sandboxes) can `beetroot build --vm-kernel` and fetch
 # a ~12 MiB bzImage in seconds instead of compiling for ~7 min.
 #
-# The asset is named bzImage-<version>-<config-fingerprint>; the CLI
+# Each kernel gets its own release tagged vm-kernel-<version>-<config-fingerprint>
+# with the bzImage + .sha256 attached AT creation — which keeps publishing
+# compatible with immutable releases (an immutable release freezes its assets at
+# creation, so a single rolling release can't be appended to). The CLI
 # (beetroot.kernel_download) computes the same fingerprint from its local
 # docker/vm/kernel.config and only fetches an exact match — so a config edit
 # correctly misses and the CLI falls back to a source compile. Runs on demand
@@ -26,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      contents: write  # create/upload the rolling 'vm-kernel' release asset
+      contents: write  # create the per-fingerprint 'vm-kernel-<ver>-<fp>' release
     env:
       # Keep in sync with KERNEL_VERSION in src/beetroot/builder.py and e2e.yml.
       KERNEL_VERSION: "6.12.9"
@@ -67,15 +70,27 @@ jobs:
           cp arch/x86/boot/bzImage "$GITHUB_WORKSPACE/${asset}"
           cd "$GITHUB_WORKSPACE"
           sha256sum "${asset}" >"${asset}.sha256"
-          echo "ASSET=${asset}" >>"$GITHUB_ENV"
+          {
+            echo "ASSET=${asset}"
+            echo "FP=${fp}"
+            echo "TAG=vm-kernel-${KERNEL_VERSION}-${fp}"
+          } >>"$GITHUB_ENV"
 
-      - name: Publish to the rolling vm-kernel release
+      - name: Publish the per-fingerprint vm-kernel release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euxo pipefail
-          notes="Prebuilt bzImage assets fetched by 'beetroot build --vm-kernel',"
-          notes="${notes} named bzImage-<version>-<config-fingerprint>."
-          gh release view vm-kernel >/dev/null 2>&1 || gh release create vm-kernel \
-            --title "Prebuilt binder: vm guest kernels" --notes "${notes}"
-          gh release upload vm-kernel "${ASSET}" "${ASSET}.sha256" --clobber
+          # Attach the bzImage + sidecar AT creation: immutable releases freeze
+          # their assets at creation, so create-with-asset is the only path that
+          # works (a later `gh release upload` would 422). Idempotent — an
+          # existing release for this fingerprint is already complete, so skip.
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists; nothing to publish"
+          else
+            notes="Prebuilt binder: vm guest kernel ${KERNEL_VERSION} (config ${FP}),"
+            notes="${notes} fetched by 'beetroot build --vm-kernel'."
+            gh release create "${TAG}" "${ASSET}" "${ASSET}.sha256" \
+              --title "binder: vm guest kernel ${KERNEL_VERSION} (${FP})" \
+              --notes "${notes}"
+          fi
