@@ -9,9 +9,9 @@ every time.
 
 This module lets the CLI download a **prebuilt** ``bzImage`` (~12 MiB) instead.
 The kernel is published as a release asset on the Beetroot repo, named by the
-pinned kernel version **and** a fingerprint of ``docker/vm/kernel.config`` — so
-a host only ever fetches a kernel built from *exactly* the config it has
-checked out. Edit the config (or bump the version) and the fingerprint changes,
+pinned kernel version **and** a fingerprint of the bundled ``kernel.config`` —
+so a host only ever fetches a kernel built from *exactly* the config it ships.
+Edit the config (or bump the version) and the fingerprint changes,
 the prebuilt no longer matches, and the caller falls back to a source compile.
 That keeps the vendored config the single source of truth: you can never boot a
 stale prebuilt kernel.
@@ -63,11 +63,12 @@ def config_fingerprint(config_path: Path) -> str:
     Return a short, stable fingerprint of the kernel config fragment.
 
     The first 12 hex chars of the SHA-256 of the file's bytes. The publishing
-    workflow computes the same value with ``sha256sum docker/vm/kernel.config
-    | cut -c1-12`` — the two must agree for a host to find its prebuilt kernel.
+    workflow computes the same value with ``sha256sum
+    src/beetroot/templates/vm/kernel.config | cut -c1-12`` — the two must agree
+    for a host to find its prebuilt kernel.
 
     Args:
-        config_path: Path to ``docker/vm/kernel.config``.
+        config_path: Path to the bundled ``kernel.config`` fragment.
 
     Returns:
         The 12-character hex fingerprint.

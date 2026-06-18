@@ -212,6 +212,77 @@ class TestBundledComposeFile:
         )
 
 
+class TestBundledVmDir:
+    def test_resolves_editable_install(self) -> None:
+        # In the source / editable checkout the three vm assets live on a real
+        # filesystem path; bundled_vm_dir returns the containing directory.
+        d = paths.bundled_vm_dir()
+        assert d.is_dir()
+        for name in ("kernel.config", "guest-init.sh", "adbprobe.c"):
+            assert (d / name).is_file(), name
+
+    def test_assets_resolve_via_importlib_resources(self) -> None:
+        pkg = importlib.resources.files("beetroot.templates.vm")
+        for name in ("kernel.config", "guest-init.sh", "adbprobe.c"):
+            assert pkg.joinpath(name).is_file(), name
+
+    def test_stable_across_calls(self) -> None:
+        assert paths.bundled_vm_dir() == paths.bundled_vm_dir()
+
+    def test_handles_zip_install(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Simulate a wheel install: the package data has no real filesystem
+        # path (``is_file()`` is False), so the helper must extract every asset
+        # into the user cache and return that directory.
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        monkeypatch.setattr(paths, "_BUNDLED_VM_DIR_CACHE", None)
+
+        payloads = {
+            "kernel.config": b"CONFIG_FOO=y\n",
+            "guest-init.sh": b"#!/bin/sh\n",
+            "adbprobe.c": b"int main(){}\n",
+        }
+
+        class _ZipResource:
+            def __init__(self, name: str) -> None:
+                self._name = name
+
+            def is_file(self) -> bool:
+                return False
+
+            def read_bytes(self) -> bytes:
+                return payloads[self._name]
+
+        class _Files:
+            def joinpath(self, name: str) -> _ZipResource:
+                return _ZipResource(name)
+
+        import contextlib
+        from collections.abc import Iterator
+
+        @contextlib.contextmanager
+        def _fake_as_file(resource: _ZipResource) -> Iterator[_ZipResource]:
+            yield resource
+
+        monkeypatch.setattr(importlib.resources, "files", lambda _pkg: _Files())
+        monkeypatch.setattr(importlib.resources, "as_file", _fake_as_file)
+
+        result = paths.bundled_vm_dir()
+        assert result == paths.user_cache_dir("vm-assets")
+        for name, content in payloads.items():
+            assert (result / name).read_bytes() == content
+
+        # "cache already present with identical bytes" branch: clear the
+        # in-memory cache, re-run, assert no rewrite happened.
+        monkeypatch.setattr(paths, "_BUNDLED_VM_DIR_CACHE", None)
+        mtimes = {n: (result / n).stat().st_mtime_ns for n in payloads}
+        second = paths.bundled_vm_dir()
+        assert second == result
+        for name in payloads:
+            assert (result / name).stat().st_mtime_ns == mtimes[name], name
+
+
 class TestUserRegistryFile:
     def test_default_under_home_config(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
