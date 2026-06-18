@@ -367,10 +367,12 @@ expensive step.
 
 1. **Stabilize** — ✅ done: `CONFIG_PSI=y` gives a clean 5-minute idle
    (no lmkd flapping, no reboot). The kernel config fragment is now pinned
-   in-tree at `docker/vm/kernel.config` so the build is reproducible.
+   in-tree at `src/beetroot/templates/vm/kernel.config` so the build is reproducible.
 2. **Package** — ✅ done (issue #44): the kernel config fragment
-   (`docker/vm/kernel.config`) and guest init (`docker/vm/guest-init.sh`) are
-   vendored in-tree; the rootfs builder is pure-Python (`build_rootfs` in
+   (`src/beetroot/templates/vm/kernel.config`) and guest init
+   (`src/beetroot/templates/vm/guest-init.sh`) are shipped as package data
+   (so `beetroot build --vm-kernel` works from a `uv tool install` wheel);
+   the rootfs builder is pure-Python (`build_rootfs` in
    `src/beetroot/builder.py`, the former `docker/vm/build-rootfs.sh`), and
    `beetroot build --vm-kernel` wraps the kernel build + rootfs assembly.
 3. **`VmDeviceBackend`** — ✅ done (issue #44): implemented against the

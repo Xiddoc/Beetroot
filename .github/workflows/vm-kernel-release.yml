@@ -8,7 +8,7 @@
 # compatible with immutable releases (an immutable release freezes its assets at
 # creation, so a single rolling release can't be appended to). The CLI
 # (beetroot.kernel_download) computes the same fingerprint from its local
-# docker/vm/kernel.config and only fetches an exact match — so a config edit
+# src/beetroot/templates/vm/kernel.config and only fetches an exact match — so a config edit
 # correctly misses and the CLI falls back to a source compile. Runs on demand
 # and whenever the config fragment changes on master.
 name: vm-kernel-release
@@ -18,7 +18,7 @@ on:
   push:
     branches: [master]
     paths:
-      - docker/vm/kernel.config
+      - src/beetroot/templates/vm/kernel.config
       - .github/workflows/vm-kernel-release.yml
 
 permissions:
@@ -48,7 +48,9 @@ jobs:
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
         with:
           path: ~/.cache/ccache
-          key: ${{ runner.os }}-ccache-vmkernel-${{ env.KERNEL_VERSION }}-${{ hashFiles('docker/vm/kernel.config') }}
+          key: >-
+            ${{ runner.os }}-ccache-vmkernel-${{ env.KERNEL_VERSION }}-${{
+            hashFiles('src/beetroot/templates/vm/kernel.config') }}
           restore-keys: |
             ${{ runner.os }}-ccache-vmkernel-${{ env.KERNEL_VERSION }}-
             ${{ runner.os }}-ccache-vmkernel-
@@ -56,14 +58,14 @@ jobs:
       - name: Build the binder-enabled bzImage
         run: |
           set -euxo pipefail
-          fp="$(sha256sum docker/vm/kernel.config | cut -c1-12)"
+          fp="$(sha256sum src/beetroot/templates/vm/kernel.config | cut -c1-12)"
           asset="bzImage-${KERNEL_VERSION}-${fp}"
           cd "$RUNNER_TEMP"
           curl -fsSLO "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz"
           tar -xf "linux-${KERNEL_VERSION}.tar.xz"
           cd "linux-${KERNEL_VERSION}"
           make defconfig
-          ./scripts/kconfig/merge_config.sh -m .config "$GITHUB_WORKSPACE/docker/vm/kernel.config"
+          ./scripts/kconfig/merge_config.sh -m .config "$GITHUB_WORKSPACE/src/beetroot/templates/vm/kernel.config"
           make olddefconfig
           make CC="ccache gcc" -j"$(nproc)" bzImage
           grep -q 'CONFIG_ANDROID_BINDER_IPC=y' .config

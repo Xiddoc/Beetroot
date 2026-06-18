@@ -157,7 +157,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
 
       - name: Shellcheck -S style (POSIX sh — boot helpers + micro-VM guest init)
-        run: shellcheck -S style -s sh docker/*.sh docker/vm/*.sh
+        run: shellcheck -S style -s sh docker/*.sh src/beetroot/templates/vm/*.sh
 
   shfmt:
     # Formatting gate for the boot helpers (issue #21). The binary is a
@@ -177,7 +177,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/shfmt"
 
       - name: shfmt diff gate (4-space indent, matching the tree)
-        run: '"$RUNNER_TEMP/shfmt" -i 4 -d docker/*.sh docker/vm/*.sh'
+        run: '"$RUNNER_TEMP/shfmt" -i 4 -d docker/*.sh src/beetroot/templates/vm/*.sh'
 
   hadolint:
     runs-on: ubuntu-latest
