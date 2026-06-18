@@ -119,7 +119,7 @@ class TestBootstrapErrorSurfacing:
     def test_build_surfaces_bootstrap_error(
         self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _boom(*, gapps: str) -> str:
+        def _boom(*, gapps: str, build_context: Path | None = None) -> str:
             raise builder.BootstrapError("simulated bootstrap failure")
 
         monkeypatch.setattr(builder, "build_image", _boom)

@@ -224,10 +224,11 @@ def build_image(  # noqa: PLR0913  # 6 keyword-only params; each is a distinct i
         build_context: Directory passed to Docker as the build context and
             as ``--project-directory``.  Must contain a ``docker/``
             sub-directory with ``Dockerfile`` and the boot-script helpers.
-            Defaults to ``paths.bundled_compose_file().parent.parent.parent.parent``
+            When ``None`` the ``BEETROOT_BUILD_CONTEXT`` env var is consulted,
+            falling back to ``paths.bundled_compose_file().parent.parent.parent.parent``
             — the repo root for a source / editable install.  For a
-            ``uv tool install``-based setup you MUST pass this explicitly
-            because ``docker/`` is not bundled in the wheel.
+            ``uv tool install``-based setup you MUST set one of these because
+            ``docker/`` is not bundled in the wheel.
         runner: Inject a :class:`SubprocessRunner` for testing. Defaults to
             :class:`DefaultRunner`.
 
@@ -242,7 +243,9 @@ def build_image(  # noqa: PLR0913  # 6 keyword-only params; each is a distinct i
             redroid versions (delegated to :class:`beetroot.config.Android`).
     """
     work = work_dir if work_dir is not None else _default_work_dir()
-    ctx = build_context if build_context is not None else _default_build_context()
+    ctx = build_context if build_context is not None else _build_context_from_env()
+    if ctx is None:
+        ctx = _default_build_context()
     run = runner if runner is not None else DefaultRunner()
 
     tag = _image_tag(android_version, gapps)
@@ -794,12 +797,68 @@ def build_rootfs(
         return _RootfsAssembly(cfg, run, Path(work)).build()
 
 
-# The vendored micro-VM build artifacts (kernel config fragment, rootfs
-# builder, guest init) live under ``docker/vm/`` in a source / editable
-# install. ``beetroot build --vm-kernel`` resolves them relative to the
-# build context, exactly like the redroid Dockerfile.
+# The micro-VM build artifacts (kernel-config fragment, guest init,
+# adbprobe.c) are shipped as package data under ``beetroot.templates.vm``
+# and resolved via :func:`paths.bundled_vm_dir`, so ``beetroot build
+# --vm-kernel`` works from a plain ``uv tool install`` wheel (where the
+# repo's ``docker/`` tree is absent). A caller may still override the
+# directory by passing an explicit ``build_context`` (CLI ``--build-context``)
+# or exporting ``BEETROOT_BUILD_CONTEXT``, in which case the assets are
+# read from ``<context>/docker/vm`` — the source-checkout layout.
 _VM_DIR = "vm"
 _KERNEL_CONFIG = "kernel.config"
+
+# Assets that must exist in the resolved vm dir before the build can proceed.
+_VM_REQUIRED_ASSETS: Final = ("kernel.config", "guest-init.sh")
+
+
+def _build_context_from_env() -> Path | None:
+    """
+    Return the ``BEETROOT_BUILD_CONTEXT`` override as a path, or ``None``.
+
+    Empty (the default) means "no override" — the caller falls back to the
+    bundled package data.
+    """
+    return Path(settings.build_context) if settings.build_context else None
+
+
+def _resolve_vm_dir(build_context: Path | None) -> Path:
+    """
+    Resolve the directory holding the micro-VM build assets.
+
+    When ``build_context`` is provided (CLI ``--build-context`` or
+    ``BEETROOT_BUILD_CONTEXT``) the assets are read from
+    ``<build_context>/docker/vm`` — the source-checkout layout. Otherwise the
+    assets bundled in the wheel are used via :func:`paths.bundled_vm_dir`, so
+    the build works from a plain ``uv tool install``.
+
+    Args:
+        build_context: An explicit override directory, or ``None`` to use the
+            bundled package data.
+
+    Returns:
+        The resolved vm-assets directory.
+
+    Raises:
+        BootstrapError: If the resolved directory is missing the
+            ``kernel.config`` / ``guest-init.sh`` assets the build needs, with
+            a message naming both ways to fix it.
+    """
+    vm_dir = (
+        (build_context / "docker" / _VM_DIR)
+        if build_context is not None
+        else paths.bundled_vm_dir()
+    )
+    missing = [name for name in _VM_REQUIRED_ASSETS if not (vm_dir / name).is_file()]
+    if missing:
+        raise BootstrapError(
+            f"micro-VM build assets not found in {vm_dir} (missing: {', '.join(missing)}). "
+            "Run `beetroot build --vm-kernel` from a source checkout, or point "
+            "Beetroot at one with `--build-context <path-to-checkout>` "
+            "(or by exporting BEETROOT_BUILD_CONTEXT=<path-to-checkout>)."
+        )
+    return vm_dir
+
 
 # The guest kernel version pinned by docs/design/vm-rnd-log.md. Kept in sync
 # with KERNEL_VERSION in .github/workflows/e2e.yml and vm-kernel-release.yml
@@ -855,8 +914,8 @@ def build_vm_kernel(  # noqa: PLR0913  # 6 keyword-only params; each is a distin
     Two steps:
 
     1. Obtain the guest kernel ``bzImage``. By default this **fetches a
-       prebuilt kernel** matching the pinned version + the
-       ``docker/vm/kernel.config`` fingerprint from the repo's GitHub release
+       prebuilt kernel** matching the pinned version + the bundled
+       ``kernel.config`` fingerprint from the repo's GitHub release
        (~12 MiB, seconds) — so a fresh host skips the ~7-min compile. If no
        matching prebuilt exists (config edited, version bumped, release not yet
        published, or network blocked) it falls back to compiling from a
@@ -871,10 +930,11 @@ def build_vm_kernel(  # noqa: PLR0913  # 6 keyword-only params; each is a distin
     Args:
         out_dir: Directory the ``bzImage`` and ``rootdisk.img`` are written
             to. Defaults to a ``vm`` subdir of the user cache.
-        build_context: Directory containing the ``docker/vm/`` artifacts.
-            Defaults to the repo root (source / editable install); pass it
-            explicitly for a ``uv tool install`` setup where ``docker/`` is
-            not bundled in the wheel.
+        build_context: A source-checkout directory whose ``docker/vm/``
+            subtree holds the build assets. When ``None`` (the default), the
+            ``BEETROOT_BUILD_CONTEXT`` env var is consulted, and failing that
+            the assets bundled inside the wheel are used — so the build works
+            from a plain ``uv tool install`` with no ``docker/`` tree on disk.
         runner: Inject a :class:`SubprocessRunner` (the kernel step) for
             testing. Defaults to :class:`DefaultRunner`.
         rootfs_build: Inject the rootfs assembler for testing. Defaults to
@@ -889,11 +949,11 @@ def build_vm_kernel(  # noqa: PLR0913  # 6 keyword-only params; each is a distin
     Raises:
         BootstrapError: If the kernel build or rootfs assembly fails.
     """
-    ctx = build_context if build_context is not None else _default_build_context()
+    ctx = build_context if build_context is not None else _build_context_from_env()
     out = out_dir if out_dir is not None else paths.user_cache_dir(_VM_DIR)
     run = runner if runner is not None else DefaultRunner()
 
-    vm_dir = ctx / "docker" / _VM_DIR
+    vm_dir = _resolve_vm_dir(ctx)
     kernel_config = vm_dir / _KERNEL_CONFIG
     kernel_out = out / "bzImage"
     rootfs_out = out / "rootdisk.img"
