@@ -11,6 +11,12 @@
     the one correction the fragment needed. Stage B (docker + redroid in the
     guest) is not yet run — the artifacts are ready for it.
 
+!!! note "Asset paths"
+    The micro-VM build assets (`kernel.config`, `adbprobe.c`) now live under
+    `src/beetroot/templates/vm/` — they were moved there from `docker/vm/` in
+    #77. Live recipes below point at the new location; any remaining
+    `docker/vm/` mentions are historical R&D narrative that predate the move.
+
 ## Environment
 
 * Host: 4 CPU cores, 15 GiB RAM, ~30 GiB free on `/`. Running as root.
@@ -47,7 +53,7 @@ GNU Make 4.3.
 
   ```sh
   make defconfig                                                   # x86_64 base
-  ./scripts/kconfig/merge_config.sh -m .config docker/vm/kernel.config
+  ./scripts/kconfig/merge_config.sh -m .config src/beetroot/templates/vm/kernel.config
   make olddefconfig
   make -j4 bzImage
   ```
@@ -60,7 +66,7 @@ GNU Make 4.3.
   `CONFIG_EXT4_FS`, `CONFIG_CGROUP_BPF`, `CONFIG_USER_NS`,
   `CONFIG_DEVTMPFS_MOUNT`, `CONFIG_MEMFD_CREATE` — all set.
 
-### Correction to `docker/vm/kernel.config`
+### Correction to `src/beetroot/templates/vm/kernel.config`
 
 * **`CONFIG_ANDROID=y` is stale and was removed.** On modern kernels there is
   no `CONFIG_ANDROID` symbol — the umbrella config was dropped and
@@ -438,7 +444,7 @@ that had masked them:
    NOT banner unprompted** — the ADB client must send a `CNXN` first, then adbd
    replies `CNXN`. A connect-and-read probe therefore *always* reads zero bytes,
    which looked like a broken relay even after fix #1 made it work. The honest
-   test is the tiny static `adbprobe` (vendored at `docker/vm/adbprobe.c`) that
+   test is the tiny static `adbprobe` (vendored at `src/beetroot/templates/vm/adbprobe.c`) that
    **sends** a real CNXN; through the full relay it returns `first4=CNXN`.
 
 ## C.2 The working relay (exact commands)
@@ -523,7 +529,7 @@ not a correctness requirement; the path itself is proven.
 * Boot+relay serial logs: `/home/user/vm-rnd/stageC-relay*.log`,
   `/home/user/vm-rnd/stageC-final.log` (the cleaned-production-init proof).
 * Run harness mirroring `build_qemu_argv` (TCG): `/home/user/vm-rnd/run-stageC.sh`.
-* CNXN probe: `/home/user/vm-rnd/adbprobe[.c]` (vendored to `docker/vm/adbprobe.c`).
+* CNXN probe: `/home/user/vm-rnd/adbprobe[.c]` (vendored to `src/beetroot/templates/vm/adbprobe.c`).
 * Iteration method: loop-mount `rootdisk.img` to refresh `/init` (cleaner than
   `debugfs -w` on the large tree, which corrupted ext4 dir checksums once after
   an unclean QEMU kill — `e2fsck -fy` repaired it). Always SIGKILL QEMU and
@@ -550,7 +556,7 @@ Same class as Stage A–C: 4 physical cores, 15 GiB RAM, **no `/dev/kvm`**, host
 kernel without `CONFIG_ANDROID_BINDER_IPC` (`beetroot modes` → `binder: vm, TCG
 accel: needs-setup`). Toolchain installed fresh (`qemu-system-x86` 8.2.x,
 `busybox-static`, `socat`, `flex`/`cpio`/`libelf-dev`). Kernel built from the
-committed `docker/vm/kernel.config` (linux-6.12.9, ~7–8 min, 14 MiB bzImage);
+committed `src/beetroot/templates/vm/kernel.config` (linux-6.12.9, ~7–8 min, 14 MiB bzImage);
 rootfs from the committed `build_rootfs` (8 GiB ext4, redroid `11.0.0-latest`
 baked into `/var/lib/docker`).
 
