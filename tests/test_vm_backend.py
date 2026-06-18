@@ -397,6 +397,120 @@ class TestLifecycle:
         assert order == ["down", "up"]
 
 
+class TestRootfsVersionSkewWarning:
+    """issue #82: up/apply warn when the baked rootfs version != config."""
+
+    def _backend_with_rootfs(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        config_version: int,
+        marker_version: int | None,
+    ) -> vm_backend.VmDeviceBackend:
+        from beetroot import builder
+
+        kernel = tmp_path / "bzImage"
+        rootfs = tmp_path / "rootdisk.img"
+        kernel.write_bytes(b"k")
+        rootfs.write_bytes(b"r")
+        if marker_version is not None:
+            builder.rootfs_version_marker(rootfs).write_text(
+                f"{marker_version}\n", encoding="utf-8"
+            )
+        monkeypatch.setattr(
+            vm_backend, "settings", Settings(vm_kernel=str(kernel), vm_rootfs=str(rootfs))
+        )
+        cfg = config.InstanceConfig(binder="vm", android={"version": config_version})  # type: ignore[arg-type]
+        return _make_backend(tmp_path, cfg=cfg)
+
+    def _silence_launch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(qemu, "detect_accel", lambda _req: "tcg")
+        monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 1)
+        monkeypatch.setattr(
+            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None
+        )
+
+    def test_up_warns_on_version_mismatch(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        backend = self._backend_with_rootfs(
+            tmp_path, monkeypatch, config_version=14, marker_version=11
+        )
+        self._silence_launch(monkeypatch)
+        backend.up()
+        err = capsys.readouterr().err
+        assert "baked for Android 11" in err
+        assert "android.version: 14" in err
+
+    def test_up_silent_when_versions_match(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        backend = self._backend_with_rootfs(
+            tmp_path, monkeypatch, config_version=14, marker_version=14
+        )
+        self._silence_launch(monkeypatch)
+        backend.up()
+        assert "baked for Android" not in capsys.readouterr().err
+
+    def test_up_silent_when_no_marker(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Backward compat: a pre-#82 rootfs has no marker — stay silent.
+        backend = self._backend_with_rootfs(
+            tmp_path, monkeypatch, config_version=14, marker_version=None
+        )
+        self._silence_launch(monkeypatch)
+        backend.up()
+        assert "baked for Android" not in capsys.readouterr().err
+
+    def test_skew_check_silent_when_rootfs_unresolvable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # No kernel/rootfs configured at all — the skew check must not raise;
+        # build_argv surfaces the missing-artifact error downstream instead.
+        monkeypatch.setattr(vm_backend, "settings", Settings(vm_kernel="", vm_rootfs=""))
+        backend = _make_backend(tmp_path)
+        backend._warn_on_rootfs_version_skew()
+        assert "baked for Android" not in capsys.readouterr().err
+
+    def test_apply_warns_on_version_mismatch(
+        self,
+        isolated_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from beetroot import builder
+
+        root = isolated_registry / "inst"
+        root.mkdir()
+        rootfs = isolated_registry / "rootdisk.img"
+        rootfs.write_bytes(b"r")
+        builder.rootfs_version_marker(rootfs).write_text("11\n", encoding="utf-8")
+        monkeypatch.setattr(
+            vm_backend, "settings", Settings(vm_kernel=str(rootfs), vm_rootfs=str(rootfs))
+        )
+        cfg = config.InstanceConfig(binder="vm", android={"version": 14})  # type: ignore[arg-type]
+        _write_yaml(root, cfg)
+        backend_cfg = registry.VmBackendConfig(absolute_path=str(root))
+        registry.add_allocating("vmphone", backend=backend_cfg)
+        backend = vm_backend.VmDeviceBackend.from_meta("vmphone", backend_cfg)
+        backend.apply()
+        assert "baked for Android 11" in capsys.readouterr().err
+
+
 class TestWaitForAdbConnect:
     def _connect_result(self, *, ok: bool) -> subprocess.CompletedProcess[str]:
         if ok:

@@ -468,7 +468,7 @@ beetroot down <name> && beetroot up <name>
 Build the redroid base image and Beetroot layer for a chosen GMS variant. One-time bootstrap; re-run when you want a fresh image.
 
 ```
-beetroot build [<gapps>] [--vm-kernel] [--from-source]
+beetroot build [<gapps>] [--vm-kernel] [--from-source] [--android-version <N>]
 ```
 
 | Argument / Flag | Type | Description |
@@ -477,10 +477,13 @@ beetroot build [<gapps>] [--vm-kernel] [--from-source]
 | `--vm-kernel` | flag | Build the `binder: vm` micro-VM guest kernel + rootfs instead of the redroid base image (for hosts with no kernel binder). Prints the resulting `vm.kernel` / `vm.rootfs` paths. |
 | `--from-source` | flag | With `--vm-kernel`: always compile the guest kernel from source (~7 min) instead of fetching the matching prebuilt `bzImage`. |
 | `--build-context` | path, optional | Path to a source checkout whose `docker/` tree supplies the build assets. Overrides `BEETROOT_BUILD_CONTEXT`. Defaults to the assets bundled in the installed wheel. |
+| `--android-version` | int, optional | With `--vm-kernel`: Android major version to bake into the guest rootfs (must match the instance's `android.version`). Defaults to `14` — the same default a fresh `beetroot create` uses, so an unflagged build and a default instance agree. Bake a different version (e.g. `--android-version 11`) when your instance pins one. |
 
 With `--vm-kernel`, the guest kernel is **fetched prebuilt by default**: a ~12 MiB `bzImage` is downloaded from the repo's `vm-kernel` GitHub release, matched to the pinned kernel version *and* a fingerprint of the bundled `kernel.config` (shipped as package data at `src/beetroot/templates/vm/kernel.config`), and verified against its `.sha256`. If no asset matches (you edited the config, bumped the version, the release isn't published yet, or the network is blocked), it falls back to compiling from source. So a fresh host skips the ~7-minute compile, and the vendored config stays authoritative — you can never boot a stale prebuilt kernel. The rootfs is always assembled locally (it pulls redroid on your machine and is 2.4 GB — too large to host).
 
 The `kernel.config`, `guest-init.sh` and `adbprobe.c` build assets ship inside the wheel, so `--vm-kernel` works from a plain `uv tool install` with no source checkout. To build against a working tree's assets instead, pass `--build-context <path-to-checkout>` (or export `BEETROOT_BUILD_CONTEXT=<path-to-checkout>`); Beetroot then reads them from `<context>/docker/vm`.
+
+The guest rootfs bakes the **plain upstream redroid image** for the chosen Android version (e.g. `redroid/redroid:14.0.0-latest`) and records that version in a marker beside the image. If an instance's `android.version` later disagrees with the baked rootfs, `beetroot up` / `beetroot apply` print a one-line warning (the guest boots the *baked* version regardless) telling you to rebuild with a matching `--android-version` or change `android.version`. A pre-existing rootfs without the marker is treated as a match (no warning) for backward compatibility.
 
 The verb:
 

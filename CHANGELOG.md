@@ -285,6 +285,26 @@
   are genuinely missing the build now raises an actionable error naming both
   fixes (run from a checkout, or pass `--build-context` / set
   `BEETROOT_BUILD_CONTEXT`).
+- **`binder: vm` rootfs now bakes the Android version a default instance
+  expects (#82).** `beetroot create` defaults `android.version` to `14`, but
+  the micro-VM rootfs baker hardcoded `redroid/redroid:11.0.0-latest`, so
+  `beetroot build --vm-kernel` produced an Android-11 guest that mismatched a
+  default instance (minSdk > 30 APKs would not install). The default Android
+  version is now a single source of truth — `config.DEFAULT_ANDROID_VERSION` —
+  shared by the `Android` schema default, the redroid base-image build, and the
+  VM rootfs baker. `beetroot build --vm-kernel` derives the plain upstream
+  redroid image from that version (`config.vm_redroid_image`) and accepts a new
+  `--android-version` flag to bake a different one (mirroring how the gapps
+  argument selects the base image). The baker records the baked version in a
+  marker beside the rootfs (`rootdisk.img.android-version`) and writes the baked
+  image tag into the guest at `/etc/beetroot/redroid-image` so `guest-init.sh`
+  runs whatever was baked rather than a hardcoded default. `beetroot up` /
+  `beetroot apply` read the marker and warn (without aborting) on a
+  config/rootfs version skew; a pre-#82 rootfs with no marker is treated as a
+  match for backward compatibility. Regression tests cover the
+  create→build version consistency, the `--android-version` image selection,
+  and the up/apply mismatch warning (firing on skew, silent on match and on the
+  no-marker case).
 - **`binder: vm` guest no longer kernel-panics on boot (ELOOP on `/init`).**
   `build_rootfs` symlinked *every* applet from `busybox --list` to `busybox` —
   but `busybox` is itself in that list, so it overwrote the real `/bin/busybox`

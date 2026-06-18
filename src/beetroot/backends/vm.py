@@ -27,7 +27,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
 
-from beetroot import config, paths, ports, registry
+from beetroot import builder, config, console, paths, ports, registry
 from beetroot.api import (
     AdbNotInstalledError,
     BackendCapabilityError,
@@ -403,10 +403,41 @@ class VmDeviceBackend:
                 f"out of sync — run `beetroot apply {self._name}` to reconcile the "
                 "registry before `beetroot up`."
             )
+        self._warn_on_rootfs_version_skew()
         accel = self.resolved_accel()
         argv = self.build_argv(accel)
         qemu.QemuProcess(self._root).start(argv)
         self._wait_for_adb_connect()
+
+    def _warn_on_rootfs_version_skew(self) -> None:
+        """
+        Warn (without aborting) if the baked rootfs Android version != config.
+
+        ``beetroot build --vm-kernel`` records the Android version it baked in a
+        marker beside the rootfs image (issue #82). If the instance's
+        ``android.version`` now disagrees, the guest would boot a different
+        Android than the instance expects (e.g. a default-14 instance against a
+        rootfs baked for 11 — minSdk>30 APKs would fail to install). Stay silent
+        when the versions match, when no marker exists (a pre-#82 rootfs, kept
+        for backward compatibility), or when the rootfs path can't be resolved
+        (``up`` surfaces that as its own hard error downstream).
+        """
+        try:
+            rootfs = _resolve_artifact(self._cfg.vm.rootfs, settings.vm_rootfs, "rootfs")
+        except qemu.QemuLaunchError:
+            return
+        baked = builder.read_rootfs_version(rootfs)
+        configured = self._cfg.android.version
+        if baked is None or baked == configured:
+            return
+        console.note(
+            f"warning: instance {self._name!r} sets android.version: {configured} "
+            f"but its VM rootfs was baked for Android {baked}. The guest will boot "
+            f"Android {baked} — apps targeting a newer minSdk may fail to install. "
+            f"Rebuild with `beetroot build --vm-kernel --android-version {configured}` "
+            "to match (or set android.version to "
+            f"{baked} in beetroot.yaml)."
+        )
 
     def _wait_for_adb_connect(self) -> None:
         """
@@ -505,6 +536,7 @@ class VmDeviceBackend:
         new_ports = ports.resolve_ports(self._index, self._cfg.ports)
         _check_port_collisions(self._name, new_ports)
         self._stage()
+        self._warn_on_rootfs_version_skew()
         registry.reconcile_backend_kind(self._name, self._cfg.binder)
 
     def _stage(self) -> None:
