@@ -41,8 +41,13 @@ def test_config_fingerprint_is_short_stable_sha(tmp_path: Path) -> None:
 
 def test_asset_name_and_release_url() -> None:
     assert kernel_download.asset_name("6.12.9", "abc123def456") == "bzImage-6.12.9-abc123def456"
+    assert kernel_download.release_tag("6.12.9", "abc123def456") == "vm-kernel-6.12.9-abc123def456"
     url = kernel_download.release_url("6.12.9", "abc123def456")
-    assert url.endswith("/releases/download/vm-kernel/bzImage-6.12.9-abc123def456")
+    # Per-fingerprint tag (immutable-release compatible): the asset lives in its
+    # own vm-kernel-<version>-<fingerprint> release, not a rolling 'vm-kernel'.
+    assert url.endswith(
+        "/releases/download/vm-kernel-6.12.9-abc123def456/bzImage-6.12.9-abc123def456"
+    )
     assert url.startswith("https://github.com/Xiddoc/Beetroot/")
 
 

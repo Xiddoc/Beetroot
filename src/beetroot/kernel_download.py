@@ -16,6 +16,14 @@ the prebuilt no longer matches, and the caller falls back to a source compile.
 That keeps the vendored config the single source of truth: you can never boot a
 stale prebuilt kernel.
 
+Each (version, fingerprint) pair gets its **own** release, tagged
+``vm-kernel-<version>-<fingerprint>``, with the ``bzImage`` + ``.sha256``
+attached at creation. A per-fingerprint tag (rather than one rolling
+``vm-kernel`` release that accrues assets) is what makes the publish compatible
+with **immutable releases**: an immutable release freezes its assets at
+creation, so you cannot append a new kernel to an existing one — but you can
+always create a brand-new release with its asset already attached.
+
 A ``.sha256`` sidecar is fetched alongside the binary and verified — this
 guards against a truncated/corrupt download. It is *not* a supply-chain anchor
 (an attacker controlling the release controls both files); the trust model is
@@ -35,7 +43,10 @@ from .settings import settings
 
 _CHUNK_SIZE = 1 << 16  # 64 KiB per read; matches frida_download for parity
 _REPO = "Xiddoc/Beetroot"
-_RELEASE_TAG = "vm-kernel"  # the rolling release that holds every published bzImage
+# Each kernel gets its own immutable release tagged vm-kernel-<version>-<fp>;
+# the publishing workflow (vm-kernel-release.yml) creates it with the asset
+# already attached. See module docstring for why this beats a rolling tag.
+_RELEASE_TAG_PREFIX = "vm-kernel"
 
 
 class KernelFetchError(RuntimeError):
@@ -78,6 +89,25 @@ def asset_name(version: str, fingerprint: str) -> str:
     return f"bzImage-{version}-{fingerprint}"
 
 
+def release_tag(version: str, fingerprint: str) -> str:
+    """
+    Return the release tag holding a (version, fingerprint) kernel.
+
+    Each kernel lives in its own release, ``vm-kernel-<version>-<fingerprint>``,
+    so the publish stays compatible with immutable releases (the asset is
+    attached at creation, never appended). The publishing workflow
+    (``vm-kernel-release.yml``) creates exactly this tag.
+
+    Args:
+        version: The pinned kernel version.
+        fingerprint: The :func:`config_fingerprint` of the config fragment.
+
+    Returns:
+        The release tag, e.g. ``vm-kernel-6.12.9-abc123def456``.
+    """
+    return f"{_RELEASE_TAG_PREFIX}-{version}-{fingerprint}"
+
+
 def release_url(version: str, fingerprint: str) -> str:
     """
     Return the GitHub download URL for a prebuilt guest kernel.
@@ -90,8 +120,8 @@ def release_url(version: str, fingerprint: str) -> str:
         The full HTTPS URL to the ``bzImage`` release asset.
     """
     return (
-        f"https://github.com/{_REPO}/releases/download/{_RELEASE_TAG}/"
-        f"{asset_name(version, fingerprint)}"
+        f"https://github.com/{_REPO}/releases/download/"
+        f"{release_tag(version, fingerprint)}/{asset_name(version, fingerprint)}"
     )
 
 

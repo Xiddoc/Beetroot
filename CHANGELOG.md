@@ -228,17 +228,21 @@
   ~12 MiB bzImage instead of compiling).** The cold kernel compile (~7 min) is
   the long pole for a fresh host, and ccache only helps *re*builds — a brand-new
   CI runner or Claude Code on the web sandbox always pays full price. The CLI
-  now downloads a prebuilt `bzImage` from the repo's `vm-kernel` GitHub release,
-  keyed on the pinned kernel version **and** a fingerprint of the local
+  now downloads a prebuilt `bzImage` from a per-kernel GitHub release, keyed on
+  the pinned kernel version **and** a fingerprint of the local
   `docker/vm/kernel.config` (sha256-verified via a `.sha256` sidecar). A config
   edit / version bump / unpublished release / blocked network all miss cleanly
   and fall back to a source compile, so the vendored config stays authoritative
   — you can never boot a stale prebuilt kernel. `--from-source` forces a
   compile. New `src/beetroot/kernel_download.py` (mirrors `frida_download.py`);
   publishing handled by `.github/workflows/vm-kernel-release.yml` (builds with
-  ccache, uploads to the rolling `vm-kernel` release on config changes /
-  manual dispatch). The 2.4 GB rootfs is still assembled locally (over GitHub's
-  2 GB asset limit, and it pulls redroid on the user's machine).
+  ccache on config changes / manual dispatch). Each kernel is published as its
+  **own** release tagged `vm-kernel-<version>-<fingerprint>`, with the `bzImage`
+  + `.sha256` attached at creation — compatible with **immutable releases**,
+  which freeze a release's assets at creation and so cannot be appended to (an
+  earlier rolling single-`vm-kernel`-release design hit `HTTP 422: Cannot upload
+  assets to an immutable release`). The 2.4 GB rootfs is still assembled locally
+  (over GitHub's 2 GB asset limit, and it pulls redroid on the user's machine).
 - **The micro-VM rootfs builder is now typed, tested Python.** The former
   `docker/vm/build-rootfs.sh` has been ported to `build_rootfs` in
   `src/beetroot/builder.py` — same recipe (busybox-static + Docker static
