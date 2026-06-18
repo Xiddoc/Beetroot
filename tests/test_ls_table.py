@@ -29,6 +29,7 @@ DOC_FILES_WITH_LS_EXAMPLE: tuple[Path, ...] = (
     REPO_ROOT / "docs" / "getting-started" / "first-instance.md",
     REPO_ROOT / "docs" / "guides" / "migration-v0.2-to-v0.3.md",
     REPO_ROOT / "docs" / "guides" / "migration-v0.3-to-v0.4.md",
+    REPO_ROOT / "docs" / "guides" / "migration-v0.4-to-v0.6.md",
 )
 
 
