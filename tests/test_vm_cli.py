@@ -75,6 +75,17 @@ class TestBuildVmKernel:
             android_version=14, from_source=False, build_context=Path("/src/checkout")
         )
 
+    def test_vm_kernel_invalid_android_version_fails_fast(self, cli_root: Path) -> None:
+        with patch("beetroot.cli.builder.build_vm_kernel") as mock_b:
+            result = runner.invoke(cli.app, ["build", "--vm-kernel", "--android-version", "99"])
+        assert result.exit_code == 1
+        mock_b.assert_not_called()
+        assert "--android-version" in result.stderr
+        assert "is not supported" in result.stderr
+        # The canonical supported-version set is surfaced verbatim.
+        for version in sorted(config._VALID_ANDROID_VERSIONS):
+            assert str(version) in result.stderr
+
     def test_vm_kernel_failure_surfaces_error(self, cli_root: Path) -> None:
         from beetroot.builder import BootstrapError
 

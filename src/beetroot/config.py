@@ -55,6 +55,33 @@ _VALID_ANDROID_VERSIONS = {11, 12, 13, 14}
 # the default VM redroid base in lock-step.
 DEFAULT_ANDROID_VERSION: Final = 14
 
+
+def validate_android_version(v: int) -> int:
+    """
+    Validate an Android major version against the supported set.
+
+    Single source of truth for the supported-version check, reused by the
+    :class:`Android` schema validator AND by callers outside the config model
+    (e.g. ``beetroot build --vm-kernel --android-version N``) that need to
+    fail fast before kicking off expensive work.
+
+    Args:
+        v: The Android major version to validate.
+
+    Returns:
+        ``v`` unchanged when it is one of the supported versions.
+
+    Raises:
+        ValueError: If ``v`` is not one of the supported Android versions.
+    """
+    if v not in _VALID_ANDROID_VERSIONS:
+        raise ValueError(
+            f"android.version {v!r} is not supported — valid values: "
+            + ", ".join(str(x) for x in sorted(_VALID_ANDROID_VERSIONS))
+        )
+    return v
+
+
 _MIN_PORT: Final = 1
 _MAX_PORT: Final = 65535
 
@@ -293,12 +320,7 @@ class Android(BaseModel):
     @field_validator("version")
     @classmethod
     def _check_version(cls, v: int) -> int:
-        if v not in _VALID_ANDROID_VERSIONS:
-            raise ValueError(
-                f"android.version {v!r} is not supported — valid values: "
-                + ", ".join(str(x) for x in sorted(_VALID_ANDROID_VERSIONS))
-            )
-        return v
+        return validate_android_version(v)
 
     @model_validator(mode="before")
     @classmethod

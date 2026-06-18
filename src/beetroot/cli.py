@@ -1280,6 +1280,10 @@ def build(
     """
     if vm_kernel:
         try:
+            config.validate_android_version(android_version)
+        except ValueError as e:
+            raise _error(f"--android-version: {e}") from e
+        try:
             artifacts = builder.build_vm_kernel(
                 android_version=android_version,
                 from_source=from_source,
