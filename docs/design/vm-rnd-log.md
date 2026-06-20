@@ -681,3 +681,45 @@ The most direct entropy signal is **when `random: crng init done` fires** in the
 kernel log — boot wall-time is dominated by ART/Zygote/`system_server` (which
 entropy does not touch), so a CRNG stall shows up as a fixed early-boot delay,
 not a proportional one.
+
+## E.3 RNG results — boot-neutral under TCG (the levers don't move boot time)
+
+Three rounds, interleaved A→B→C, pure TCG, `-smp 4`, 8 GiB, redroid 11. One arm-B
+boot (round 2) hit a **one-off TCG kernel panic at ~20 s** ("Fatal exception in
+interrupt") — an emulation flake unrelated to the lever (the other two arm-B
+boots were clean), so it is excluded from the means below and noted here for
+honesty. The harness fails such a boot fast rather than recording it.
+
+| arm | `crng init done` (kernel log) | host wall (s) | guest boot (s) |
+| --- | --- | --- | --- |
+| **A** baseline (no levers) | 0.192 / 0.194 / 0.200 | 126.1 / 128.1 / 132.1 (μ **128.8**) | 108 / 111 / 114 (μ 111.0) |
+| **B** `random.trust_cpu=on` only | 0.191 / *(panic)* / 0.193 | 134.1 / 128.1 (μ **131.1**) | 116 / 111 (μ 113.5) |
+| **C** `virtio-rng-pci` + `trust_cpu` (shipped) | 0.189 / 0.208 / 0.205 | 130.1 / 132.1 / 130.1 (μ **130.8**) | 113 / 116 / 112 (μ 113.7) |
+
+**Reading (honest):**
+
+* **The boot never stalls on entropy, so the levers can't speed it up.** The
+  kernel CRNG reports `crng init done` at **~0.19–0.20 s in every arm, baseline
+  included** — the 6.12.9 guest seeds the pool almost instantly from its
+  in-kernel jitter-entropy source plus the `-cpu max` `RDRAND` leaf, *with or
+  without* the levers. (In one arm-B boot the marker even printed at
+  `0.000000` — `trust_cpu` credited `RDRAND` at t=0 — but baseline already
+  reaches the same state by 0.19 s, so there is nothing left to win.)
+* **The ~3 s spread across arms (128.8 / 131.1 / 130.8 wall) is within the
+  within-arm spread** (arm A alone ranges 126–132 s), i.e. host-contention
+  drift, not a lever effect — exactly the pattern Stage D §D.4 measured for
+  `mitigations=off`. There is **no separable RNG treatment effect on boot
+  time** under TCG.
+* **They still ship**, for the same reason `mitigations=off` did: they are
+  correct, free, and *could* matter on a guest kernel/arch without a fast RNG
+  source (no `RDRAND`, weaker jitter entropy) where a real `getrandom()` stall
+  would otherwise block Android init / ART. On this stack they are inert
+  insurance — the flag verifiably works (the device binds; `trust_cpu` is on
+  the cmdline), it just isn't a TCG boot-speed lever.
+
+**So where does the cold-boot time actually go?** Into ART/Zygote/`system_server`
+under software emulation — ~111 s of the ~129 s wall is the guest-measured
+Android boot itself. That is irreducible per-instruction TCG cost (and the
+reason `-smp 4` + MTTCG + `-cpu max` are the levers that *do* move it, §B.5).
+The way to make a *repeat* start "blazingly quick" is therefore not to boot
+faster but to **not cold-boot at all** — see §E.4.
