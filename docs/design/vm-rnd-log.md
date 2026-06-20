@@ -641,16 +641,16 @@ is that it is **not** a TCG boot-speed lever. `smp: auto` resolves to 4 on this
 
 # Micro-VM R&D log — Stage E (cold-boot entropy levers + warm-start, issue #83)
 
-!!! info "Status: Stage E in progress (2026-06-20) — method + harness landed; full numbers appended below as the in-sandbox runs complete"
+!!! success "Status: Stage E validated (2026-06-20) — RNG levers measured boot-neutral; warm-start proven (131 s → 15 s)"
     Issue #83 asked two things: benchmark the cold TCG boot with vs. without the
     entropy levers (`-device virtio-rng-pci`, `random.trust_cpu=on`), and
-    document/validate a warm-start path. Both are being driven end-to-end on a
+    document/validate a warm-start path. Both were driven end-to-end on a
     binderless, KVM-less host through the committed builder + a small A/B harness
-    (`scripts/vm_boot_ab.py`). Early reads (filled in at §E.3/§E.4 as the runs
-    finish): the guest CRNG seeds at **~0.19 s with *and* without** the levers, so
-    the boot does not stall on entropy and the levers are boot-neutral under TCG —
-    they ship as cheap, correct insurance, while the real cold-start win is the
-    warm-start (savevm/loadvm) recipe.
+    (`scripts/vm_boot_ab.py`). Headline: the guest CRNG seeds at **~0.19 s with
+    *and* without** the levers (§E.3), so the boot never stalls on entropy and the
+    levers are boot-neutral under TCG — they ship as cheap, correct insurance. The
+    real cold-start win is the **warm-start** (savevm/loadvm): a `-loadvm` resume
+    reaches a usable device in **15 s vs the 131 s cold boot** (§E.4).
 
 ## E.1 Environment
 
@@ -723,3 +723,57 @@ Android boot itself. That is irreducible per-instruction TCG cost (and the
 reason `-smp 4` + MTTCG + `-cpu max` are the levers that *do* move it, §B.5).
 The way to make a *repeat* start "blazingly quick" is therefore not to boot
 faster but to **not cold-boot at all** — see §E.4.
+
+## E.4 Warm-start (savevm/loadvm) — the real cold-start win: 131 s → 15 s
+
+Since the cold boot is irreducible TCG cost (§E.3), the way to make a *repeat*
+start fast is to skip it: checkpoint the running machine once, then resume.
+Validated end-to-end on the same host with the documented recipe
+([VM boot-cache § Warm-start recipe](vm-savevm-cache.md#warm-start-recipe)) —
+a qcow2 overlay over `rootdisk.img`, a QMP monitor socket, `savevm` after
+`boot_completed`, then relaunch with `-loadvm`:
+
+| phase | host wall | what it measures |
+| --- | --- | --- |
+| **cold boot** | **131 s** | fresh `qemu` launch → guest `boot_completed=1` (`boot_seconds=114` guest-measured) |
+| **`savevm warm`** | one-time | QMP `stop` → `savevm` writes a **1.79 GiB** internal RAM+disk snapshot into the qcow2, then `quit` |
+| **`-loadvm warm` resume** | **15 s** | fresh `qemu -loadvm` launch → host `adb connect` sees `sys.boot_completed=1` (`ro.build.version.release=11`) |
+
+**~8.7× faster to a usable device** (131 s → 15 s), and the 15 s is itself an
+upper bound: it includes the `adb connect` retry-poll cadence and the relay
+settle, so the guest is *running* (ART/Zygote already warm, the in-guest adb
+relay already listening — the resumed serial log shows `ADB_RELAY_OK` and
+`guest ready` immediately) in even less. The QMP transcript confirms the clean
+path: `STOP` → `savevm` returns `{}` → `quit`, then on resume a real host-side
+`adb shell getprop sys.boot_completed` → `1`.
+
+**Caveats (already in the design note):** the snapshot is only valid against the
+exact kernel+rootfs it was taken on — gate it with `scripts/vm_cache_key.py`;
+and a `loadvm` resume must **never** feed the cold-boot benchmark (it measures
+resume, not boot). Wiring this into the CLI (a qcow2 root + QMP socket + a
+`--resume` launch path) is tracked on #49; the recipe above needs no code change
+today.
+
+## E.5 Bottom line for issue #83
+
+* **RNG levers** (`virtio-rng-pci` + `random.trust_cpu=on`): shipped, correct,
+  and **boot-neutral under TCG** on this guest — the CRNG never stalls (seeds at
+  ~0.19 s with or without them), so they are cheap insurance, not a speed-up.
+  The honest record matches Stage D's `mitigations=off`: a working flag that
+  isn't a TCG boot-speed lever.
+* **The cold boot itself** is dominated by ART/Zygote/`system_server` under
+  software emulation (~114 s of ~131 s); the levers that move *that* are already
+  shipped (`-smp` auto = physical cores, MTTCG `thread=multi`, `-cpu max`, and a
+  KVM fast path when `/dev/kvm` exists).
+* **The "blazingly quick" repeat start** is the **warm-start** (savevm/loadvm):
+  **131 s → 15 s**, validated here, documented as a recipe, CLI integration
+  tracked on #49. For a Claude-Cloud-style binderless sandbox that boots the
+  same guest repeatedly, this is the lever with real leverage.
+
+## E.6 Artifacts (scratch — never committed)
+
+* Guest kernel (with `CONFIG_HW_RANDOM_VIRTIO=y`): `~/.cache/beetroot/vm/bzImage`
+  (12 MiB); rootfs `~/.cache/beetroot/vm/rootdisk.img` (8 GiB, redroid 11 baked).
+* A/B harness: `scripts/vm_boot_ab.py` (committed); per-arm serial logs under
+  `/tmp/vmlogs/r{1,2,3}/`.
+* Warm-start validation logs: `/tmp/warm/cold.log`, `/tmp/warm/warm.log`.

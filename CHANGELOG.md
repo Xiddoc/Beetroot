@@ -453,7 +453,8 @@ CI pipeline itself.
   **not** skip the Android boot and is unsupported on the `binder: vm`
   backend), and documented the actual near-instant warm-start for the slow TCG
   boot: a QEMU `savevm`/`loadvm` machine-state checkpoint that resumes an
-  already-booted guest in seconds. The validated manual recipe lives in
+  already-booted guest in seconds (validated in-sandbox: **131 s cold boot →
+  15 s `loadvm` resume**, ~8.7×). The validated manual recipe lives in
   [VM boot-cache (savevm) § Warm-start recipe](https://iliketo.party/Beetroot/design/vm-savevm-cache/#warm-start-recipe);
   wiring it into the CLI is tracked on #49. New reproducibility harness:
   `scripts/vm_boot_ab.py` (the A/B cold-boot timer behind the Stage E numbers).

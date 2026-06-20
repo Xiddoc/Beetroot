@@ -83,8 +83,11 @@ that makes any of it safe lands here.
 Issue #83 asked for a documented/validated warm-start workflow. The recipe below
 is the manual precursor to the CLI integration above — it needs no Beetroot code
 change, only the stock guest kernel + rootfs from `beetroot build --vm-kernel`
-and a qcow2 overlay. Use it today to skip the ~120 s cold boot on repeat starts;
-the measured cold-vs-warm numbers from an in-sandbox run are in
+and a qcow2 overlay. **Validated end-to-end on a binderless, KVM-less host (pure
+TCG): a `-loadvm` resume reached a usable device (host `adb` sees
+`sys.boot_completed=1`) in 15 s vs the 131 s cold boot — ~8.7× — off a 1.79 GiB
+internal snapshot.** Use it today to skip the cold boot on repeat starts; the
+full cold-vs-warm table is in
 [vm-rnd-log Stage E](vm-rnd-log.md#micro-vm-rd-log-stage-e-cold-boot-entropy-levers-warm-start-issue-83).
 
 **1. Boot once over a qcow2 overlay, with a monitor socket.** A qcow2 overlay
