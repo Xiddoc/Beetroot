@@ -234,6 +234,23 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
     boot and steady-state CPU time with no relevant security loss for a
     throwaway VM.
 
+    It also carries ``random.trust_cpu=on``: it credits the CRNG from the
+    CPU's ``RDRAND`` at boot so ``getrandom()`` callers never block waiting
+    for interrupt entropy. With the production ``-cpu max`` (which exposes
+    ``RDRAND``) the pinned 6.12.9 guest already does this by default — the
+    issue #83 benchmark measured ``crng init done`` at ~0.13 s and a
+    *zero*-second ``getrandom()`` block, so this flag is **boot-neutral**
+    there and is set as explicit, zero-cost insurance: if a future defconfig
+    flips ``CONFIG_RANDOM_TRUST_CPU`` off, or a host pins a CPU model without
+    ``RDRAND``, crng init otherwise slips to ~3-4.5 s under TCG (measured)
+    and early-boot ``getrandom()`` callers stall. A ``virtio-rng`` device was
+    evaluated alongside and **deliberately not added**: it is inert without a
+    ``CONFIG_HW_RANDOM_VIRTIO=y`` guest driver (absent here), and compiling
+    that in would churn the kernel-config fingerprint — forcing every user
+    off the prebuilt kernel onto a ~7-min source compile — for no boot win
+    (crng is already seeded from ``RDRAND`` before userspace). See
+    ``docs/design/vm-rnd-log.md`` §E.
+
     Args:
         qemu_bin: The QEMU binary (path or name resolved via PATH).
         accel: The resolved accelerator (``"kvm"`` or ``"tcg"``).
@@ -273,7 +290,7 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
         "-device",
         "virtio-net-pci,netdev=net0",
         "-append",
-        "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off",
+        "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off random.trust_cpu=on",
     ]
 
 

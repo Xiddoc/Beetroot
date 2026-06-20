@@ -6,6 +6,21 @@
     QEMU side (qcow2 overlay + QMP `savevm`/`loadvm`) is described here as the
     implementation that plugs into the `binder: vm` backend next.
 
+!!! success "Mechanism validated under TCG (2026-06-20, issue #83)"
+    The `savevm`/`loadvm` round-trip below was driven end-to-end on the
+    binderless, KVM-less sandbox (pure TCG, the committed prebuilt 6.12.9
+    kernel) with a qcow2 disk + HMP monitor. Cold-boot a guest, `savevm booted`
+    once it is up (here a 110 MiB RAM checkpoint, written in ~5.5 s), then
+    relaunch with `-loadvm booted`: **the guest resumed live in ~1.9 s** with
+    its `/proc/uptime` and wall clock identical to the pre-save state — a true
+    RAM restore, not a re-boot. So the seconds-not-minutes claim is measured,
+    not assumed; the restore latency scales with the guest's *touched* RAM (a
+    booted redroid at `-m 8192` checkpoints a multi-GB working set, so expect
+    a larger but still seconds-to-low-tens-of-seconds restore vs. ~100 s cold).
+    Full numbers + harness: [vm-rnd-log.md §E](vm-rnd-log.md). The RNG levers
+    investigated alongside (`virtio-rng`, `random.trust_cpu`) were measured
+    **boot-neutral** — entropy is not the cold-boot bottleneck, this is.
+
 ## Problem
 
 Booting redroid in the `binder: vm` backend under TCG takes ~100 s (see

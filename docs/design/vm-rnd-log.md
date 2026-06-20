@@ -636,3 +636,143 @@ is that it is **not** a TCG boot-speed lever. `smp: auto` resolves to 4 on this
 * Rootfs: `/root/vm-rnd/rootdisk.img` (8 GiB ext4, redroid baked).
 * Boot harness + per-run serial logs: `/root/vm-rnd/boot-measure.sh`,
   `/root/vm-rnd/boot-{baseline,treatment}-*.log`.
+
+---
+
+# Micro-VM R&D log — Stage E (cold-boot RNG investigation + savevm warm-start, issue #83)
+
+!!! success "Status: Stage E validated (2026-06-20) — RNG levers measured *boot-neutral*; QEMU savevm/loadvm warm-start proven (~1.9 s restore of a booted guest)"
+    Issue #83 asked two questions about making the `binder: vm` TCG cold boot
+    "blazingly quick": (1) do `-device virtio-rng-pci` + `random.trust_cpu=on`
+    cut boot time by un-stalling Android init on entropy, and (2) can
+    snapshot/restore give a near-instant *warm* start. Both were driven to real
+    numbers on a binderless, KVM-less host (the Claude Code on the web sandbox)
+    under **pure TCG**. The honest result: **RNG is not the bottleneck** — the
+    pinned 6.12.9 guest already seeds the CRNG from `RDRAND` at ~0.13 s, before
+    userspace, so the RNG flags are boot-neutral (mirroring the Stage D
+    `mitigations=off` finding). The real warm-start lever is **QEMU
+    `savevm`/`loadvm`** (the #49 cache): a booted guest restores in **~1.9 s**
+    with RAM state intact, independent of how long the cold boot took.
+
+## E.1 Environment
+
+The Claude Code on the web sandbox: 4 physical cores, 15 GiB RAM, **no
+`/dev/kvm`** (`beetroot modes` → `binder: vm, TCG: needs-setup`). QEMU 8.2.2
+(`apt-get install qemu-system-x86`). `cdn.kernel.org` is **blocked** by the
+sandbox network policy (GitHub is reachable), so no fresh kernel could be
+compiled from source here; the benchmark used the **committed prebuilt guest
+kernel** fetched from the repo's GitHub release —
+`vm-kernel-6.12.9-bb5e50f8d3e1` (11.9 MiB), i.e. the *exact* kernel today's
+`beetroot build --vm-kernel` ships. A minimal busybox rootfs (Stage-A style,
+`mke2fs -d`, 64 MiB ext4) carried a static `entropy_probe` that calls blocking
+`getrandom()` and records guest `/proc/uptime` before/after, plus markers for
+`/dev/hwrng` and `/sys/class/misc/hw_random/rng_current`. QEMU invocation
+mirrored `build_qemu_argv` (`-M q35 -accel tcg,thread=multi,tb-size=1024
+-cpu max -smp 4`), varying only the RNG device + `random.trust_cpu` cmdline.
+
+## E.2 RNG matrix — 4 runs per cell, prebuilt kernel under TCG
+
+`crng` = guest uptime at the kernel's `random: crng init done`; `getrandom`
+= seconds the userspace blocking `getrandom(256)` waited (0 = CRNG already
+seeded, never blocked).
+
+| cmdline / device | `crng init done` | `getrandom()` blocked |
+| --- | --- | --- |
+| **production** (`-cpu max`, no RNG flags) | **~0.13 s** | **0.000 s** |
+| `random.trust_cpu=on` (`-cpu max`) | ~0.1 s | 0.000 s |
+| `random.trust_cpu=on` + `virtio-rng-pci` | ~0.1 s | 0.000 s |
+| `random.trust_cpu=off` (`-cpu max`) | ~4.5 s | ~0.35–0.39 s |
+| `random.trust_cpu=off` + `virtio-rng-pci` | ~4.5 s | ~0.36–0.38 s |
+| **control:** `-cpu qemu64` (no `RDRAND`), production cmdline | ~3.2 s | ~0.39 s |
+
+Reading the matrix:
+
+* **The production invocation already seeds the CRNG before userspace
+  (~0.13 s) and never blocks `getrandom()`.** `-cpu max` exposes `RDRAND`, and
+  the pinned 6.12.9 `make defconfig` ships `CONFIG_RANDOM_TRUST_CPU=y`, so the
+  kernel credits 256 bits from `RDRAND` at boot. There is **no entropy stall to
+  remove** — the #83 hypothesis does not hold on this kernel.
+* **`random.trust_cpu=on` is therefore boot-neutral** here (it only restates
+  the existing default). It *does* matter in the two failure modes the control
+  rows isolate: force it off and crng slips to ~4.5 s with a measurable
+  `getrandom()` block; hide `RDRAND` (`-cpu qemu64`) and even the default
+  cmdline slips to ~3.2 s. So the flag is cheap insurance against a future
+  defconfig flip or a CPU-model change, not a measured win today.
+* **`virtio-rng-pci` made no difference in any row.** With the committed
+  kernel `rng_current=none` and `rng_available` is empty — the device is
+  present on the PCI bus but **inert**, because `CONFIG_HW_RANDOM_VIRTIO` is
+  **not** compiled in (it is `=m` in defconfig, and the guest builds with
+  `CONFIG_MODULES` *off*, so `=m` → `=n`). Even *with* the driver it could not
+  beat ~0.13 s, since `RDRAND` already seeds crng before any virtio device is
+  probed.
+
+## E.3 Decision — ship the free flag, do **not** churn the kernel
+
+* **`random.trust_cpu=on` added to `build_qemu_argv`'s cmdline.** Zero cost (a
+  cmdline token, no fingerprint change), boot-neutral on `-cpu max`, and makes
+  the entropy posture explicit + robust against the two regressions above.
+* **`virtio-rng` / `CONFIG_HW_RANDOM_VIRTIO=y` deliberately NOT added.** Adding
+  the guest driver would change the `kernel.config` **fingerprint**
+  (`bb5e50f8d3e1` → a new hash), so `kernel_download.fetch_prebuilt` would miss
+  the published release and **every** `beetroot build --vm-kernel` would fall
+  back to a ~7-min source compile until a new prebuilt is cut — a real
+  cold-boot **regression** (the kernel step goes from seconds to minutes) in
+  exchange for **zero** measured boot benefit. Not worth it. (If a future need
+  for a *continuous* in-guest entropy source appears — distinct from boot
+  seeding — revisit then, paired with a fresh prebuilt-kernel release so the
+  fetch keeps hitting.)
+
+This is the same shape of finding as Stage D's `mitigations=off` A/B: the lever
+verifiably *works* (the control rows prove the mechanism) but is **not** a TCG
+cold-boot speed-up on the shipped configuration.
+
+## E.4 Where the cold-boot time actually goes — and the warm-start lever
+
+The minimal busybox boot is ~4–6 s wall; the real cost is the **~100 s**
+redroid boot under TCG (§B.5), which is CPU-bound ART/Zygote/`system_server`
+work, not entropy. The lever that actually makes a *repeat* cold start
+"blazingly quick" is to **not boot Android again at all**: checkpoint the
+booted machine with QEMU `savevm` and `loadvm` it back (issue #49,
+[vm-savevm-cache.md](vm-savevm-cache.md)).
+
+Validated end-to-end here with the same kernel + a qcow2 disk + an idle-init
+guest that heartbeats its `/proc/uptime` to the serial log:
+
+1. Cold boot to a `GUEST_READY` marker, let a few heartbeats accrue.
+2. Over the QEMU HMP monitor (`-monitor unix:…`), issue `savevm booted`. This
+   wrote a **110 MiB** internal snapshot (RAM + block state) into the qcow2 in
+   ~5.5 s (including the subsequent `quit`); `qemu-img snapshot -l` shows the
+   `booted` tag with `VM CLOCK 00:00:07.6`.
+3. Relaunch with `-loadvm booted` and time to the first heartbeat.
+
+Result:
+
+| phase | measurement |
+| --- | --- |
+| `savevm booted` (110 MiB RAM state → qcow2) | ~5.5 s |
+| **`loadvm booted` → guest live (first heartbeat)** | **1.91 s** |
+
+The decisive evidence it is a true RAM restore and **not** a re-boot: the first
+heartbeat *after* `loadvm` reports the **same** `uptime=7` and the **same**
+wall-clock `ts=…` as the last heartbeat *before* `savevm` — the guest resumed
+exactly where it was frozen. Restore latency scales with the guest's *touched*
+RAM (this idle busybox guest used 110 MiB; a booted redroid with `-m 8192`
+will checkpoint a multi-GB working set, so expect seconds-to-low-tens-of-seconds
+to restore, compressed — still vs. ~100 s to cold-boot). This is the genuine
+"blazingly quick" path for any job that needs a *booted* device and does not
+measure boot time.
+
+!!! warning "Never serve the cold-boot benchmark from a snapshot"
+    Per [vm-savevm-cache.md](vm-savevm-cache.md), the cold-boot metric must
+    measure a real cold boot; `loadvm` is for functional / post-boot / warm
+    starts only. And it is orthogonal to `beetroot snapshot` / `restore`, which
+    pack the **cold** `/data` tree and still re-boot Android on restore.
+
+## E.5 Artifacts (scratch — never committed)
+
+* Prebuilt kernel: `/home/user/vm-bench/bzImage-prebuilt` (11.9 MiB,
+  `vm-kernel-6.12.9-bb5e50f8d3e1`, fetched from the GitHub release).
+* Entropy probe + minimal rootfs: `/home/user/vm-bench/entropy_probe.c`,
+  `minroot.img`; RNG matrix harness `runboot.sh` + per-run `boot-*.log`.
+* savevm/loadvm harness: `/home/user/vm-bench/savevm_demo.py`, `idle.qcow2`
+  (carrying the `booted` internal snapshot), `serial-{save,load}.log`.

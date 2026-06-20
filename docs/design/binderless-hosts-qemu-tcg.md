@@ -177,12 +177,15 @@ qemu-system-x86_64 \
   -nographic -display none -no-reboot \
   -kernel bzImage \
   -drive file=rootdisk.img,format=raw,if=virtio \
-  -append "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off"
+  -append "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off random.trust_cpu=on"
 ```
 
 `thread=multi` (MTTCG) is the single biggest TCG lever — one host
 thread per guest vCPU. `-cpu max` exposes SSE4/AVX that ART/bionic
-expect. `-smp` is pinned to the host's **physical** core count (`vm.smp:
+expect (and the `RDRAND` that `random.trust_cpu=on` credits the CRNG from
+at boot — boot-neutral on this kernel since it already trusts `RDRAND` by
+default, but explicit insurance; see vm-rnd-log §E for the issue-#83
+measurements). `-smp` is pinned to the host's **physical** core count (`vm.smp:
 auto`, the default — the vm-rnd-log §B.5 sweep found this is the optimum:
 the boot scales with vCPUs up to the host core count, then regresses, so a
 logical-CPU count would oversubscribe on a hyperthreaded host).

@@ -202,6 +202,47 @@ adb -s localhost:5555 exec-out screencap -p > shot.png
 `shot.png` is the live guest screen — proof the emulated Android booted all the
 way to SurfaceFlinger.
 
+## Step 6 — make repeat boots fast (warm start)
+
+The first cold boot under TCG is genuinely slow — the cost is the **~100 s**
+of CPU-bound ART/Zygote/`system_server` work Android does on every boot, not
+anything Beetroot can flag away (the kernel cmdline already carries
+`mitigations=off` + `random.trust_cpu=on`, and an [RNG investigation][rng]
+confirmed entropy is *not* the bottleneck — the guest seeds its CRNG from
+`RDRAND` at ~0.13 s, before userspace). The way to make a *repeat* start
+blazingly quick is to **not boot Android again**: checkpoint the already-booted
+machine and resume its RAM image.
+
+Two distinct tools, do not confuse them:
+
+| | `beetroot snapshot` / `restore` | QEMU `savevm` / `loadvm` (warm) |
+|---|---|---|
+| Captures | the **cold** `/data` tree (`.tar.zst`) | the **running** machine (RAM + disk) |
+| On restore | re-boots Android (~100 s again) | **resumes booted** in seconds |
+| Use for | moving/cloning an instance, backups | skipping the boot for repeat starts |
+
+`beetroot snapshot` is the portable, cross-host cold archive:
+
+```bash
+uv run beetroot down alpha           # snapshot a stopped instance
+uv run beetroot snapshot alpha ./alpha.tar.zst
+uv run beetroot restore ./alpha.tar.zst --name bravo --path ./bravo
+```
+
+The near-instant **warm** path is QEMU's whole-machine checkpoint. It is
+validated (a booted guest restores in **~1.9 s** with RAM state intact — see
+the [R&D log §E][rng]) and tracked for first-class CLI support in
+[issue #49](https://github.com/Xiddoc/Beetroot/issues/49)
+([design][savevm]). Until that lands, drive it manually against a qcow2 disk:
+boot once with a monitor socket, `savevm booted` once `sys.boot_completed=1`,
+then relaunch the same QEMU argv with `-loadvm booted` to resume already-booted.
+The [savevm cache design][savevm] has the full recipe and the cache-key safety
+latch (`scripts/vm_cache_key.py`) that keeps a snapshot from ever being restored
+against a kernel/rootfs it wasn't taken on.
+
+[rng]: ../design/vm-rnd-log.md
+[savevm]: ../design/vm-savevm-cache.md
+
 ## Tear down
 
 ```bash

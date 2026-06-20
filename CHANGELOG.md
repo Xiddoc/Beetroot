@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Performance
+
+- **`binder: vm` cold-boot investigation (issue #83): RNG levers measured
+  boot-neutral; warm-start path proven.** Benchmarked the two hypothesised
+  cold-boot speed-ups for the TCG micro-VM on a binderless, KVM-less host
+  (pure TCG, the committed prebuilt 6.12.9 kernel). The finding is a clean
+  *negative*: entropy is **not** the bottleneck — `-cpu max` exposes `RDRAND`
+  and the pinned kernel trusts it by default, so the CRNG seeds at **~0.13 s**
+  before userspace and `getrandom()` never blocks. `random.trust_cpu=on` is
+  thus boot-neutral (it only restates the default) and `virtio-rng-pci` is
+  inert without a `CONFIG_HW_RANDOM_VIRTIO=y` guest driver — and compiling that
+  in would churn the kernel-config fingerprint, forcing every `build
+  --vm-kernel` off the prebuilt kernel onto a ~7-min source compile for **zero**
+  boot benefit (a net regression). So: **`random.trust_cpu=on` is added to the
+  guest kernel cmdline** as explicit, zero-cost insurance (it does rescue the
+  measured ~3–4.5 s slip if `RDRAND` is ever hidden or the defconfig flips),
+  and `virtio-rng` is deliberately **not** added. The real "blazingly quick"
+  lever is the QEMU `savevm`/`loadvm` warm start (issue #49): validated here, a
+  booted guest restores in **~1.9 s** with RAM state intact vs. ~100 s to
+  cold-boot. Full numbers, the entropy-probe harness, and the savevm round-trip
+  live in
+  [Micro-VM R&D log §E](https://iliketo.party/Beetroot/design/vm-rnd-log/), and
+  the snapshot-vs-savevm warm-start workflow is documented in the
+  [Sandbox quickstart § Step 6](https://iliketo.party/Beetroot/guides/sandbox-quickstart/).
+  No `api_version` bump.
+
 ### Features
 
 - **Reusable CI workflow — boot a Beetroot instance in *your* repo's CI.**

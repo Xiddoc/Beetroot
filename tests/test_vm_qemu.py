@@ -115,9 +115,9 @@ class TestBuildQemuArgv:
         argv = _argv("tcg")
         assert "-nographic" in argv
         assert "-no-reboot" in argv
-        assert (
-            argv[argv.index("-append") + 1]
-            == "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off"
+        assert argv[argv.index("-append") + 1] == (
+            "console=ttyS0 root=/dev/vda rw init=/init panic=1 "
+            "mitigations=off random.trust_cpu=on"
         )
 
     def test_disables_cpu_mitigations_on_both_accels(self) -> None:
@@ -128,6 +128,16 @@ class TestBuildQemuArgv:
         for accel in ("tcg", "kvm"):
             argv = _argv(accel)
             assert "mitigations=off" in argv[argv.index("-append") + 1]
+
+    def test_trusts_cpu_rng_on_both_accels(self) -> None:
+        # random.trust_cpu=on credits the CRNG from RDRAND at boot so early
+        # getrandom() callers never block on interrupt entropy (issue #83).
+        # Boot-neutral on -cpu max (the kernel already trusts RDRAND) but
+        # explicit, zero-cost insurance against a hidden-RDRAND / defconfig
+        # flip; lives on the shared cmdline, so present for both accelerators.
+        for accel in ("tcg", "kvm"):
+            argv = _argv(accel)
+            assert "random.trust_cpu=on" in argv[argv.index("-append") + 1]
 
 
 # ---------------------------------------------------------------------------
