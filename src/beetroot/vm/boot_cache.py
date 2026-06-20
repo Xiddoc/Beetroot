@@ -48,12 +48,18 @@ _OVERLAY_NAME = "vm-overlay.qcow2"
 _MONITOR_NAME = "qemu-monitor.sock"
 
 # How long to wait for the HMP monitor handshake + savevm acknowledgement.
-# savevm of a multi-GB guest writes only touched/compressed pages and returns
-# in ~1 s on the validated host, but TCG can be slow — be generous.
-_MONITOR_TIMEOUT_SECONDS = 120.0
+# savevm of a multi-GB guest writes a few GiB to the overlay; under TCG that is
+# ~30-60 s, so the timeout is generous (a slow host should not abort a valid
+# checkpoint that is still being written).
+_MONITOR_TIMEOUT_SECONDS = 300.0
 
-# Read size for draining the monitor socket while looking for an error line.
+# Read size for draining the monitor socket.
 _MONITOR_CHUNK = 4096
+
+# HMP prints this prompt after the connect banner and again after each command
+# completes. Reading up to the *second* one is how we wait for ``savevm`` to
+# finish (it is otherwise silent on success).
+_HMP_PROMPT = b"(qemu)"
 
 
 def overlay_path(instance_dir: Path) -> Path:
@@ -165,57 +171,56 @@ def save_snapshot(monitor: Path, tag: str = SNAPSHOT_TAG) -> bool:
     """
     Issue ``savevm <tag>`` over the HMP monitor socket (best-effort).
 
-    Connects to the QEMU human-monitor UNIX socket, sends ``savevm <tag>``, and
-    scans the reply for an error. The VM keeps running either way — a failed
-    checkpoint just means the next ``up`` cold-boots again, so this never
-    raises; it returns whether the checkpoint was acknowledged cleanly.
+    HMP greets with a banner ending in a ``(qemu)`` prompt, then prints a fresh
+    prompt after each command completes (``savevm`` is silent on success). So
+    the protocol is: **drain the banner up to its prompt, send the command,
+    then read up to the next prompt** — the second prompt is what proves
+    ``savevm`` finished writing (this is the load-bearing fix: an earlier
+    version broke on the *banner* prompt and returned before ``savevm`` ran).
+
+    Best-effort by design: the VM keeps running regardless, so a failed
+    checkpoint just means the next ``up`` cold-boots again. Any socket error
+    (unreachable, reset, timeout mid-write) reports failure rather than raising.
 
     Args:
         monitor: Path to the HMP monitor UNIX socket QEMU created.
         tag: The snapshot tag to write (default :data:`SNAPSHOT_TAG`).
 
     Returns:
-        ``True`` if the checkpoint was issued with no error in the reply,
-        ``False`` if the socket was unreachable or QEMU reported an error.
+        ``True`` if ``savevm`` completed with no error in its reply, ``False``
+        if the socket was unreachable / errored or QEMU reported an error.
     """
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(_MONITOR_TIMEOUT_SECONDS)
             sock.connect(str(monitor))
-            # HMP greets with a banner + "(qemu) " prompt; we don't need to
-            # parse it — send the command, then drain the reply for an error.
+            _read_to_prompt(sock)  # drain the connect banner up to its prompt
             sock.sendall(f"savevm {tag}\n".encode())
-            reply = _drain(sock)
+            reply = _read_to_prompt(sock)  # wait for savevm to finish + reprompt
     except OSError:
         return False
     return "error" not in reply.lower()
 
 
-def _drain(sock: socket.socket) -> str:
+def _read_to_prompt(sock: socket.socket) -> str:
     """
-    Read from ``sock`` until it goes quiet, returning the decoded text.
+    Read from ``sock`` until the HMP ``(qemu)`` prompt re-appears (or EOF).
 
-    QEMU's HMP does not close the connection after a command, so we read until
-    the next ``(qemu)`` prompt re-appears (command finished) or the socket
-    times out. Decoding is lenient — the banner may carry non-UTF-8 bytes.
+    The prompt has no trailing newline (``"(qemu) "``), so we test the
+    right-stripped buffer's tail. Decoding is lenient — the banner may carry
+    control bytes. A closed connection (empty read) ends the loop with whatever
+    was read so far.
 
     Args:
         sock: The connected monitor socket.
 
     Returns:
-        Everything read, decoded as UTF-8 (errors replaced).
+        Everything read up to (and including) the prompt, decoded as UTF-8.
     """
-    chunks: list[bytes] = []
-    try:
-        while True:
-            chunk = sock.recv(_MONITOR_CHUNK)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            # The prompt re-prints once the command completes; once we've seen
-            # it *after* sending the command, the reply is in hand.
-            if b"(qemu)" in b"".join(chunks) and len(chunks) > 1:
-                break
-    except OSError:
-        pass
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    buf = b""
+    while not buf.rstrip().endswith(_HMP_PROMPT):
+        chunk = sock.recv(_MONITOR_CHUNK)
+        if not chunk:
+            break
+        buf += chunk
+    return buf.decode("utf-8", errors="replace")

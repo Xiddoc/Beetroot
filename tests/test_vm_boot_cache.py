@@ -146,8 +146,17 @@ class TestSnapshotPresent:
 # ---------------------------------------------------------------------------
 
 
-def _serve_once(sock_path: Path, reply: bytes) -> threading.Thread:
-    """Start a one-shot AF_UNIX server that records the command and replies."""
+def _serve_hmp(
+    sock_path: Path, command_reply: bytes, *, banner: bytes = b"QEMU 8.2.2 monitor\n(qemu) "
+) -> threading.Thread:
+    """
+    Stand in for QEMU HMP: send a banner+prompt on connect, then ``command_reply``.
+
+    Models the real protocol the fixed ``save_snapshot`` relies on — the banner
+    ends in a ``(qemu)`` prompt that the client must drain *before* its command
+    is processed, and the command's reply ends in the next prompt. Records the
+    bytes received so a test can assert the command that was sent.
+    """
     received: list[bytes] = []
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(sock_path))
@@ -156,8 +165,9 @@ def _serve_once(sock_path: Path, reply: bytes) -> threading.Thread:
     def _run() -> None:
         conn, _ = server.accept()
         with conn:
+            conn.sendall(banner)
             received.append(conn.recv(4096))
-            conn.sendall(reply)
+            conn.sendall(command_reply)
         server.close()
 
     thread = threading.Thread(target=_run, daemon=True)
@@ -166,39 +176,35 @@ def _serve_once(sock_path: Path, reply: bytes) -> threading.Thread:
     return thread
 
 
-def _serve_chunks(sock_path: Path, chunks: list[bytes]) -> threading.Thread:
-    """
-    Serve ``chunks`` as separate sends (with gaps) and keep the socket open.
-
-    The gaps force the client into multiple ``recv`` calls so the drain loop
-    must terminate on the ``(qemu)`` prompt re-appearing (the real-QEMU case
-    where the monitor connection stays open), not on EOF.
-    """
+def _serve_hmp_split(sock_path: Path, command_reply: bytes) -> threading.Thread:
+    """Like :func:`_serve_hmp` but sends the banner as two packets (text, prompt)."""
+    received: list[bytes] = []
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(sock_path))
     server.listen(1)
 
     def _run() -> None:
         conn, _ = server.accept()
-        conn.recv(4096)
-        for chunk in chunks:
-            conn.sendall(chunk)
+        with conn:
+            conn.sendall(b"QEMU 8.2.2 monitor - type 'help'\n")
             time.sleep(0.05)
-        # Hold the connection open until the test tears the server down — this
-        # is what makes the client rely on the prompt-break, not EOF.
-        time.sleep(2)
-        conn.close()
+            conn.sendall(b"(qemu) ")
+            received.append(conn.recv(4096))
+            conn.sendall(command_reply)
         server.close()
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
+    thread.received = received  # type: ignore[attr-defined]
     return thread
 
 
 class TestSaveSnapshot:
-    def test_success_sends_savevm_and_returns_true(self, tmp_path: Path) -> None:
+    def test_success_drains_banner_then_sends_savevm(self, tmp_path: Path) -> None:
+        # The fix: drain the connect banner's prompt FIRST, then send savevm,
+        # then read up to the next prompt. savevm is silent on success.
         sock_path = tmp_path / "qemu-monitor.sock"
-        thread = _serve_once(sock_path, b"(qemu) ")
+        thread = _serve_hmp(sock_path, b"(qemu) ")
         assert boot_cache.save_snapshot(sock_path, "beetroot-boot") is True
         thread.join(timeout=5)
         sent = b"".join(thread.received)  # type: ignore[attr-defined]
@@ -206,16 +212,30 @@ class TestSaveSnapshot:
 
     def test_error_reply_returns_false(self, tmp_path: Path) -> None:
         sock_path = tmp_path / "qemu-monitor.sock"
-        thread = _serve_once(sock_path, b"Error: device has no medium\n(qemu) ")
+        thread = _serve_hmp(sock_path, b"Error: device has no medium\n(qemu) ")
         assert boot_cache.save_snapshot(sock_path) is False
         thread.join(timeout=5)
 
-    def test_drains_until_prompt_when_connection_stays_open(self, tmp_path: Path) -> None:
-        # Mirrors real QEMU HMP: the monitor connection stays open, so the
-        # drain loop must stop when the "(qemu)" prompt re-appears across
-        # multiple recvs, not on EOF.
+    def test_banner_split_across_packets_still_waits_for_command_prompt(
+        self, tmp_path: Path
+    ) -> None:
+        # Regression guard for the real bug found in e2e: the banner arrives as
+        # two packets ("...monitor\n" then "(qemu) "). The drain must consume
+        # the WHOLE banner up to its prompt, then send savevm and wait for the
+        # command's own prompt — not mistake a split banner prompt for the
+        # savevm result. _serve_hmp_split sends the banner in two sends.
         sock_path = tmp_path / "qemu-monitor.sock"
-        thread = _serve_chunks(sock_path, [b"banner line, no prompt yet\n", b"(qemu) "])
+        thread = _serve_hmp_split(sock_path, b"(qemu) ")
+        assert boot_cache.save_snapshot(sock_path, "beetroot-boot") is True
+        thread.join(timeout=5)
+        assert b"savevm beetroot-boot" in b"".join(thread.received)  # type: ignore[attr-defined]
+
+    def test_connection_closed_before_command_prompt_is_handled(self, tmp_path: Path) -> None:
+        # If QEMU closes after the command without re-printing the prompt, the
+        # read loop must terminate on EOF (not spin on empty reads).
+        sock_path = tmp_path / "qemu-monitor.sock"
+        thread = _serve_hmp(sock_path, b"")  # banner+prompt, then close, no reply
+        # No error text was seen, so the best-effort result is True.
         assert boot_cache.save_snapshot(sock_path) is True
         thread.join(timeout=5)
 
@@ -223,12 +243,11 @@ class TestSaveSnapshot:
         # No server listening at this path → connect() raises OSError.
         assert boot_cache.save_snapshot(tmp_path / "nope.sock") is False
 
-    def test_recv_error_mid_drain_is_swallowed(
+    def test_socket_error_returns_false(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A reset/timeout during the drain (after the command was sent) must
-        # not propagate — the checkpoint was already issued, so the read loop
-        # returns what it has rather than crashing the boot.
+        # A reset/timeout during the exchange reports failure (the checkpoint is
+        # uncertain), so the next `up` cold-boots rather than resume a bad state.
         class _FakeSock:
             def __enter__(self) -> _FakeSock:
                 return self
@@ -249,5 +268,4 @@ class TestSaveSnapshot:
                 raise OSError("connection reset")
 
         monkeypatch.setattr("beetroot.vm.boot_cache.socket.socket", lambda *_a, **_k: _FakeSock())
-        # No error text was read, so the best-effort result is a clean True.
-        assert boot_cache.save_snapshot(tmp_path / "qemu-monitor.sock") is True
+        assert boot_cache.save_snapshot(tmp_path / "qemu-monitor.sock") is False
