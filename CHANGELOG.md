@@ -70,6 +70,22 @@
   redroid stays the default. See
   [Binderless hosts (QEMU/TCG)](https://iliketo.party/Beetroot/design/binderless-hosts-qemu-tcg/).
 
+- **Faster `binder: vm` cold boots: paravirtual RNG + trusted-CPU entropy
+  (issue #83).** The QEMU micro-VM now boots with a `virtio-rng-pci` device and
+  `random.trust_cpu=on` on the guest kernel command line, on top of the
+  existing MTTCG / `-smp auto` / `mitigations=off` levers. Android's early boot
+  reads the kernel CRNG (keystore/keymaster key generation, secure-random
+  seeding); on a cold, entropy-starved guest that read can *block* until the
+  pool initialises, and under TCG the emulated interrupts that would normally
+  seed the pool are themselves slow — so the stall is amplified. `virtio-rng`
+  gives the guest a fast host-backed entropy source and `random.trust_cpu=on`
+  credits the CPU's `RDRAND`/`RDSEED` (exposed by `-cpu max`/`host`) at init, so
+  the CRNG is seeded immediately instead of waiting on interrupt entropy. Both
+  apply on TCG and KVM and are harmless for an ephemeral single-tenant sandbox.
+  See the A/B measurements in vm-rnd-log §E and the warm-start (savevm)
+  follow-up for skipping the boot entirely (#49). Additive — no `api_version`
+  bump.
+
 - **Faster `binder: vm` boots: auto-sized `-smp` + `mitigations=off`.** Two
   boot-speed levers ship for the QEMU micro-VM backend, on top of the
   existing MTTCG + KVM fast path. (1) **`vm.smp` now defaults to `auto`**,

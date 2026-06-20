@@ -115,9 +115,8 @@ class TestBuildQemuArgv:
         argv = _argv("tcg")
         assert "-nographic" in argv
         assert "-no-reboot" in argv
-        assert (
-            argv[argv.index("-append") + 1]
-            == "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off"
+        assert argv[argv.index("-append") + 1] == (
+            "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off random.trust_cpu=on"
         )
 
     def test_disables_cpu_mitigations_on_both_accels(self) -> None:
@@ -128,6 +127,19 @@ class TestBuildQemuArgv:
         for accel in ("tcg", "kvm"):
             argv = _argv(accel)
             assert "mitigations=off" in argv[argv.index("-append") + 1]
+
+    def test_adds_virtio_rng_and_trusts_cpu_entropy_on_both_accels(self) -> None:
+        # Boot-entropy levers (issue #83): a paravirtual RNG plus
+        # random.trust_cpu=on so Android's early CRNG reads never block on a
+        # cold, entropy-starved guest (amplified under TCG). Both apply
+        # regardless of accelerator.
+        for accel in ("tcg", "kvm"):
+            argv = _argv(accel)
+            # virtio-rng-pci is wired as a -device.
+            device_args = [argv[i + 1] for i, tok in enumerate(argv) if tok == "-device"]
+            assert "virtio-rng-pci" in device_args
+            # trust_cpu credits RDRAND/RDSEED (exposed by -cpu max/host) at init.
+            assert "random.trust_cpu=on" in argv[argv.index("-append") + 1]
 
 
 # ---------------------------------------------------------------------------

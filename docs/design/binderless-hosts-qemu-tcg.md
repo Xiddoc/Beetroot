@@ -177,7 +177,8 @@ qemu-system-x86_64 \
   -nographic -display none -no-reboot \
   -kernel bzImage \
   -drive file=rootdisk.img,format=raw,if=virtio \
-  -append "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off"
+  -device virtio-rng-pci \
+  -append "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off random.trust_cpu=on"
 ```
 
 `thread=multi` (MTTCG) is the single biggest TCG lever — one host
@@ -188,8 +189,14 @@ the boot scales with vCPUs up to the host core count, then regresses, so a
 logical-CPU count would oversubscribe on a hyperthreaded host).
 `mitigations=off` drops the guest's speculative-execution barriers —
 pure (emulated under TCG / real under KVM) overhead for a throwaway,
-single-tenant research sandbox. On a host **with** `/dev/kvm`, swap
-`-accel tcg,thread=multi` for `-accel kvm` for near-native speed (rank 3).
+single-tenant research sandbox. `-device virtio-rng-pci` +
+`random.trust_cpu=on` keep Android's early CRNG reads from blocking on a
+cold, entropy-starved guest (issue #83 — see vm-rnd-log §E): the paravirtual
+RNG is a fast host-backed entropy source and `trust_cpu` credits the
+`RDRAND`/`RDSEED` that `-cpu max`/`host` expose, so the pool is seeded at
+init instead of waiting on slow emulated interrupt entropy. On a host
+**with** `/dev/kvm`, swap `-accel tcg,thread=multi` for `-accel kvm` for
+near-native speed (rank 3).
 
 ## 5. Debugging log (every blocker was plumbing, not physics)
 
@@ -240,11 +247,18 @@ This is the most reusable knowledge — the failure→fix chain:
 * **Shipped boot-speed levers** (on top of MTTCG + KVM fast path): `-smp`
   auto-sizes to the host's **physical** core count (`vm.smp: auto` default —
   HT siblings collapsed, capped by CPU affinity; the vm-rnd-log §B.5 optimum,
-  since a logical-CPU count would oversubscribe a hyperthreaded host), and the
+  since a logical-CPU count would oversubscribe a hyperthreaded host); the
   guest kernel cmdline carries `mitigations=off`, dropping
   speculative-execution barriers that are pure overhead for an ephemeral
   single-tenant sandbox (emulated work under TCG, real serialization under
-  KVM).
+  KVM); and a `virtio-rng-pci` device + `random.trust_cpu=on` remove the
+  entropy-starvation cold-boot stall (issue #83, vm-rnd-log §E).
+* **Warm start (skip the boot entirely).** The cold boot is unavoidable
+  *once*; after that, a QEMU `savevm`/`loadvm` whole-machine snapshot resumes
+  an already-booted guest (ART/Zygote settled) in seconds. The design +
+  cache-key safety latch live in [vm-savevm-cache.md](vm-savevm-cache.md);
+  this is the highest-leverage win for repeated cold starts (CI, agent
+  sandboxes) and is tracked on #49.
 
 ## 7. Proposed Beetroot integration (the backend + fallback design)
 

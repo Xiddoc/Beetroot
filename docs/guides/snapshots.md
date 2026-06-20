@@ -2,6 +2,23 @@
 
 Beetroot's `snapshot` and `restore` verbs pack and unpack an instance's host-side state as a single `.tar.zst` archive. Use snapshots to roll back a research instance to a known-good baseline, hand off an instance to a colleague, or fork one instance into many to run a comparative experiment.
 
+!!! warning "Snapshot/restore is *not* a boot-skip (warm-start)"
+    `beetroot snapshot` / `restore` captures the **cold** host-side state —
+    `beetroot.yaml`, the persisted `data/` tree, staged `modules/`. Restoring
+    re-creates that on-disk state, but the next `beetroot up` still runs a
+    **full cold Android boot** (and, on the `binder: vm` backend, a full
+    cold *VM* boot under QEMU). It does not resume a running machine.
+
+    If your goal is to make repeated starts **near-instant** — the common
+    case for CI and ephemeral agent sandboxes paying the slow TCG cold boot
+    on every run — the boot-skipping warm-start is the QEMU `savevm`/`loadvm`
+    whole-machine snapshot, designed in
+    [vm-savevm-cache.md](../design/vm-savevm-cache.md) (issue #49) and
+    summarised in [Warm-starting the `binder: vm`
+    backend](#warm-starting-the-binder-vm-backend) below. The two mechanisms
+    are orthogonal: snapshot/restore is for *portability and rollback of
+    userdata*; savevm is for *skipping the boot*.
+
 ## When to snapshot
 
 A snapshot is the right tool when you need to capture an instance's *complete persisted state* and later re-create it byte-for-byte:
@@ -122,6 +139,79 @@ beetroot destroy -y alpha
 beetroot restore ./baseline.tar.zst --name alpha
 beetroot up alpha
 ```
+
+## Warm-starting the `binder: vm` backend
+
+On a host with no kernel binder driver and no KVM (the Claude Code on the web
+sandbox, many CI runners), Beetroot boots redroid inside a QEMU micro-VM under
+**TCG software emulation**. That cold boot is the slow path — Android takes
+~100 s to several minutes to reach `sys.boot_completed` under TCG (see
+[vm-rnd-log.md](../design/vm-rnd-log.md)). Paying it *once* is unavoidable;
+paying it on *every* start is not.
+
+The warm-start trick is a QEMU **whole-machine snapshot**: boot the micro-VM
+once to `boot_completed`, checkpoint the running machine (RAM + disk) with
+`savevm`, then `loadvm` it on subsequent starts to resume an already-booted
+guest — ART/Zygote warmed, `system_server` up — in **seconds** instead of
+re-running the cold boot. This is distinct from `beetroot snapshot`/`restore`
+(which re-boots; see the warning at the top of this page).
+
+### Why this is the right warm-start for the VM path
+
+A whole-machine QEMU snapshot sidesteps the fragility of checkpointing a live
+Android: the host-binder container path would mean CRIU-dumping live
+binder/ashmem/socket FDs, but a QEMU snapshot captures the *entire guest* as an
+opaque RAM+disk image. A restored guest is also a *more deterministic*
+post-boot baseline (caches primed), which cuts the runner-noise that makes CI
+benchmarks flaky.
+
+### The manual recipe (today)
+
+The `binder: vm` backend currently launches QEMU with a **raw** root disk and
+no monitor socket, so the integrated `-loadvm` launch path is the
+[#49](https://github.com/Xiddoc/Beetroot/issues/49) follow-up. Until it lands,
+you can drive the warm-start by hand against the artifacts
+`beetroot build --vm-kernel` produced (`~/.cache/beetroot/vm/bzImage` +
+`rootdisk.img`):
+
+```bash
+VM=~/.cache/beetroot/vm
+# 1. Make a qcow2 overlay over the raw rootfs (internal snapshots need qcow2).
+qemu-img create -f qcow2 -b "$VM/rootdisk.img" -F raw "$VM/overlay.qcow2"
+
+# 2. Cold-boot ONCE with a QMP monitor; wait for boot_completed, then savevm.
+qemu-system-x86_64 -M q35 -accel tcg,thread=multi,tb-size=1024 -cpu max \
+  -smp "$(nproc)" -m 8192 -nographic -no-reboot \
+  -kernel "$VM/bzImage" -drive file="$VM/overlay.qcow2",if=virtio \
+  -device virtio-rng-pci \
+  -netdev user,id=net0,hostfwd=tcp:127.0.0.1:5555-:5555 \
+  -device virtio-net-pci,netdev=net0 \
+  -monitor unix:"$VM/mon.sock",server,nowait \
+  -append "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off random.trust_cpu=on"
+# In another shell, once `beetroot logs` / the serial shows boot_completed:
+echo savevm warm | socat - unix-connect:"$VM/mon.sock"
+
+# 3. Every subsequent start RESUMES the booted machine in seconds:
+qemu-system-x86_64 ... -loadvm warm ...   # same argv as step 2, plus -loadvm warm
+```
+
+The saved state lives **inside** `overlay.qcow2`. Keep the overlay keyed to the
+exact `bzImage` + `rootdisk.img` it was taken on — a snapshot resumed against a
+different guest kernel/rootfs is worse than a cold boot. The
+[`scripts/vm_cache_key.py`](https://github.com/Xiddoc/Beetroot/blob/master/scripts/vm_cache_key.py)
+helper computes that key (it folds every guest-defining input), and the
+[vm-savevm-cache.md](../design/vm-savevm-cache.md) design note specifies how
+the integrated path will cache and restore it safely.
+
+!!! tip "Cold boot still needs to be fast"
+    Warm-start removes the boot from the *steady state*, but the first boot —
+    and any boot after a guest-artifact change invalidates the snapshot —
+    still runs cold. Beetroot ships the cold-boot levers (`-smp auto`, MTTCG,
+    `mitigations=off`, and the `virtio-rng-pci` + `random.trust_cpu=on`
+    entropy fix from issue #83) so that first boot is as fast as TCG allows.
+    On a host **with** `/dev/kvm`, `vm.accel: auto` picks KVM and the cold boot
+    approaches native speed — warm-start matters most precisely where it
+    doesn't (TCG).
 
 ## Low-overhead alternatives
 

@@ -234,6 +234,19 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
     boot and steady-state CPU time with no relevant security loss for a
     throwaway VM.
 
+    **Boot entropy (issue #83).** Both accelerators get a paravirtual
+    ``virtio-rng-pci`` device and ``random.trust_cpu=on`` on the cmdline.
+    Android's early boot reads from the kernel CRNG (keystore/keymaster key
+    generation, ``SystemServer`` secure-random seeding); on a freshly-booted
+    guest with no accumulated entropy that read can *block* until the pool
+    initialises, and under TCG every emulated interrupt that would normally
+    seed the pool is itself slow — so the stall is amplified into tens of
+    seconds of dead wait. ``virtio-rng`` gives the guest a fast, host-backed
+    entropy source, and ``random.trust_cpu=on`` credits the CPU's
+    ``RDRAND``/``RDSEED`` (exposed by ``-cpu max``/``host``) at init so the
+    CRNG is seeded immediately rather than waiting on interrupt entropy.
+    Together they remove the entropy-starvation class of cold-boot stall.
+
     Args:
         qemu_bin: The QEMU binary (path or name resolved via PATH).
         accel: The resolved accelerator (``"kvm"`` or ``"tcg"``).
@@ -272,8 +285,10 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
         f"user,id=net0,{hostfwd}",
         "-device",
         "virtio-net-pci,netdev=net0",
+        "-device",
+        "virtio-rng-pci",
         "-append",
-        "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off",
+        "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off random.trust_cpu=on",
     ]
 
 
