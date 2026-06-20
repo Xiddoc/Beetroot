@@ -200,7 +200,7 @@ def resolve_smp(configured: int | Literal["auto"]) -> int:
     return configured
 
 
-def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinct QEMU invocation parameter
+def build_qemu_argv(  # noqa: PLR0913  # distinct QEMU invocation knobs; each is its own parameter
     *,
     qemu_bin: str,
     accel: ResolvedAccel,
@@ -209,6 +209,10 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
     smp: int,
     memory_mib: int,
     host_adb_port: int,
+    disk_format: Literal["raw", "qcow2"] = "raw",
+    disk_cache: str | None = None,
+    monitor_socket: Path | None = None,
+    loadvm: str | None = None,
 ) -> list[str]:
     """
     Build the ``qemu-system-x86_64`` argv per the design doc §4.4.
@@ -234,14 +238,36 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
     boot and steady-state CPU time with no relevant security loss for a
     throwaway VM.
 
+    The ``disk_format`` / ``disk_cache`` / ``monitor_socket`` / ``loadvm``
+    knobs are the hooks the ``vm.boot_cache`` warm-start path needs (issue
+    #49/#83): a **qcow2** root disk so internal snapshots are possible, an
+    HMP **monitor** socket so a checkpoint can be issued after boot, and a
+    ``-loadvm`` launch mode so a cached snapshot is *resumed* (~10 s) instead
+    of cold-booted (~minutes under TCG). They all default to the original
+    cold-boot behaviour (a raw disk, no monitor, no resume) so the plain
+    ``up`` path is byte-for-byte unchanged.
+
     Args:
         qemu_bin: The QEMU binary (path or name resolved via PATH).
         accel: The resolved accelerator (``"kvm"`` or ``"tcg"``).
         kernel: Host path to the guest ``bzImage``.
-        rootfs: Host path to the guest ext4 root image.
+        rootfs: Host path to the guest root image (raw, or a qcow2 overlay
+            when ``disk_format="qcow2"``).
         smp: Number of guest vCPUs (``-smp``).
         memory_mib: Guest RAM in MiB (``-m``).
         host_adb_port: Host loopback port the guest's ADB is forwarded to.
+        disk_format: ``"raw"`` (default) or ``"qcow2"`` — the on-disk format
+            of ``rootfs``. The warm-start overlay is qcow2 (savevm stores its
+            RAM+device snapshot inside it).
+        disk_cache: Optional ``cache=`` mode for the root drive (e.g.
+            ``"unsafe"``). ``None`` (default) omits it, leaving QEMU's
+            default.
+        monitor_socket: Optional path for an HMP monitor UNIX socket
+            (``-monitor unix:<path>,server,nowait``). The warm-start path
+            connects here to issue ``savevm`` once the guest is up.
+        loadvm: Optional internal-snapshot tag to resume at launch
+            (``-loadvm <tag>``). When set, the guest boots straight into the
+            checkpointed running state instead of from ``init``.
 
     Returns:
         The full argv list, ready for :class:`subprocess.Popen`.
@@ -251,7 +277,10 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
     else:
         accel_args = ["-accel", "tcg,thread=multi,tb-size=1024", "-cpu", "max"]
     hostfwd = f"hostfwd=tcp:127.0.0.1:{host_adb_port}-:{_GUEST_ADB_PORT}"
-    return [
+    drive = f"file={rootfs},format={disk_format},if=virtio"
+    if disk_cache is not None:
+        drive += f",cache={disk_cache}"
+    argv = [
         qemu_bin,
         "-M",
         "q35",
@@ -267,14 +296,21 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
         "-kernel",
         str(kernel),
         "-drive",
-        f"file={rootfs},format=raw,if=virtio",
+        drive,
         "-netdev",
         f"user,id=net0,{hostfwd}",
         "-device",
         "virtio-net-pci,netdev=net0",
+    ]
+    if monitor_socket is not None:
+        argv += ["-monitor", f"unix:{monitor_socket},server,nowait"]
+    if loadvm is not None:
+        argv += ["-loadvm", loadvm]
+    argv += [
         "-append",
         "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off",
     ]
+    return argv
 
 
 class QemuProcess:

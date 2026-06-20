@@ -1,10 +1,21 @@
 # Caching a booted VM with QEMU `savevm` (issue #49)
 
-!!! info "Status: design + cache-key helper landed; the QEMU integration is the follow-up implementation"
-    This note specifies the savevm boot-cache and ships its load-bearing,
-    unit-tested piece — the cache-key helper (`scripts/vm_cache_key.py`). The
-    QEMU side (qcow2 overlay + QMP `savevm`/`loadvm`) is described here as the
-    implementation that plugs into the `binder: vm` backend next.
+!!! success "Status: shipped as the opt-in `vm.boot_cache` flag (issue #83) — validated end-to-end under TCG"
+    The QEMU integration this note scoped now ships. Setting `vm.boot_cache:
+    true` makes the first `beetroot up` cold-boot through a qcow2 overlay and
+    `savevm`-checkpoint the running guest; every later `up` resumes it with
+    `-loadvm`. **Measured on a binderless, KVM-less host (Android 14, pure
+    TCG): cold first boot to first host ADB ~222 s; warm resume ~10 s — a
+    ~22x speedup.** The implementation lives in
+    `src/beetroot/vm/boot_cache.py` (overlay create + snapshot probe + HMP
+    `savevm`) and `src/beetroot/backends/vm.py` (`VmDeviceBackend._up_cached`),
+    with the qcow2/monitor/`-loadvm` argv hooks in
+    `src/beetroot/vm/qemu.build_qemu_argv`. The cache-key helper
+    (`scripts/vm_cache_key.py`) remains the safety latch for the *CI* cache
+    story below; the per-instance flag uses a simpler "delete the overlay to
+    reset" model (it is not auto-invalidated on a kernel/rootfs rebuild). See
+    [config reference § warm-start boot cache](../reference/config.md#warm-start-boot-cache-vmboot_cache)
+    and [vm-rnd-log Stage E](vm-rnd-log.md).
 
 ## Problem
 
@@ -63,17 +74,22 @@ directory as a `.tar.zst` — restoring it still requires a full cold Android
 boot, so it does **not** skip the boot. The savevm path is QEMU-specific
 (running-RAM checkpoint) and orthogonal.
 
-## Implementation hooks (follow-up)
+## Implementation hooks (shipped in #83)
 
-The current backend launches QEMU with a **raw** root disk and no monitor
-(`build_qemu_argv` in `src/beetroot/vm/qemu.py`). The savevm capability needs:
+The three hooks this section originally listed as follow-up work have landed:
 
-* a **qcow2** root disk (or a qcow2 overlay over the raw image) so internal
-  snapshots are possible;
-* a **QMP/monitor** socket so a helper can issue `savevm` after boot;
-* a `-loadvm` / `-incoming` launch mode so a cached snapshot is resumed instead
-  of cold-booted.
+* a **qcow2 overlay** over the raw image (`boot_cache.create_overlay`, via
+  `qemu-img create -f qcow2 -F raw -b <rootfs>`), so the base stays pristine and
+  internal snapshots are possible;
+* an **HMP monitor** socket (`build_qemu_argv(monitor_socket=...)` →
+  `-monitor unix:<path>,server,nowait`) that `boot_cache.save_snapshot` connects
+  to and issues `savevm <tag>` once ADB is reachable;
+* a `-loadvm` launch mode (`build_qemu_argv(loadvm=<tag>)`) so a cached snapshot
+  is resumed instead of cold-booted, selected when
+  `boot_cache.snapshot_present` finds the tag in the overlay.
 
-These are additive backend changes (a new "resume from snapshot" launch path)
-gated behind an opt-in, and are tracked as the next slice on #49. The cache key
-that makes any of it safe lands here.
+All are additive and gated behind the opt-in `vm.boot_cache` flag — the default
+cold-boot argv is byte-for-byte unchanged. The per-instance flag invalidates by
+hand (delete `<instance>/vm-overlay.qcow2`); the `scripts/vm_cache_key.py` helper
+remains the basis for an *automatic*, content-keyed CI cache (restore a booted VM
+across jobs), which is the remaining slice on #49.

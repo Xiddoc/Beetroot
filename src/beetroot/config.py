@@ -452,6 +452,16 @@ class Vm(BaseModel):
             logical-CPU count would hit on a hyperthreaded host. Pin an
             explicit value to leave host cores free or to override.
         memory_mib: Guest RAM in MiB (``-m``). Must be >= 256. Default 8192.
+        boot_cache: Opt into the warm-start boot cache (default ``False``).
+            When ``True``, the first ``beetroot up`` cold-boots through a
+            qcow2 overlay and checkpoints the running machine state with QEMU
+            ``savevm``; every subsequent ``up`` *resumes* that checkpoint
+            (``-loadvm``) instead of cold-booting — ~10 s vs ~minutes under
+            TCG (issue #49/#83). The checkpoint lives in the instance
+            directory (``vm-overlay.qcow2``); delete it to discard the cache
+            (e.g. after rebuilding the kernel/rootfs). Resume reverts the
+            guest to the checkpoint each time, so it is a fast *known-good
+            boot*, not a persistence mechanism. Requires ``qemu-img``.
     """
 
     kernel: str | None = None
@@ -459,6 +469,7 @@ class Vm(BaseModel):
     accel: Literal["auto", "kvm", "tcg"] = "auto"
     smp: int | Literal["auto"] = "auto"
     memory_mib: int = Field(default=8192, ge=_MIN_MEMORY_MIB)
+    boot_cache: bool = False
 
     @field_validator("smp")
     @classmethod

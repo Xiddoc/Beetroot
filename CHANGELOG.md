@@ -4,6 +4,41 @@
 
 ### Features
 
+- **`binder: vm` warm-start boot cache (`vm.boot_cache`) — ~22x faster repeat
+  boots.** Booting redroid in the micro-VM under TCG is CPU-bound (emulating
+  ART / Zygote / `system_server`), so a cold boot to first ADB takes ~3-4 min
+  on a 4-core host (Android 14) and no entropy/disk micro-lever moves it (see
+  the investigation below). The new opt-in `vm.boot_cache: true` skips the boot
+  on repeat starts: the **first** `beetroot up` cold-boots through a qcow2
+  overlay and checkpoints the running machine state with QEMU `savevm`; every
+  **later** `up` *resumes* that checkpoint with `-loadvm`. Measured on a
+  binderless, KVM-less host (Android 14, pure TCG): cold first boot to first
+  host ADB **~222 s**, warm resume **~10 s**. Resume reverts the guest to the
+  checkpoint each time — a fast known-good boot, not a persistence mechanism
+  (use `beetroot snapshot` for that); the checkpoint lives at
+  `<instance>/vm-overlay.qcow2` (~2 GiB) and is reset by deleting it (e.g.
+  after rebuilding the kernel/rootfs). Requires `qemu-img`
+  (`BEETROOT_QEMU_IMG_BIN` to override). Additive: the default cold-boot path
+  is unchanged. New code: `src/beetroot/vm/boot_cache.py` and
+  `build_qemu_argv`'s qcow2/monitor/`-loadvm` hooks. Docs:
+  [config § warm-start boot cache](https://iliketo.party/Beetroot/reference/config/#warm-start-boot-cache-vmboot_cache),
+  [sandbox quickstart](https://iliketo.party/Beetroot/guides/sandbox-quickstart/),
+  and [vm-savevm-cache design](https://iliketo.party/Beetroot/design/vm-savevm-cache/).
+
+- **Investigated cold TCG boot-time levers (issue #83): RNG options are
+  neutral.** Benchmarked `-device virtio-rng-pci` and `random.trust_cpu=on`
+  (and a `cache=unsafe` root-disk variant) against the cold boot on a
+  binderless, KVM-less host, several runs each. All are **boot-neutral**: the
+  guest CRNG is already seeded at ~0.19 s (the defconfig
+  `CONFIG_RANDOM_TRUST_CPU=y` plus `-cpu max` exposing RDRAND even under TCG), so
+  `random.trust_cpu=on` is redundant; and `virtio-rng-pci` creates no
+  `/dev/hw_random` without `CONFIG_HW_RANDOM_VIRTIO=y` (a `=m` in defconfig,
+  absent from the module-less guest), so it is inert. The boot is CPU-bound,
+  not entropy- or disk-bound, which is why the warm-start cache above — not
+  these micro-levers — is the real win. The QEMU argv is unchanged; the
+  findings and measurements are recorded in
+  [vm-rnd-log Stage E](https://iliketo.party/Beetroot/design/vm-rnd-log/).
+
 - **Reusable CI workflow — boot a Beetroot instance in *your* repo's CI.**
   A new `on: workflow_call` workflow at
   `.github/workflows/beetroot-ci.yml` lets any other repository raise a rooted

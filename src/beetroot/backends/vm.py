@@ -36,7 +36,7 @@ from beetroot.api import (
 )
 from beetroot.backends import register_backend
 from beetroot.settings import settings
-from beetroot.vm import qemu
+from beetroot.vm import boot_cache, qemu
 
 if TYPE_CHECKING:
     from beetroot.api import CheckResult
@@ -405,9 +405,75 @@ class VmDeviceBackend:
             )
         self._warn_on_rootfs_version_skew()
         accel = self.resolved_accel()
+        if self._cfg.vm.boot_cache:
+            self._up_cached(accel)
+            return
         argv = self.build_argv(accel)
         qemu.QemuProcess(self._root).start(argv)
         self._wait_for_adb_connect()
+
+    def _up_cached(self, accel: qemu.ResolvedAccel) -> None:
+        """
+        Boot via the warm-start boot cache: resume a checkpoint, or cold-boot + checkpoint.
+
+        On the first ``up`` the qcow2 overlay carries no snapshot, so QEMU
+        cold-boots (through the overlay, with an HMP monitor socket) and — once
+        ADB is reachable — :func:`boot_cache.save_snapshot` checkpoints the
+        running machine state. Every later ``up`` finds the snapshot and
+        launches with ``-loadvm``, resuming the booted guest in ~10 s instead
+        of cold-booting in minutes under TCG (issue #49/#83).
+
+        The checkpoint is best-effort: if ``savevm`` fails the VM still runs
+        (the next ``up`` just cold-boots again), so a failed checkpoint is a
+        warning, never a hard error.
+
+        Args:
+            accel: The resolved accelerator (from :meth:`resolved_accel`).
+
+        Raises:
+            qemu.QemuLaunchError: On a missing kernel/rootfs, a missing
+                ``qemu-img``, a launch failure, or if the guest does not expose
+                ADB within ``settings.vm_adb_connect_timeout`` seconds.
+        """
+        kernel = _resolve_artifact(self._cfg.vm.kernel, settings.vm_kernel, "kernel")
+        base_rootfs = _resolve_artifact(self._cfg.vm.rootfs, settings.vm_rootfs, "rootfs")
+        overlay = boot_cache.overlay_path(self._root)
+        monitor = boot_cache.monitor_path(self._root)
+        # A stale monitor socket from a prior `down` would block QEMU's bind.
+        monitor.unlink(missing_ok=True)
+        if not overlay.exists():
+            boot_cache.create_overlay(base_rootfs, overlay)
+        warm = boot_cache.snapshot_present(overlay)
+        if warm:
+            console.info(f"resuming cached boot snapshot for {self._name!r} (warm start)")
+        else:
+            console.info(
+                f"no boot snapshot yet for {self._name!r}; cold-booting once, then caching"
+            )
+        argv = qemu.build_qemu_argv(
+            qemu_bin=settings.qemu_bin,
+            accel=accel,
+            kernel=kernel,
+            rootfs=overlay,
+            smp=qemu.resolve_smp(self._cfg.vm.smp),
+            memory_mib=self._cfg.vm.memory_mib,
+            host_adb_port=self.ports["adb"],
+            disk_format="qcow2",
+            monitor_socket=monitor,
+            loadvm=boot_cache.SNAPSHOT_TAG if warm else None,
+        )
+        qemu.QemuProcess(self._root).start(argv)
+        self._wait_for_adb_connect()
+        if not warm:
+            if boot_cache.save_snapshot(monitor):
+                console.info(
+                    f"cached boot snapshot for {self._name!r}; future `up` resumes in seconds"
+                )
+            else:
+                console.warn(
+                    f"could not checkpoint {self._name!r} (savevm failed); "
+                    "the next `up` will cold-boot again. See `beetroot logs`."
+                )
 
     def _warn_on_rootfs_version_skew(self) -> None:
         """
