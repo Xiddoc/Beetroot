@@ -1,10 +1,21 @@
 # Caching a booted VM with QEMU `savevm` (issue #49)
 
-!!! info "Status: design + cache-key helper landed; the QEMU integration is the follow-up implementation"
+!!! info "Status: design + cache-key helper landed; QEMU path validated end-to-end (Stage E); backend integration is the follow-up implementation"
     This note specifies the savevm boot-cache and ships its load-bearing,
     unit-tested piece — the cache-key helper (`scripts/vm_cache_key.py`). The
     QEMU side (qcow2 overlay + QMP `savevm`/`loadvm`) is described here as the
     implementation that plugs into the `binder: vm` backend next.
+
+!!! success "QEMU path proven (2026-06-20, issue #83)"
+    The checkpoint→restore recipe below was driven end-to-end through Beetroot's
+    committed `build_qemu_argv` on the binderless, KVM-less sandbox (pure TCG,
+    redroid 11): `savevm` checkpoints the booted machine in **3.3 s** (1.91 GiB
+    internal snapshot), and `-loadvm` resumes a **fully-booted, adb-reachable**
+    guest in **~16–21 s** (7.9 s with a hot page cache) versus **~121 s** for a
+    cold boot — a **~6–7×** win. Full measurements + the RNG-lever null result
+    are in [vm-rnd-log.md → Stage E](vm-rnd-log.md). The remaining work is the
+    backend integration in `VmDeviceBackend` (the hooks listed at the bottom of
+    this note), not the QEMU mechanism, which is now confirmed.
 
 ## Problem
 

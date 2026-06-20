@@ -636,3 +636,166 @@ is that it is **not** a TCG boot-speed lever. `smp: auto` resolves to 4 on this
 * Rootfs: `/root/vm-rnd/rootdisk.img` (8 GiB ext4, redroid baked).
 * Boot harness + per-run serial logs: `/root/vm-rnd/boot-measure.sh`,
   `/root/vm-rnd/boot-{baseline,treatment}-*.log`.
+
+---
+
+# Micro-VM R&D log — Stage E (cold-boot optimization: RNG levers + savevm warm-start)
+
+!!! success "Status: Stage E validated (2026-06-20) — RNG levers measured a no-op; `savevm`/`loadvm` warm-start proven ~6–7× faster"
+    Issue [#83](https://github.com/Xiddoc/Beetroot/issues/83) asked two
+    questions about making the `binder: vm` TCG cold boot faster: (1) do the
+    RNG knobs `-device virtio-rng-pci` + `random.trust_cpu=on` help (the
+    hypothesis being Android init stalls on entropy under TCG), and (2) can
+    `savevm`/`restore` give a near-instant warm start. Both were driven
+    end-to-end **through Beetroot's own committed `build_qemu_argv`** on the
+    binderless, KVM-less Claude Code on the web sandbox. **Answer (1): no — the
+    CRNG initialises at 0.16 s via RDRAND, so there is no entropy stall to
+    remove, and an A/B confirmed the levers are within run-to-run noise.**
+    **Answer (2): yes — QEMU `savevm` checkpoints the booted machine in 3.3 s,
+    and `-loadvm` resumes a fully-booted, adb-reachable guest in ~16–21 s vs
+    ~121 s cold.** This validates the QEMU side of the
+    [savevm boot-cache design (#49)](vm-savevm-cache.md).
+
+## E.1 Environment
+
+Same class as Stages A–D: the Claude Code on the web sandbox — 4 physical
+cores, 15 GiB RAM, **no `/dev/kvm`** (pure TCG), host kernel without binder
+(`beetroot modes` → `binder: vm, TCG accel: needs-setup`). Guest kernel 6.12.9
+fetched **prebuilt** (config fingerprint `bb5e50f8d3e1`, ~12 MiB, <1 s — the
+#49/prebuilt-kernel path), rootfs assembled by the committed `build_rootfs`
+with redroid **11.0.0** baked (Android 11 chosen to match the seeded baseline
+and because the RNG/warm-start levers are Android-version-independent; the
+shipped default 14 scales the boot numbers up but not the conclusions).
+
+All boots use the committed `qemu.build_qemu_argv` argv verbatim
+(`-M q35 -accel tcg,thread=multi,tb-size=1024 -cpu max -smp 4 -m 8192`,
+`mitigations=off`), with `-snapshot` added so every cold run starts from the
+pristine rootfs (throwaway overlay) — making repeated cold boots independent.
+
+## E.2 Where the cold boot actually goes (phase breakdown)
+
+A clean cold boot reaches `sys.boot_completed=1` in **~99 s guest-measured**
+(`docker run` → `boot_completed`; 8 runs: 93/94/96/98/100/100/101/106 s),
+**~106–121 s host-wall** (QEMU launch → marker), and the guest is
+**adb-reachable (the real "first interaction") at ~121 s** — the adb relay /
+adbd TCP bind lands ~15 s *after* `boot_completed`. Mapping the serial console
+to guest-kernel timestamps:
+
+| Phase | guest-kernel window | ~cost |
+| --- | --- | --- |
+| guest kernel + containerd + dockerd + `docker run` | 0 → ~13 s | ~13 s |
+| redroid early init / apexd / vold / post-fs-data | ~13 → ~29 s | ~16 s |
+| services + bootanim | ~29 → ~40 s | ~11 s |
+| `system_server` start → `idmap2d` | ~40 → ~64 s | ~24 s |
+| `idmap2d` (resource/overlay idmap) | ~64 → ~78 s | ~14 s |
+| `system_server` finish → `boot_completed` | ~78 → ~117 s | **~39 s** |
+
+**Reading:** every phase past kernel hand-off is CPU-bound ART / Zygote /
+`system_server` Java+dex work, and the single biggest chunk (~39 s) is
+`system_server` finishing. Under TCG this is software-emulated instruction
+streaming — it is the **irreducible** cost and the reason the headline lever is
+*skipping* the boot (E.4), not shaving it. On a KVM host (rank 3) the same work
+runs ~5–20× faster; the prebuilt kernel already removed the ~7 min compile
+(Stage D / benchmarks) and the rootfs bake (~183 s of the 184 s `build
+--vm-kernel`) is network/disk-bound, not boot.
+
+## E.3 RNG levers (#83 hypothesis) — a measured no-op under TCG
+
+**Mechanism first.** The serial log of every boot shows:
+
+```
+[    0.157703] random: crng init done
+```
+
+The CRNG is fully initialised at **0.16 s** — before Android `init` even
+starts. `-cpu max` exposes `RDRAND`/`RDSEED` (both present on the host CPU and
+emulated by TCG), which the 6.12 kernel credits at boot, so `getrandom()` never
+blocks. **There is no entropy stall to remove.** Both levers in #83 exist only
+to speed CRNG init, so neither can help once init already completes at 0.16 s.
+
+**A/B confirms it.** Same kernel + rootfs, `-append` toggled, 3 runs each
+(guest `boot_seconds`):
+
+| arm | runs | mean | spread |
+| --- | --- | --- | --- |
+| baseline | 96 / 100 / 101 | **99.0 s** | ±2.5 |
+| `random.trust_cpu=on` | 94 / 98 / 100 | **97.3 s** | ±3 |
+
+Δ = 1.7 s with fully overlapping ranges — **no separable effect**, exactly as
+the 0.16 s crng-init mechanism predicts (mirrors Stage D.4's `mitigations=off`
+null result: a flag that verifiably *works* but doesn't move TCG boot time).
+
+**`-device virtio-rng-pci` was deliberately *not* adopted, and is the wrong
+move:** (a) it targets the same entropy mechanism that provably doesn't stall,
+and (b) the guest kernel has **no `CONFIG_HW_RANDOM_VIRTIO`** (and
+`CONFIG_MODULES` is off, so it would have to be `=y`) — adding it changes the
+`kernel.config` **fingerprint**, which busts the prebuilt-bzImage fetch
+(`kernel_download`) so *every fresh host falls back to a ~7-min source compile*
+until `vm-kernel-release.yml` republishes. That is a real **cold-boot
+regression** (minutes) for **zero** boot benefit. The device stays out.
+
+**Conclusion (#83 part 1):** the RNG levers do not improve the TCG cold boot;
+no code change is warranted. The bottleneck is CPU-bound emulation (E.2).
+
+## E.4 `savevm`/`loadvm` warm-start (#83 part 2 / validates #49) — proven
+
+This is the lever that actually moves the needle, and it validates the QEMU
+path specified (but not yet implemented) in
+[vm-savevm-cache.md](vm-savevm-cache.md). Recipe, run against the committed
+argv with a qcow2 overlay + an HMP monitor socket:
+
+```sh
+# disk: qcow2 overlay over the pristine raw rootfs (savevm needs qcow2)
+qemu-img create -f qcow2 -b rootdisk.img -F raw overlay.qcow2
+# boot ... -drive file=overlay.qcow2,format=qcow2,if=virtio \
+#          -monitor unix:mon.sock,server,nowait
+# once guest-init prints boot_completed + "guest ready":
+(echo savevm warm) | socat - unix:mon.sock      # checkpoint RAM+disk into qcow2
+# later, resume:
+qemu-system-x86_64 ... -drive file=overlay.qcow2,... -loadvm warm
+```
+
+Measured (pure TCG, redroid 11, `-smp 4`, 8 GiB):
+
+| step | result |
+| --- | --- |
+| `savevm warm` (checkpoint the booted machine) | **3.3 s**, stores a **1.91 GiB** internal snapshot (qcow2 grows to 2.1 GB) |
+| `-loadvm warm` → host `adb` sees `boot_completed=1` | **7.9 s** (hot page cache) / **15.9–20.8 s** (cold: fresh qcow2 copy + 1.91 GiB RAM restore) — 3 cold runs: 20.8 / 16.0 / 15.9 s |
+| same, cold boot for comparison | **~121 s** to adb-ready |
+
+**~6–7× faster**, and the guest resumes *already booted* — Zygote/ART settled,
+adbd + the socat relay live — so the first `adb` command works within the
+restore window instead of after a 2-minute boot. `-loadvm` is incompatible with
+`-snapshot` (the vmstate lives in the base qcow2; `-snapshot` operates on an
+empty temp overlay), so repeatable restores copy the post-`savevm` qcow2 per
+run; the copy (`cp --reflink=auto`, ~0.8 s) is excluded from the timings above.
+
+**Caveat (already in #49's design):** a restored VM must *never* feed the
+cold-boot benchmark, and the cache key (`scripts/vm_cache_key.py`) must fold
+the kernel+rootfs so a snapshot is never resumed against a guest it wasn't taken
+on. This Stage E is the empirical green light for implementing the
+`-loadvm`/`savevm` launch path in `VmDeviceBackend` (the #49 follow-up).
+
+## E.5 Takeaways / recommendation
+
+* **Cold boot under TCG is CPU-bound and ~irreducible** (~99 s guest / ~121 s
+  to first interaction). The prebuilt kernel already removed the compile; the
+  rootfs bake is the other ~183 s and is network/disk-bound.
+* **RNG levers (#83): drop them.** No entropy stall exists (crng done at
+  0.16 s); `random.trust_cpu=on` is within noise and `virtio-rng-pci` would
+  regress cold boot by busting the prebuilt-kernel fingerprint.
+* **`savevm`/`loadvm` (#49) is the blazingly-quick path** and is now validated
+  end-to-end: ~16–21 s to a fully-booted guest. The natural next slice is the
+  opt-in "resume from snapshot" launch mode in `VmDeviceBackend`
+  (`build_qemu_argv` gains a qcow2 disk + monitor socket + `-loadvm`), so a
+  fresh host pays the ~121 s boot **once** at `build`/first-`up` and every
+  subsequent `up` resumes in seconds.
+
+## E.6 Artifacts (scratch — never committed)
+
+* Cold-boot harness (committed-argv + `-snapshot`, serial capture, boot_seconds
+  + host-wall): `/tmp/bench_boot.py`; per-run serial logs `/tmp/bench-*.log`.
+* Warm-start harness (qcow2 overlay, HMP `savevm`, `-loadvm`, adb-ready timing):
+  `/tmp/warm_snapshot.py`; logs under `/tmp/warm/`.
+* Built artifacts: `~/.cache/beetroot/vm/{bzImage,rootdisk.img}` (prebuilt
+  kernel `bb5e50f8d3e1`, redroid-11 rootfs).

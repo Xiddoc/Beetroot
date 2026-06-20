@@ -445,6 +445,27 @@ CI pipeline itself.
   `docs/design/vm-rnd-log.md` (see `benchmarks/README.md` for the refresh
   flow).
 
+### Performance: cold-boot TCG investigation — RNG levers + savevm warm-start (#83)
+
+- Benchmarked the two cold-boot levers proposed in #83 on the binderless,
+  KVM-less sandbox (pure TCG), driving Beetroot's own committed
+  `build_qemu_argv` end-to-end. **RNG levers are a measured no-op:** the guest
+  CRNG initialises at **0.16 s** via `RDRAND` (exposed by `-cpu max`), so there
+  is no entropy stall to remove — an A/B of `random.trust_cpu=on` (97.3 s) vs
+  baseline (99.0 s) sits within run-to-run noise, and `-device virtio-rng-pci`
+  was rejected because it targets the same non-existent stall **and** would bust
+  the prebuilt-kernel config fingerprint (regressing every fresh host to a
+  ~7-min compile). No code change: the bottleneck is CPU-bound ART/`system_server`
+  emulation (full phase breakdown in the R&D log).
+- **Validated the `savevm`/`loadvm` warm-start** that #49 designs: QEMU
+  checkpoints the booted machine in **3.3 s** (1.91 GiB internal snapshot) and
+  `-loadvm` resumes a fully-booted, adb-reachable guest in **~16–21 s** (7.9 s
+  hot-cache) versus **~121 s** cold — a **~6–7×** win, and the green light for
+  implementing the opt-in "resume from snapshot" launch path in
+  `VmDeviceBackend` (#49 follow-up). Full numbers + recipe:
+  [VM R&D log → Stage E](https://iliketo.party/Beetroot/design/vm-rnd-log/);
+  the savevm design note is updated to mark its QEMU path proven.
+
 ### CI: `binder: vm` savevm boot-cache — design + cache key (#49)
 
 - Design note ([VM boot-cache (savevm)](https://iliketo.party/Beetroot/design/vm-savevm-cache/))
