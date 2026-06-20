@@ -636,3 +636,122 @@ is that it is **not** a TCG boot-speed lever. `smp: auto` resolves to 4 on this
 * Rootfs: `/root/vm-rnd/rootdisk.img` (8 GiB ext4, redroid baked).
 * Boot harness + per-run serial logs: `/root/vm-rnd/boot-measure.sh`,
   `/root/vm-rnd/boot-{baseline,treatment}-*.log`.
+
+---
+
+# Micro-VM R&D log — Stage E (cold-boot entropy A/B + savevm warm-start)
+
+!!! success "Status: Stage E validated (2026-06-20) — entropy levers measured boot-neutral; the savevm warm-start cuts launch→ADB ~14×"
+    Issue #83 asked whether the cold TCG boot stalls on entropy (and to add
+    `-device virtio-rng-pci` + `random.trust_cpu=on`), and to document a
+    snapshot/restore warm-start. Both were taken from hypothesis to **measured
+    numbers** on a binderless, KVM-less host under pure TCG, driving the
+    **committed** `build_qemu_argv` (with the #83 entropy levers) + a freshly
+    compiled `kernel.config` kernel + the committed `build_rootfs` (redroid
+    `11.0.0-latest`). Finding: the cold path is **not** entropy-bound on this
+    stack (the CRNG is seeded at boot t=0), so the levers are **defensive
+    hardening**, not a TCG speed-up — and the real cold-boot win is the QEMU
+    `savevm`/`loadvm` warm-start, validated here at **119.8 s cold → 8.4 s
+    warm**.
+
+## E.1 The cold path is not entropy-bound on this stack
+
+The #83 hypothesis was that under TCG the guest sees almost no
+hardware-interrupt entropy, so the kernel CRNG seeds slowly and the first
+`getrandom()` reader (Android keystore/init) blocks, stalling boot. The guest
+serial **refutes that for the current stack** — the very first kernel line is:
+
+```
+[    0.000000] random: crng init done
+```
+
+The CRNG is fully seeded at boot **t=0**, before any userspace runs, **even at
+baseline** (no virtio-rng, no `random.trust_cpu=on`). Why: linux-6.12.9
+hardcodes `static bool trust_cpu __initdata = true` (`drivers/char/random.c`;
+the old `CONFIG_RANDOM_TRUST_CPU` symbol was dropped in the 5.18 RNG rewrite),
+and `-cpu max` exposes an (emulated) **RDRAND**, which `random_init()` credits
+immediately. So `getrandom()` never blocks here and there is no entropy stall to
+remove. `random.trust_cpu=on` is therefore a **no-op** on this kernel (it only
+matters to *re-enable* a CPU RNG that a `=off` cmdline or a future
+default-off kernel turned away).
+
+## E.2 A/B — virtio-rng + `random.trust_cpu=on` is boot-neutral under TCG
+
+Quantified with `scripts/bench_vm_rng.py` (committed): three interleaved boots
+per arm, **baseline** (the entropy levers stripped from the argv) vs
+**treatment** (the committed `build_qemu_argv`), pure TCG, `-smp 4`, MTTCG,
+8 GiB, host wall = QEMU launch → the guest-init `boot_completed` marker:
+
+| run | baseline host wall | treatment (rng) host wall |
+| --- | --- | --- |
+| 1 | 103.1 s | 104.1 s |
+| 2 | 108.1 s | 108.1 s |
+| 3 | 104.1 s | 100.0 s |
+| **median** | **104.1 s** | **104.1 s** |
+
+Median **identical** (1.00×, 0.0 s); the per-run spread tracks host-contention
+drift, **not** the arm — exactly the §D.4 `mitigations=off` pattern. The levers
+verifiably *work* (the treatment kernel binds `virtio_rng` and the host feed is
+live), they just **do not move boot time** on a stack whose CRNG is already
+seeded from RDRAND at t=0.
+
+**Decision: keep them as defensive hardening, not a perf claim.** They are
+near-zero-cost and remove a *latent* stall for any stack where the CPU RNG is
+absent or untrusted (a leaner `-cpu` model without RDRAND, `random.trust_cpu=off`,
+or a kernel that defaults it off). The guest kernel must carry the driver to
+consume the device, so `kernel.config` pins `CONFIG_HW_RANDOM=y` +
+`CONFIG_HW_RANDOM_VIRTIO=y` (defconfig ships the latter `=m`, which a
+`CONFIG_MODULES=n` guest drops to `=n`).
+
+## E.3 The real cold-boot win — QEMU `savevm`/`loadvm` warm-start
+
+"Don't cold-boot at all": boot **once** to `boot_completed`, checkpoint the
+running machine (RAM + disk) with `savevm`, then `loadvm` it back. Validated
+end-to-end here over a **qcow2 overlay** on the raw rootfs, with an HMP monitor
+socket to issue the checkpoint after boot:
+
+| phase | measurement |
+| --- | --- |
+| cold boot, launch → ADB-reachable (`getprop sys.boot_completed`==1) | **119.8 s** |
+| `savevm` checkpoint (guest `stop` → snapshot written) | **17.8 s** (one-time) |
+| snapshot size in the overlay | **1.88 GiB** VM state (overlay grew 0.2 → 2089 MB) |
+| **warm restore, `-loadvm` launch → ADB-reachable** | **8.4 s** |
+
+A **~14×** launch→usable speedup (119.8 s → 8.4 s) on every start after the
+first; the restored guest is the fully-booted Android 11 (ADB `getprop
+ro.build.version.release` → `11`), ART/Zygote already warm. The validated
+recipe:
+
+```sh
+# one qcow2 overlay over the raw rootfs (internal snapshots need qcow2)
+qemu-img create -f qcow2 -b rootdisk.img -F raw overlay.qcow2
+
+# cold boot with the overlay as the disk + an HMP monitor socket
+qemu-system-x86_64 ... -drive file=overlay.qcow2,format=qcow2,if=virtio \
+    -monitor unix:/tmp/mon.sock,server,nowait ...
+# after boot_completed, over the monitor socket:
+(qemu) stop
+(qemu) savevm warm
+
+# every subsequent start resumes the running machine in seconds:
+qemu-system-x86_64 ... -drive file=overlay.qcow2,format=qcow2,if=virtio -loadvm warm
+```
+
+Caveats, carried into the #49 implementation (see
+[vm-savevm-cache.md](vm-savevm-cache.md)): the snapshot is **only** valid
+against the exact kernel+rootfs it was taken on, so the cache key
+(`scripts/vm_cache_key.py`, already shipped) is the safety latch; and this is
+**not yet wired into the `VmDeviceBackend`** (the launcher uses a raw disk and
+no monitor today) — Stage E proves the recipe; #49 lands the opt-in
+qcow2-overlay + QMP + resume-launch path. `beetroot snapshot`/`restore` is a
+**different** feature (host-binder `/data` packing, no boot-skip, not wired for
+`vm`) — it does not overlap this.
+
+## E.4 Artifacts (scratch — never committed)
+
+* Kernel (`bzImage`, 11.4 MiB, `CONFIG_HW_RANDOM_VIRTIO=y`) + rootfs (8 GiB
+  ext4, redroid `11.0.0-latest`) under `~/.cache/beetroot/vm/`.
+* A/B harness: committed at `scripts/bench_vm_rng.py`; run log in `/tmp/abrng.log`.
+* savevm validation driver + serial/monitor logs: `/tmp/savevm_test.py`,
+  `/tmp/savevm-{cold,warm}.log`; the qcow2 overlay holding the `warm` snapshot
+  at `~/.cache/beetroot/vm/overlay.qcow2`.

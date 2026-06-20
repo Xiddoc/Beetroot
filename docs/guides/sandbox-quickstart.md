@@ -223,8 +223,10 @@ host entropy straight in and credit the CPU RNG at the earliest boot stage, so
 the CRNG seeds promptly. This is built into `build_qemu_argv` and needs the
 guest kernel's `CONFIG_HW_RANDOM_VIRTIO=y` (pinned in the bundled
 `kernel.config`) — both ship by default, so a stock `beetroot build --vm-kernel`
-already has them. The measured effect is in
-[micro-VM R&D log §E](../design/vm-rnd-log.md#e-entropy-levers-virtio-rng--randomtrust_cpu).
+already has them. The measured effect (boot-neutral on the current kernel,
+because its CRNG already seeds from trusted RDRAND at boot t=0 — so these are
+defensive hardening rather than a TCG speed lever) is written up in the
+[micro-VM R&D log, Stage E](../design/vm-rnd-log.md).
 
 ### 2. Skip the boot entirely — QEMU `savevm`/`loadvm` (the real warm start)
 
