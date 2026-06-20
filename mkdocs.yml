@@ -104,6 +104,7 @@ nav:
     - Magisk Modules: guides/modules.md
     - Frida: guides/frida.md
     - Snapshots: guides/snapshots.md
+    - Sandbox / CI quickstart (no-KVM TCG): guides/sandbox-quickstart.md
     - Running in CI / without kernel access: guides/running-in-ci.md
     - CI integration (reusable workflow): guides/ci-reusable-workflow.md
     - Adding a backend: guides/adding-a-backend.md

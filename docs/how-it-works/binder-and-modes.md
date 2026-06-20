@@ -132,6 +132,9 @@ Run `beetroot modes`.
 
 ## See also
 
+* [Sandbox / CI quickstart (no-KVM TCG)](../guides/sandbox-quickstart.md) — the
+  end-to-end runbook for the `binder: vm` TCG path: prereqs, `build --vm-kernel`,
+  `up`, and screenshot, top-to-bottom.
 * [Running in CI / without kernel access](../guides/running-in-ci.md) — the same
   decision tree applied to CI runners and cloud sandboxes.
 * [Binderless hosts (QEMU/TCG)](../design/binderless-hosts-qemu-tcg.md) — the
