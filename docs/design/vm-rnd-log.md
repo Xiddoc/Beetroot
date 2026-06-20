@@ -449,7 +449,7 @@ that had masked them:
    ```
 
 3. **Measurement error that hid both:** the in-guest self-probe used
-   `socat - TCP:127.0.0.1:5555 </dev/null` and waited for a banner. **adbd does
+   `socat - TCP:127.0.0.1:5555 < /dev/null` and waited for a banner. **adbd does
    NOT banner unprompted** — the ADB client must send a `CNXN` first, then adbd
    replies `CNXN`. A connect-and-read probe therefore *always* reads zero bytes,
    which looked like a broken relay even after fix #1 made it work. The honest
@@ -636,3 +636,48 @@ is that it is **not** a TCG boot-speed lever. `smp: auto` resolves to 4 on this
 * Rootfs: `/root/vm-rnd/rootdisk.img` (8 GiB ext4, redroid baked).
 * Boot harness + per-run serial logs: `/root/vm-rnd/boot-measure.sh`,
   `/root/vm-rnd/boot-{baseline,treatment}-*.log`.
+
+---
+
+# Micro-VM R&D log — Stage E (cold-boot entropy levers + warm-start, issue #83)
+
+!!! info "Status: Stage E in progress (2026-06-20) — method + harness landed; full numbers appended below as the in-sandbox runs complete"
+    Issue #83 asked two things: benchmark the cold TCG boot with vs. without the
+    entropy levers (`-device virtio-rng-pci`, `random.trust_cpu=on`), and
+    document/validate a warm-start path. Both are being driven end-to-end on a
+    binderless, KVM-less host through the committed builder + a small A/B harness
+    (`scripts/vm_boot_ab.py`). Early reads (filled in at §E.3/§E.4 as the runs
+    finish): the guest CRNG seeds at **~0.19 s with *and* without** the levers, so
+    the boot does not stall on entropy and the levers are boot-neutral under TCG —
+    they ship as cheap, correct insurance, while the real cold-start win is the
+    warm-start (savevm/loadvm) recipe.
+
+## E.1 Environment
+
+Same class as Stages A–D: 4 physical cores, 15 GiB RAM, **no `/dev/kvm`** (pure
+TCG, `accel: auto` → tcg), Ubuntu 24.04, QEMU 8.2.2. Guest kernel built from the
+committed `src/beetroot/templates/vm/kernel.config` (linux-6.12.9) **with the new
+`CONFIG_HW_RANDOM=y` + `CONFIG_HW_RANDOM_VIRTIO=y`** so the `-device
+virtio-rng-pci` actually binds a guest driver. Rootfs from the committed
+`build_rootfs` (8 GiB ext4, redroid `11.0.0-latest` baked — the lighter,
+Stage-B/D-validated Android keeps repeated TCG boots tractable; the entropy
+effect is at the early kernel/init layer and is Android-version-independent).
+
+## E.2 Method
+
+`scripts/vm_boot_ab.py` boots the guest under QEMU, toggling the two levers, and
+times **launch → the guest's own `boot_seconds` marker** (a true cold boot, not
+the post-boot adb-reconnect lag that inflated the host-wall figure in
+`benchmarks/README.md`). Each run takes a **fresh qcow2 overlay** over the same
+raw rootfs so a prior boot's `/var/lib/docker` churn can't skew the next. Three
+arms, **interleaved** A→B→C each round (so the monotonic host-contention drift
+Stage D §D.4 observed cancels across the comparison), three rounds:
+
+* **A — baseline:** no `virtio-rng-pci`, cmdline without `random.trust_cpu=on`.
+* **B — trust_cpu only:** `random.trust_cpu=on`, no RNG device.
+* **C — shipped default:** `virtio-rng-pci` **and** `random.trust_cpu=on`.
+
+The most direct entropy signal is **when `random: crng init done` fires** in the
+kernel log — boot wall-time is dominated by ART/Zygote/`system_server` (which
+entropy does not touch), so a CRNG stall shows up as a fixed early-boot delay,
+not a proportional one.

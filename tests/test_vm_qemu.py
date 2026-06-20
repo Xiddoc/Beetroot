@@ -117,7 +117,8 @@ class TestBuildQemuArgv:
         assert "-no-reboot" in argv
         assert (
             argv[argv.index("-append") + 1]
-            == "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off"
+            == "console=ttyS0 root=/dev/vda rw init=/init panic=1 "
+            "mitigations=off random.trust_cpu=on"
         )
 
     def test_disables_cpu_mitigations_on_both_accels(self) -> None:
@@ -128,6 +129,22 @@ class TestBuildQemuArgv:
         for accel in ("tcg", "kvm"):
             argv = _argv(accel)
             assert "mitigations=off" in argv[argv.index("-append") + 1]
+
+    def test_entropy_levers_present_on_both_accels(self) -> None:
+        # Issue #83 entropy levers: a paravirtual RNG device + trusting the
+        # CPU RNG so the guest CRNG seeds at boot instead of stalling Android
+        # init / ART. Both are throwaway-VM-safe and accelerator-independent.
+        for accel in ("tcg", "kvm"):
+            argv = _argv(accel)
+            assert "virtio-rng-pci" in argv
+            assert "random.trust_cpu=on" in argv[argv.index("-append") + 1]
+
+    def test_virtio_rng_is_a_device(self) -> None:
+        # The RNG attaches as a -device (so the guest's CONFIG_HW_RANDOM_VIRTIO
+        # driver binds it), not a bare flag.
+        argv = _argv("tcg")
+        rng_idx = argv.index("virtio-rng-pci")
+        assert argv[rng_idx - 1] == "-device"
 
 
 # ---------------------------------------------------------------------------

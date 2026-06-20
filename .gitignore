@@ -296,3 +296,7 @@ poetry.toml
 
 # LSP config files
 pyrightconfig.json
+
+# Scratch output from scripts/vm_boot_ab.py (the issue-#83 A/B cold-boot harness)
+vm-boot-ab-logs/
+rng-samples.json

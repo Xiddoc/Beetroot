@@ -428,6 +428,36 @@ CI pipeline itself.
   permissions are scoped to the deploy job; every checkout across all
   workflows sets `persist-credentials: false`.
 
+### `binder: vm` cold-boot perf — entropy levers + warm-start (#83)
+
+- **Entropy levers on the micro-VM boot.** `build_qemu_argv` now attaches
+  `-device virtio-rng-pci` and appends `random.trust_cpu=on` to the guest
+  kernel cmdline (both accelerators), and the guest `kernel.config` gains
+  `CONFIG_HW_RANDOM=y` + `CONFIG_HW_RANDOM_VIRTIO=y` so the paravirtual RNG
+  binds a driver. These seed the guest CRNG at boot from the host RNG / the CPU
+  `RDRAND` so Android init and ART never stall on a slow-to-initialise entropy
+  pool. They are throwaway-VM-safe and carry no security cost for a
+  single-tenant sandbox. **Measured effect on cold-boot time under TCG:
+  neutral** — an in-sandbox A/B (see
+  [vm-rnd-log Stage E](https://iliketo.party/Beetroot/design/vm-rnd-log/)) found
+  the CRNG already seeds at ~0.19 s *with and without* the levers on the 6.12.9
+  guest (jitter-entropy + `-cpu max` RDRAND), so the boot never stalled on
+  entropy in the first place. The levers ship as cheap, correct insurance
+  (e.g. for a kernel/arch without a fast RNG source), mirroring the
+  `mitigations=off` finding in Stage D — the flag works, it just isn't a TCG
+  boot-speed lever. Changing `kernel.config` bumps its fingerprint, so a fresh
+  `beetroot build --vm-kernel` recompiles the guest kernel until a matching
+  prebuilt is published.
+- **Warm-start path documented + validated.** Clarified that `beetroot
+  snapshot` / `restore` is a *cold* `/data` archive (redroid-only; it does
+  **not** skip the Android boot and is unsupported on the `binder: vm`
+  backend), and documented the actual near-instant warm-start for the slow TCG
+  boot: a QEMU `savevm`/`loadvm` machine-state checkpoint that resumes an
+  already-booted guest in seconds. The validated manual recipe lives in
+  [VM boot-cache (savevm) § Warm-start recipe](https://iliketo.party/Beetroot/design/vm-savevm-cache/#warm-start-recipe);
+  wiring it into the CLI is tracked on #49. New reproducibility harness:
+  `scripts/vm_boot_ab.py` (the A/B cold-boot timer behind the Stage E numbers).
+
 ### CI: host-vs-VM benchmark harness (#50)
 
 - New nightly **benchmark lane** (`.github/workflows/benchmark.yml`;

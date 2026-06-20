@@ -77,3 +77,60 @@ The current backend launches QEMU with a **raw** root disk and no monitor
 These are additive backend changes (a new "resume from snapshot" launch path)
 gated behind an opt-in, and are tracked as the next slice on #49. The cache key
 that makes any of it safe lands here.
+
+## Warm-start recipe
+
+Issue #83 asked for a documented/validated warm-start workflow. The recipe below
+is the manual precursor to the CLI integration above — it needs no Beetroot code
+change, only the stock guest kernel + rootfs from `beetroot build --vm-kernel`
+and a qcow2 overlay. Use it today to skip the ~120 s cold boot on repeat starts;
+the measured cold-vs-warm numbers from an in-sandbox run are in
+[vm-rnd-log Stage E](vm-rnd-log.md#micro-vm-rd-log-stage-e-cold-boot-entropy-levers-warm-start-issue-83).
+
+**1. Boot once over a qcow2 overlay, with a monitor socket.** A qcow2 overlay
+keeps the committed raw `rootdisk.img` immutable and is what `savevm` writes its
+internal snapshot into:
+
+```sh
+qemu-img create -q -f qcow2 -b ~/.cache/beetroot/vm/rootdisk.img -F raw warm.qcow2
+qemu-system-x86_64 \
+  -M q35 -accel tcg,thread=multi,tb-size=1024 -cpu max -smp 4 -m 8192 \
+  -nographic -display none -no-reboot -kernel ~/.cache/beetroot/vm/bzImage \
+  -drive file=warm.qcow2,format=qcow2,if=virtio \
+  -netdev user,id=net0,hostfwd=tcp:127.0.0.1:5555-:5555 \
+  -device virtio-net-pci,netdev=net0 -device virtio-rng-pci \
+  -qmp unix:qmp.sock,server,nowait \
+  -append "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off random.trust_cpu=on"
+```
+
+**2. Once the guest reports `sys.boot_completed=1`, checkpoint the running
+machine** (RAM + disk) into the qcow2 as a named internal snapshot, then quit.
+Over QMP, `savevm` is reached via `human-monitor-command`:
+
+```sh
+# pause vCPUs, snapshot, quit — via the QMP socket above
+printf '%s\n' '{"execute":"qmp_capabilities"}' \
+  '{"execute":"stop"}' \
+  '{"execute":"human-monitor-command","arguments":{"command-line":"savevm warm"}}' \
+  '{"execute":"quit"}' | socat - UNIX-CONNECT:qmp.sock
+```
+
+**3. Resume — every subsequent start is a `-loadvm`, not a cold boot.** Relaunch
+with the identical argv plus `-loadvm warm`; the guest resumes already-booted
+(ART/Zygote settled, the in-guest adb relay already listening), reachable over
+`adb connect localhost:5555` in seconds:
+
+```sh
+qemu-system-x86_64 ... -drive file=warm.qcow2,format=qcow2,if=virtio \
+  ... -loadvm warm
+```
+
+The launch-time flags (`-netdev`/`hostfwd`, `-smp`, `-m`) are re-applied fresh
+on resume, so the host ADB port forward is re-established without being part of
+the saved state. The cache key from `scripts/vm_cache_key.py` over
+(`bzImage` + `rootdisk.img`) is the safety latch: only restore `warm.qcow2`
+against the exact kernel/rootfs it was taken on.
+
+`benchmarks/` is the *cold* path's home — never serve a benchmark cold-boot
+sample from a `loadvm` (it would measure resume, not boot). The two metrics are
+orthogonal.

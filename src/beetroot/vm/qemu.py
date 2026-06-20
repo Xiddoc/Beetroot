@@ -234,6 +234,26 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
     boot and steady-state CPU time with no relevant security loss for a
     throwaway VM.
 
+    **Entropy levers (issue #83).** Two cheap, throwaway-VM-safe knobs guard
+    against an early-boot stall on entropy — Android's ``init`` and ART seed
+    a userspace CSPRNG, and on a fresh emulated machine with no real hardware
+    entropy source the kernel CRNG can be slow to initialise (a stall that
+    TCG's per-instruction tax amplifies):
+
+    * ``-device virtio-rng-pci`` attaches a paravirtual RNG that feeds the
+      host's entropy into the guest's ``hwrng``, so the CRNG seeds promptly.
+      This needs ``CONFIG_HW_RANDOM_VIRTIO=y`` in the guest kernel (added to
+      ``src/beetroot/templates/vm/kernel.config``); without that driver the
+      device is a harmless no-op.
+    * ``random.trust_cpu=on`` tells the kernel to credit the CPU's
+      ``RDRAND``/``RDSEED`` output as initial entropy. Under ``-cpu max``
+      (TCG) and ``-cpu host`` (KVM) the RDRAND leaf is exposed, so the CRNG
+      can seed from it at boot without waiting on collected entropy.
+
+    Both are belt-and-suspenders: either one alone seeds the CRNG, and both
+    are inert if the guest never blocks on entropy. They carry no security
+    cost for a single-tenant throwaway VM.
+
     Args:
         qemu_bin: The QEMU binary (path or name resolved via PATH).
         accel: The resolved accelerator (``"kvm"`` or ``"tcg"``).
@@ -272,8 +292,10 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
         f"user,id=net0,{hostfwd}",
         "-device",
         "virtio-net-pci,netdev=net0",
+        "-device",
+        "virtio-rng-pci",
         "-append",
-        "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off",
+        "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off random.trust_cpu=on",
     ]
 
 

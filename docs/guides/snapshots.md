@@ -123,6 +123,37 @@ beetroot restore ./baseline.tar.zst --name alpha
 beetroot up alpha
 ```
 
+## Snapshots are *not* a warm-start (and what is)
+
+A common hope — especially for the slow `binder: vm` TCG boot — is that
+`beetroot snapshot` captures a *booted* device so `restore` can skip the boot.
+It does **not**, and the distinction matters:
+
+- **`beetroot snapshot` captures cold `/data`, not a running machine.** The
+  archive is the on-disk Android userdata tree (plus `beetroot.yaml`, modules,
+  the Frida placeholder). Restoring it still requires a full Android cold boot —
+  `beetroot up` brings the framework up from scratch against the restored
+  `/data`. It is a *state* artefact (roll back, fork, hand off), never a
+  boot-time shortcut.
+- **`beetroot snapshot` is redroid-only.** It is not implemented for the
+  `binder: vm` backend (the manifest's `kind` is `redroid`), so
+  `beetroot snapshot <vm-instance>` reports that the backend lacks the
+  capability. There is nothing to snapshot host-side for a VM instance beyond
+  its config — the interesting state lives inside the guest disk image.
+
+If what you actually want is **"boot the VM once, then start near-instantly
+every time after"**, that is a *QEMU machine-state* snapshot (RAM + disk),
+which is a different mechanism entirely:
+
+> **Warm-starting the `binder: vm` micro-VM** — boot once, `savevm` the running
+> machine, then `loadvm` to resume an already-booted guest in seconds instead
+> of paying the ~100 s+ TCG cold boot. This is the right tool for a fast cold
+> start on a binderless/KVM-less host. The validated recipe and measured
+> cold-vs-warm numbers live in
+> [VM boot-cache (savevm)](../design/vm-savevm-cache.md#warm-start-recipe).
+> Wiring it into the CLI is tracked as
+> [issue #49](https://github.com/Xiddoc/Beetroot/issues/49).
+
 ## Low-overhead alternatives
 
 For the simplest case — quick "undo button" for a single instance, no

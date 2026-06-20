@@ -177,7 +177,8 @@ qemu-system-x86_64 \
   -nographic -display none -no-reboot \
   -kernel bzImage \
   -drive file=rootdisk.img,format=raw,if=virtio \
-  -append "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off"
+  -device virtio-rng-pci \
+  -append "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off random.trust_cpu=on"
 ```
 
 `thread=multi` (MTTCG) is the single biggest TCG lever — one host
@@ -188,7 +189,13 @@ the boot scales with vCPUs up to the host core count, then regresses, so a
 logical-CPU count would oversubscribe on a hyperthreaded host).
 `mitigations=off` drops the guest's speculative-execution barriers —
 pure (emulated under TCG / real under KVM) overhead for a throwaway,
-single-tenant research sandbox. On a host **with** `/dev/kvm`, swap
+single-tenant research sandbox. `-device virtio-rng-pci` +
+`random.trust_cpu=on` are the entropy levers (issue #83): they seed the
+guest CRNG at boot from the host's RNG / the CPU `RDRAND` so Android init
+and ART never stall waiting for the entropy pool to initialise (a stall TCG
+would amplify). The device needs `CONFIG_HW_RANDOM_VIRTIO=y` in the guest
+kernel (vendored in `kernel.config`); both are inert if the guest never
+blocks on entropy. On a host **with** `/dev/kvm`, swap
 `-accel tcg,thread=multi` for `-accel kvm` for near-native speed (rank 3).
 
 ## 5. Debugging log (every blocker was plumbing, not physics)
