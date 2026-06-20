@@ -6,13 +6,27 @@
     QEMU side (qcow2 overlay + QMP `savevm`/`loadvm`) is described here as the
     implementation that plugs into the `binder: vm` backend next.
 
+!!! success "Validated end-to-end (2026-06-20, issue #83)"
+    The premise below is no longer just a design — the `savevm`/`loadvm`
+    warm-start was measured working on the no-KVM TCG sandbox (redroid
+    Android 14, kernel 6.12.9): **cold boot 200 s → warm restore ~9–10 s
+    (≈20×)**, `savevm` checkpoint 6.6 s, snapshot ~0.6–2.2 GB qcow2, and the
+    restored device is fully usable (`adb shell` works, guest uptime carries
+    over from the checkpoint). Full numbers + the reproducible recipe:
+    [vm-cold-boot-perf.md](vm-cold-boot-perf.md). This confirms the
+    qcow2-overlay + QMP-`savevm` + `-loadvm` integration below is the right
+    design to build.
+
 ## Problem
 
-Booting redroid in the `binder: vm` backend under TCG takes ~100 s (see
-[vm-rnd-log.md](vm-rnd-log.md)). CI jobs that need a **booted** device but do
-**not** measure boot time — the functional [`tier-vm-qemu` e2e tier](../guides/running-in-ci.md)
-and the post-boot rows of the [nightly benchmark](../guides/running-in-ci.md) —
-repay that ~100 s on every run for no benefit.
+Booting redroid in the `binder: vm` backend under TCG takes ~100 s for
+Android 11, ~200 s for the default Android 14 (see
+[vm-rnd-log.md](vm-rnd-log.md) and the measured numbers in
+[vm-cold-boot-perf.md](vm-cold-boot-perf.md)). CI jobs that need a **booted**
+device but do **not** measure boot time — the functional
+[`tier-vm-qemu` e2e tier](../guides/running-in-ci.md) and the post-boot rows of
+the [nightly benchmark](../guides/running-in-ci.md) — repay that boot on every
+run for no benefit.
 
 ## Approach
 

@@ -133,6 +133,7 @@ nav:
     - Binderless hosts (QEMU/TCG): design/binderless-hosts-qemu-tcg.md
     - VM R&D log (TCG recipe): design/vm-rnd-log.md
     - VM boot-cache (savevm): design/vm-savevm-cache.md
+    - VM cold-boot perf (#83): design/vm-cold-boot-perf.md
   - Troubleshooting: troubleshooting.md
   - About:
     - Credits: about/credits.md

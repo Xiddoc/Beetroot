@@ -29,3 +29,9 @@ and the design doc is archived from the nav.
   reproducible recipe, the full debugging log, and the auto-detect /
   fallback design (use host binder when present; opt into the slow
   emulated path explicitly).
+- **[VM cold-boot performance (#83)](vm-cold-boot-perf.md)** — measured
+  cold-boot report for the `binder: vm` TCG path: the proposed RNG levers
+  (`random.trust_cpu=on`, `-device virtio-rng-pci`) are **neutral** (the
+  CRNG already seeds in ~0.15 s), the QEMU `savevm`/`loadvm` warm-start is a
+  **~20× win** (200 s → ~10 s, validated), and the Android version is itself a
+  ~40 % cold-boot dial under TCG.

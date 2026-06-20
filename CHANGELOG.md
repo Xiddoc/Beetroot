@@ -461,6 +461,29 @@ CI pipeline itself.
   (qcow2 overlay + QMP `savevm`/`loadvm` launch path) is the tracked
   follow-up.
 
+### Investigation: `binder: vm` cold-boot perf + savevm warm-start (#83)
+
+- New report ([VM cold-boot perf](https://iliketo.party/Beetroot/design/vm-cold-boot-perf/))
+  with real numbers from the no-KVM TCG sandbox the issue targets (redroid
+  Android 14, kernel 6.12.9). Findings:
+  - The proposed entropy levers are **neutral for boot time**:
+    `random.trust_cpu=on` is a no-op (the guest CRNG already seeds at ~0.15 s
+    via `RANDOM_TRUST_CPU`+`RDRAND`), and `-device virtio-rng-pci` needs a
+    kernel rebuild (`CONFIG_HW_RANDOM_VIRTIO=y`) to bind at all — and even then
+    boot time is unchanged (Android's `prng_seeder` hang is off the boot
+    critical path). Measured 193.7 s both arms. So `build_qemu_argv` is **left
+    unchanged** — the negative result is documented to avoid re-investigation.
+  - The QEMU **`savevm`/`loadvm` warm-start is the real win — validated at
+    ≈20× (cold 200 s → warm ~9–10 s)**, `savevm` checkpoint 6.6 s, snapshot
+    ~0.6–2.2 GB qcow2, restored device fully usable. This empirically confirms
+    the #49 design; measurements folded into the
+    [savevm boot-cache note](https://iliketo.party/Beetroot/design/vm-savevm-cache/).
+    Distinct from `beetroot snapshot`/`restore` (host `/data` tar — still
+    cold-boots), as clarified in the report.
+  - The Android version is itself a cold-boot dial under TCG (14 ≈ 165 s guest
+    vs 11 ≈ 98 s, ~40% faster); `examples/vm.yaml` now notes the tradeoff for
+    researchers who want faster iteration and don't need Android-14 APIs.
+
 ### CI: `binder: vm` e2e tier (#48)
 
 - New **`tier-vm-qemu`** job in `e2e.yml` that exercises the QEMU micro-VM
