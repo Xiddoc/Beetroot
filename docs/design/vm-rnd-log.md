@@ -715,9 +715,44 @@ separable RNG or disk-cache effect.
   CPU-bound** (emulating ART / Zygote / `system_server`), not disk-I/O-bound —
   the docker-overlay reads are tiny next to the per-instruction emulation cost.
 
+### E.2.1 Control runs prove the mechanism (not just "no difference")
+
+To rule out a hidden entropy stall masked by boot noise, a second, focused
+harness measured the entropy path directly: a minimal busybox rootfs (Stage-A
+style, 64 MiB ext4) carrying a static `getrandom()` probe that records guest
+`/proc/uptime` before and after a blocking `getrandom(256)`, on the **same**
+committed `vm-kernel-6.12.9` prebuilt under TCG. `crng` = guest uptime at the
+kernel's `random: crng init done`; `getrandom` = seconds userspace blocked
+(0 = CRNG already seeded). Four runs per cell:
+
+| cmdline / device | `crng init done` | `getrandom()` blocked |
+| --- | --- | --- |
+| **production** (`-cpu max`, no RNG flags) | **~0.13 s** | **0.000 s** |
+| `random.trust_cpu=on` (`-cpu max`) | ~0.1 s | 0.000 s |
+| `random.trust_cpu=on` + `virtio-rng-pci` | ~0.1 s | 0.000 s |
+| **control:** `random.trust_cpu=off` (`-cpu max`) | ~4.5 s | ~0.35–0.39 s |
+| **control:** `-cpu qemu64` (no `RDRAND`), production cmdline | ~3.2 s | ~0.39 s |
+
+The two control rows are the proof, not a statistical near-miss: force
+`trust_cpu` **off** and crng slips to ~4.5 s with a measurable `getrandom()`
+block; hide `RDRAND` entirely (`-cpu qemu64`) and even the default cmdline slips
+to ~3.2 s. So the mechanism is exactly as claimed — `-cpu max` exposes `RDRAND`
+and `defconfig` ships `CONFIG_RANDOM_TRUST_CPU=y`, so the production config
+already credits 256 bits at ~0.13 s and `random.trust_cpu=on` only restates a
+default that is *already on*. The flag is cheap insurance against a future
+defconfig flip or a CPU-model change, **not** a measured win on the shipped
+stack — and `virtio-rng-pci` stays inert in every row (`rng_current=none`)
+because the module-less guest never builds the `=m` `CONFIG_HW_RANDOM_VIRTIO`
+driver.
+
 **Decision:** the QEMU argv is left unchanged for the cold path — none of these
-levers earns its place. (`mitigations=off` and `smp: auto` from #66 stay; Stage
-D already measured `mitigations=off` boot-neutral under TCG but harmless and
+levers earns its place. `random.trust_cpu=on` is a no-op on the shipped
+`-cpu max` config (the controls show it only matters in failure modes that do
+not occur here), and `virtio-rng` would need a `kernel.config` change that bumps
+the prebuilt-kernel **fingerprint** — forcing a ~7-min source recompile on every
+fresh host for zero measured benefit, an actual cold-boot *regression*. So:
+no code change. (`mitigations=off` and `smp: auto` from #66 stay; Stage D
+already measured `mitigations=off` boot-neutral under TCG but harmless and
 potentially useful under KVM.)
 
 ## E.3 The warm-start win — `savevm`/`loadvm` (~22x)
@@ -755,6 +790,12 @@ persistence) — the design + caveats are in [vm-savevm-cache.md](vm-savevm-cach
 * **`vm.boot_cache: true` is the headline win**: after the first boot, every
   `up` is ~10 s. For a research loop that boots a phone repeatedly, that turns a
   multi-minute wait into an interactive one.
+* **The Android version is the one cold-boot dial that does move:** the default
+  is now Android 14 (#82), which cold-boots in ~190–200 s guest under TCG;
+  Android 11 boots in ~100 s (~40–50 % faster) on the same host (Stage B). If
+  you don't need Android-14 APIs, `android: {version: 11}` (rebuilt with
+  `beetroot build --vm-kernel`) is a real first-boot speed-up — and
+  `vm.boot_cache` then collapses *either* version's repeat boots to ~10 s.
 * On a host **with** `/dev/kvm`, `accel: auto` already gives a near-native cold
   boot (the expensive TCG path is the binderless-sandbox case).
 

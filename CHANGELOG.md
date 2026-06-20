@@ -35,8 +35,12 @@
   `/dev/hw_random` without `CONFIG_HW_RANDOM_VIRTIO=y` (a `=m` in defconfig,
   absent from the module-less guest), so it is inert. The boot is CPU-bound,
   not entropy- or disk-bound, which is why the warm-start cache above — not
-  these micro-levers — is the real win. The QEMU argv is unchanged; the
-  findings and measurements are recorded in
+  these micro-levers — is the real win. Control runs (force `trust_cpu` off, or
+  hide RDRAND with `-cpu qemu64`) prove the mechanism rather than just measuring
+  a near-miss. The one cold-boot dial that *does* move is the Android version
+  (14 cold-boots in ~190–200 s under TCG; 11 in ~100 s), now noted in
+  `examples/vm.yaml`. The QEMU argv is unchanged; the findings and measurements
+  are recorded in
   [vm-rnd-log Stage E](https://iliketo.party/Beetroot/design/vm-rnd-log/).
 
 - **Reusable CI workflow — boot a Beetroot instance in *your* repo's CI.**
