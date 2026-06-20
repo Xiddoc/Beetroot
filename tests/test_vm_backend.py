@@ -11,7 +11,7 @@ import pytest
 from beetroot import api, config, frida_download, registry
 from beetroot.backends import vm as vm_backend
 from beetroot.settings import Settings
-from beetroot.vm import qemu
+from beetroot.vm import boot_cache, qemu
 
 
 def _write_yaml(root: Path, cfg: config.InstanceConfig) -> None:
@@ -108,7 +108,8 @@ class TestInstallFrida:
         # #44): install_frida raises a friendly, actionable error and never
         # stages a binary.
         backend = _make_backend(
-            tmp_path, cfg=config.InstanceConfig(binder="vm", frida=config.Frida(version="16.4.10")),
+            tmp_path,
+            cfg=config.InstanceConfig(binder="vm", frida=config.Frida(version="16.4.10")),
         )
 
         def _boom(*_a: object, **_k: object) -> None:
@@ -269,7 +270,9 @@ class TestLifecycle:
         backend = _make_backend(tmp_path, cfg=cfg)
         argv = backend.build_argv("tcg")
         assert argv[argv.index("-kernel") + 1] == str(cache / "bzImage")
-        assert argv[argv.index("-drive") + 1] == f"file={cache / 'rootdisk.img'},format=raw,if=virtio"
+        assert (
+            argv[argv.index("-drive") + 1] == f"file={cache / 'rootdisk.img'},format=raw,if=virtio"
+        )
 
     def test_build_argv_missing_kernel_config_and_env_errors(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -304,9 +307,7 @@ class TestLifecycle:
             return 1234
 
         monkeypatch.setattr(qemu.QemuProcess, "start", _start)
-        monkeypatch.setattr(
-            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None
-        )
+        monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None)
         backend.up()
         assert launched["argv"][0] == "qemu-system-x86_64"
 
@@ -352,9 +353,7 @@ class TestLifecycle:
             return 1
 
         monkeypatch.setattr(qemu.QemuProcess, "start", _start)
-        monkeypatch.setattr(
-            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None
-        )
+        monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None)
         backend.up()
         argv = launched["argv"]
         assert argv[0] == "qemu-system-x86_64"
@@ -375,6 +374,173 @@ class TestLifecycle:
         monkeypatch.setattr(qemu, "_dev_kvm_usable", lambda: False)
         with pytest.raises(qemu.QemuLaunchError, match="/dev/kvm is absent"):
             backend.up()
+
+    def _cached_backend(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> vm_backend.VmDeviceBackend:
+        kernel, rootfs = _stage_artifacts(monkeypatch, tmp_path)
+        cfg = config.InstanceConfig(
+            binder="vm",
+            vm={"kernel": str(kernel), "rootfs": str(rootfs), "boot_cache": True},  # type: ignore[arg-type]
+        )
+        backend = _make_backend(tmp_path, cfg=cfg)
+        monkeypatch.setattr(qemu, "detect_accel", lambda _req: "tcg")
+        monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None)
+        # Default: the guest boots (cold path gates savevm on this). The
+        # not-booted branch is exercised explicitly below.
+        monkeypatch.setattr(
+            vm_backend.VmDeviceBackend, "_wait_for_boot_completed", lambda _self: True
+        )
+        return backend
+
+    def test_up_cached_cold_creates_overlay_and_checkpoints(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = self._cached_backend(tmp_path, monkeypatch)
+        events: list[str] = []
+        launched: dict[str, list[str]] = {}
+        monkeypatch.setattr(
+            "beetroot.vm.boot_cache.create_overlay", lambda *_a: events.append("overlay")
+        )
+        monkeypatch.setattr("beetroot.vm.boot_cache.snapshot_present", lambda _o: False)
+
+        def _save(_m: Path) -> bool:
+            events.append("saved")
+            return True
+
+        monkeypatch.setattr("beetroot.vm.boot_cache.save_snapshot", _save)
+
+        def _start(_self: object, argv: list[str]) -> int:
+            launched["argv"] = argv
+            return 1
+
+        monkeypatch.setattr(qemu.QemuProcess, "start", _start)
+        backend.up()
+        argv = launched["argv"]
+        # Cold cached boot: qcow2 overlay disk + monitor socket, NO -loadvm,
+        # then a checkpoint is taken for next time.
+        assert ",format=qcow2," in argv[argv.index("-drive") + 1]
+        assert "-monitor" in argv
+        assert "-loadvm" not in argv
+        assert events == ["overlay", "saved"]
+
+    def test_up_cached_warm_resumes_without_recheckpoint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = self._cached_backend(tmp_path, monkeypatch)
+        # Overlay already present → create_overlay must NOT run; snapshot exists
+        # → resume with -loadvm and do NOT re-checkpoint.
+        boot_cache.overlay_path(backend.root).write_bytes(b"qcow2")
+        events: list[str] = []
+        launched: dict[str, list[str]] = {}
+        monkeypatch.setattr(
+            "beetroot.vm.boot_cache.create_overlay", lambda *_a: events.append("overlay")
+        )
+        monkeypatch.setattr("beetroot.vm.boot_cache.snapshot_present", lambda _o: True)
+        monkeypatch.setattr(
+            "beetroot.vm.boot_cache.save_snapshot", lambda _m: events.append("saved")
+        )
+
+        def _start(_self: object, argv: list[str]) -> int:
+            launched["argv"] = argv
+            return 1
+
+        monkeypatch.setattr(qemu.QemuProcess, "start", _start)
+        backend.up()
+        argv = launched["argv"]
+        assert argv[argv.index("-loadvm") + 1] == boot_cache.SNAPSHOT_TAG
+        assert events == []  # neither overlay creation nor checkpoint
+
+    def test_up_cached_warns_when_checkpoint_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = self._cached_backend(tmp_path, monkeypatch)
+        warnings: list[str] = []
+        monkeypatch.setattr("beetroot.vm.boot_cache.create_overlay", lambda *_a: None)
+        monkeypatch.setattr("beetroot.vm.boot_cache.snapshot_present", lambda _o: False)
+        monkeypatch.setattr("beetroot.vm.boot_cache.save_snapshot", lambda _m: False)
+        monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 1)
+        monkeypatch.setattr("beetroot.console.warn", warnings.append)
+        backend.up()
+        assert any("cold-boot again" in w for w in warnings)
+
+    def test_up_cached_cold_skips_checkpoint_when_boot_times_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # If the guest never reaches boot_completed, savevm must NOT run (a
+        # half-booted checkpoint is worse than a cold boot).
+        backend = self._cached_backend(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            vm_backend.VmDeviceBackend, "_wait_for_boot_completed", lambda _self: False
+        )
+        events: list[str] = []
+        warnings: list[str] = []
+        monkeypatch.setattr("beetroot.vm.boot_cache.create_overlay", lambda *_a: None)
+        monkeypatch.setattr("beetroot.vm.boot_cache.snapshot_present", lambda _o: False)
+        monkeypatch.setattr(
+            "beetroot.vm.boot_cache.save_snapshot", lambda _m: events.append("saved")
+        )
+        monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 1)
+        monkeypatch.setattr("beetroot.console.warn", warnings.append)
+        backend.up()
+        assert events == []  # savevm never attempted
+        assert any("did not reach sys.boot_completed" in w for w in warnings)
+
+    def test_wait_for_boot_completed_polls_getprop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        kernel, rootfs = _stage_artifacts(monkeypatch, tmp_path)
+        backend = _make_backend(
+            tmp_path,
+            cfg=config.InstanceConfig(
+                binder="vm",
+                vm={"kernel": str(kernel), "rootfs": str(rootfs), "boot_cache": True},  # type: ignore[arg-type]
+            ),
+        )
+        monkeypatch.setattr(shutil, "which", lambda _n: "/usr/bin/adb")
+        # getprop returns "" twice (not booted), then "1".
+        replies = iter(["", "", "1"])
+
+        def _run(cmd: list[str], **_k: object) -> subprocess.CompletedProcess[str]:
+            out = next(replies) if cmd[:4] == ["adb", "-s", backend.adb_address, "shell"] else ""
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=out, stderr="")
+
+        monkeypatch.setattr("beetroot.backends.vm.subprocess.run", _run)
+        monkeypatch.setattr("beetroot.backends.vm.time.sleep", lambda _s: None)
+        assert backend._wait_for_boot_completed() is True
+
+    def test_wait_for_boot_completed_times_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = self._cached_backend(tmp_path, monkeypatch)
+        # Undo the _cached_backend stub so the real method runs.
+        monkeypatch.undo()
+        monkeypatch.setattr(shutil, "which", lambda _n: "/usr/bin/adb")
+        # getprop never reads "1"; collapse the deadline so the loop exits fast.
+        monkeypatch.setattr("beetroot.backends.vm._BOOT_COMPLETED_TIMEOUT_SECONDS", 0.0)
+        monkeypatch.setattr(
+            "beetroot.backends.vm.subprocess.run",
+            lambda *_a, **_k: subprocess.CompletedProcess(args=[], returncode=0, stdout="0"),
+        )
+        assert backend._wait_for_boot_completed() is False
+
+    def test_wait_for_boot_completed_requires_adb(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = self._cached_backend(tmp_path, monkeypatch)
+        monkeypatch.undo()
+        monkeypatch.setattr(shutil, "which", lambda _n: None)
+        with pytest.raises(api.AdbNotInstalledError):
+            backend._wait_for_boot_completed()
+
+    def test_boot_completed_handles_adb_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom(*_a: object, **_k: object) -> subprocess.CompletedProcess[str]:
+            raise OSError("adb gone")
+
+        monkeypatch.setattr("beetroot.backends.vm.subprocess.run", _boom)
+        assert vm_backend.VmDeviceBackend._boot_completed("localhost:5555") is False
 
     def test_down_terminates(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         backend = _make_backend(tmp_path)
@@ -427,9 +593,7 @@ class TestRootfsVersionSkewWarning:
     def _silence_launch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(qemu, "detect_accel", lambda _req: "tcg")
         monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 1)
-        monkeypatch.setattr(
-            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None
-        )
+        monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None)
 
     def test_up_warns_on_version_mismatch(
         self,

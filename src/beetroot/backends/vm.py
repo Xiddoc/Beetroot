@@ -36,7 +36,7 @@ from beetroot.api import (
 )
 from beetroot.backends import register_backend
 from beetroot.settings import settings
-from beetroot.vm import qemu
+from beetroot.vm import boot_cache, qemu
 
 if TYPE_CHECKING:
     from beetroot.api import CheckResult
@@ -50,6 +50,15 @@ _ADB = "adb"
 # connect almost always races that late bind and must be retried.
 _ADB_CONNECT_POLL_SECONDS = 1.0
 _ADB_CONNECT_ATTEMPT_TIMEOUT = 5
+
+# The boot-cache path must checkpoint a *fully booted* guest, so it gates
+# ``savevm`` on a real ``getprop sys.boot_completed == 1`` poll rather than the
+# plain ``adb connect`` (which succeeds as soon as QEMU's user-net hostfwd binds
+# the host port — before the guest's adbd is reachable). The deadline matches
+# guest-init.sh's own BOOT_TIMEOUT; a cold TCG boot is minutes.
+_BOOT_COMPLETED_TIMEOUT_SECONDS = 900
+_BOOT_COMPLETED_POLL_SECONDS = 3.0
+_BOOT_COMPLETED_ATTEMPT_TIMEOUT = 10
 
 # Frida is not yet wired through the QEMU micro-VM (issue #44 scopes the
 # vm backend to ADB forwarding only): the guest runs redroid with
@@ -406,9 +415,147 @@ class VmDeviceBackend:
         self._warn_on_rootfs_version_skew()
         self._warn_on_inert_vm_config()
         accel = self.resolved_accel()
+        if self._cfg.vm.boot_cache:
+            self._up_cached(accel)
+            return
         argv = self.build_argv(accel)
         qemu.QemuProcess(self._root).start(argv)
         self._wait_for_adb_connect()
+
+    def _up_cached(self, accel: qemu.ResolvedAccel) -> None:
+        """
+        Boot via the warm-start boot cache: resume a checkpoint, or cold-boot + checkpoint.
+
+        On the first ``up`` the qcow2 overlay carries no snapshot, so QEMU
+        cold-boots (through the overlay, with an HMP monitor socket) and — once
+        ADB is reachable — :func:`boot_cache.save_snapshot` checkpoints the
+        running machine state. Every later ``up`` finds the snapshot and
+        launches with ``-loadvm``, resuming the booted guest in ~10 s instead
+        of cold-booting in minutes under TCG (issue #49/#83).
+
+        The checkpoint is best-effort: if ``savevm`` fails the VM still runs
+        (the next ``up`` just cold-boots again), so a failed checkpoint is a
+        warning, never a hard error.
+
+        Args:
+            accel: The resolved accelerator (from :meth:`resolved_accel`).
+
+        Raises:
+            qemu.QemuLaunchError: On a missing kernel/rootfs, a missing
+                ``qemu-img``, a launch failure, or if the guest does not expose
+                ADB within ``settings.vm_adb_connect_timeout`` seconds.
+        """
+        kernel = _resolve_artifact(self._cfg.vm.kernel, settings.vm_kernel, "kernel")
+        base_rootfs = _resolve_artifact(self._cfg.vm.rootfs, settings.vm_rootfs, "rootfs")
+        overlay = boot_cache.overlay_path(self._root)
+        monitor = boot_cache.monitor_path(self._root)
+        # A stale monitor socket from a prior `down` would block QEMU's bind.
+        monitor.unlink(missing_ok=True)
+        if not overlay.exists():
+            boot_cache.create_overlay(base_rootfs, overlay)
+        warm = boot_cache.snapshot_present(overlay)
+        if warm:
+            console.info(f"resuming cached boot snapshot for {self._name!r} (warm start)")
+        else:
+            console.info(
+                f"no boot snapshot yet for {self._name!r}; cold-booting once, then caching"
+            )
+        argv = qemu.build_qemu_argv(
+            qemu_bin=settings.qemu_bin,
+            accel=accel,
+            kernel=kernel,
+            rootfs=overlay,
+            smp=qemu.resolve_smp(self._cfg.vm.smp),
+            memory_mib=self._cfg.vm.memory_mib,
+            host_adb_port=self.ports["adb"],
+            disk_format="qcow2",
+            monitor_socket=monitor,
+            loadvm=boot_cache.SNAPSHOT_TAG if warm else None,
+        )
+        qemu.QemuProcess(self._root).start(argv)
+        self._wait_for_adb_connect()
+        if warm:
+            # Resume restores an already-booted guest; nothing to checkpoint.
+            return
+        # Cold boot: the checkpoint must capture a FULLY booted guest, so gate
+        # on a real boot_completed poll (plain adb connect succeeds the moment
+        # QEMU's hostfwd binds, long before the guest's adbd is reachable).
+        if not self._wait_for_boot_completed():
+            console.warn(
+                f"guest {self._name!r} did not reach sys.boot_completed in "
+                f"{_BOOT_COMPLETED_TIMEOUT_SECONDS}s; not checkpointing (the next "
+                "`up` will cold-boot again). See `beetroot logs`."
+            )
+            return
+        if boot_cache.save_snapshot(monitor):
+            console.info(f"cached boot snapshot for {self._name!r}; future `up` resumes in seconds")
+        else:
+            console.warn(
+                f"could not checkpoint {self._name!r} (savevm failed); "
+                "the next `up` will cold-boot again. See `beetroot logs`."
+            )
+
+    def _wait_for_boot_completed(self) -> bool:
+        """
+        Poll ``adb shell getprop sys.boot_completed`` until it reads ``1``.
+
+        Unlike :meth:`_wait_for_adb_connect` (which is satisfied by QEMU's
+        hostfwd port binding), this confirms the guest's Android has actually
+        finished booting and adbd is reachable through the relay — the
+        precondition for a useful ``savevm`` checkpoint. Returns ``False`` on
+        timeout so the caller can skip the checkpoint rather than snapshot a
+        half-booted guest.
+
+        Returns:
+            ``True`` once ``sys.boot_completed`` reads ``1``; ``False`` if the
+            deadline elapses first.
+
+        Raises:
+            AdbNotInstalledError: If the ``adb`` binary is not on PATH.
+        """
+        if shutil.which(_ADB) is None:
+            raise AdbNotInstalledError("adb not found on PATH (install android-tools)")
+        target = self.adb_address
+        deadline = time.monotonic() + _BOOT_COMPLETED_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if self._boot_completed(target):
+                return True
+            time.sleep(_BOOT_COMPLETED_POLL_SECONDS)
+        return False
+
+    @staticmethod
+    def _boot_completed(target: str) -> bool:
+        """
+        Return True iff ``getprop sys.boot_completed`` reads ``1`` on ``target``.
+
+        Reconnects first (``adb connect``) since the relay endpoint may have
+        only just come up, then reads the prop. Any adb error (endpoint not yet
+        accepting, transient timeout) is reported as "not booted yet".
+
+        Args:
+            target: The ``host:port`` adb endpoint.
+
+        Returns:
+            True only on a clean ``1`` reading.
+        """
+        try:
+            subprocess.run(  # noqa: S603  # adb is a host CLI resolved via PATH; target is localhost:<port>
+                [_ADB, "connect", target],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=_BOOT_COMPLETED_ATTEMPT_TIMEOUT,
+            )
+            res = subprocess.run(  # noqa: S603  # same as above
+                [_ADB, "-s", target, "shell", "getprop", "sys.boot_completed"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=_BOOT_COMPLETED_ATTEMPT_TIMEOUT,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return res.stdout.strip() == "1"
 
     def _warn_on_rootfs_version_skew(self) -> None:
         """

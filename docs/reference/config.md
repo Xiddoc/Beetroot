@@ -291,6 +291,7 @@ QEMU micro-VM tunables. Consulted **only** when `binder: vm`; ignored otherwise.
 | `vm.accel` | string | `auto` | QEMU accelerator: `auto` (probe `/dev/kvm`, prefer KVM, else TCG), `kvm` (force; errors if `/dev/kvm` is absent), or `tcg` (force software emulation). |
 | `vm.smp` | int \| `auto` | `auto` | Guest vCPUs (`-smp`). `auto` pins `-smp` to the host's **physical** core count (HyperThread siblings collapsed, capped by CPU affinity so a cgroup-limited CI runner is respected) — the vm-rnd-log §B.5 measured optimum, since more vCPUs than physical cores oversubscribe the emulator. An explicit integer (>= 1) pins it. |
 | `vm.memory_mib` | int | `8192` | Guest RAM in MiB (`-m`). Must be >= 256. |
+| `vm.boot_cache` | bool | `false` | Warm-start boot cache. When `true`, the first `up` cold-boots through a qcow2 overlay and checkpoints the running machine state with QEMU `savevm`; every later `up` *resumes* that checkpoint (`-loadvm`) instead of cold-booting — **~10 s vs ~3-4 min under TCG**. Resume reverts the guest to the checkpoint each time (a fast *known-good boot*, not persistence). The checkpoint lives at `<instance>/vm-overlay.qcow2` (~2 GiB); delete it to reset (e.g. after rebuilding the kernel/rootfs). Requires `qemu-img`. See [Warm-start boot cache](#warm-start-boot-cache-vmboot_cache). |
 
 After launching QEMU, `beetroot up` polls `adb connect` against the guest until the forwarded ADB endpoint accepts a connection — the guest restarts `adbd` to enable TCP a few seconds *after* `sys.boot_completed=1`, so a single immediate connect would race that late bind. The poll deadline is the `BEETROOT_VM_ADB_CONNECT_TIMEOUT` environment variable (seconds, default `60`); raise it for slow TCG first boots. If the guest never exposes ADB within the deadline, `up` fails with an actionable error (try `beetroot logs <name>` to watch the boot, or pin `vm.accel: kvm`) rather than a traceback.
 
@@ -302,7 +303,38 @@ vm:
   accel: auto
   smp: auto
   memory_mib: 8192
+  boot_cache: false
 ```
+
+### Warm-start boot cache (`vm.boot_cache`)
+
+Booting redroid in the micro-VM under TCG is **CPU-bound** — emulating ART / Zygote / `system_server` to `sys.boot_completed` costs ~3-4 min on a 4-core host (Android 14). Entropy and disk-cache tweaks do not move it (see [vm-rnd-log Stage E](../design/vm-rnd-log.md)). The one lever that does is to **not boot at all** on repeat starts:
+
+```yaml
+binder: vm
+vm:
+  kernel: ~/.cache/beetroot/vm/bzImage
+  rootfs: ~/.cache/beetroot/vm/rootdisk.img
+  boot_cache: true     # checkpoint once, resume in ~10 s thereafter
+```
+
+```bash
+beetroot apply alpha
+beetroot up alpha      # FIRST up: cold-boot (~3-4 min under TCG), then checkpoint
+beetroot down alpha
+beetroot up alpha      # LATER up: resume the checkpoint — ~10 s to a live device
+```
+
+Measured on a binderless, KVM-less host (Android 14, pure TCG): cold first boot to first host ADB **~222 s**; warm resume **~10 s** — a **~22x** speedup. How it works:
+
+- The first `up` boots through a **qcow2 overlay** over the (untouched) raw rootfs, with an HMP monitor socket. Once ADB is reachable, Beetroot issues `savevm` to checkpoint the *running machine state* (RAM + device + disk) inside the overlay.
+- Every later `up` detects the checkpoint and launches QEMU with `-loadvm`, resuming the already-booted guest in seconds.
+
+Caveats:
+
+- **Resume is ephemeral.** Each warm `up` reverts the guest to the checkpoint moment — it is a fast known-good boot, not a way to persist changes across restarts. (Persist research state with `beetroot snapshot` instead.)
+- **The checkpoint is not auto-invalidated** when you rebuild the kernel/rootfs. Delete `<instance>/vm-overlay.qcow2` to force a fresh cold boot + re-checkpoint.
+- Requires the `qemu-img` binary (Debian/Ubuntu: `qemu-utils`); override with `BEETROOT_QEMU_IMG_BIN`.
 
 ---
 

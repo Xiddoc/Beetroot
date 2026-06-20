@@ -7,6 +7,13 @@
 # accel: auto prefers KVM when /dev/kvm is available (near-native) and
 # falls back to TCG (software emulation, ~5-20x slower) otherwise. A slow
 # first boot under TCG is expected, not a hang.
+#
+# Faster TCG iteration: the default Android version is 14, which cold-boots in
+# ~190-200 s under TCG; redroid 11 boots in ~100 s (~40% faster) on the same
+# host. If you don't need Android-14 APIs, set `android: {version: 11}` and
+# rebuild the guest with `beetroot build --vm-kernel`. Either way, the
+# `vm.boot_cache` warm-start below collapses repeat boots to ~10 s — see
+# docs/design/vm-rnd-log.md (Stage E).
 
 api_version: 4
 
@@ -30,3 +37,9 @@ vm:
   # leave host cores free or override the auto-size.
   smp: auto
   memory_mib: 8192
+  # boot_cache: true checkpoints the booted guest once (QEMU savevm) and
+  # RESUMES it (-loadvm) on every later `up` — ~10 s vs ~3-4 min cold under
+  # TCG (a ~22x speedup). Resume reverts to the checkpoint each time (a fast
+  # known-good boot, not persistence); delete <instance>/vm-overlay.qcow2 to
+  # reset after rebuilding the kernel/rootfs. Requires qemu-img.
+  boot_cache: false
