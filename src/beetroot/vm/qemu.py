@@ -234,6 +234,18 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
     boot and steady-state CPU time with no relevant security loss for a
     throwaway VM.
 
+    Two entropy levers were investigated as TCG cold-boot speedups (issue #83)
+    — a ``virtio-rng-pci`` device and ``random.trust_cpu=on`` — and
+    deliberately *not* adopted. The guest CRNG already reaches ``crng init
+    done`` ~0.15 s into boot (x86_64 ``defconfig`` ships
+    ``CONFIG_RANDOM_TRUST_CPU=y`` and ``-cpu max`` exposes ``RDRAND``), ~100 s
+    before ``sys.boot_completed``, so entropy is not on the critical path and
+    ``random.trust_cpu=on`` is a no-op against that default. The guest kernel
+    also lacks the ``virtio-rng`` driver (``rng_current=none``), so a
+    ``virtio-rng-pci`` device would be inert without a kernel rebuild — for
+    zero measured boot benefit. See ``docs/design/vm-cold-boot-perf.md`` for
+    the measurements and root-cause evidence.
+
     Args:
         qemu_bin: The QEMU binary (path or name resolved via PATH).
         accel: The resolved accelerator (``"kvm"`` or ``"tcg"``).

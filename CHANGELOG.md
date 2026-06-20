@@ -168,6 +168,20 @@
   pre-abort rows in its `results` attribute).
 
 ### Quality & internals
+- **Cold-boot perf investigation for the `binder: vm` TCG path (#83).** Two
+  proposed entropy levers — a `virtio-rng-pci` device and a
+  `random.trust_cpu=on` kernel arg — were benchmarked on the binderless,
+  KVM-less sandbox and found **boot-time-neutral**: the guest CRNG already
+  reaches `crng init done` ~0.15 s into boot (x86_64 `defconfig` ships
+  `CONFIG_RANDOM_TRUST_CPU=y`; `-cpu max` exposes `RDRAND`), ~123 s *before*
+  `sys.boot_completed`, and the guest kernel carries no `virtio-rng` driver
+  (`rng_current=none`), so the device is inert. Neither was adopted; a
+  `build_qemu_argv` docstring note records the dead end. The same campaign
+  **validated the `savevm`/`loadvm` warm-start end-to-end** — a ~123 s cold
+  boot + 14 s `savevm` buys reproducible **~6.6 s warm restores (~19×
+  faster)** — with a copy-pasteable recipe. New report:
+  [VM cold-boot perf](https://iliketo.party/Beetroot/design/vm-cold-boot-perf/);
+  the productionisation of warm-start is tracked on #49.
 - **The whole CLI now speaks through one rich-rendered voice.** Every
   user-facing line — verb outcomes, the verbose step narration, next-step
   hints, advisories, errors, and the migration hints emitted from

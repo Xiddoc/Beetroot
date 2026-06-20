@@ -6,6 +6,13 @@
     QEMU side (qcow2 overlay + QMP `savevm`/`loadvm`) is described here as the
     implementation that plugs into the `binder: vm` backend next.
 
+!!! success "Validated end-to-end (2026-06-20, issue #83)"
+    The qcow2-overlay + QMP `savevm`/`loadvm` path described below was driven
+    end-to-end on the binderless, KVM-less sandbox: a ~123 s cold boot, a 14 s
+    `savevm`, then **~6.6 s warm restores (~19× faster)**. The measured numbers
+    and a copy-pasteable warm-start recipe are in
+    [vm-cold-boot-perf.md](vm-cold-boot-perf.md) §2.
+
 ## Problem
 
 Booting redroid in the `binder: vm` backend under TCG takes ~100 s (see
