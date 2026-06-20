@@ -6,7 +6,9 @@
 [![Docs](https://github.com/Xiddoc/Beetroot/actions/workflows/docs.yml/badge.svg)](https://iliketo.party/Beetroot/)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/Xiddoc/Beetroot/actions/workflows/ci.yml)
 
-Beetroot is a Docker-packaged rooted Android environment (Android 14 by default; 11, 12, and 13 also selectable) — Magisk, LiteGapps, Houdini ARM translation, and Frida — wrapped with a Python CLI that runs as many persistent research "phones" as your host can afford, side by side. Each phone is a self-contained directory anywhere on disk: its own `beetroot.yaml`, its own `/data`, its own ADB and Frida ports, its own resource caps. A cross-instance registry at `~/.config/beetroot/instances.json` tracks them all by name.
+Beetroot aims to simplify the process of raising lightweight rooted Android environments — worry less about how it's done, so you can focus on what you want to achieve.
+
+Configure your environment quicker, with support for Magisk modules, LiteGapps, and Frida. Want to spin up a new phone with the same config? Everything is already in your config, just run `beetroot create` & `beetroot up` to raise it.
 
 ```
 $ beetroot create alpha
@@ -67,9 +69,3 @@ Full documentation lives at <https://iliketo.party/Beetroot/>.
 | [Troubleshooting](https://iliketo.party/Beetroot/troubleshooting/) | Common breakages and how to unstick them |
 
 Contributors should read [CLAUDE.md](CLAUDE.md) for the development workflow (uv, ruff, mypy, pytest, 100% coverage gate).
-
-## Credits
-
-- [redroid](https://github.com/remote-android/redroid-doc) — the Android-in-a-container project Beetroot builds on.
-- [`ayasa520/redroid-script`](https://github.com/ayasa520/redroid-script) — the patcher that bakes Magisk, gapps, and Houdini into redroid images.
-- [Magisk](https://github.com/topjohnwu/Magisk), [Frida](https://frida.re/), [LSPosed/Shamiko](https://github.com/LSPosed) — the building blocks Beetroot packages together.
