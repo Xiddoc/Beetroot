@@ -676,18 +676,23 @@ contention-robust signal.
 
 Arms, fresh overlay each boot, ADB-reachable wall + guest `boot_seconds`:
 
-| Arm | cmdline / device added | guest boot_seconds | host wall (s) |
+Two interleaved rounds, fresh overlay each boot (guest `boot_seconds`, then host
+wall):
+
+| Arm | cmdline / device added | guest boot_seconds (×2) | host wall, s (×2) |
 | --- | --- | --- | --- |
 | baseline (shipped) | — | 188, 192 | 223.5, 228.5 |
-| `random.trust_cpu=on` | `random.trust_cpu=on` | 196 | 232.0 |
-| virtio-rng | `-device virtio-rng-pci` | 193 | 223.6 |
-| both | both of the above | 223* | 258* |
-| both + `cache=unsafe` | both + root `cache=unsafe` | 194 | 232.2 |
+| `random.trust_cpu=on` | `random.trust_cpu=on` | 196, 193 | 232.0, 230.6 |
+| virtio-rng | `-device virtio-rng-pci` | 193, 192 | 223.6, 224.0 |
+| both | both of the above | 223, **186** | 258.3, 221.9 |
+| both + `cache=unsafe` | both + root `cache=unsafe` | 194, **181** | 232.2, 214.2 |
 
-\* The "both" row is a transient host-contention spike, **not** an RNG effect:
-the very next boot (same two flags **plus** `cache=unsafe`) came back at 194 s
-guest, right in line with every other arm. Across arms the guest boot clusters
-at **188–196 s** — a ~4 % spread that tracks host load, not the lever.
+Every arm's two samples straddle the baseline; the guest boot clusters at
+**181–196 s** (a ~8 % spread) with **no arm consistently faster**. The lone high
+sample (`both`=223 in round 1) is exposed as pure host-contention noise by round
+2, where the *same* two flags produced **186 s — the fastest run of the whole
+sweep** (and `both`+`cache=unsafe` the next-fastest at 181 s). There is no
+separable RNG or disk-cache effect.
 
 **Why they do nothing (root cause, from the serial log):**
 
