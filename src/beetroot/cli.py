@@ -488,6 +488,16 @@ def up(
         bool,
         typer.Option("--all", help="Act on all registered instances."),
     ] = False,
+    fresh: Annotated[
+        bool,
+        typer.Option(
+            "--fresh",
+            help=(
+                "For binder: vm snapshot instances, discard the saved warm-start "
+                "snapshot and cold-boot + re-checkpoint (re-baseline)."
+            ),
+        ),
+    ] = False,
     build: Annotated[
         bool,
         typer.Option(
@@ -538,6 +548,12 @@ def up(
             binder_warned = _binder_preflight(backend.config.binder, warned=binder_warned)
         if isinstance(backend, vm_backend.VmDeviceBackend):
             _vm_up_banner(backend)
+            if fresh:
+                backend.discard_snapshot()
+                console.note(
+                    f"--fresh: discarded {instance_name}'s saved warm snapshot; "
+                    "cold-booting and re-checkpointing"
+                )
         console.step(f"starting {instance_name}")
         try:
             lc.up()

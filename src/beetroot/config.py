@@ -452,6 +452,19 @@ class Vm(BaseModel):
             logical-CPU count would hit on a hyperthreaded host. Pin an
             explicit value to leave host cores free or to override.
         memory_mib: Guest RAM in MiB (``-m``). Must be >= 256. Default 8192.
+        snapshot: Opt into the ``savevm``/``loadvm`` warm-start cache
+            (default ``False``). When ``True``, the instance boots from a
+            per-instance qcow2 overlay over the shared rootfs: the **first**
+            ``up`` cold-boots, then checkpoints the running machine
+            (``savevm``) once the guest is adb-reachable, and **every
+            subsequent** ``up`` resumes that checkpoint (``loadvm``) — turning
+            a ~2-minute TCG cold boot into a seconds-long warm restore
+            (issue #83/#49; measured ~19x faster in
+            ``docs/design/vm-cold-boot-perf.md``). The checkpoint is keyed on
+            the kernel + rootfs (size + mtime); changing either re-cold-boots
+            and re-snapshots automatically. A warm restore rewinds to the
+            snapshotted post-boot state, so it is a fast *clean baseline*, not
+            a persistent ``/data`` — re-baseline with ``beetroot up --fresh``.
     """
 
     kernel: str | None = None
@@ -459,6 +472,7 @@ class Vm(BaseModel):
     accel: Literal["auto", "kvm", "tcg"] = "auto"
     smp: int | Literal["auto"] = "auto"
     memory_mib: int = Field(default=8192, ge=_MIN_MEMORY_MIB)
+    snapshot: bool = False
 
     @field_validator("smp")
     @classmethod

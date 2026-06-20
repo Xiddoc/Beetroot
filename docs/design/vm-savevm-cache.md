@@ -1,10 +1,16 @@
 # Caching a booted VM with QEMU `savevm` (issue #49)
 
-!!! info "Status: design + cache-key helper landed; the QEMU integration is the follow-up implementation"
-    This note specifies the savevm boot-cache and ships its load-bearing,
-    unit-tested piece — the cache-key helper (`scripts/vm_cache_key.py`). The
-    QEMU side (qcow2 overlay + QMP `savevm`/`loadvm`) is described here as the
-    implementation that plugs into the `binder: vm` backend next.
+!!! success "Status: shipped as the opt-in `vm.snapshot` warm-start cache"
+    This note specifies the savevm boot-cache. The QEMU integration it
+    describes (per-instance qcow2 overlay + QMP `savevm`/`loadvm`, gated by a
+    kernel+rootfs fingerprint) now ships in the `binder: vm` backend behind the
+    opt-in `vm.snapshot: true` config key — first `up` cold-boots + checkpoints,
+    every subsequent `up`/`restart` warm-restores in seconds, and
+    `beetroot up --fresh` re-baselines. See
+    [Config reference § `vm.snapshot`](../reference/config.md#vmsnapshot-the-warm-start-cache).
+    The standalone cache-key helper (`scripts/vm_cache_key.py`) remains for the
+    cross-machine CI cache scenario (content-hash keying), distinct from the
+    backend's fast per-`up` size+mtime latch.
 
 !!! success "Validated end-to-end (2026-06-20, issue #83)"
     The qcow2-overlay + QMP `savevm`/`loadvm` path described below was driven

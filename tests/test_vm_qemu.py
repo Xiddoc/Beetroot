@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import signal
+import socket
 import subprocess
+import threading
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -128,6 +132,197 @@ class TestBuildQemuArgv:
         for accel in ("tcg", "kvm"):
             argv = _argv(accel)
             assert "mitigations=off" in argv[argv.index("-append") + 1]
+
+    def test_defaults_omit_snapshot_flags(self) -> None:
+        # Non-snapshot instances must be byte-identical to the historical
+        # cold-boot invocation: raw disk, no QMP monitor, no -loadvm.
+        argv = _argv("tcg")
+        assert argv[argv.index("-drive") + 1] == "file=/img/rootdisk.img,format=raw,if=virtio"
+        assert "-qmp" not in argv
+        assert "-loadvm" not in argv
+
+    def test_qcow2_overlay_disk_for_snapshot(self) -> None:
+        argv = _argv("tcg", rootfs=Path("/i/overlay.qcow2"), rootfs_format="qcow2")
+        assert argv[argv.index("-drive") + 1] == "file=/i/overlay.qcow2,format=qcow2,if=virtio"
+
+    def test_qmp_socket_added_when_requested(self) -> None:
+        argv = _argv("tcg", qmp_socket=Path("/i/qmp.sock"))
+        assert argv[argv.index("-qmp") + 1] == "unix:/i/qmp.sock,server,nowait"
+
+    def test_loadvm_added_when_requested(self) -> None:
+        argv = _argv("tcg", loadvm="beetroot-warm")
+        assert argv[argv.index("-loadvm") + 1] == "beetroot-warm"
+
+
+# ---------------------------------------------------------------------------
+# create_overlay
+# ---------------------------------------------------------------------------
+
+
+class TestCreateOverlay:
+    def test_creates_qcow2_overlay_argv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        base = tmp_path / "rootdisk.img"
+        base.write_bytes(b"r")
+        overlay = tmp_path / "overlay.qcow2"
+        captured: dict[str, list[str]] = {}
+
+        def _run(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+            captured["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr("beetroot.vm.qemu.subprocess.run", _run)
+        qemu.create_overlay(base_rootfs=base, overlay=overlay, qemu_img_bin="qemu-img")
+        assert captured["cmd"] == [
+            "qemu-img",
+            "create",
+            "-f",
+            "qcow2",
+            "-b",
+            str(base),
+            "-F",
+            "raw",
+            str(overlay),
+        ]
+
+    def test_removes_stale_overlay_before_create(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        base = tmp_path / "rootdisk.img"
+        overlay = tmp_path / "overlay.qcow2"
+        overlay.write_bytes(b"stale")
+        seen: dict[str, bool] = {}
+
+        def _run(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+            # The stale file must be gone by the time qemu-img runs.
+            seen["existed_at_run"] = overlay.exists()
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr("beetroot.vm.qemu.subprocess.run", _run)
+        qemu.create_overlay(base_rootfs=base, overlay=overlay, qemu_img_bin="qemu-img")
+        assert seen["existed_at_run"] is False
+
+    def test_missing_binary_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _run(_cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+            raise OSError("no qemu-img")
+
+        monkeypatch.setattr("beetroot.vm.qemu.subprocess.run", _run)
+        with pytest.raises(qemu.QemuLaunchError, match="Is qemu-img installed"):
+            qemu.create_overlay(
+                base_rootfs=tmp_path / "r", overlay=tmp_path / "o.qcow2", qemu_img_bin="qemu-img"
+            )
+
+    def test_qemu_img_failure_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _run(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+            raise subprocess.CalledProcessError(1, cmd, "", "backing file not found")
+
+        monkeypatch.setattr("beetroot.vm.qemu.subprocess.run", _run)
+        with pytest.raises(qemu.QemuLaunchError, match="backing file not found"):
+            qemu.create_overlay(
+                base_rootfs=tmp_path / "r", overlay=tmp_path / "o.qcow2", qemu_img_bin="qemu-img"
+            )
+
+
+# ---------------------------------------------------------------------------
+# qmp_savevm — exercised against an in-process fake QMP unix server
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _fake_qmp_server(
+    socket_path: Path,
+    *,
+    greeting: bool = True,
+    responses: Sequence[bytes | None] | None = None,
+) -> Iterator[None]:
+    """
+    Serve one QMP client: send a greeting, then reply to each command in turn.
+
+    ``responses[i]`` is the bytes sent in answer to the i-th client command
+    (capabilities, then savevm). A ``None`` entry closes the socket without
+    replying (to exercise the "connection dropped" paths).
+    """
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(str(socket_path))
+    srv.listen(1)
+
+    def _serve() -> None:
+        conn, _ = srv.accept()
+        with conn:
+            if greeting:
+                conn.sendall(b'{"QMP": {"version": {}}}\n')
+            for resp in responses or []:
+                if not conn.recv(4096):
+                    return
+                if resp is None:
+                    return
+                conn.sendall(resp)
+
+    thread = threading.Thread(target=_serve)
+    thread.start()
+    try:
+        yield
+    finally:
+        thread.join(timeout=5)
+        srv.close()
+
+
+class TestQmpSavevm:
+    def test_savevm_success(self, tmp_path: Path) -> None:
+        sock = tmp_path / "qmp.sock"
+        with _fake_qmp_server(sock, responses=[b'{"return": {}}\n', b'{"return": ""}\n']):
+            qemu.qmp_savevm(socket_path=sock, tag="beetroot-warm")
+
+    def test_savevm_skips_async_events_before_reply(self, tmp_path: Path) -> None:
+        # adbd/zygote churn makes QEMU emit STOP/RESUME events around savevm;
+        # the client must skip events and read the real reply.
+        sock = tmp_path / "qmp.sock"
+        responses = [
+            b'{"return": {}}\n',
+            b'{"event": "STOP"}\n{"return": ""}\n',
+        ]
+        with _fake_qmp_server(sock, responses=responses):
+            qemu.qmp_savevm(socket_path=sock, tag="beetroot-warm")
+
+    def test_savevm_nonempty_return_is_failure(self, tmp_path: Path) -> None:
+        sock = tmp_path / "qmp.sock"
+        responses = [b'{"return": {}}\n', b'{"return": "Error: no space left"}\n']
+        with (
+            _fake_qmp_server(sock, responses=responses),
+            pytest.raises(qemu.QemuLaunchError, match="no space left"),
+        ):
+            qemu.qmp_savevm(socket_path=sock, tag="beetroot-warm")
+
+    def test_savevm_qmp_error_object_is_failure(self, tmp_path: Path) -> None:
+        sock = tmp_path / "qmp.sock"
+        responses = [b'{"return": {}}\n', b'{"error": {"desc": "boom"}}\n']
+        with (
+            _fake_qmp_server(sock, responses=responses),
+            pytest.raises(qemu.QemuLaunchError, match="savevm failed"),
+        ):
+            qemu.qmp_savevm(socket_path=sock, tag="beetroot-warm")
+
+    def test_no_greeting_raises(self, tmp_path: Path) -> None:
+        sock = tmp_path / "qmp.sock"
+        with (
+            _fake_qmp_server(sock, greeting=False, responses=[]),
+            pytest.raises(qemu.QemuLaunchError, match="before the greeting"),
+        ):
+            qemu.qmp_savevm(socket_path=sock, tag="beetroot-warm")
+
+    def test_connection_dropped_before_reply_raises(self, tmp_path: Path) -> None:
+        sock = tmp_path / "qmp.sock"
+        # Greeting + capabilities reply, then close without answering savevm.
+        with (
+            _fake_qmp_server(sock, responses=[b'{"return": {}}\n', None]),
+            pytest.raises(qemu.QemuLaunchError, match="closed before a reply"),
+        ):
+            qemu.qmp_savevm(socket_path=sock, tag="beetroot-warm")
+
+    def test_connect_failure_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(qemu.QemuLaunchError, match="could not connect"):
+            qemu.qmp_savevm(socket_path=tmp_path / "absent.sock", tag="beetroot-warm")
 
 
 # ---------------------------------------------------------------------------

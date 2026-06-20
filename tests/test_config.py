@@ -912,6 +912,10 @@ class TestVmConfig:
         assert vm.accel == "auto"
         assert vm.smp == "auto"
         assert vm.memory_mib == 8192
+        assert vm.snapshot is False
+
+    def test_snapshot_opt_in(self) -> None:
+        assert InstanceConfig(vm={"snapshot": True}).vm.snapshot is True  # type: ignore[arg-type]
 
     def test_smp_auto_is_accepted(self) -> None:
         assert InstanceConfig(vm={"smp": "auto"}).vm.smp == "auto"  # type: ignore[arg-type]

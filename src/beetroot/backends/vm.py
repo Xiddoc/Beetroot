@@ -20,6 +20,8 @@ is just another adb-reachable rooted Android.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import shutil
 import subprocess
 import time
@@ -50,6 +52,39 @@ _ADB = "adb"
 # connect almost always races that late bind and must be retried.
 _ADB_CONNECT_POLL_SECONDS = 1.0
 _ADB_CONNECT_ATTEMPT_TIMEOUT = 5
+
+# ``vm.snapshot`` warm-start cache filenames (relative to the instance dir) and
+# the internal ``savevm`` tag. The overlay is the per-instance qcow2 boot disk
+# that holds the checkpoint; the meta file records the kernel+rootfs
+# fingerprint the checkpoint was taken against (the safety latch); the QMP
+# socket is how ``savevm`` is issued after boot.
+_OVERLAY_NAME = "vm-overlay.qcow2"
+_SNAPMETA_NAME = "vm-snapshot.json"
+_QMP_SOCK_NAME = "qmp.sock"
+_SNAPSHOT_TAG = "beetroot-warm"
+
+
+def _artifact_fingerprint(path: Path) -> dict[str, object]:
+    """
+    Return a cheap (size + mtime) fingerprint of a VM artifact.
+
+    Used as the ``vm.snapshot`` safety latch: a saved checkpoint is only
+    restored while the kernel and rootfs it was taken against are byte-stable.
+    A content hash would be authoritative but means re-hashing the multi-GB
+    rootfs on *every* ``up`` — which would dominate the very warm-start budget
+    the snapshot exists to shrink — so size + ``mtime_ns`` is the right
+    tradeoff: rebuilding either artifact (``beetroot build --vm-kernel``)
+    bumps the mtime and invalidates the stale checkpoint.
+
+    Args:
+        path: The resolved kernel or rootfs path.
+
+    Returns:
+        A JSON-serialisable fingerprint (``name`` / ``size`` / ``mtime_ns``).
+    """
+    st = path.stat()
+    return {"name": path.name, "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+
 
 # Frida is not yet wired through the QEMU micro-VM (issue #44 scopes the
 # vm backend to ADB forwarding only): the guest runs redroid with
@@ -389,6 +424,11 @@ class VmDeviceBackend:
         TCP a few seconds *after* ``sys.boot_completed=1``, so a single
         connect right after launch races that late bind and fails.
 
+        When ``vm.snapshot`` is enabled the boot goes through the
+        ``savevm``/``loadvm`` warm-start path (:meth:`_up_with_snapshot`)
+        instead: a valid saved checkpoint is resumed in seconds, else the
+        instance cold-boots once and checkpoints itself for next time.
+
         Raises:
             BackendCapabilityError: If the on-disk config no longer sets
                 ``binder: vm`` (the row is out of sync — run ``apply``).
@@ -405,9 +445,171 @@ class VmDeviceBackend:
             )
         self._warn_on_rootfs_version_skew()
         accel = self.resolved_accel()
+        if self._cfg.vm.snapshot:
+            self._up_with_snapshot(accel)
+            return
         argv = self.build_argv(accel)
         qemu.QemuProcess(self._root).start(argv)
         self._wait_for_adb_connect()
+
+    # ---- vm.snapshot warm-start (issue #49 / #83) -------------------------
+
+    @property
+    def _overlay_path(self) -> Path:
+        """
+        Path to this instance's qcow2 warm-start overlay.
+        """
+        return self._root / _OVERLAY_NAME
+
+    @property
+    def _snapmeta_path(self) -> Path:
+        """
+        Path to this instance's snapshot fingerprint file (the safety latch).
+        """
+        return self._root / _SNAPMETA_NAME
+
+    @property
+    def _qmp_socket(self) -> Path:
+        """
+        Path to this instance's QEMU QMP monitor socket.
+        """
+        return self._root / _QMP_SOCK_NAME
+
+    def _up_with_snapshot(self, accel: qemu.ResolvedAccel) -> None:
+        """
+        Boot via the ``savevm``/``loadvm`` warm-start cache.
+
+        If a checkpoint exists and its kernel+rootfs fingerprint still matches
+        (:meth:`_snapshot_is_valid`), QEMU is launched with ``-loadvm`` and the
+        already-booted guest resumes in seconds. Otherwise the instance
+        cold-boots from a freshly created qcow2 overlay, waits for adb, then
+        checkpoints itself (``savevm`` over QMP) so the *next* ``up`` is a warm
+        restore.
+
+        Args:
+            accel: The resolved accelerator (from :meth:`resolved_accel`).
+
+        Raises:
+            qemu.QemuLaunchError: On a missing kernel/rootfs, an overlay or
+                launch failure, an adb timeout, or a ``savevm`` failure.
+        """
+        kernel = _resolve_artifact(self._cfg.vm.kernel, settings.vm_kernel, "kernel")
+        rootfs = _resolve_artifact(self._cfg.vm.rootfs, settings.vm_rootfs, "rootfs")
+        self._root.mkdir(parents=True, exist_ok=True)
+        # A stale server socket from a SIGKILL'd prior run would make QEMU's
+        # ``-qmp …,server`` fail to bind — clear it before every launch.
+        with contextlib.suppress(OSError):
+            self._qmp_socket.unlink()
+
+        if self._snapshot_is_valid(kernel, rootfs):
+            console.step(f"warm-restoring {self._name!r} from its saved snapshot (loadvm)")
+            argv = self._snapshot_argv(accel, kernel, self._overlay_path, loadvm=_SNAPSHOT_TAG)
+            qemu.QemuProcess(self._root).start(argv)
+            self._wait_for_adb_connect()
+            return
+
+        console.step(
+            f"cold-booting {self._name!r} (first snapshot boot — the slow one; "
+            "subsequent starts warm-restore in seconds)"
+        )
+        qemu.create_overlay(
+            base_rootfs=rootfs,
+            overlay=self._overlay_path,
+            qemu_img_bin=settings.qemu_img_bin,
+        )
+        # Drop any stale meta until the new savevm succeeds, so a crash between
+        # overlay creation and a successful checkpoint never restores garbage.
+        with contextlib.suppress(OSError):
+            self._snapmeta_path.unlink()
+        argv = self._snapshot_argv(accel, kernel, self._overlay_path, loadvm=None)
+        qemu.QemuProcess(self._root).start(argv)
+        self._wait_for_adb_connect()
+        console.step(
+            f"checkpointing {self._name!r} (savevm) so the next start is a fast warm restore"
+        )
+        qemu.qmp_savevm(socket_path=self._qmp_socket, tag=_SNAPSHOT_TAG)
+        self._snapmeta_path.write_text(json.dumps(self._snapmeta(kernel, rootfs)))
+        console.note("snapshot saved — subsequent `up`/`restart` warm-restore in seconds")
+
+    def _snapshot_argv(
+        self,
+        accel: qemu.ResolvedAccel,
+        kernel: Path,
+        overlay: Path,
+        *,
+        loadvm: str | None,
+    ) -> list[str]:
+        """
+        Build the QEMU argv for a snapshot boot (qcow2 overlay + QMP socket).
+
+        Args:
+            accel: The resolved accelerator.
+            kernel: Resolved guest ``bzImage`` path.
+            overlay: The per-instance qcow2 overlay to boot.
+            loadvm: A snapshot tag to resume (warm), or ``None`` (cold boot).
+
+        Returns:
+            The full QEMU argv.
+        """
+        return qemu.build_qemu_argv(
+            qemu_bin=settings.qemu_bin,
+            accel=accel,
+            kernel=kernel,
+            rootfs=overlay,
+            smp=qemu.resolve_smp(self._cfg.vm.smp),
+            memory_mib=self._cfg.vm.memory_mib,
+            host_adb_port=self.ports["adb"],
+            rootfs_format="qcow2",
+            qmp_socket=self._qmp_socket,
+            loadvm=loadvm,
+        )
+
+    def _snapmeta(self, kernel: Path, rootfs: Path) -> dict[str, object]:
+        """
+        Return the snapshot fingerprint (tag + kernel/rootfs fingerprints).
+        """
+        return {
+            "tag": _SNAPSHOT_TAG,
+            "kernel": _artifact_fingerprint(kernel),
+            "rootfs": _artifact_fingerprint(rootfs),
+        }
+
+    def _snapshot_is_valid(self, kernel: Path, rootfs: Path) -> bool:
+        """
+        Report whether a restorable, current checkpoint exists for this instance.
+
+        Both the overlay (which holds the ``savevm`` data) and a meta file
+        matching the live kernel+rootfs fingerprint must be present; a missing
+        overlay, missing/garbled meta, or a kernel/rootfs that changed since
+        the checkpoint was taken all force a fresh cold boot.
+
+        Args:
+            kernel: Resolved guest ``bzImage`` path.
+            rootfs: Resolved guest rootfs path.
+
+        Returns:
+            True iff a valid warm restore is possible.
+        """
+        if not self._overlay_path.exists():
+            return False
+        try:
+            recorded = json.loads(self._snapmeta_path.read_text())
+        except (OSError, ValueError):
+            return False
+        return bool(recorded == self._snapmeta(kernel, rootfs))
+
+    def discard_snapshot(self) -> None:
+        """
+        Delete the warm-start overlay + meta so the next ``up`` cold-boots.
+
+        Backs ``beetroot up --fresh``: re-baselines a ``vm.snapshot`` instance
+        (the warm restore always rewinds to the checkpointed post-boot state,
+        so this is how a user gets a *new* baseline). A no-op when neither file
+        exists, so it is safe to call unconditionally.
+        """
+        for path in (self._overlay_path, self._snapmeta_path):
+            with contextlib.suppress(OSError):
+                path.unlink()
 
     def _warn_on_rootfs_version_skew(self) -> None:
         """

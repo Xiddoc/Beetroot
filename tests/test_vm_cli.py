@@ -208,6 +208,38 @@ class TestVmUp:
         assert "KVM (near-native)" in result.stderr
         assert "5-20x" not in result.stderr
 
+    def test_up_fresh_discards_warm_snapshot_and_cold_boots(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # --fresh on a vm.snapshot instance must discard the saved overlay+meta
+        # and cold-boot + re-checkpoint, not warm-restore the stale snapshot.
+        _stage_vm_artifacts(monkeypatch, cli_root)
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(
+            root / "beetroot.yaml",
+            config.InstanceConfig(binder="vm", vm={"snapshot": True}),  # type: ignore[arg-type]
+        )
+        api.Instance.register(root, name="vm1")
+        # Pre-stage a (now-to-be-discarded) warm snapshot.
+        (root / "vm-overlay.qcow2").write_bytes(b"stale")
+        (root / "vm-snapshot.json").write_text("{}")
+        monkeypatch.setattr(qemu, "detect_accel", lambda _r: "tcg")
+        monkeypatch.setattr(qemu, "create_overlay", lambda **kw: kw["overlay"].write_bytes(b"fresh"))
+        saved: list[str] = []
+        monkeypatch.setattr(qemu, "qmp_savevm", lambda **kw: saved.append(kw["tag"]))
+        launched: list[list[str]] = []
+        monkeypatch.setattr(qemu.QemuProcess, "start", lambda _s, argv: launched.append(argv))
+
+        result = runner.invoke(cli.app, ["up", "vm1", "--fresh"])
+        assert result.exit_code == 0, result.stderr
+        assert "--fresh: discarded" in result.stderr
+        # Cold path ran (re-checkpointed), and no -loadvm in the launch argv.
+        assert saved == ["beetroot-warm"]
+        assert "-loadvm" not in launched[0]
+        # The stale meta was discarded and a fresh one written.
+        assert json.loads((root / "vm-snapshot.json").read_text())["tag"] == "beetroot-warm"
+
     def test_up_explicit_kvm_without_dev_kvm_errors_before_launch(
         self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

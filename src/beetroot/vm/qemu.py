@@ -27,8 +27,11 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import io
+import json
 import os
 import signal
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -50,6 +53,11 @@ _PIDFILE_NAME = "qemu.pid"
 # to SIGKILL, and how often it polls liveness during that window.
 _TERM_GRACE_SECONDS = 5.0
 _TERM_POLL_SECONDS = 0.1
+
+# Socket-level receive timeout for the QMP savevm exchange. ``savevm`` of a
+# multi-GB running guest can take tens of seconds while QEMU writes RAM into
+# the qcow2, so the per-read timeout is generous.
+_QMP_RECV_TIMEOUT = 300.0
 
 
 class QemuLaunchError(RuntimeError):
@@ -200,7 +208,7 @@ def resolve_smp(configured: int | Literal["auto"]) -> int:
     return configured
 
 
-def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinct QEMU invocation parameter
+def build_qemu_argv(  # noqa: PLR0913  # each kw is a distinct QEMU invocation parameter
     *,
     qemu_bin: str,
     accel: ResolvedAccel,
@@ -209,6 +217,9 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
     smp: int,
     memory_mib: int,
     host_adb_port: int,
+    rootfs_format: Literal["raw", "qcow2"] = "raw",
+    qmp_socket: Path | None = None,
+    loadvm: str | None = None,
 ) -> list[str]:
     """
     Build the ``qemu-system-x86_64`` argv per the design doc §4.4.
@@ -246,14 +257,31 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
     zero measured boot benefit. See ``docs/design/vm-cold-boot-perf.md`` for
     the measurements and root-cause evidence.
 
+    The ``vm.snapshot`` warm-start cache (issue #49) drives the three
+    optional parameters: ``rootfs_format="qcow2"`` boots the per-instance
+    qcow2 overlay (which can hold internal ``savevm`` snapshots, unlike a raw
+    disk), ``qmp_socket`` adds a ``-qmp`` monitor socket so a helper can issue
+    ``savevm`` after boot, and ``loadvm`` adds ``-loadvm <tag>`` so a launch
+    resumes a previously-checkpointed machine instead of cold-booting. The
+    defaults (``raw`` / no monitor / no loadvm) reproduce the plain cold-boot
+    invocation exactly, so non-snapshot instances are unchanged.
+
     Args:
         qemu_bin: The QEMU binary (path or name resolved via PATH).
         accel: The resolved accelerator (``"kvm"`` or ``"tcg"``).
         kernel: Host path to the guest ``bzImage``.
-        rootfs: Host path to the guest ext4 root image.
+        rootfs: Host path to the guest root disk (the raw ext4 image, or a
+            qcow2 overlay over it when ``rootfs_format="qcow2"``).
         smp: Number of guest vCPUs (``-smp``).
         memory_mib: Guest RAM in MiB (``-m``).
         host_adb_port: Host loopback port the guest's ADB is forwarded to.
+        rootfs_format: ``"raw"`` (default) or ``"qcow2"`` — the ``-drive``
+            ``format=`` for the root disk. ``qcow2`` is required for the
+            ``savevm`` warm-start overlay.
+        qmp_socket: When set, adds a ``-qmp unix:<path>,server,nowait``
+            monitor socket so :func:`qmp_savevm` can checkpoint the guest.
+        loadvm: When set, adds ``-loadvm <tag>`` so QEMU resumes the named
+            internal snapshot instead of cold-booting.
 
     Returns:
         The full argv list, ready for :class:`subprocess.Popen`.
@@ -263,6 +291,8 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
     else:
         accel_args = ["-accel", "tcg,thread=multi,tb-size=1024", "-cpu", "max"]
     hostfwd = f"hostfwd=tcp:127.0.0.1:{host_adb_port}-:{_GUEST_ADB_PORT}"
+    monitor_args = ["-qmp", f"unix:{qmp_socket},server,nowait"] if qmp_socket is not None else []
+    loadvm_args = ["-loadvm", loadvm] if loadvm is not None else []
     return [
         qemu_bin,
         "-M",
@@ -276,17 +306,173 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
         "-display",
         "none",
         "-no-reboot",
+        *monitor_args,
         "-kernel",
         str(kernel),
         "-drive",
-        f"file={rootfs},format=raw,if=virtio",
+        f"file={rootfs},format={rootfs_format},if=virtio",
         "-netdev",
         f"user,id=net0,{hostfwd}",
         "-device",
         "virtio-net-pci,netdev=net0",
+        *loadvm_args,
         "-append",
         "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off",
     ]
+
+
+def create_overlay(*, base_rootfs: Path, overlay: Path, qemu_img_bin: str) -> None:
+    """
+    Create (or recreate) a qcow2 overlay backed by the raw rootfs.
+
+    The overlay is the per-instance writable boot disk for the ``vm.snapshot``
+    warm-start cache: it holds the instance's disk deltas *and* the internal
+    ``savevm`` checkpoints (a raw disk can hold neither). An existing overlay
+    is removed first so a fresh cold boot always starts from the pristine
+    backing image.
+
+    Args:
+        base_rootfs: Host path to the pristine raw ext4 rootfs (the qcow2
+            backing file).
+        overlay: Host path to write the qcow2 overlay to.
+        qemu_img_bin: The ``qemu-img`` binary (path or name resolved via PATH).
+
+    Raises:
+        QemuLaunchError: If ``qemu-img`` cannot be spawned or fails.
+    """
+    with contextlib.suppress(OSError):
+        overlay.unlink()
+    try:
+        subprocess.run(  # noqa: S603  # qemu_img_bin resolved via PATH; paths from validated config
+            [
+                qemu_img_bin,
+                "create",
+                "-f",
+                "qcow2",
+                "-b",
+                str(base_rootfs),
+                "-F",
+                "raw",
+                str(overlay),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise QemuLaunchError(
+            f"failed to run {qemu_img_bin!r}: {exc}. Is qemu-img installed and on "
+            "PATH? Override the binary with BEETROOT_QEMU_IMG_BIN."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise QemuLaunchError(
+            f"qemu-img could not create the snapshot overlay {overlay}: "
+            f"{(exc.stderr or '').strip()}"
+        ) from exc
+
+
+def qmp_savevm(*, socket_path: Path, tag: str) -> None:
+    """
+    Checkpoint the running guest by issuing ``savevm <tag>`` over QMP.
+
+    Connects to the QEMU QMP monitor unix socket (added by
+    :func:`build_qemu_argv` when ``qmp_socket`` is set), negotiates
+    capabilities, and runs ``savevm`` via ``human-monitor-command``. The HMP
+    ``savevm`` prints nothing on success and an error string on failure, so a
+    non-empty ``return`` (or a QMP ``error`` object) is surfaced as a
+    :class:`QemuLaunchError`.
+
+    Args:
+        socket_path: Path to the QEMU QMP unix socket.
+        tag: The snapshot tag to write (resumed later with ``-loadvm <tag>``).
+
+    Raises:
+        QemuLaunchError: If the socket can't be reached, the connection drops
+            mid-exchange, or QEMU reports a ``savevm`` failure.
+    """
+    sock = _qmp_connect(socket_path)
+    try:
+        with sock.makefile("rwb") as stream:
+            greeting = stream.readline()
+            if not greeting:
+                raise QemuLaunchError(f"QMP socket {socket_path} closed before the greeting")
+            _qmp_command(stream, "qmp_capabilities")
+            reply = _qmp_command(
+                stream,
+                "human-monitor-command",
+                {"command-line": f"savevm {tag}"},
+            )
+    finally:
+        sock.close()
+    if "error" in reply:
+        raise QemuLaunchError(f"QEMU savevm failed: {reply['error']}")
+    result = reply.get("return", "")
+    if isinstance(result, str) and result.strip():
+        raise QemuLaunchError(f"QEMU savevm failed: {result.strip()}")
+
+
+def _qmp_connect(socket_path: Path) -> socket.socket:
+    """
+    Connect to the QEMU QMP unix socket, or raise :class:`QemuLaunchError`.
+
+    The ``server,nowait`` monitor socket is created synchronously when QEMU
+    launches — long before ``savevm`` is issued (the guest has booted to adb
+    by then) — so a single connect attempt suffices.
+
+    Args:
+        socket_path: Path to the QEMU QMP unix socket.
+
+    Returns:
+        The connected socket (caller closes it).
+
+    Raises:
+        QemuLaunchError: If the socket cannot be connected.
+    """
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(_QMP_RECV_TIMEOUT)
+    try:
+        sock.connect(str(socket_path))
+    except OSError as exc:
+        sock.close()
+        raise QemuLaunchError(
+            f"could not connect to the QEMU QMP socket {socket_path}: {exc}"
+        ) from exc
+    return sock
+
+
+def _qmp_command(
+    stream: io.BufferedIOBase,
+    execute: str,
+    arguments: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """
+    Send one QMP command and return the first non-event reply.
+
+    Args:
+        stream: The buffered read/write file object over the QMP socket.
+        execute: The QMP command name.
+        arguments: Optional command arguments.
+
+    Returns:
+        The decoded reply object (the first message carrying ``return`` or
+        ``error``; asynchronous ``event`` messages are skipped).
+
+    Raises:
+        QemuLaunchError: If the connection closes before a reply arrives.
+    """
+    payload: dict[str, object] = {"execute": execute}
+    if arguments is not None:
+        payload["arguments"] = arguments
+    stream.write(json.dumps(payload).encode() + b"\n")
+    stream.flush()
+    while True:
+        line = stream.readline()
+        if not line:
+            raise QemuLaunchError("QMP connection closed before a reply arrived")
+        message: dict[str, object] = json.loads(line)
+        if "event" in message:
+            continue
+        return message
 
 
 class QemuProcess:

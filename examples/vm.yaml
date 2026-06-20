@@ -23,3 +23,11 @@ vm:
   # leave host cores free or override the auto-size.
   smp: auto
   memory_mib: 8192
+  # snapshot: true opts into the savevm/loadvm WARM-START cache. The first
+  # `up` cold-boots and checkpoints the running machine; every subsequent
+  # `up`/`restart` resumes it in SECONDS (~19x faster than a TCG cold boot).
+  # The checkpoint is keyed on the kernel+rootfs (rebuilding either
+  # invalidates it). A warm restore rewinds to the snapshotted post-boot
+  # state — a fast clean baseline, not a persistent /data; re-baseline with
+  # `beetroot up <name> --fresh`. Needs `qemu-img` on PATH. Off by default.
+  snapshot: false

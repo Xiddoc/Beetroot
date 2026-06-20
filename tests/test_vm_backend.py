@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -787,3 +789,129 @@ class TestAccelCheck:
         row = vm_backend._accel_check("kvm")
         assert row.status == "fail"
         assert "/dev/kvm" in (row.reason or "")
+
+
+class TestSnapshotWarmStart:
+    """issue #49/#83: the vm.snapshot savevm/loadvm warm-start cache."""
+
+    def _snapshot_backend(self, tmp_path: Path) -> tuple[vm_backend.VmDeviceBackend, Path, Path]:
+        kernel = tmp_path / "bzImage"
+        rootfs = tmp_path / "rootdisk.img"
+        kernel.write_bytes(b"kernel")
+        rootfs.write_bytes(b"rootfs")
+        cfg = config.InstanceConfig(
+            binder="vm",
+            vm={
+                "kernel": str(kernel),
+                "rootfs": str(rootfs),
+                "accel": "tcg",
+                "snapshot": True,
+            },  # type: ignore[arg-type]
+        )
+        backend = _make_backend(tmp_path, cfg=cfg)
+        return backend, kernel, rootfs
+
+    def test_cold_boot_creates_overlay_and_checkpoints(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend, kernel, rootfs = self._snapshot_backend(tmp_path)
+        monkeypatch.setattr(qemu, "detect_accel", lambda _r: "tcg")
+        calls: dict[str, object] = {}
+
+        def _create(*, base_rootfs: Path, overlay: Path, qemu_img_bin: str) -> None:
+            calls["overlay"] = overlay
+            calls["base"] = base_rootfs
+            overlay.write_bytes(b"qcow2")  # mimic qemu-img producing the file
+
+        def _start(_self: object, argv: list[str]) -> int:
+            calls["argv"] = argv
+            return 1
+
+        def _savevm(*, socket_path: Path, tag: str) -> None:
+            calls["savevm"] = (socket_path, tag)
+
+        monkeypatch.setattr(qemu, "create_overlay", _create)
+        monkeypatch.setattr(qemu.QemuProcess, "start", _start)
+        monkeypatch.setattr(qemu, "qmp_savevm", _savevm)
+        monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None)
+
+        backend.up()
+
+        # Overlay created from the raw rootfs; argv boots qcow2 + QMP, no loadvm.
+        assert calls["base"] == rootfs
+        argv = calls["argv"]
+        assert isinstance(argv, list)
+        assert argv[argv.index("-drive") + 1].endswith("vm-overlay.qcow2,format=qcow2,if=virtio")
+        assert "-qmp" in argv
+        assert "-loadvm" not in argv
+        # Checkpoint taken against this instance's QMP socket + the warm tag.
+        sock, tag = cast("tuple[Path, str]", calls["savevm"])
+        assert sock == backend.root / "qmp.sock"
+        assert tag == "beetroot-warm"
+        # Meta written so the NEXT up warm-restores.
+        meta = json.loads((backend.root / "vm-snapshot.json").read_text())
+        assert meta["tag"] == "beetroot-warm"
+        assert meta["kernel"]["size"] == kernel.stat().st_size
+        assert meta["rootfs"]["size"] == rootfs.stat().st_size
+
+    def test_warm_restore_uses_loadvm_and_skips_savevm(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend, kernel, rootfs = self._snapshot_backend(tmp_path)
+        # Pre-stage a valid checkpoint: the overlay file + a matching meta.
+        (backend.root / "vm-overlay.qcow2").write_bytes(b"qcow2")
+        (backend.root / "vm-snapshot.json").write_text(json.dumps(backend._snapmeta(kernel, rootfs)))
+        monkeypatch.setattr(qemu, "detect_accel", lambda _r: "tcg")
+
+        def _no_create(**_kw: object) -> None:
+            raise AssertionError("a valid snapshot must NOT recreate the overlay")
+
+        def _no_savevm(**_kw: object) -> None:
+            raise AssertionError("a warm restore must NOT re-checkpoint")
+
+        captured: dict[str, list[str]] = {}
+        monkeypatch.setattr(qemu, "create_overlay", _no_create)
+        monkeypatch.setattr(qemu, "qmp_savevm", _no_savevm)
+        monkeypatch.setattr(qemu.QemuProcess, "start", lambda _s, argv: captured.update(argv=argv))
+        monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None)
+
+        backend.up()
+        argv = captured["argv"]
+        assert argv[argv.index("-loadvm") + 1] == "beetroot-warm"
+        assert "-qmp" in argv
+
+    def test_snapshot_invalid_when_overlay_missing(self, tmp_path: Path) -> None:
+        backend, kernel, rootfs = self._snapshot_backend(tmp_path)
+        assert backend._snapshot_is_valid(kernel, rootfs) is False
+
+    def test_snapshot_invalid_when_meta_missing(self, tmp_path: Path) -> None:
+        backend, kernel, rootfs = self._snapshot_backend(tmp_path)
+        (backend.root / "vm-overlay.qcow2").write_bytes(b"q")
+        assert backend._snapshot_is_valid(kernel, rootfs) is False
+
+    def test_snapshot_invalid_when_meta_garbled(self, tmp_path: Path) -> None:
+        backend, kernel, rootfs = self._snapshot_backend(tmp_path)
+        (backend.root / "vm-overlay.qcow2").write_bytes(b"q")
+        (backend.root / "vm-snapshot.json").write_text("{not json")
+        assert backend._snapshot_is_valid(kernel, rootfs) is False
+
+    def test_snapshot_invalid_when_artifact_changed(self, tmp_path: Path) -> None:
+        backend, kernel, rootfs = self._snapshot_backend(tmp_path)
+        (backend.root / "vm-overlay.qcow2").write_bytes(b"q")
+        (backend.root / "vm-snapshot.json").write_text(json.dumps(backend._snapmeta(kernel, rootfs)))
+        assert backend._snapshot_is_valid(kernel, rootfs) is True
+        # Mutating the rootfs (a rebuild) invalidates the stale checkpoint.
+        rootfs.write_bytes(b"rootfs-rebuilt-bigger")
+        assert backend._snapshot_is_valid(kernel, rootfs) is False
+
+    def test_discard_snapshot_removes_overlay_and_meta(self, tmp_path: Path) -> None:
+        backend, _k, _r = self._snapshot_backend(tmp_path)
+        overlay = backend.root / "vm-overlay.qcow2"
+        meta = backend.root / "vm-snapshot.json"
+        overlay.write_bytes(b"q")
+        meta.write_text("{}")
+        backend.discard_snapshot()
+        assert not overlay.exists()
+        assert not meta.exists()
+        # Idempotent: a second call on already-absent files is a no-op.
+        backend.discard_snapshot()

@@ -214,15 +214,20 @@ adb connect localhost:$PORT        # device is ready in seconds
   qcow2 overlay carries that instance's `/data`. To re-arm a clean warm start,
   re-create the overlay from the raw image and re-snapshot.
 
-### How this plugs into the backend (next slice, #49)
+### How this plugs into the backend (shipped — `vm.snapshot`, #49)
 
-Today `build_qemu_argv` launches a **raw** root disk with no monitor, so the
-backend can't snapshot. The additive changes that turn the validated recipe
-above into a `beetroot` feature — a **qcow2 overlay**, a **QMP socket**, and a
-**`-loadvm` launch mode** gated behind an opt-in — are exactly the
-implementation hooks [vm-savevm-cache.md](vm-savevm-cache.md) lists, tracked on
-issue #49. This report is the "validate the warm-start path" half of #83's
-acceptance; #49 is the productionisation.
+The validated recipe above is now a first-class, opt-in `beetroot` feature.
+Setting `vm.snapshot: true` in `beetroot.yaml` makes `build_qemu_argv` launch a
+**per-instance qcow2 overlay** with a **QMP monitor socket**, and the backend
+drives the lifecycle automatically: the first `beetroot up` cold-boots and
+checkpoints the running machine (`savevm` over QMP) once the guest is
+adb-reachable; every subsequent `up`/`restart` launches with **`-loadvm`** and
+resumes the booted Android in seconds. The checkpoint is gated by a
+kernel+rootfs fingerprint (the safety latch below), and `beetroot up --fresh`
+re-baselines by discarding the overlay and re-checkpointing. See
+[Config reference § `vm.snapshot`](../reference/config.md#vmsnapshot-the-warm-start-cache).
+This report was the "validate the warm-start path" half of #83's acceptance;
+the `vm.snapshot` feature is the productionisation (#49).
 
 ## 3. Other levers surveyed
 

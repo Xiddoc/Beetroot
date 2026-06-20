@@ -288,6 +288,7 @@ QEMU micro-VM tunables. Consulted **only** when `binder: vm`; ignored otherwise.
 | `vm.accel` | string | `auto` | QEMU accelerator: `auto` (probe `/dev/kvm`, prefer KVM, else TCG), `kvm` (force; errors if `/dev/kvm` is absent), or `tcg` (force software emulation). |
 | `vm.smp` | int \| `auto` | `auto` | Guest vCPUs (`-smp`). `auto` pins `-smp` to the host's **physical** core count (HyperThread siblings collapsed, capped by CPU affinity so a cgroup-limited CI runner is respected) — the vm-rnd-log §B.5 measured optimum, since more vCPUs than physical cores oversubscribe the emulator. An explicit integer (>= 1) pins it. |
 | `vm.memory_mib` | int | `8192` | Guest RAM in MiB (`-m`). Must be >= 256. |
+| `vm.snapshot` | bool | `false` | Opt into the `savevm`/`loadvm` **warm-start cache**. When `true`, the first `up` cold-boots and checkpoints the running machine; every subsequent `up` resumes it in seconds (~19× faster under TCG). See below. |
 
 After launching QEMU, `beetroot up` polls `adb connect` against the guest until the forwarded ADB endpoint accepts a connection — the guest restarts `adbd` to enable TCP a few seconds *after* `sys.boot_completed=1`, so a single immediate connect would race that late bind. The poll deadline is the `BEETROOT_VM_ADB_CONNECT_TIMEOUT` environment variable (seconds, default `60`); raise it for slow TCG first boots. If the guest never exposes ADB within the deadline, `up` fails with an actionable error (try `beetroot logs <name>` to watch the boot, or pin `vm.accel: kvm`) rather than a traceback.
 
@@ -299,7 +300,25 @@ vm:
   accel: auto
   smp: auto
   memory_mib: 8192
+  snapshot: false
 ```
+
+### `vm.snapshot` — the warm-start cache
+
+A TCG cold boot of the micro-VM takes ~2 minutes (the host emulates the entire Android boot in software). `vm.snapshot: true` removes that cost from every boot *after the first*:
+
+* The **first** `beetroot up` boots from a per-instance qcow2 overlay (`<instance>/vm-overlay.qcow2`) over the shared rootfs, waits for the guest to become adb-reachable, then checkpoints the running machine with QEMU `savevm` (RAM + devices + disk) — adding a one-time ~15 s.
+* **Every subsequent** `up`/`restart` launches with `-loadvm` and the already-booted Android resumes in **seconds** (measured ~6.6 s vs ~123 s — a ~19× speedup; see [VM cold-boot perf](../design/vm-cold-boot-perf.md)).
+
+The checkpoint is keyed on the kernel + rootfs (size + mtime). Rebuilding either (`beetroot build --vm-kernel`) invalidates it automatically, so the next `up` cold-boots and re-checkpoints — a stale snapshot is never restored against a changed guest.
+
+A warm restore **rewinds to the snapshotted post-boot state**: it is a fast *clean baseline*, not a persistent `/data`. To take a new baseline (e.g. after changing what you want pre-installed), re-checkpoint with:
+
+```bash
+beetroot up <name> --fresh   # discard the saved snapshot, cold-boot, re-checkpoint
+```
+
+Requires `qemu-img` on `PATH` (ships with QEMU; override via `BEETROOT_QEMU_IMG_BIN`).
 
 ---
 

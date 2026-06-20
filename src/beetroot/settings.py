@@ -64,6 +64,9 @@ class Settings(BaseSettings):
         qemu_bin: Path or name of the QEMU system emulator binary used by
             the ``binder: vm`` micro-VM backend (default:
             ``qemu-system-x86_64``).
+        qemu_img_bin: Path or name of the ``qemu-img`` binary used to create
+            the per-instance qcow2 overlay backing the ``vm.snapshot``
+            warm-start cache (default: ``qemu-img``).
         vm_kernel: Default host path to the guest ``bzImage`` for the
             micro-VM backend when an instance's config doesn't pin one
             (empty = require an explicit ``vm.kernel`` in ``beetroot.yaml``).
@@ -94,6 +97,7 @@ class Settings(BaseSettings):
     frida_bin: str = "/data/local/tmp/frida-server"
     build_context: str = ""
     qemu_bin: str = "qemu-system-x86_64"
+    qemu_img_bin: str = "qemu-img"
     vm_kernel: str = ""
     vm_rootfs: str = ""
     vm_adb_connect_timeout: int = 60

@@ -4,6 +4,28 @@
 
 ### Features
 
+- **`vm.snapshot` — `savevm`/`loadvm` warm-start cache for the `binder: vm`
+  micro-VM.** A TCG cold boot of the QEMU micro-VM costs ~2 minutes (the host
+  emulates the entire Android boot in software). The new opt-in `vm.snapshot:
+  true` config key removes that cost from every boot *after the first*: the
+  first `beetroot up` boots from a per-instance qcow2 overlay
+  (`<instance>/vm-overlay.qcow2`) over the shared rootfs, waits for the guest to
+  become adb-reachable, then checkpoints the running machine with QEMU `savevm`
+  over a QMP monitor socket; every subsequent `up`/`restart` launches with
+  `-loadvm` and resumes the already-booted Android in **seconds** (measured
+  ~6.6 s vs ~123 s — a **~19× speedup**; see
+  [VM cold-boot perf](https://iliketo.party/Beetroot/design/vm-cold-boot-perf/)).
+  The checkpoint is keyed on the kernel + rootfs (size + mtime), so rebuilding
+  either (`beetroot build --vm-kernel`) invalidates it automatically — a stale
+  snapshot is never restored against a changed guest. A warm restore rewinds to
+  the snapshotted post-boot state (a fast *clean baseline*, not a persistent
+  `/data`); re-baseline with the new `beetroot up <name> --fresh` flag, which
+  discards the saved snapshot and cold-boots + re-checkpoints. Requires
+  `qemu-img` on `PATH` (ships with QEMU; override via `BEETROOT_QEMU_IMG_BIN`).
+  This is the productionisation of the validated warm-start path from #83,
+  tracked on #49. New docs:
+  [Config reference § `vm.snapshot`](https://iliketo.party/Beetroot/reference/config/#vmsnapshot-the-warm-start-cache).
+
 - **Reusable CI workflow — boot a Beetroot instance in *your* repo's CI.**
   A new `on: workflow_call` workflow at
   `.github/workflows/beetroot-ci.yml` lets any other repository raise a rooted
