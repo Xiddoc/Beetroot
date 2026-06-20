@@ -305,6 +305,21 @@
   create→build version consistency, the `--android-version` image selection,
   and the up/apply mismatch warning (firing on skew, silent on match and on the
   no-marker case).
+- **`binder: vm` now warns when `android.gapps` / `magisk` / `frida` settings
+  can't be honoured (#96).** The micro-VM guest boots an *unmodified upstream*
+  redroid image — no GApps, no Magisk, no Houdini — so a `gapps: full` (or any
+  non-`none` value), a `frida:` block, or a customised `magisk.denylist` in a
+  `binder: vm` config was silently inert, leaving a researcher to debug missing
+  Play Services rather than the backend. This is the same silent
+  config-vs-reality gap #82 closed for `android.version`, and it now gets the
+  same treatment: `beetroot up` / `beetroot apply` emit a single non-fatal
+  advisory naming every ignored setting. The shipped `examples/vm.yaml` now
+  pins `android.gapps: none` so the canonical config matches what the VM
+  actually runs (and stays warning-free), and `docs/reference/config.md` gains a
+  "boots plain redroid" warning callout alongside the existing Frida one.
+  Regression tests cover each field (gapps / frida / customised denylist), the
+  silent paths (gapps `none`, the inherited default denylist), the consolidated
+  single-note output, and the up/apply end-to-end emission.
 - **`binder: vm` guest no longer kernel-panics on boot (ELOOP on `/init`).**
   `build_rootfs` symlinked *every* applet from `busybox --list` to `busybox` —
   but `busybox` is itself in that list, so it overwrote the real `/bin/busybox`

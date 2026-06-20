@@ -511,6 +511,133 @@ class TestRootfsVersionSkewWarning:
         assert "baked for Android 11" in capsys.readouterr().err
 
 
+class TestInertVmConfigWarning:
+    """issue #96: up/apply warn about settings the plain-redroid VM can't honour."""
+
+    def test_warns_on_non_none_gapps(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg = config.InstanceConfig(binder="vm", android={"gapps": "full"})  # type: ignore[arg-type]
+        backend = _make_backend(tmp_path, cfg=cfg)
+        backend._warn_on_inert_vm_config()
+        err = capsys.readouterr().err
+        assert "android.gapps: full" in err
+        assert "no effect under binder: vm" in err
+
+    def test_warns_on_frida_block(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg = config.InstanceConfig(
+            binder="vm",
+            android={"gapps": "none"},  # type: ignore[arg-type]
+            frida=config.Frida(version="16.4.10"),
+        )
+        backend = _make_backend(tmp_path, cfg=cfg)
+        backend._warn_on_inert_vm_config()
+        assert "frida" in capsys.readouterr().err
+
+    def test_warns_on_custom_denylist(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg = config.InstanceConfig(
+            binder="vm",
+            android={"gapps": "none"},  # type: ignore[arg-type]
+            magisk=config.Magisk(denylist=["com.example.app"]),
+        )
+        backend = _make_backend(tmp_path, cfg=cfg)
+        backend._warn_on_inert_vm_config()
+        assert "magisk.denylist" in capsys.readouterr().err
+
+    def test_silent_when_nothing_inert(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # gapps: none, no frida block, and the inherited default denylist —
+        # nothing the VM can't honour, so the advisory must not fire.
+        cfg = config.InstanceConfig(binder="vm", android={"gapps": "none"})  # type: ignore[arg-type]
+        backend = _make_backend(tmp_path, cfg=cfg)
+        backend._warn_on_inert_vm_config()
+        assert capsys.readouterr().err == ""
+
+    def test_default_denylist_alone_is_not_flagged(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The inherited GMS denylist is inert on every vm instance; flagging it
+        # by default would be noise, so only a *customised* denylist warns.
+        cfg = config.InstanceConfig(binder="vm", android={"gapps": "none"})  # type: ignore[arg-type]
+        assert cfg.magisk.denylist == config.Magisk().denylist
+        backend = _make_backend(tmp_path, cfg=cfg)
+        backend._warn_on_inert_vm_config()
+        assert "magisk.denylist" not in capsys.readouterr().err
+
+    def test_all_inert_settings_collapse_into_one_note(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg = config.InstanceConfig(
+            binder="vm",
+            android={"gapps": "lite"},  # type: ignore[arg-type]
+            frida=config.Frida(version="16.4.10"),
+            magisk=config.Magisk(denylist=["com.example.app"]),
+        )
+        backend = _make_backend(tmp_path, cfg=cfg)
+        backend._warn_on_inert_vm_config()
+        err = capsys.readouterr().err
+        assert err.count("[beetroot]") == 1
+        assert "android.gapps: lite" in err
+        assert "frida" in err
+        assert "magisk.denylist" in err
+
+    def test_up_emits_warning_end_to_end(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from beetroot import builder
+
+        kernel = tmp_path / "bzImage"
+        rootfs = tmp_path / "rootdisk.img"
+        kernel.write_bytes(b"k")
+        rootfs.write_bytes(b"r")
+        builder.rootfs_version_marker(rootfs).write_text("14\n", encoding="utf-8")
+        monkeypatch.setattr(
+            vm_backend, "settings", Settings(vm_kernel=str(kernel), vm_rootfs=str(rootfs))
+        )
+        cfg = config.InstanceConfig(
+            binder="vm",
+            android={"version": 14, "gapps": "full"},  # type: ignore[arg-type]
+        )
+        backend = _make_backend(tmp_path, cfg=cfg)
+        monkeypatch.setattr(qemu, "detect_accel", lambda _req: "tcg")
+        monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 1)
+        monkeypatch.setattr(
+            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None
+        )
+        backend.up()
+        err = capsys.readouterr().err
+        assert "android.gapps: full" in err
+        # version matches the marker, so the *only* advisory is the inert-config one.
+        assert "baked for Android" not in err
+
+    def test_apply_emits_warning(
+        self,
+        isolated_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        root = isolated_registry / "inst"
+        root.mkdir()
+        cfg = config.InstanceConfig(
+            binder="vm",
+            android={"version": 14, "gapps": "full"},  # type: ignore[arg-type]
+        )
+        _write_yaml(root, cfg)
+        backend_cfg = registry.VmBackendConfig(absolute_path=str(root))
+        registry.add_allocating("vmphone", backend=backend_cfg)
+        backend = vm_backend.VmDeviceBackend.from_meta("vmphone", backend_cfg)
+        backend.apply()
+        assert "android.gapps: full" in capsys.readouterr().err
+
+
 class TestWaitForAdbConnect:
     def _connect_result(self, *, ok: bool) -> subprocess.CompletedProcess[str]:
         if ok:

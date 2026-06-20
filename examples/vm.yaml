@@ -12,6 +12,13 @@ api_version: 4
 
 binder: vm
 
+android:
+  # binder: vm boots an unmodified upstream redroid image — it has no GApps,
+  # Magisk, or Houdini layer. Pin gapps: none so the config matches what the
+  # VM actually runs; any other value is silently inert here and beetroot up
+  # will warn about it (see issue #96).
+  gapps: none
+
 vm:
   kernel: ~/.cache/beetroot/vm/bzImage
   rootfs: ~/.cache/beetroot/vm/rootdisk.img
