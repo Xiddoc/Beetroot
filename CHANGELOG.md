@@ -167,6 +167,21 @@
   New public API: `beetroot.api.DevicePreflightError` (carries the
   pre-abort rows in its `results` attribute).
 
+- **Micro-VM cold-boot: host-backed entropy so the guest CRNG never
+  stalls (#83).** The `binder: vm` launcher now attaches a host entropy
+  source (`-device virtio-rng-pci` with a non-blocking `rng-builtin`
+  backend) and sets `random.trust_cpu=on` on the guest kernel cmdline; the
+  bundled `kernel.config` pins `CONFIG_HW_RANDOM_VIRTIO=y` so the guest
+  kernel can consume the device. Under TCG the emulated guest sees almost no
+  hardware-interrupt entropy, so an unseeded kernel CRNG can block the first
+  `getrandom()` reader (Android keystore/init) and stall cold boot; the
+  host-backed feed removes that latent stall. Applies to both accelerators
+  (harmless under KVM). A reproducible A/B harness ships at
+  `scripts/bench_vm_rng.py`; the measured cold-boot effect and the
+  warm-start (savevm) landscape are written up in
+  [micro-VM R&D log §E](https://iliketo.party/Beetroot/design/vm-rnd-log/)
+  and the [sandbox quickstart](https://iliketo.party/Beetroot/guides/sandbox-quickstart/#speeding-up-cold-boot).
+
 ### Quality & internals
 - **The whole CLI now speaks through one rich-rendered voice.** Every
   user-facing line — verb outcomes, the verbose step narration, next-step

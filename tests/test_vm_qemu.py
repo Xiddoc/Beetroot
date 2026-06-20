@@ -117,7 +117,8 @@ class TestBuildQemuArgv:
         assert "-no-reboot" in argv
         assert (
             argv[argv.index("-append") + 1]
-            == "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off"
+            == "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off "
+            "random.trust_cpu=on"
         )
 
     def test_disables_cpu_mitigations_on_both_accels(self) -> None:
@@ -128,6 +129,24 @@ class TestBuildQemuArgv:
         for accel in ("tcg", "kvm"):
             argv = _argv(accel)
             assert "mitigations=off" in argv[argv.index("-append") + 1]
+
+    def test_attaches_virtio_rng_on_both_accels(self) -> None:
+        # A host-backed entropy source stops the guest CRNG from stalling cold
+        # boot under TCG (issue #83). The device + its builtin backend must be
+        # present regardless of accelerator (harmless under KVM).
+        for accel in ("tcg", "kvm"):
+            argv = _argv(accel)
+            assert "rng-builtin,id=rng0" in argv
+            assert "virtio-rng-pci,rng=rng0" in argv
+            # The backend object is declared before the device that references it.
+            assert argv.index("rng-builtin,id=rng0") < argv.index("virtio-rng-pci,rng=rng0")
+
+    def test_trusts_cpu_rng_on_both_accels(self) -> None:
+        # random.trust_cpu=on credits RDRAND (exposed by -cpu max / -cpu host)
+        # so the CRNG seeds at the earliest boot stage instead of blocking.
+        for accel in ("tcg", "kvm"):
+            argv = _argv(accel)
+            assert "random.trust_cpu=on" in argv[argv.index("-append") + 1]
 
 
 # ---------------------------------------------------------------------------

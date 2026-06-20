@@ -21,7 +21,9 @@ the design rationale and validated measurements live in
     longer on a busy or smaller runner). This is normal. Do not kill the VM
     thinking it has hung — watch `beetroot logs <name>` for progress. On a host
     that *does* have `/dev/kvm`, the same path is near-native; `accel: auto`
-    uses KVM automatically when present.
+    uses KVM automatically when present. To make the cold path as fast as it can
+    be, and to skip it entirely on repeat starts, see
+    [Speeding up cold boot](#speeding-up-cold-boot) below.
 
 ## Step 0 — confirm this is the path you need
 
@@ -201,6 +203,58 @@ adb -s localhost:5555 exec-out screencap -p > shot.png
 
 `shot.png` is the live guest screen — proof the emulated Android booted all the
 way to SurfaceFlinger.
+
+## Speeding up cold boot
+
+"Cold boot" here means the wall time from `beetroot up` to a usable
+(ADB-reachable, `sys.boot_completed=1`) instance. Under TCG that is the
+dominant cost, so it is worth understanding the three independent layers — what
+is automatic, and what you can do on top.
+
+### 1. The entropy levers — automatic, nothing to configure
+
+Every `beetroot up` on the `vm` backend now launches QEMU with a host-backed
+entropy source (`-device virtio-rng-pci`) and `random.trust_cpu=on` on the
+guest kernel cmdline (issue #83). Under TCG the emulated guest sees almost no
+hardware-interrupt entropy, so without these the kernel CRNG can take a long
+time to seed — and an unseeded CRNG **blocks** the first `getrandom()` reader
+(Android's keystore/init among them), stalling the cold path. The levers feed
+host entropy straight in and credit the CPU RNG at the earliest boot stage, so
+the CRNG seeds promptly. This is built into `build_qemu_argv` and needs the
+guest kernel's `CONFIG_HW_RANDOM_VIRTIO=y` (pinned in the bundled
+`kernel.config`) — both ship by default, so a stock `beetroot build --vm-kernel`
+already has them. The measured effect is in
+[micro-VM R&D log §E](../design/vm-rnd-log.md#e-entropy-levers-virtio-rng--randomtrust_cpu).
+
+### 2. Skip the boot entirely — QEMU `savevm`/`loadvm` (the real warm start)
+
+The biggest possible win is to **not cold-boot at all**: boot the micro-VM once
+to `sys.boot_completed`, checkpoint the *running machine* (RAM + disk) with
+QEMU `savevm`, and `loadvm` it back in **seconds** on every subsequent start —
+ART/Zygote already warmed. This is the genuine warm-start path for the TCG VM.
+It is **designed and specced** (a qcow2 overlay + a QMP socket + a resume-launch
+mode, keyed by a content fingerprint so a snapshot is never restored against a
+kernel/rootfs it wasn't taken on) but **not yet wired into the backend** — see
+[VM boot-cache (savevm)](../design/vm-savevm-cache.md) and issue #49 for the
+implementation plan and the load-bearing cache-key helper that already ships.
+
+### 3. What `beetroot snapshot` / `restore` actually do (and don't)
+
+[`beetroot snapshot` / `restore`](snapshots.md) are **not** a boot-skip, and on
+the `vm` backend they do **not apply at all**:
+
+* They pack an instance's **persisted `/data`** as a `.tar.zst` and unpack it
+  into a fresh instance — useful for cloning or archiving researcher state, but
+  restoring still requires a **full cold Android boot** of the target.
+* They are implemented only for the **host-binder `redroid`** backend (whose
+  `/data` is a host bind-mount). The `vm` backend keeps `/data` *inside* the
+  rootfs image, so it is not `Snapshottable` — `beetroot snapshot <vm-instance>`
+  reports that the backend doesn't support it. The boot-skipping warm start for
+  `vm` is the `savevm`/`loadvm` path in (2), which is orthogonal to this verb.
+
+In short: layer 1 is on automatically today; layer 2 is the high-value
+follow-up (issue #49); layer 3 is a different feature (state portability, not
+boot-skip) that doesn't cover the `vm` backend.
 
 ## Tear down
 

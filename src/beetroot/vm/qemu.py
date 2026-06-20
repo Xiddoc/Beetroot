@@ -46,6 +46,39 @@ _GUEST_ADB_PORT = 5555
 # The QEMU pidfile name inside the instance directory.
 _PIDFILE_NAME = "qemu.pid"
 
+# Host-backed entropy source for the guest. Under TCG the guest sees almost no
+# hardware-interrupt entropy (no real devices, an idle emulated timer), so if
+# the kernel CRNG is *not* seeded from a trusted CPU RNG it can take a long time
+# to seed — and an unseeded CRNG blocks the first ``getrandom()``/``/dev/random``
+# reader (Android keystore/init), stalling cold boot. ``virtio-rng-pci`` feeds
+# host entropy straight into the guest's hwrng so the CRNG seeds promptly; the
+# guest kernel consumes it via ``CONFIG_HW_RANDOM_VIRTIO=y`` (pinned in
+# ``templates/vm/kernel.config``). The explicit ``rng-builtin`` backend reads the
+# host CSPRNG (``getrandom(2)``), which never blocks and needs no host
+# ``/dev/urandom`` path. On the *current* stack (linux-6.12.9 + ``-cpu max``'s
+# trusted RDRAND) the CRNG already seeds at boot t=0, so this is measured
+# boot-neutral and stands as defensive hardening — see ``vm-rnd-log.md`` §E. It
+# is unconditional (harmless under KVM, where RDRAND seeds quickly anyway).
+_RNG_ARGS = (
+    "-object",
+    "rng-builtin,id=rng0",
+    "-device",
+    "virtio-rng-pci,rng=rng0",
+)
+
+# The guest kernel command line. ``random.trust_cpu=on`` credits the CPU RNG
+# (RDRAND — exposed by ``-cpu max`` under TCG and ``-cpu host`` under KVM) as a
+# trusted entropy source, so the CRNG is seeded from it at the earliest boot
+# stage instead of waiting on collected entropy; this pairs with virtio-rng to
+# kill entropy-stall on the cold path. ``mitigations=off`` drops CPU
+# speculative-execution mitigations (pure overhead — emulated under TCG, real
+# serialization under KVM — on a throwaway single-tenant sandbox). ``panic=1``
+# turns a guest panic into a clean exit rather than a hang (paired with
+# ``-no-reboot``).
+_KERNEL_CMDLINE = (
+    "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off random.trust_cpu=on"
+)
+
 # How long ``terminate`` waits for a clean SIGTERM exit before escalating
 # to SIGKILL, and how often it polls liveness during that window.
 _TERM_GRACE_SECONDS = 5.0
@@ -226,6 +259,13 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
     * **kvm** → ``-accel kvm`` and ``-cpu host`` (pass the host CPU through
       for near-native speed).
 
+    Every invocation also attaches a host-backed entropy source
+    (:data:`_RNG_ARGS` — ``virtio-rng-pci``) and sets ``random.trust_cpu=on``
+    on the kernel cmdline (:data:`_KERNEL_CMDLINE`). Together they stop the
+    guest CRNG from stalling cold boot under TCG, where the emulated guest
+    sees almost no hardware-interrupt entropy and an unseeded CRNG blocks the
+    first ``getrandom()`` reader (issue #83).
+
     The kernel command line also carries ``mitigations=off``: the guest is
     an ephemeral, single-tenant research sandbox, so the CPU
     speculative-execution mitigations (retpolines, lfence barriers, …) buy
@@ -272,8 +312,9 @@ def build_qemu_argv(  # noqa: PLR0913  # 7 keyword-only knobs; each is a distinc
         f"user,id=net0,{hostfwd}",
         "-device",
         "virtio-net-pci,netdev=net0",
+        *_RNG_ARGS,
         "-append",
-        "console=ttyS0 root=/dev/vda rw init=/init panic=1 mitigations=off",
+        _KERNEL_CMDLINE,
     ]
 
 
