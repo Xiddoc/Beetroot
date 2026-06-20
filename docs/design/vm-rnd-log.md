@@ -636,3 +636,115 @@ is that it is **not** a TCG boot-speed lever. `smp: auto` resolves to 4 on this
 * Rootfs: `/root/vm-rnd/rootdisk.img` (8 GiB ext4, redroid baked).
 * Boot harness + per-run serial logs: `/root/vm-rnd/boot-measure.sh`,
   `/root/vm-rnd/boot-{baseline,treatment}-*.log`.
+
+---
+
+# Micro-VM R&D log — Stage E (cold-boot entropy A/B: virtio-rng + random.trust_cpu)
+
+!!! info "Status: Stage E validated (2026-06-20, issue #83) — the entropy levers WORK but are boot-neutral under TCG; keep them as cheap insurance, and lean on savevm warm-start for the real win"
+    Issue #83 hypothesised that Android init may **stall on entropy** during the
+    `binder: vm` cold boot — a CRNG read blocking on an uninitialised pool,
+    amplified under TCG where the interrupts that seed the pool are themselves
+    slow — and proposed `-device virtio-rng-pci` + `random.trust_cpu=on` as the
+    fix. Stage E drove the **committed** code (`build_qemu_argv` now emits both)
+    through a controlled A/B on the same binderless, KVM-less host. The honest
+    result: the levers **verifiably do what they claim** (the guest gets a
+    `hwrng` and the CPU's `RDRAND`/`RDSEED` is credited at init) but the boot
+    was **not entropy-bound to begin with** on this Android-14 / redroid-14
+    image, so they **did not move boot time** — a clean null, mirroring the
+    §D.4 `mitigations=off` finding. They are kept anyway: harmless, near-zero
+    cost, and they *remove the entropy-stall failure mode* (intermittent and
+    host-dependent) rather than buying steady-state speed. The real cold-boot
+    lever is the savevm **warm-start** (skip the boot entirely — §E.4 / #49).
+
+## E.1 Environment
+
+Same class as Stage A–D: a Claude Code on the web sandbox, **4 physical cores,
+no `/dev/kvm`** (`beetroot modes` → `binder: vm, TCG accel: needs-setup`), pure
+TCG. QEMU 8.2.2. Guest kernel 6.12.9 (the committed prebuilt `bzImage`, fetched
+~12 MiB), rootfs from the committed `build_rootfs` with **redroid
+`14.0.0-latest`** baked in (today's default Android, vs the 11.0.0 of Stages
+A–D — so the absolute boot numbers here are larger than §B.5's ~100 s and are
+**not** comparable across Android versions).
+
+## E.2 Method
+
+* **Interleaved A/B**, 3 rounds, treatment-then-baseline each round (the §D.4
+  pattern that controls for monotonic host-contention drift):
+  * **treatment** = `-device virtio-rng-pci` + `… mitigations=off
+    random.trust_cpu=on` (the committed argv).
+  * **baseline** = no RNG device, `… mitigations=off` (no `random.trust_cpu`).
+* **Pristine image per boot** via QEMU `-snapshot`: every run starts from the
+  identical baked rootfs and discards its writes, so each is a true *first*
+  Android boot (no persisted keystore state carried between runs — the
+  keystore/keymaster key-generation path that would read the CRNG runs every
+  time, which is exactly the path #83 worried about).
+* **Two metrics:** `guest_boot_s` — the guest-init's own measurement from
+  `docker run` to `sys.boot_completed=1` (the precise figure, excludes the
+  identical kernel+dockerd preamble); `host_wall_s` — QEMU launch → marker.
+* Run **directly** (no `sudo`/`timeout` wrapper) so each QEMU is killed cleanly
+  between runs — an early harness bug left `sudo`-orphaned QEMUs contending for
+  cores and skewing every later boot; the numbers below are from the corrected,
+  single-emulator-at-a-time harness.
+
+## E.3 Results
+
+| round | arm | cmdline RNG | `guest_boot_s` | `host_wall_s` |
+| --- | --- | --- | --- | --- |
+| 1 | treatment | virtio-rng + trust_cpu | 163 | 177.7 |
+| 1 | baseline | none | 158 | 172.7 |
+| 2 | treatment | virtio-rng + trust_cpu | 156 | 171.7 |
+| 2 | baseline | none | 159 | 173.6 |
+| 3 | treatment | virtio-rng + trust_cpu | 161 | 176.7 |
+| 3 | baseline | none | 158 | 172.6 |
+
+| arm | mean `guest_boot_s` | mean `host_wall_s` |
+| --- | --- | --- |
+| treatment (rng) | **160.0** | 175.4 |
+| baseline (norng) | **158.3** | 173.0 |
+
+**No separable treatment effect.** The arm difference (~1.7 s guest, ~1 %)
+is within run-to-run noise and *favours baseline*, while the per-arm sign
+**flips** between rounds (round 1 baseline faster, round 2 treatment faster) —
+the signature of host drift, not a real effect. Baseline is even slightly
+*tighter* (158/159/158) than treatment (163/156/161).
+
+## E.4 Honest reading + what actually moves cold boot
+
+* **The levers are real, just not load-bearing *here*.** With virtio-rng the
+  guest exposes `/dev/hwrng` and the kernel logs the virtio RNG; with
+  `random.trust_cpu=on` the CRNG is credited from `RDRAND` at init (the
+  baseline kernel waits on interrupt entropy instead). But the serial trace
+  shows **no entropy plateau** either way — the ~160 s is spent in
+  ART/Zygote/`system_server`/SELinux under TCG, which `-cpu max` emulates one
+  slow instruction at a time. Entropy was never the bottleneck on this image,
+  so removing the (non-existent) stall buys nothing.
+* **Keep them anyway.** They are near-zero cost, harmless for an ephemeral
+  single-tenant sandbox, and they *delete a failure mode*: entropy stalls are
+  intermittent and host/kernel/Android-version dependent (they bite only when
+  the pool happens to be starved at the wrong moment). On a **KVM** host, where
+  the whole boot is seconds rather than minutes, even a few seconds of CRNG
+  block would be a *large* fraction — unmeasured here, but the cheap insurance
+  is worth carrying. Same disposition as `mitigations=off` (§D.4): verifiably
+  works, boot-neutral under TCG, kept.
+* **Caveat — host page cache.** These `-snapshot` runs read a backing rootfs
+  that is **warm** in the host page cache after the first boot, so they do not
+  reproduce a true *first-ever* cold boot (cold page cache for the 8 GiB
+  image). The ~8-minute first boot #83 observed was **not reproduced** here
+  (~3 min wall, steady) — the likeliest contributors are cold page cache and
+  host contention rather than entropy, but a cold-cache first boot remains the
+  one regime where these levers *could* still matter and is the harder thing to
+  benchmark repeatably.
+* **The real cold-boot win is to not cold-boot.** Boot once, QEMU `savevm` the
+  running machine, `loadvm` it in seconds thereafter — the warm-start designed
+  in [vm-savevm-cache.md](vm-savevm-cache.md) (#49) and documented for users in
+  [the snapshots guide](../guides/snapshots.md#warm-starting-the-binder-vm-backend).
+  That skips the entire ~160 s, which no cmdline lever can. `beetroot
+  snapshot`/`restore` is **not** this (it re-boots) — see that guide.
+
+## E.5 Artifacts (scratch — never committed)
+
+* Kernel + rootfs: `/root/.cache/beetroot/vm/{bzImage,rootdisk.img}` (redroid 14
+  baked), produced by the committed `beetroot build --vm-kernel`.
+* A/B harness + per-boot serial logs: `/tmp/bench_entropy.sh`,
+  `/tmp/bench-{T,B}-*-*.log`; results CSV: `/tmp/bench_results.csv`.

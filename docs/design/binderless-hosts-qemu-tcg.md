@@ -252,7 +252,9 @@ This is the most reusable knowledge — the failure→fix chain:
   speculative-execution barriers that are pure overhead for an ephemeral
   single-tenant sandbox (emulated work under TCG, real serialization under
   KVM); and a `virtio-rng-pci` device + `random.trust_cpu=on` remove the
-  entropy-starvation cold-boot stall (issue #83, vm-rnd-log §E).
+  entropy-starvation cold-boot *stall class* (issue #83) — verifiably present
+  but measured **boot-neutral under TCG** (the boot was not entropy-bound),
+  kept as cheap insurance like `mitigations=off` (vm-rnd-log §E).
 * **Warm start (skip the boot entirely).** The cold boot is unavoidable
   *once*; after that, a QEMU `savevm`/`loadvm` whole-machine snapshot resumes
   an already-booted guest (ART/Zygote settled) in seconds. The design +

@@ -70,21 +70,23 @@
   redroid stays the default. See
   [Binderless hosts (QEMU/TCG)](https://iliketo.party/Beetroot/design/binderless-hosts-qemu-tcg/).
 
-- **Faster `binder: vm` cold boots: paravirtual RNG + trusted-CPU entropy
-  (issue #83).** The QEMU micro-VM now boots with a `virtio-rng-pci` device and
+- **Robust `binder: vm` cold boots: seed the guest CRNG at boot (issue #83).**
+  The QEMU micro-VM now boots with a `virtio-rng-pci` device and
   `random.trust_cpu=on` on the guest kernel command line, on top of the
   existing MTTCG / `-smp auto` / `mitigations=off` levers. Android's early boot
   reads the kernel CRNG (keystore/keymaster key generation, secure-random
   seeding); on a cold, entropy-starved guest that read can *block* until the
   pool initialises, and under TCG the emulated interrupts that would normally
-  seed the pool are themselves slow — so the stall is amplified. `virtio-rng`
-  gives the guest a fast host-backed entropy source and `random.trust_cpu=on`
-  credits the CPU's `RDRAND`/`RDSEED` (exposed by `-cpu max`/`host`) at init, so
-  the CRNG is seeded immediately instead of waiting on interrupt entropy. Both
-  apply on TCG and KVM and are harmless for an ephemeral single-tenant sandbox.
-  See the A/B measurements in vm-rnd-log §E and the warm-start (savevm)
-  follow-up for skipping the boot entirely (#49). Additive — no `api_version`
-  bump.
+  seed the pool are themselves slow. `virtio-rng` gives the guest a fast
+  host-backed entropy source and `random.trust_cpu=on` credits the CPU's
+  `RDRAND`/`RDSEED` (exposed by `-cpu max`/`host`) at init, so the CRNG is
+  seeded immediately instead of waiting on interrupt entropy. A controlled A/B
+  (vm-rnd-log §E) measured this **boot-neutral under TCG** on an Android-14
+  image — the boot there was not entropy-bound — so this ships as cheap,
+  harmless *insurance* that removes the (intermittent, host-dependent)
+  entropy-stall failure mode, not as a measured speedup. Both apply on TCG and
+  KVM. For actually *skipping* the cold boot, see the savevm warm-start
+  (vm-rnd-log §E.4, snapshots guide, #49). Additive — no `api_version` bump.
 
 - **Faster `binder: vm` boots: auto-sized `-smp` + `mitigations=off`.** Two
   boot-speed levers ship for the QEMU micro-VM backend, on top of the
