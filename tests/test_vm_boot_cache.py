@@ -7,7 +7,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import pytest
 
@@ -233,7 +233,7 @@ class TestSaveSnapshot:
             def __enter__(self) -> _FakeSock:
                 return self
 
-            def __exit__(self, *_a: object) -> bool:
+            def __exit__(self, *_a: object) -> Literal[False]:
                 return False
 
             def settimeout(self, _t: float) -> None:
