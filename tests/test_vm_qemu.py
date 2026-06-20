@@ -129,6 +129,36 @@ class TestBuildQemuArgv:
             argv = _argv(accel)
             assert "mitigations=off" in argv[argv.index("-append") + 1]
 
+    def test_defaults_carry_no_monitor_or_loadvm(self) -> None:
+        # The cold-boot default path must be byte-for-byte unchanged: raw disk,
+        # no monitor socket, no -loadvm.
+        argv = _argv("tcg")
+        assert argv[argv.index("-drive") + 1] == "file=/img/rootdisk.img,format=raw,if=virtio"
+        assert "-monitor" not in argv
+        assert "-loadvm" not in argv
+
+    def test_qcow2_disk_format_and_cache(self) -> None:
+        argv = _argv("tcg", disk_format="qcow2", disk_cache="unsafe")
+        assert (
+            argv[argv.index("-drive") + 1]
+            == "file=/img/rootdisk.img,format=qcow2,if=virtio,cache=unsafe"
+        )
+
+    def test_monitor_socket_appended(self) -> None:
+        argv = _argv("tcg", monitor_socket=Path("/inst/qemu-monitor.sock"))
+        assert argv[argv.index("-monitor") + 1] == "unix:/inst/qemu-monitor.sock,server,nowait"
+
+    def test_loadvm_tag_appended(self) -> None:
+        argv = _argv("tcg", loadvm="beetroot-boot")
+        assert argv[argv.index("-loadvm") + 1] == "beetroot-boot"
+
+    def test_loadvm_precedes_append(self) -> None:
+        # -loadvm must sit before -append so the kernel cmdline stays the last
+        # positional pair (mirrors the cold layout).
+        argv = _argv("tcg", monitor_socket=Path("/m.sock"), loadvm="beetroot-boot")
+        assert argv.index("-loadvm") < argv.index("-append")
+        assert argv.index("-monitor") < argv.index("-append")
+
 
 # ---------------------------------------------------------------------------
 # resolve_smp / host_physical_cores

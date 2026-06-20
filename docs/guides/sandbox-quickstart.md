@@ -202,6 +202,45 @@ adb -s localhost:5555 exec-out screencap -p > shot.png
 `shot.png` is the live guest screen — proof the emulated Android booted all the
 way to SurfaceFlinger.
 
+## Step 6 — make repeat boots instant (warm-start boot cache)
+
+The cold first boot above is slow because, under TCG, booting Android is
+**CPU-bound** — every instruction of ART / Zygote / `system_server` is emulated.
+No entropy or disk tweak changes that (benchmarked in
+[vm-rnd-log Stage E](../design/vm-rnd-log.md)). The fix is to **boot once, then
+never boot again**: opt into the warm-start boot cache.
+
+Edit `alpha/beetroot.yaml` and set `boot_cache: true` under `vm:`:
+
+```yaml
+binder: vm
+vm:
+  kernel: ~/.cache/beetroot/vm/bzImage
+  rootfs: ~/.cache/beetroot/vm/rootdisk.img
+  boot_cache: true
+```
+
+```bash
+uv run beetroot apply alpha
+uv run beetroot up alpha      # FIRST up: cold-boot (~3-4 min TCG), then checkpoint
+uv run beetroot down alpha
+uv run beetroot up alpha      # LATER up: RESUME the checkpoint — ~10 s to a live device
+```
+
+The first `up` boots through a qcow2 overlay and, once ADB is reachable, runs
+QEMU `savevm` to checkpoint the *running machine state* (RAM + devices + disk).
+Every later `up` finds that checkpoint and launches with `-loadvm`, resuming the
+already-booted guest. Measured on this class of host (Android 14, pure TCG):
+**~222 s cold → ~10 s warm, a ~22x speedup.**
+
+!!! note "Resume is a fast *known-good boot*, not persistence"
+    Each warm `up` reverts the guest to the checkpoint moment. That is ideal for
+    a throwaway research sandbox (every session starts from an identical, warmed
+    Android), but it means in-guest changes do not carry across restarts. Use
+    `beetroot snapshot` to persist host-side research state, and delete
+    `alpha/vm-overlay.qcow2` to discard the cache (e.g. after rebuilding the
+    kernel/rootfs with `beetroot build --vm-kernel`).
+
 ## Tear down
 
 ```bash

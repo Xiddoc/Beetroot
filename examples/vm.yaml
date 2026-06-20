@@ -23,3 +23,9 @@ vm:
   # leave host cores free or override the auto-size.
   smp: auto
   memory_mib: 8192
+  # boot_cache: true checkpoints the booted guest once (QEMU savevm) and
+  # RESUMES it (-loadvm) on every later `up` — ~10 s vs ~3-4 min cold under
+  # TCG (a ~22x speedup). Resume reverts to the checkpoint each time (a fast
+  # known-good boot, not persistence); delete <instance>/vm-overlay.qcow2 to
+  # reset after rebuilding the kernel/rootfs. Requires qemu-img.
+  boot_cache: false
