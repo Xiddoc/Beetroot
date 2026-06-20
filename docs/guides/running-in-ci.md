@@ -106,7 +106,9 @@ matrix.
     apply` + `beetroot up`. KVM-accelerated where available; otherwise TCG
     (~5-20x slower — a slow first boot is expected, not a hang). The
     rationale, reproducible recipe, and backend design live in
-    [Binderless hosts (QEMU/TCG)](../design/binderless-hosts-qemu-tcg.md).
+    [Binderless hosts (QEMU/TCG)](../design/binderless-hosts-qemu-tcg.md); the
+    copy-paste runbook is the
+    [Sandbox / CI quickstart](sandbox-quickstart.md).
 
 ## Reusable workflow — boot an instance in *your* CI
 
