@@ -404,6 +404,7 @@ class VmDeviceBackend:
                 "registry before `beetroot up`."
             )
         self._warn_on_rootfs_version_skew()
+        self._warn_on_inert_vm_config()
         accel = self.resolved_accel()
         argv = self.build_argv(accel)
         qemu.QemuProcess(self._root).start(argv)
@@ -437,6 +438,44 @@ class VmDeviceBackend:
             f"Rebuild with `beetroot build --vm-kernel --android-version {configured}` "
             "to match (or set android.version to "
             f"{baked} in beetroot.yaml)."
+        )
+
+    def _warn_on_inert_vm_config(self) -> None:
+        """
+        Warn (without aborting) about beetroot.yaml settings the VM can't honour.
+
+        The ``binder: vm`` guest boots an **unmodified upstream** redroid image
+        (:func:`config.vm_redroid_image`) — no GApps, no Magisk, no Houdini — in
+        a network-isolated guest. Settings that only mean something for the
+        layered ``beetroot build`` image (``android.gapps``, ``magisk.denylist``)
+        or for Frida are therefore silently inert under ``binder: vm``. #82 added
+        a loud warning for the analogous ``android.version`` skew; this closes
+        the same silent config-vs-reality gap for the rest of the knobs (issue
+        #96) so a researcher who set ``gapps: full`` isn't left debugging missing
+        Play Services. A non-fatal note, matching :meth:`_warn_on_rootfs_version_skew`.
+        """
+        inert: list[str] = []
+        if self._cfg.android.gapps != "none":
+            inert.append(
+                f"android.gapps: {self._cfg.android.gapps} (the guest boots plain "
+                "redroid with no GApps — Play Services will be absent)"
+            )
+        if self._cfg.frida is not None:
+            inert.append(
+                "frida (the network-isolated guest can't reach a frida-server; "
+                "the frida verbs are unsupported on binder: vm)"
+            )
+        if self._cfg.magisk.denylist and self._cfg.magisk.denylist != config.Magisk().denylist:
+            inert.append(
+                "magisk.denylist (the guest runs plain redroid with no Magisk, "
+                "so the denylist is never applied)"
+            )
+        if not inert:
+            return
+        console.note(
+            f"warning: instance {self._name!r} uses binder: vm, which boots an "
+            "unmodified upstream redroid image. These beetroot.yaml settings have "
+            "no effect under binder: vm: " + "; ".join(inert) + "."
         )
 
     def _wait_for_adb_connect(self) -> None:
@@ -537,6 +576,7 @@ class VmDeviceBackend:
         _check_port_collisions(self._name, new_ports)
         self._stage()
         self._warn_on_rootfs_version_skew()
+        self._warn_on_inert_vm_config()
         registry.reconcile_backend_kind(self._name, self._cfg.binder)
 
     def _stage(self) -> None:

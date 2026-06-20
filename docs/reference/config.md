@@ -275,6 +275,9 @@ binder: host
 !!! warning "Frida is not yet supported under `binder: vm`"
     The micro-VM guest is network-isolated, so the `vm` backend is scoped to ADB forwarding (`beetroot shell`) only. `beetroot frida <vm-instance>` raises a friendly "not yet supported on the 'vm' backend" error, `beetroot doctor` omits the `frida.handshake` row, and `ls` / `status` report the Frida address as `unsupported`. Any `frida:` block in a `binder: vm` config is ignored (no `frida-server` is staged). For Frida, use `binder: auto` / `host` (redroid) or `beetroot adopt` an external rooted device. Tracked as a follow-up to [#44](https://github.com/Xiddoc/Beetroot/issues/44).
 
+!!! warning "`binder: vm` boots **plain** redroid — GApps, Magisk, and Houdini are inert"
+    Unlike `binder: auto` / `host` (which boot the layered image `beetroot build` produces: redroid **+ Magisk + optional GApps + Houdini**), the `binder: vm` guest boots an *unmodified upstream* redroid image. So `android.gapps` and `magisk.denylist` have **no effect** under `binder: vm` — there are no Play Services and no Magisk in the guest. `beetroot up` / `beetroot apply` print a one-line advisory naming any such setting it had to ignore (e.g. a `gapps: full` you'd expect to give you the Play Store). Set `android.gapps: none` (as `examples/vm.yaml` does) to make the config match what the VM actually runs. If you need rooted Magisk **and** GApps, use a `binder: auto` / `host` instance or `beetroot adopt` an external rooted device. Tracked as [#96](https://github.com/Xiddoc/Beetroot/issues/96).
+
 ---
 
 ## `vm`
