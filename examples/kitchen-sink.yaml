@@ -1,0 +1,106 @@
+# Documentation only — not loaded by the CLI. Copy this over your fresh beetroot.yaml if you want this configuration.
+#
+# THE "KITCHEN SINK" — every knob Beetroot exposes, in one file.
+#
+# This is NOT a recommended config. It exists to show, at a glance, the full
+# surface area a researcher *can* touch. In practice you should set almost
+# none of this: every field except `android.version` has a sensible default
+# (see examples/default.yaml, which is ~6 lines and is what you actually want
+# 95% of the time). Treat anything below without a "set this" note as
+# "delete me unless you have a specific reason."
+#
+# A few fields here are mutually exclusive or context-gated — they can't all
+# be active at once. Those are called out inline:
+#   * `binder: vm` runs an unmodified upstream redroid image, so it ignores
+#     `gapps`, `magisk`, and `frida` (beetroot up warns — issue #96). The
+#     `vm:` block below is ONLY read when `binder: vm`. As written this file
+#     uses `binder: auto`, so the `vm:` block is inert documentation.
+#   * `frida.sha256` / `modules[].sha256` are integrity pins. The digests
+#     below are placeholders — replace them with real values or remove the
+#     line (a wrong digest fails the staged download on purpose).
+
+# ── Schema version ──────────────────────────────────────────────────────────
+# Must equal the release's SUPPORTED_API_VERSION. Omit it entirely and you
+# get the current version for free; only pin it if you want a loud failure
+# when you move the YAML to an incompatible Beetroot. (default: current = 4)
+api_version: 4
+
+# ── Android image ───────────────────────────────────────────────────────────
+android:
+  version: 14                  # 11 | 12 | 13 | 14            (default: 14)
+  gapps: lite                  # none | lite | full | mindthegapps (default: lite)
+
+# ── Virtual screen ──────────────────────────────────────────────────────────
+display:
+  width: 540                   # pixels, > 0                  (default: 540)
+  height: 960                  # pixels, > 0                  (default: 960)
+  fps: 3                       # frame-rate cap, > 0          (default: 3)
+  gpu_mode: host               # redroid GPU mode             (default: host)
+
+# ── Docker resource caps ────────────────────────────────────────────────────
+resources:
+  mem: 3g                      # hard memory limit            (default: 3g)
+  cpus: 2.0                    # CPU cap (float)              (default: 2.0)
+  shared_mem: 256m             # /dev/shm size (shm_size)     (default: 256m)
+  mem_reservation: 2g          # soft memory floor (optional) (default: unset)
+  memswap_limit: 4g            # mem+swap combined (optional) (default: unset)
+  pids_limit: 4096             # max PIDs in container        (default: 4096)
+  # Sizes use Docker's format: a number + optional b/k/m/g/t suffix
+  # ("3g", "512m", "1.5G"). "3gb" or "512 mb" are rejected at load time.
+
+# ── Frida ───────────────────────────────────────────────────────────────────
+# OPT-IN. Omit this whole block (as default.yaml does) and no frida-server is
+# downloaded or launched. Pin `version` to match your host-side frida-tools
+# (major + minor must agree). Ignored under `binder: vm`.
+frida:
+  version: "16.4.10"           # upstream tag, major.minor.patch (default: 16.4.10 when block present)
+  # sha256 below is an optional integrity pin — replace with a real digest or delete the line
+  sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+
+# ── Magisk modules to flash at boot ─────────────────────────────────────────
+# A list; each entry sets EXACTLY ONE of `url` (https) or `path` (local zip,
+# resolved relative to the instance dir). `sha256` is optional but recommended
+# for URLs. (default: [] — no modules) Ignored under `binder: vm`.
+modules:
+  - url: https://github.com/example/module/releases/download/v1/module.zip
+    sha256: "1111111111111111111111111111111111111111111111111111111111111111"  # replace or delete
+  - path: ./local-module.zip   # relative to this beetroot.yaml's directory
+
+# ── Magisk root-hiding ──────────────────────────────────────────────────────
+# Packages added to Magisk's denylist at boot. Each must be a valid Android
+# package id ([a-zA-Z0-9._]+). (default: the GMS pair below)
+# Ignored under `binder: vm`.
+magisk:
+  denylist:
+    - com.google.android.gms
+    - com.google.android.gms.unstable
+
+# ── Host port pins ──────────────────────────────────────────────────────────
+# Each field is independently optional. Leave them out and the stride-of-10
+# allocator assigns them from the instance's registry index (index 0 → ADB
+# 5555, Frida 27042/27043; index 1 → 5565 / 27052 / 27053; …). Pin only the
+# ones you need fixed; the three must be distinct. (default: all auto)
+ports:
+  adb: 5555
+  frida: 27042
+  frida_control: 27043
+
+# ── Binder backend ──────────────────────────────────────────────────────────
+# How redroid gets the kernel `binder` driver it needs to boot.
+#   auto  — use the host kernel's binder; warn (don't abort) if absent (default)
+#   host  — strict: refuse to start unless host binder is ready (good for CI)
+#   vm    — run redroid in a QEMU micro-VM that ships its own binder kernel
+#           (for hosts with no host binder at all — hardened/nomodule sandboxes)
+binder: auto
+
+# ── QEMU micro-VM tunables ──────────────────────────────────────────────────
+# CONSULTED ONLY WHEN `binder: vm`. With `binder: auto` above, this entire
+# block is ignored — it's here purely to document the fields. Build the guest
+# artifacts once with `beetroot build --vm-kernel`.
+vm:
+  kernel: ~/.cache/beetroot/vm/bzImage      # guest bzImage  (default: BEETROOT_VM_KERNEL)
+  rootfs: ~/.cache/beetroot/vm/rootdisk.img  # guest ext4 img (default: BEETROOT_VM_ROOTFS)
+  accel: auto                  # auto | kvm | tcg             (default: auto)
+  smp: auto                    # "auto" (host physical cores) or an int >= 1 (default: auto)
+  memory_mib: 8192             # guest RAM in MiB, >= 256     (default: 8192)
+  boot_cache: false            # checkpoint + resume warm start  (default: false)
