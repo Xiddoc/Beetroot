@@ -1,6 +1,6 @@
 """End-to-end container boot test.
 
-Runs ``docker/entrypoint.sh`` (and the three helpers it sources) inside a
+Runs ``docker/entrypoint.sh`` (and the helpers it sources) inside a
 real container using a lightweight busybox base, with fake ``magisk`` and
 ``frida-server`` shims that record every invocation to a log file.
 
@@ -201,6 +201,18 @@ def test_container_boot_end_to_end(tmp_path: Path) -> None:
     # magisk --install-module was called for the dummy zip
     assert any("--install-module" in q for q in queries), (
         f"magisk --install-module not called.\nqueries={queries!r}"
+    )
+
+    # magisk-env.sh was sourced — the busybox base has no /system/etc/init/magisk,
+    # so it takes the missing-source branch and falls through (proving it is
+    # wired into entrypoint.sh before flash-modules.sh).
+    assert "Magisk source dir" in combined, (
+        f"magisk-env.sh was not sourced by entrypoint.sh.\ncombined={combined!r}"
+    )
+    # activate-zygisk.sh was sourced — the fake magisk reports zygisk already 1,
+    # so it takes the already-active branch (no zygote restart on a routine boot).
+    assert "Zygisk already active" in combined, (
+        f"activate-zygisk.sh was not sourced by entrypoint.sh.\ncombined={combined!r}"
     )
 
     # launch-frida ran — frida-server was executable so it was launched

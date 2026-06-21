@@ -176,6 +176,32 @@ jobs:
           # Zygisk enabled + GMS denylisted + frida reachable — exactly what
           # `beetroot doctor` checks. On the real image every row should pass.
           uv run beetroot doctor e2e-phone
+          # magisk-env.sh must have populated MAGISKBIN headlessly — without
+          # /data/adb/magisk/util_functions.sh every `magisk --install-module`
+          # aborts with "Incomplete Magisk install" (the gap behind a broken
+          # declarative module flow). This is the regression guard for it.
+          adb -s 127.0.0.1:5555 shell su -c 'test -f /data/adb/magisk/util_functions.sh'
+
+      - name: Assert a module flashes end-to-end (the declarative flow)
+        run: |
+          set -euxo pipefail
+          # Stage a trivial no-op Magisk module and prove it installs via the
+          # exact primitive flash-modules.sh uses. This is what actually
+          # exercises the populated MAGISKBIN (the doctor checks above do not).
+          workdir="$(mktemp -d)"
+          mkdir -p "$workdir/noop"
+          cat > "$workdir/noop/module.prop" <<'EOF'
+          id=beetroot_e2e_noop
+          name=Beetroot E2E No-op
+          version=1.0
+          versionCode=1
+          author=beetroot
+          description=Trivial module proving the declarative flash flow works.
+          EOF
+          (cd "$workdir/noop" && zip -r ../noop.zip .)
+          adb -s 127.0.0.1:5555 push "$workdir/noop.zip" /data/local/tmp/noop.zip
+          adb -s 127.0.0.1:5555 shell su -c 'magisk --install-module /data/local/tmp/noop.zip'
+          adb -s 127.0.0.1:5555 shell su -c 'test -d /data/adb/modules/beetroot_e2e_noop'
 
       - name: Beetroot + container logs (always, for diagnosis)
         if: always()

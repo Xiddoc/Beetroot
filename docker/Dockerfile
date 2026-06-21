@@ -5,8 +5,9 @@
 ARG BASE_IMAGE=redroid/redroid:14.0.0_litegapps_houdini_magisk
 FROM ${BASE_IMAGE}
 
-# entrypoint.sh sources three sibling helpers (magisk-config.sh,
-# flash-modules.sh, launch-frida.sh) — all four land at filesystem root.
+# entrypoint.sh sources its sibling helpers (magisk-config.sh, magisk-env.sh,
+# flash-modules.sh, activate-zygisk.sh, launch-frida.sh) — the glob lands them
+# all at filesystem root.
 COPY --chmod=755 docker/*.sh /
 
 # Android init parses every *.rc in /system/etc/init/ at boot.
