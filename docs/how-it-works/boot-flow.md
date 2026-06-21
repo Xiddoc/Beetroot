@@ -19,8 +19,8 @@ instance .env file (per-instance, in the instance directory)
     `environment:` block (one ${KEY} per BEETROOT_* var)
 container env vars (visible to PID 1 = Android `init`)
   ↓ Android init propagates env to services it spawns
-helper shell scripts (entrypoint.sh / magisk-config.sh /
-                      flash-modules.sh / launch-frida.sh)
+helper shell scripts (entrypoint.sh / magisk-config.sh / magisk-env.sh /
+                      flash-modules.sh / activate-zygisk.sh / launch-frida.sh)
   reads `${BEETROOT_FRIDA_BIN:-/data/local/tmp/frida-server}` etc.
 ```
 
@@ -72,26 +72,33 @@ sequenceDiagram
     M->>I: set sys.boot_completed=1
     I->>E: trigger exec_background u:r:magisk:s0 root root -- /system/bin/sh /entrypoint.sh
     E->>E: wait for /data/adb/magisk.db to exist
-    E->>M: magisk --sqlite: enable Zygisk + denylist
+    E->>M: magisk --sqlite: enable Zygisk + denylist (record prior zygisk value)
     E->>M: magisk --sqlite: add denylist entries
+    E->>E: populate /data/adb/magisk (MAGISKBIN) from /system/etc/init/magisk + magisk.apk
     E->>M: magisk --install-module for each zip in /data/adb/modules_update
+    E->>I: setprop ctl.restart zygote (only if Zygisk was newly enabled this boot)
+    I->>M: zygote restarts → Zygisk injects + modules load
     E->>E: launch /data/local/tmp/frida-server &
     E->>E: wait (keeps frida-server as child)
 ```
 
 ## `entrypoint.sh` step by step
 
-In v0.3, each numbered step below lives in a dedicated helper (see [Boot Scripts](boot-scripts.md) for per-helper contracts). The entrypoint itself is 12 lines of glue that sources the three helpers in order.
+Each numbered step below lives in a dedicated helper (see [Boot Scripts](boot-scripts.md) for per-helper contracts). The entrypoint itself is a few lines of glue that sources the helpers in order.
 
 1. **Wait for the Magisk daemon.** (`magisk-config.sh`.) Polls `magisk --sqlite "SELECT 1"` in a bounded loop (default 120 one-second attempts, ~2 minutes — conservative because a first boot of redroid+Magisk can legitimately take a while). The DB at `/data/adb/magisk.db` is created by Magisk during its own initialization, which happens during the Zygote start. Without this wait, the SQL writes below would silently no-op. If Magisk never answers (broken or missing), the helper exits 1 and the boot configuration aborts loudly — the error surfaces in `docker compose logs` instead of the container hanging half-configured forever.
 
-2. **Configure Magisk via SQL.** (`magisk-config.sh`.) Calls `magisk --sqlite` to enable Zygisk and the denylist, then inserts each package from `magisk.denylist` as a denylist entry. These writes take effect the next time Zygisk reads the DB — which happens before any app process starts, because Zygisk hooks into Zygote before forking app processes.
+2. **Configure Magisk via SQL.** (`magisk-config.sh`.) Calls `magisk --sqlite` to enable Zygisk and the denylist, then inserts each package from `magisk.denylist` as a denylist entry. It also records the *prior* `zygisk` value before the write so step 5 knows whether this boot is the one that flips Zygisk on. The denylist write takes effect the next time Zygisk reads the DB.
 
-3. **Flash modules.** (`flash-modules.sh`.) Iterates every `*.zip` in `/data/adb/modules_update` (the bind-mounted `<instance-dir>/modules/` directory — v0.4 T4 moved the target from the Beetroot-invented `/flash_dir` to Magisk's well-known staging dir) and calls `magisk --install-module <zip>`. Modules that are already installed are reinstalled safely (Magisk handles idempotency). A module that fails to install is logged with a `[!]` warning and skipped — boot continues to the Frida launch step.
+3. **Populate the Magisk binary directory.** (`magisk-env.sh`.) The redroid-script image leaves `/data/adb/magisk` (MAGISKBIN) empty — on a real phone the Magisk *app* finishes the install the first time it's opened, copying the binaries and extracting the per-install scripts (`util_functions.sh`, `module_installer.sh`, …) out of `magisk.apk`. Headless redroid never runs that, so `magisk --install-module` would abort with "Incomplete Magisk install". This helper replicates the app's environment-fix headlessly: it copies the Magisk binaries from `/system/etc/init/magisk` and `busybox unzip`s the asset scripts out of `magisk.apk` into MAGISKBIN. It runs **before** the flash step for that reason, and is idempotent (it skips when `util_functions.sh` is already present).
 
-4. **Launch Frida (if opted in).** (`launch-frida.sh`.) If `/data/local/tmp/frida-server` is executable, starts it in the background with `&`. When the instance's `beetroot.yaml` omits the `frida:` block (v0.3+ default), this path is a 0-byte non-executable placeholder and the launch is skipped — no Frida process inside the container.
+4. **Flash modules.** (`flash-modules.sh`.) Iterates every `*.zip` in `/data/adb/modules_update` (the bind-mounted `<instance-dir>/modules/` directory — v0.4 T4 moved the target from the Beetroot-invented `/flash_dir` to Magisk's well-known staging dir) and calls `magisk --install-module <zip>`. Modules that are already installed are reinstalled safely (Magisk handles idempotency). A module that fails to install is logged with a `[!]` warning and skipped — boot continues.
 
-5. **`wait`.** (Back in `entrypoint.sh`.) The script blocks on `wait` so the shell process stays alive. If Frida was launched, this also keeps it attached to the Docker container's process tree and means `docker compose logs` streams Frida's stderr alongside the entrypoint output.
+5. **Activate Zygisk.** (`activate-zygisk.sh`.) Zygisk only injects zygote at zygote start, but step 2 enables it after `boot_completed` — when the first zygote has already started without it. So on the first boot of a fresh instance (where step 2 recorded a `0`/missing prior value) this helper restarts zygote once via `setprop ctl.restart zygote`, making Zygisk — and any Zygisk module just flashed (e.g. LSPosed) — active without the user having to `beetroot restart`. On later boots `zygisk` is already `1`, so magiskd injects the first zygote and no restart fires. Opt out with `BEETROOT_ZYGOTE_RESTART=0`.
+
+6. **Launch Frida (if opted in).** (`launch-frida.sh`.) If `/data/local/tmp/frida-server` is executable, starts it in the background with `&`. When the instance's `beetroot.yaml` omits the `frida:` block (v0.3+ default), this path is a 0-byte non-executable placeholder and the launch is skipped — no Frida process inside the container.
+
+7. **`wait`.** (Back in `entrypoint.sh`.) The script blocks on `wait` so the shell process stays alive. If Frida was launched, this also keeps it attached to the Docker container's process tree and means `docker compose logs` streams Frida's stderr alongside the entrypoint output.
 
 ## Shell environment
 
@@ -99,6 +106,6 @@ In v0.3, each numbered step below lives in a dedicated helper (see [Boot Scripts
 
 ## Helper scripts
 
-In v0.3, `entrypoint.sh` was split into three helpers — `magisk-config.sh`, `flash-modules.sh`, `launch-frida.sh` — that the slimmed-down glue sources in order. Each helper reads its container-side paths from a `BEETROOT_*` env var with a safe default, so v0.4's [stealth-posture path randomization](../design/stealth-posture.md) can swap paths per-build without touching helper code.
+`entrypoint.sh` is slimmed-down glue that sources five helpers in order — `magisk-config.sh`, `magisk-env.sh`, `flash-modules.sh`, `activate-zygisk.sh`, `launch-frida.sh`. Each helper reads its container-side paths from a `BEETROOT_*` env var with a safe default, so v0.4's [stealth-posture path randomization](../design/stealth-posture.md) can swap paths per-build without touching helper code.
 
 For the per-helper contracts (env vars, idempotency, exit semantics) and the modify-helpers checklist, see [Boot Scripts](boot-scripts.md).

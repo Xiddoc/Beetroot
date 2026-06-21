@@ -46,8 +46,18 @@ while ! magisk --sqlite "SELECT 1" >/dev/null 2>&1; do
 done
 
 echo "[*] Enabling Zygisk + denylist"
+# Capture the prior zygisk value so activate-zygisk.sh knows whether this boot
+# is the one that flips it on. Zygisk only injects zygote at zygote start, so a
+# 0/missing → 1 transition this boot means the running zygote predates Zygisk
+# and needs a one-shot restart to activate it (and any flashed Zygisk module).
+PREV_ZYGISK="$(magisk --sqlite "SELECT value FROM settings WHERE key='zygisk';" | awk -F'=' '{print $NF}')"
 magisk --sqlite "REPLACE INTO settings (key, value) VALUES ('zygisk', 1);"
 magisk --sqlite "REPLACE INTO settings (key, value) VALUES ('denylist', 1);"
+if [ "$PREV_ZYGISK" != "1" ]; then
+    # Read by activate-zygisk.sh (sourced into the same entrypoint shell).
+    BEETROOT_ZYGISK_NEWLY_ENABLED=1
+    export BEETROOT_ZYGISK_NEWLY_ENABLED
+fi
 
 # Verify Zygisk actually landed in the settings table. A silent
 # regression here (e.g. Magisk renames its settings schema, or the

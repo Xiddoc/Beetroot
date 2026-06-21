@@ -298,6 +298,42 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **Magisk module install + Zygisk activation now work on a real booted
+  instance (the two gaps behind a broken declarative module flow).** Two
+  structural gaps in the redroid-script Magisk Delta image — both stemming from
+  it expecting a human to open the Magisk app once to finish setup — broke
+  Beetroot's headless boot:
+  1. **`magisk --install-module` aborted with "Incomplete Magisk install".**
+     The image bakes the Magisk binaries into `/system/etc/init/magisk` but its
+     bootanim.rc only `mkdir`s `/data/adb/magisk` (MAGISKBIN) *empty* — the
+     per-install scripts (`util_functions.sh`, `module_installer.sh`, …) live
+     only inside `magisk.apk` and are normally extracted by the Magisk app.
+     Headless redroid never runs that, so MAGISKBIN stayed empty and the
+     installer aborted (`module_installer.sh` sources
+     `/data/adb/magisk/util_functions.sh`). This broke **every** module flash
+     (`flash-modules.sh`), not just LSPosed. A new boot helper
+     `docker/magisk-env.sh` (sourced before `flash-modules.sh`) replicates the
+     app's environment-fix headlessly: it copies the binaries from
+     `/system/etc/init/magisk` and `busybox unzip`s the `assets/*.sh` scripts
+     out of `magisk.apk` into MAGISKBIN. Idempotent (skips when
+     `util_functions.sh` is already present).
+  2. **Zygisk never actually activated on the first boot.** Zygisk injects
+     zygote at zygote *start*, but `magisk-config.sh` enables it on
+     `boot_completed` — after the first zygote already started without it — so
+     the setting landed but Zygisk (and any flashed Zygisk module) stayed
+     dormant until a reboot. A new helper `docker/activate-zygisk.sh` restarts
+     zygote once (`setprop ctl.restart zygote`) on the boot that *newly* enables
+     Zygisk (gated via a prior-value read in `magisk-config.sh`, exported as
+     `BEETROOT_ZYGISK_NEWLY_ENABLED`), so a declarative `up` → module-flashed →
+     active flow works without a manual `beetroot restart`. Routine restarts
+     skip it; opt out with `BEETROOT_ZYGOTE_RESTART=0`. New env vars
+     (`BEETROOT_MAGISK_BIN_DIR`, `BEETROOT_MAGISK_SRC_DIR`,
+     `BEETROOT_ZYGOTE_RESTART`) are script-level (like `BEETROOT_MAGISK_WAIT_SECS`)
+     and don't cross compose. The `e2e.yml` Tier 2 job now flashes a no-op module
+     and asserts MAGISKBIN is populated — the regression guard the old
+     doctor-only assertions lacked. Docs:
+     [boot scripts](https://iliketo.party/Beetroot/how-it-works/boot-scripts/),
+     [boot flow](https://iliketo.party/Beetroot/how-it-works/boot-flow/).
 - **Docs links now point directly at the canonical HTTPS host (#80).** The
   README badge, README doc table, `CLAUDE.md` "published site" link, the
   `mkdocs.yml` `site_url`, and every CHANGELOG doc link used

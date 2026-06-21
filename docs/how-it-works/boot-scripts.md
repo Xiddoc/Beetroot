@@ -12,8 +12,10 @@ for the init trigger.
 
 ## Why split entrypoint.sh
 
-v0.2 shipped a single 40-line `entrypoint.sh`. v0.3 splits it into
-three helpers plus a 12-line glue file. The split delivers two things:
+v0.2 shipped a single 40-line `entrypoint.sh`. v0.3 split it into
+helpers plus a small glue file (`magisk-env.sh` and `activate-zygisk.sh`
+were added later — see their sections below). The split delivers two
+things:
 
 - **Per-helper contracts.** Each helper has one job, one set of env
   vars, and one place in the boot sequence. New behaviour (e.g.
@@ -27,7 +29,7 @@ three helpers plus a 12-line glue file. The split delivers two things:
 
 ## Shared contract
 
-All three helpers obey the same rules:
+All helpers obey the same rules:
 
 - **Shell:** `/system/bin/sh` (Android's toybox-derived shell). Strict
   POSIX sh. No bashisms (`[[ ]]`, arrays, process substitution),
@@ -48,9 +50,11 @@ All three helpers obey the same rules:
 
 ## `entrypoint.sh`
 
-The glue. Prints a boot banner, sources the three helpers below in
-order, then `wait`s so the shell stays alive as the parent of any
-backgrounded children (notably `frida-server`).
+The glue. Prints a boot banner, sources the helpers below in
+order (`magisk-config.sh` → `magisk-env.sh` → `flash-modules.sh` →
+`activate-zygisk.sh` → `launch-frida.sh`), then `wait`s so the shell
+stays alive as the parent of any backgrounded children (notably
+`frida-server`).
 
 | Item        | Value                                                       |
 |-------------|-------------------------------------------------------------|
@@ -93,8 +97,42 @@ Four actions (v0.4 T2):
 | `BEETROOT_DENYLIST_PACKAGES`  | `(empty)`                                               | Comma-separated package ids. The **script-level** default is the empty string (enrols nothing). The GMS pair (`com.google.android.gms,com.google.android.gms.unstable`) is supplied by Beetroot's `render_env` from `magisk.denylist`'s config default — not by this script. Empty list → helper skips the INSERT entirely (no SQL'inject of an empty `('', '')` row). |
 | `BEETROOT_MAGISK_WAIT_SECS`   | `120`                                                   | Upper bound (1-second probe attempts) on the daemon wait; on timeout the helper exits 1. Script-level knob only — not passed through `compose.yaml` / `render_env`. |
 
+It also records the **prior** `zygisk` value (a `SELECT` before the
+`REPLACE INTO`) and, when that value was not already `1`, exports
+`BEETROOT_ZYGISK_NEWLY_ENABLED=1` into the shared entrypoint shell so
+`activate-zygisk.sh` knows this boot is the one that flipped Zygisk on.
+
 **Idempotency:** `REPLACE INTO` and `INSERT OR IGNORE` both no-op on
 re-run.
+
+## `magisk-env.sh`
+
+Populates Magisk's binary directory (**MAGISKBIN**, `/data/adb/magisk`)
+so `magisk --install-module` works headlessly. The redroid-script image
+bakes the Magisk binaries into `/system/etc/init/magisk` and its
+bootanim.rc only `mkdir`s `/data/adb/magisk` **empty** at boot. On a real
+phone the Magisk *app* finishes the install the first time a human opens
+it — it copies the binaries and extracts the per-install shell scripts
+(`util_functions.sh`, `module_installer.sh`, …) out of `magisk.apk` into
+MAGISKBIN. Headless redroid never runs that app flow, so MAGISKBIN stays
+empty and every `magisk --install-module` aborts with
+**"Incomplete Magisk install"** (the installer sources
+`/data/adb/magisk/util_functions.sh`). This helper replicates the app's
+environment-fix headlessly: it copies the binaries from
+`BEETROOT_MAGISK_SRC_DIR` and `busybox unzip`s the `assets/*.sh` scripts
+out of `magisk.apk` into MAGISKBIN. entrypoint.sh sources it **before**
+`flash-modules.sh` for that reason.
+
+| Env var                     | Default                       | Notes                                                                                                  |
+|-----------------------------|-------------------------------|--------------------------------------------------------------------------------------------------------|
+| `BEETROOT_MAGISK_BIN_DIR`   | `/data/adb/magisk`            | MAGISKBIN — the data-side Magisk install the module installer reads.                                    |
+| `BEETROOT_MAGISK_SRC_DIR`   | `/system/etc/init/magisk`     | Where redroid-script baked the Magisk binaries + `magisk.apk` at build time.                            |
+
+**Idempotency:** skips when `BEETROOT_MAGISK_BIN_DIR/util_functions.sh`
+already exists (the exact file the module installer checks). A missing
+source dir or `magisk.apk` is logged with a `[!]` warning and the helper
+falls through — like every other helper it is sourced under the
+entrypoint's `set -e`, so it must never `exit`.
 
 ## `flash-modules.sh`
 
@@ -119,6 +157,33 @@ bare non-zero exit would otherwise abort the whole boot and skip
 **Idempotency:** Magisk's `--install-module` handles re-install of an
 already-present module gracefully.
 
+## `activate-zygisk.sh`
+
+Makes a freshly-enabled Zygisk actually take effect. Zygisk injects
+itself into **zygote at zygote start**, but `magisk-config.sh` enables it
+on `sys.boot_completed=1` — after the first zygote has already started
+*without* Zygisk. So on the first boot of a fresh instance the setting
+lands but Zygisk (and any Zygisk module just flashed, e.g. LSPosed) is
+not live until a zygote restart. This helper performs that one-shot
+restart (`setprop ctl.restart zygote`) so a declarative `up` →
+module-flashed → active flow works without the user having to
+`beetroot restart`.
+
+It is **gated** to fire only on the boot that *newly* enables Zygisk
+(`BEETROOT_ZYGISK_NEWLY_ENABLED=1`, exported by `magisk-config.sh` when
+the prior DB value was not already `1`). On every later boot `zygisk` is
+already `1`, so magiskd injects the first zygote and no restart is needed
+— this avoids churning zygote on routine restarts.
+
+| Env var                          | Default | Notes                                                                                                                |
+|----------------------------------|---------|--------------------------------------------------------------------------------------------------------------------|
+| `BEETROOT_ZYGOTE_RESTART`        | `1`     | Set to `0` to disable the zygote restart entirely (e.g. a backend where a mid-boot zygote restart is undesirable).  |
+| `BEETROOT_ZYGISK_NEWLY_ENABLED`  | `0`     | Set to `1` by `magisk-config.sh` (not by compose) when Zygisk transitioned to enabled this boot. The gating signal. |
+
+**Idempotency:** the gate makes this a no-op on every boot after the
+first. `setprop` failures are logged with a `[!]` warning and the helper
+falls through — it must never abort the boot.
+
 ## `launch-frida.sh`
 
 Checks the executable bit on the frida-server binary and, if set,
@@ -142,18 +207,26 @@ attempt's port bind anyway).
 
 ## Env-var contract summary
 
-| Env var                      | Default                              | Consumer            |
-|------------------------------|--------------------------------------|---------------------|
-| `BEETROOT_MAGISK_DB`         | `/data/adb/magisk.db`                | `magisk-config.sh`  |
-| `BEETROOT_DENYLIST_PACKAGES` | `(empty)`                            | `magisk-config.sh`  |
-| `BEETROOT_MODULES_DIR`       | `/data/adb/modules_update`           | `flash-modules.sh`  |
-| `BEETROOT_FRIDA_BIN`         | `/data/local/tmp/frida-server`       | `launch-frida.sh`   |
+| Env var                      | Default                              | Consumer             |
+|------------------------------|--------------------------------------|----------------------|
+| `BEETROOT_MAGISK_DB`         | `/data/adb/magisk.db`                | `magisk-config.sh`   |
+| `BEETROOT_DENYLIST_PACKAGES` | `(empty)`                            | `magisk-config.sh`   |
+| `BEETROOT_MODULES_DIR`       | `/data/adb/modules_update`           | `flash-modules.sh`   |
+| `BEETROOT_FRIDA_BIN`         | `/data/local/tmp/frida-server`       | `launch-frida.sh`    |
 
-All four are passed through `compose.yaml`'s service `environment:`
+These four are passed through `compose.yaml`'s service `environment:`
 block from the host shell, with an empty-string fallback that triggers
-each helper's bake-in default. (`BEETROOT_MAGISK_WAIT_SECS` is
-intentionally absent from this table — it never crosses compose; it's
-a script-level default consumed only by `magisk-config.sh`, see above.)
+each helper's bake-in default. A second group is **script-level only**
+(never crosses compose), consumed via `${VAR:-default}` directly in the
+helpers:
+
+| Env var                         | Default                       | Consumer              |
+|---------------------------------|-------------------------------|-----------------------|
+| `BEETROOT_MAGISK_WAIT_SECS`     | `120`                         | `magisk-config.sh`    |
+| `BEETROOT_MAGISK_BIN_DIR`       | `/data/adb/magisk`            | `magisk-env.sh`       |
+| `BEETROOT_MAGISK_SRC_DIR`       | `/system/etc/init/magisk`     | `magisk-env.sh`       |
+| `BEETROOT_ZYGOTE_RESTART`       | `1`                           | `activate-zygisk.sh`  |
+| `BEETROOT_ZYGISK_NEWLY_ENABLED` | `0`                           | `activate-zygisk.sh` (set by `magisk-config.sh`) |
 
 ## Why not Python?
 

@@ -9,6 +9,7 @@ These tests source each helper from a sh -c wrapper that prints
 ``POST`` afterwards. If the helper exits the parent shell, ``POST``
 never reaches stdout — the assertion catches that regression.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -69,6 +70,33 @@ def test_flash_modules_sourced_failing_install_does_not_kill_parent_shell(tmp_pa
     )
     assert "POST" in out, f"parent shell died — full stdout: {out!r}"
     assert "failed to install" in out, f"missing [!] warning — full stdout: {out!r}"
+
+
+def test_magisk_env_sourced_missing_src_does_not_kill_parent_shell(tmp_path: Path) -> None:
+    # No MAGISK_SRC_DIR on disk: the helper must warn and fall through (it is
+    # sourced before flash-modules.sh, so a stray `exit` here would skip every
+    # later helper). POST must still reach stdout.
+    out = _source_and_post(
+        "magisk-env.sh",
+        env={
+            "BEETROOT_MAGISK_SRC_DIR": str(tmp_path / "no-magisk"),
+            "BEETROOT_MAGISK_BIN_DIR": str(tmp_path / "magiskbin"),
+        },
+    )
+    assert "POST" in out, f"parent shell died — full stdout: {out!r}"
+
+
+def test_activate_zygisk_sourced_failing_setprop_does_not_kill_parent_shell(
+    tmp_path: Path,
+) -> None:
+    # Zygisk newly enabled but `setprop` is absent from the pinned PATH, so the
+    # restart fails. The guarded `|| echo` must swallow it and fall through —
+    # a bare non-zero here would skip launch-frida.sh and the trailing `wait`.
+    out = _source_and_post(
+        "activate-zygisk.sh",
+        env={"BEETROOT_ZYGISK_NEWLY_ENABLED": "1"},
+    )
+    assert "POST" in out, f"parent shell died — full stdout: {out!r}"
 
 
 def test_launch_frida_sourced_missing_binary(tmp_path: Path) -> None:
