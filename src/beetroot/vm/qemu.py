@@ -45,6 +45,7 @@ _GUEST_ADB_PORT = 5555
 
 # The QEMU pidfile name inside the instance directory.
 _PIDFILE_NAME = "qemu.pid"
+_CONSOLE_LOG_NAME = "qemu-console.log"
 
 # How long ``terminate`` waits for a clean SIGTERM exit before escalating
 # to SIGKILL, and how often it polls liveness during that window.
@@ -343,6 +344,17 @@ class QemuProcess:
         """
         return self._instance_dir / _PIDFILE_NAME
 
+    @property
+    def console_log(self) -> Path:
+        """
+        Return the path the guest serial console is persisted to.
+
+        QEMU runs ``-nographic`` (ttyS0 → process stdout), and :meth:`start`
+        redirects that stdout here so the boot trace survives after ``up``
+        returns — the file ``beetroot logs`` reads for a ``vm`` instance.
+        """
+        return self._instance_dir / _CONSOLE_LOG_NAME
+
     def read_pid(self) -> int | None:
         """
         Return the PID recorded in the pidfile, or ``None`` if absent/garbage.
@@ -401,11 +413,22 @@ class QemuProcess:
             )
         self._instance_dir.mkdir(parents=True, exist_ok=True)
         try:
-            proc = subprocess.Popen(  # noqa: S603  # argv built by build_qemu_argv from validated config; qemu_bin resolved via PATH
-                argv,
-                stdin=subprocess.DEVNULL,
-                start_new_session=True,
-            )
+            # Redirect the guest serial console (ttyS0 → QEMU stdout under
+            # -nographic) to a persisted file so `beetroot logs` can surface
+            # the boot trace after `up` returns. Truncated each start, so a
+            # fresh boot gets a fresh log. The child dups the fd at fork, so
+            # the handle is safe to close once Popen has launched.
+            log_handle = self.console_log.open("wb")
+            try:
+                proc = subprocess.Popen(  # noqa: S603  # argv built by build_qemu_argv from validated config; qemu_bin resolved via PATH
+                    argv,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            finally:
+                log_handle.close()
         except OSError as exc:
             raise QemuLaunchError(
                 f"failed to launch QEMU ({argv[0]!r}): {exc}. "

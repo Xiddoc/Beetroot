@@ -303,7 +303,10 @@ Adb-kind rows use the same shape as `beetroot status` for an adopted device: `se
 
 ## `logs`
 
-Tail the Docker Compose logs for an instance.
+Tail an instance's logs. The source depends on the backend:
+
+- **redroid (`binder: host|auto`)** — passes through to `docker compose logs`.
+- **micro-VM (`binder: vm`)** — prints the guest's persisted QEMU **serial console** (`<instance>/qemu-console.log`): the kernel boot trace, `guest-init` output, and the in-guest redroid container's stdout. The console is captured by `beetroot up` and survives after it returns, so this is how you watch — or post-mortem — a slow TCG boot.
 
 ```
 beetroot logs <name> [-f]
@@ -312,13 +315,20 @@ beetroot logs <name> [-f]
 | Argument / Flag | Type | Description |
 |----------------|------|-------------|
 | `name` | positional | Instance name |
-| `-f`, `--follow` | flag | Follow log output (equivalent to `docker compose logs -f`) |
+| `-f`, `--follow` | flag | Follow log output (`docker compose logs -f` for redroid; `tail -f` of the console for the micro-VM) |
 
-Passes through directly to `docker compose logs`. Useful for watching `entrypoint.sh` output during boot:
+Useful for watching `entrypoint.sh` output during boot:
 
 ```bash
 beetroot logs alpha -f
 # Watch for: [*] Android boot detected. Applying Beetroot configuration...
+```
+
+For a `binder: vm` instance, the same command surfaces the emulated boot (it's only supported once the VM has been started at least once, so the console log exists):
+
+```bash
+beetroot logs vmphone -f
+# Watch for: kernel boot → guest-init → redroid container stdout
 ```
 
 ---

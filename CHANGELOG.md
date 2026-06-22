@@ -4,6 +4,23 @@
 
 ### Features
 
+- **`beetroot logs` now works for the `binder: vm` backend — the micro-VM is
+  finally debuggable.** Previously `logs` was redroid-only (`docker compose
+  logs`); a `vm` instance raised `'logs' is not supported by the 'vm'
+  backend`, even though `beetroot up`'s own error hint and the config docs
+  told users to run it to watch a slow TCG boot. The gap was real: QEMU runs
+  `-nographic` (guest serial → process stdout) and `QemuProcess.start` left
+  that stdout un-redirected, so the boot trace died with the `up` process and
+  there was **no way to see why a guest never reached `sys.boot_completed`**.
+  Now `start` redirects the serial console to a persisted
+  `<instance>/qemu-console.log` (truncated per boot; the child dups the fd so
+  the VM keeps running detached), and a new `LogReader` capability protocol
+  (satisfied by both the redroid `Instance` and `VmDeviceBackend`) gates the
+  `logs` verb so `beetroot logs <vm-instance> [-f]` prints (or `tail -f`s) the
+  kernel boot trace, `guest-init` output, and the in-guest redroid container's
+  stdout. New code: `qemu.QemuProcess.console_log`, `VmDeviceBackend.logs`,
+  `api.LogReader`. Docs: [CLI § logs](https://iliketo.party/Beetroot/reference/cli/#logs).
+
 - **`binder: vm` warm-start boot cache (`vm.boot_cache`) — ~22x faster repeat
   boots.** Booting redroid in the micro-VM under TCG is CPU-bound (emulating
   ART / Zygote / `system_server`), so a cold boot to first ADB takes ~3-4 min

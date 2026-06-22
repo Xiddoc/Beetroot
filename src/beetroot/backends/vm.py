@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -324,6 +325,38 @@ class VmDeviceBackend:
         cmd = [_ADB, "-s", target, "shell", *(args or [])]
         res = subprocess.run(cmd, check=False)  # noqa: S603  # same as above
         return int(res.returncode)
+
+    def logs(self, *, follow: bool = False) -> None:
+        """
+        Surface the guest's persisted QEMU serial console.
+
+        Unlike the redroid backend (which tails ``docker compose logs``),
+        the micro-VM has no Docker project on the host — its only log is the
+        guest serial console that
+        :meth:`beetroot.vm.qemu.QemuProcess.start` redirects to
+        ``<instance>/qemu-console.log``. This prints that file (the kernel
+        boot trace, ``guest-init`` output, and the in-guest redroid
+        container's stdout). With ``follow`` it streams via ``tail -f``
+        (Ctrl-C to stop), mirroring ``docker compose logs -f``.
+
+        Args:
+            follow: If True, stream continuously with ``tail -f`` instead of
+                printing the current contents once.
+        """
+        log = qemu.QemuProcess(self._root).console_log
+        if not log.is_file():
+            console.warn(
+                f"no QEMU console log for {self._name!r} yet at {log} — "
+                "has the VM been started with `beetroot up`?"
+            )
+            return
+        if follow:
+            subprocess.run(  # noqa: S603  # tail is a host coreutils CLI; the only argument is a repo-controlled path
+                ["tail", "-n", "+1", "-f", str(log)],  # noqa: S607  # tail resolved via PATH, matching the rest of the host-CLI calls here
+                check=False,
+            )
+            return
+        sys.stdout.write(log.read_text(errors="replace"))
 
     def frida_cli(self, args: Sequence[str]) -> int:
         """

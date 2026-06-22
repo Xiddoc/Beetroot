@@ -306,6 +306,28 @@ class Lifecycle(Protocol):
 
 
 @runtime_checkable
+class LogReader(Protocol):
+    """
+    Capability sub-protocol: backends that can surface their own logs.
+
+    The :class:`Instance` (redroid) backend tails ``docker compose logs``;
+    the :class:`~beetroot.backends.vm.VmDeviceBackend` reads the persisted
+    QEMU serial console. Both satisfy this Protocol, so the ``logs`` verb
+    gates on it (via :func:`beetroot.cli._require`) rather than on the
+    concrete :class:`Instance` type.
+    """
+
+    def logs(self, *, follow: bool = False) -> None:
+        """
+        Tail this backend's logs.
+
+        Args:
+            follow: If True, stream continuously instead of printing once.
+        """
+        ...
+
+
+@runtime_checkable
 class ModuleInstaller(Protocol):
     """
     Capability sub-protocol: backends that can install Magisk modules.

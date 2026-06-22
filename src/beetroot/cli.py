@@ -933,7 +933,7 @@ def logs(
     """
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
-    inst = cast(api.Instance, _require(backend, api.Instance, "logs"))
+    inst = cast(api.LogReader, _require(backend, api.LogReader, "logs"))
     inst.logs(follow=follow)
 
 
