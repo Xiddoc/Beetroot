@@ -315,6 +315,32 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **The boot helpers couldn't find the `magisk` binary on a real boot — so
+  none of the Magisk configuration ran.** `entrypoint.sh` is launched by Android
+  init (`stealth.rc`'s `exec_background`), which inherits init's default service
+  PATH (`/system/bin:/system/xbin:/vendor/bin:…`). That PATH does **not**
+  include the directory Magisk installs its `magisk` binary into — `/sbin/magisk`
+  on the redroid Magisk image. Every helper calls bare `magisk`, so each call
+  failed with "not found": `magisk-config.sh`'s daemon-wait loop spun on
+  `magisk --sqlite "SELECT 1"` until it hit `BEETROOT_MAGISK_WAIT_SECS` (~120 s),
+  exited 1, and **aborted the entire entrypoint before Zygisk, the denylist,
+  MAGISKBIN, or modules were ever configured**. The smoking gun on a real booted
+  image: `init: Service 'exec 38 (/system/bin/sh /entrypoint.sh)' … exited with
+  status 1 … took 145 seconds`, with an empty settings table and empty
+  `/data/adb/magisk`. This made the two fixes above (and the pre-existing
+  Zygisk/denylist writes) **no-ops on every real boot** — it was invisible
+  because the unit tests put a fake `magisk` on PATH and the e2e boot tier is
+  WIP/`continue-on-error`. New helper `docker/magisk-path.sh` (sourced **first**)
+  prepends the first directory from `BEETROOT_MAGISK_DIRS` (default
+  `/sbin:/debug_ramdisk`) that actually holds an executable `magisk`; it's a
+  no-op when `magisk` already resolves. **Verified end-to-end on a live
+  `binder: vm` TCG VM**: with the fix, an unattended boot populates MAGISKBIN
+  (`util_functions.sh` present), `magisk --install-module` succeeds, and the
+  settings table shows `zygisk=1` / `denylist=1`. The container-boot test now
+  places its fake `magisk` off-PATH (reachable only via `BEETROOT_MAGISK_DIRS`)
+  so it's a real regression guard. Docs:
+  [boot scripts](https://iliketo.party/Beetroot/how-it-works/boot-scripts/),
+  [boot flow](https://iliketo.party/Beetroot/how-it-works/boot-flow/).
 - **Magisk module install + Zygisk activation now work on a real booted
   instance (the two gaps behind a broken declarative module flow).** Two
   structural gaps in the redroid-script Magisk Delta image — both stemming from

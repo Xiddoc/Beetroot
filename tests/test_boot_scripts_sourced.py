@@ -32,6 +32,17 @@ def _source_and_post(helper_name: str, env: dict[str, str]) -> str:
     return res.stdout
 
 
+def test_magisk_path_sourced_does_not_kill_parent_shell(tmp_path: Path) -> None:
+    # magisk-path.sh is sourced FIRST by entrypoint.sh; a stray `exit` here
+    # would skip every later helper. With no `magisk` anywhere it must fall
+    # through cleanly. POST must still reach stdout.
+    out = _source_and_post(
+        "magisk-path.sh",
+        env={"BEETROOT_MAGISK_DIRS": str(tmp_path / "nope")},
+    )
+    assert "POST" in out, f"parent shell died — full stdout: {out!r}"
+
+
 def test_flash_modules_sourced_does_not_kill_parent_shell(tmp_path: Path) -> None:
     # Point BEETROOT_MODULES_DIR at a path that doesn't exist; the
     # original helper bailed with `exit 0` on this branch and killed

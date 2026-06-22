@@ -6,6 +6,7 @@
 # shellcheck disable=SC1091  # helpers live at container root, not this tree.
 set -eu # fail fast on undefined vars and unhandled errors (T3).
 echo "[*] Android boot detected. Applying Beetroot configuration..."
+. /magisk-path.sh
 . /magisk-config.sh
 . /magisk-env.sh
 . /flash-modules.sh

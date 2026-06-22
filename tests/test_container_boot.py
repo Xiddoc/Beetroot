@@ -78,27 +78,33 @@ def _build_inline_script(log_mount: str, docker_src: str, modules_dir: str) -> s
         cp {docker_src}/*.sh /
 
         # 2. Write fake shims — log to the bind-mounted log directory
-        mkdir -p /tmp/beet-bin
+        mkdir -p /tmp/beet-bin /tmp/magisk-dir
         export MAGISK_LOG="{log_mount}/magisk.log"
         touch "$MAGISK_LOG"
 
-        cat > /tmp/beet-bin/magisk << 'EOF'
+        # The fake magisk is placed OFF PATH, reachable only via the dir
+        # magisk-path.sh probes (BEETROOT_MAGISK_DIRS). This mirrors the real
+        # image, where `magisk` lives at /sbin (absent from init's service
+        # PATH): the boot only configures anything if magisk-path.sh resolves
+        # it. A regression there makes magisk-config.sh's wait fail fast (see
+        # BEETROOT_MAGISK_WAIT_SECS below) rather than hang.
+        cat > /tmp/magisk-dir/magisk << 'EOF'
 {_FAKE_MAGISK}
 EOF
-        chmod +x /tmp/beet-bin/magisk
+        chmod +x /tmp/magisk-dir/magisk
 
         cat > /tmp/beet-bin/frida-server << 'EOF'
 {_FAKE_FRIDA}
 EOF
         chmod +x /tmp/beet-bin/frida-server
 
-        export PATH="/tmp/beet-bin:$PATH"
-
         # 3. Create DB parent dir (magisk-config.sh echoes the path)
         mkdir -p /data/adb
 
         # 4. BEETROOT_* env vars consumed by the helpers
         export BEETROOT_MAGISK_DB="/data/adb/magisk.db"
+        export BEETROOT_MAGISK_DIRS="/tmp/magisk-dir"
+        export BEETROOT_MAGISK_WAIT_SECS=5
         export BEETROOT_DENYLIST_PACKAGES="com.google.android.gms,com.google.android.gms.unstable"
         export BEETROOT_MODULES_DIR="{modules_dir}"
         export BEETROOT_FRIDA_BIN="/tmp/beet-bin/frida-server"
@@ -135,6 +141,12 @@ def test_container_boot_end_to_end(tmp_path: Path) -> None:
             "docker",
             "run",
             "--rm",
+            # The boot helpers do pure filesystem/shell work — no network. Run
+            # with none so the test doesn't depend on the daemon's bridge being
+            # healthy (a broken docker0 bridge would otherwise fail `docker run`
+            # with exit 125, unrelated to the boot logic under test).
+            "--network",
+            "none",
             # Boot helpers (read-only; copied to / inside the script)
             "--volume",
             f"{_DOCKER_DIR}:{docker_src}:ro",
@@ -162,6 +174,13 @@ def test_container_boot_end_to_end(tmp_path: Path) -> None:
         f"entrypoint.sh exited {result.returncode}.\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
+    )
+
+    # magisk-path.sh must have resolved the off-PATH magisk and prepended its
+    # dir — without this every `magisk` call below would have failed and the
+    # boot would have aborted (the whole point of the fix).
+    assert "Resolved magisk at /tmp/magisk-dir/magisk" in combined, (
+        f"magisk-path.sh did not resolve the off-PATH magisk.\ncombined={combined!r}"
     )
 
     # magisk-config.sh must have issued the Zygisk+denylist REPLACE INTO writes

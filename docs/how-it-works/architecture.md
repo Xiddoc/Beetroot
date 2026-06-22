@@ -25,7 +25,7 @@ The Docker image (`docker/Dockerfile`) is a single-stage build from the redroid 
 The only things added on top of the base are:
 
 - `docker/entrypoint.sh` — copied to `/entrypoint.sh` (12-line glue that sources the helpers in order).
-- `docker/magisk-config.sh`, `docker/magisk-env.sh`, `docker/flash-modules.sh`, `docker/activate-zygisk.sh`, `docker/launch-frida.sh` — copied to `/` alongside the entrypoint via a single `COPY --chmod=755 docker/*.sh /` glob. See [Boot Scripts](boot-scripts.md) for each helper's env-var contract.
+- `docker/magisk-path.sh`, `docker/magisk-config.sh`, `docker/magisk-env.sh`, `docker/flash-modules.sh`, `docker/activate-zygisk.sh`, `docker/launch-frida.sh` — copied to `/` alongside the entrypoint via a single `COPY --chmod=755 docker/*.sh /` glob. See [Boot Scripts](boot-scripts.md) for each helper's env-var contract.
 - `docker/stealth.rc` — copied to `/system/etc/init/stealth.rc` in the image.
 
 That's it. Magisk is already in the base image (courtesy of the `ayasa520/redroid-script` patcher run by `beetroot build`). The `magisk --sqlite` command ships with Magisk itself, so there's no separate sqlite binary to bundle.
