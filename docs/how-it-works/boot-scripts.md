@@ -51,10 +51,10 @@ All helpers obey the same rules:
 ## `entrypoint.sh`
 
 The glue. Prints a boot banner, sources the helpers below in
-order (`magisk-config.sh` → `magisk-env.sh` → `flash-modules.sh` →
-`activate-zygisk.sh` → `launch-frida.sh`), then `wait`s so the shell
-stays alive as the parent of any backgrounded children (notably
-`frida-server`).
+order (`magisk-path.sh` → `magisk-config.sh` → `magisk-env.sh` →
+`flash-modules.sh` → `activate-zygisk.sh` → `launch-frida.sh`), then
+`wait`s so the shell stays alive as the parent of any backgrounded
+children (notably `frida-server`).
 
 | Item        | Value                                                       |
 |-------------|-------------------------------------------------------------|
@@ -63,6 +63,33 @@ stays alive as the parent of any backgrounded children (notably
 | SELinux ctx | `u:r:magisk:s0` (from `exec_background` in `stealth.rc`)    |
 | Env vars    | none directly; helpers read their own                       |
 | Idempotent  | yes (helpers are; the glue does nothing else)               |
+
+## `magisk-path.sh`
+
+Makes Magisk's `magisk` binary resolvable on `PATH` — sourced **first**, before
+every other helper. `entrypoint.sh` is launched by Android init (`stealth.rc`'s
+`exec_background`), which inherits init's default service `PATH`
+(`/system/bin:/system/xbin:/vendor/bin:/product/bin:…`). That does **not**
+include the directory Magisk installs its `magisk` binary into — on the redroid
+Magisk image that's `/sbin/magisk` (verified against a real booted image; the
+data-side `MAGISKTMP` mirror is `/debug_ramdisk`). Every helper calls bare
+`magisk`, so without this each call fails with "not found": `magisk-config.sh`'s
+daemon wait then spins until it times out and exits 1, aborting the **whole**
+boot before Zygisk / denylist / MAGISKBIN / modules are ever configured. (The
+unit tests put a fake `magisk` on `PATH`, so this stayed invisible until a real
+device boot.)
+
+It prepends the first candidate directory that actually holds an executable
+`magisk`, and is a no-op when `magisk` already resolves (a future image that
+puts it on `PATH`, or the test harness's fake).
+
+| Env var               | Default                | Notes                                                                                                  |
+|-----------------------|------------------------|--------------------------------------------------------------------------------------------------------|
+| `BEETROOT_MAGISK_DIRS`| `/sbin:/debug_ramdisk` | Colon-separated candidate directories, searched in order for an executable `magisk`. Script-level knob. |
+
+**Idempotency:** skips entirely when `magisk` is already resolvable; otherwise
+prepends one directory. Sourced under `set -e`, so — like every helper — it
+never `exit`s.
 
 ## `magisk-config.sh`
 
@@ -222,6 +249,7 @@ helpers:
 
 | Env var                         | Default                       | Consumer              |
 |---------------------------------|-------------------------------|-----------------------|
+| `BEETROOT_MAGISK_DIRS`          | `/sbin:/debug_ramdisk`        | `magisk-path.sh`      |
 | `BEETROOT_MAGISK_WAIT_SECS`     | `120`                         | `magisk-config.sh`    |
 | `BEETROOT_MAGISK_BIN_DIR`       | `/data/adb/magisk`            | `magisk-env.sh`       |
 | `BEETROOT_MAGISK_SRC_DIR`       | `/system/etc/init/magisk`     | `magisk-env.sh`       |
