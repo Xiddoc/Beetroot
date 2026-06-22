@@ -1078,3 +1078,64 @@ class TestAccelCheck:
         row = vm_backend._accel_check("kvm")
         assert row.status == "fail"
         assert "/dev/kvm" in (row.reason or "")
+
+
+# ---------------------------------------------------------------------------
+# logs (LogReader capability — reads the persisted QEMU serial console)
+# ---------------------------------------------------------------------------
+
+
+class TestLogs:
+    def test_warns_when_no_console_log_yet(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        backend = _make_backend(tmp_path)
+        backend.logs()
+        err = capsys.readouterr().err
+        assert "no QEMU console log" in err
+        assert "beetroot up" in err
+
+    def test_prints_console_log_contents_once(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        backend = _make_backend(tmp_path)
+        log = qemu.QemuProcess(backend.root).console_log
+        log.write_text("[ 0.00] Linux\n[*] Zygisk newly enabled — restarting zygote\n")
+        backend.logs()
+        out = capsys.readouterr().out
+        assert "Linux" in out
+        assert "restarting zygote" in out
+
+    def test_decodes_non_utf8_console_bytes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Kernel console output can carry non-UTF8 bytes; logs must not crash.
+        backend = _make_backend(tmp_path)
+        log = qemu.QemuProcess(backend.root).console_log
+        log.write_bytes(b"boot \xff\xfe done\n")
+        backend.logs()
+        out = capsys.readouterr().out
+        assert "boot" in out
+        assert "done" in out
+
+    def test_follow_streams_via_tail_f(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = _make_backend(tmp_path)
+        log = qemu.QemuProcess(backend.root).console_log
+        log.write_text("x\n")
+        called: dict[str, list[str]] = {}
+
+        def _fake_run(cmd: list[str], **_kw: object) -> subprocess.CompletedProcess[bytes]:
+            called["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr("beetroot.backends.vm.subprocess.run", _fake_run)
+        backend.logs(follow=True)
+        assert called["cmd"][0] == "tail"
+        assert "-f" in called["cmd"]
+        assert str(log) == called["cmd"][-1]
+
+    def test_satisfies_logreader_protocol(self, tmp_path: Path) -> None:
+        backend = _make_backend(tmp_path)
+        assert isinstance(backend, api.LogReader)

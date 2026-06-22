@@ -469,3 +469,29 @@ class TestVmDoctorStatus:
         assert row["kind"] == "vm"
         assert row["adb_address"] == "localhost:5555"
         assert "serial" not in row
+
+
+class TestVmLogs:
+    """`beetroot logs <vm-instance>` reads the persisted QEMU console (issue #44 follow-up)."""
+
+    def _register(self, cli_root: Path) -> Path:
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(root / "beetroot.yaml", config.InstanceConfig(binder="vm"))
+        api.Instance.register(root, name="vm1")
+        return root
+
+    def test_logs_prints_qemu_console(self, cli_root: Path) -> None:
+        root = self._register(cli_root)
+        qemu.QemuProcess(root).console_log.write_text(
+            "[ 0.000000] Linux\n[*] Zygisk newly enabled — restarting zygote\n"
+        )
+        result = runner.invoke(cli.app, ["logs", "vm1"])
+        assert result.exit_code == 0, result.stderr
+        assert "restarting zygote" in result.stdout
+
+    def test_logs_warns_when_never_booted(self, cli_root: Path) -> None:
+        self._register(cli_root)
+        result = runner.invoke(cli.app, ["logs", "vm1"])
+        assert result.exit_code == 0, result.stderr
+        assert "no QEMU console log" in result.stderr

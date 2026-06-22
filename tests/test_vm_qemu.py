@@ -300,6 +300,50 @@ class TestQemuProcessStart:
         assert kwargs["start_new_session"] is True
         assert kwargs["stdin"] == subprocess.DEVNULL
 
+    def test_console_log_path_beside_pidfile(self, tmp_path: Path) -> None:
+        proc = qemu.QemuProcess(tmp_path)
+        assert proc.console_log == tmp_path / "qemu-console.log"
+
+    def test_start_redirects_serial_console_to_log_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        class _FakePopen:
+            pid = 8888
+
+            def __init__(self, argv: list[str], **kwargs: object) -> None:
+                captured["argv"] = argv
+                captured["kwargs"] = kwargs
+
+        monkeypatch.setattr("beetroot.vm.qemu.subprocess.Popen", _FakePopen)
+        monkeypatch.setattr(qemu.QemuProcess, "is_running", lambda _self: False)
+        proc = qemu.QemuProcess(tmp_path / "inst")
+        proc.start(["qemu-system-x86_64"])
+        # The console log file is created (truncated) so `beetroot logs` has
+        # something to read, and QEMU's stdout/stderr are pointed at it.
+        assert proc.console_log.is_file()
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert kwargs["stderr"] == subprocess.STDOUT
+        # stdout is the opened (now-closed) console-log handle.
+        assert getattr(kwargs["stdout"], "name", None) == str(proc.console_log)
+
+    def test_start_truncates_stale_console_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _FakePopen:
+            pid = 9
+            def __init__(self, argv: list[str], **kwargs: object) -> None: ...
+
+        monkeypatch.setattr("beetroot.vm.qemu.subprocess.Popen", _FakePopen)
+        monkeypatch.setattr(qemu.QemuProcess, "is_running", lambda _self: False)
+        proc = qemu.QemuProcess(tmp_path / "inst")
+        proc.console_log.parent.mkdir(parents=True)
+        proc.console_log.write_text("STALE FROM A PRIOR BOOT")
+        proc.start(["qemu-system-x86_64"])
+        assert proc.console_log.read_text() == ""
+
     def test_start_refuses_when_already_running(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
