@@ -1,0 +1,29 @@
+# Documentation only — not loaded by the CLI. Copy this over your fresh beetroot.yaml if you want this configuration.
+# Beetroot baseline + LSPosed (Vector) — a Zygisk/Xposed framework — flashed as a Magisk module.
+#
+# Vector is JingMatrix's actively-maintained LSPosed successor. Because Beetroot
+# flashes Magisk/Zygisk modules declaratively (`modules:` → `magisk
+# --install-module` at boot) and activates Zygisk on first boot, the framework
+# comes up automatically — no manual Magisk-app tap-through. See the full
+# walkthrough (install an Xposed module APK, enable it in scope, launch the
+# target) in docs/guides/lsposed.md.
+#
+# Pinning: the URL + sha256 below are a specific release. When a newer Vector /
+# LSPosed is cut, look up the new release at
+# https://github.com/JingMatrix/Vector/releases, swap the URL, and recompute the
+# digest with `curl -sL <url> | sha256sum`.
+
+api_version: 4
+
+android:
+  version: 14
+
+modules:
+  # Vector v2.0 (Zygisk, Release) — the LSPosed framework module.
+  - url: https://github.com/JingMatrix/Vector/releases/download/v2.0/Vector-v2.0-3021-Release.zip
+    sha256: d5e39669c02c2c699ab948eb8f3639b348eefb7749553224a9c62fa4a2f2dc18
+
+magisk:
+  denylist:
+    - com.google.android.gms
+    - com.google.android.gms.unstable
