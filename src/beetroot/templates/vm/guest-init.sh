@@ -143,12 +143,22 @@ start_dockerd() {
 run_redroid() {
     # Clear any stale container from a prior boot (/var/lib/docker persists).
     docker rm -f redroid >/dev/null 2>&1 || true
-    log "running $REDROID_IMAGE (--network none)"
+    # Persist redroid's /data across VM reboots by bind-mounting a directory on
+    # the (persistent) guest rootfs as the container's /data. Without this the
+    # rm -f + fresh `docker run` below discards /data every boot — the Magisk
+    # DB, MAGISKBIN, and installed modules reset — so a flash → reboot →
+    # activate flow (Zygisk modules such as LSPosed need that second boot, where
+    # magiskd reads the persisted zygisk=1 at post-fs-data and injects zygote)
+    # could never complete. The mount is overridable via BEETROOT_GUEST_DATA_DIR.
+    _data_dir="${BEETROOT_GUEST_DATA_DIR:-/var/lib/redroid-data}"
+    mkdir -p "$_data_dir"
+    log "running $REDROID_IMAGE (--network none, /data persisted at $_data_dir)"
     # --name must be >=2 chars (docker rejects 'r'); --network none is the only
     # mode that boots cleanly here (see header). The extra key=value args become
     # Android system properties at the earliest boot stage: ro.adb.secure=0 (no
     # adb auth) and service/persist.adb.tcp.port so adbd opens TCP.
     docker run -d --privileged --name redroid --network none \
+        -v "$_data_dir:/data" \
         "$REDROID_IMAGE" \
         androidboot.redroid_gpu_mode=guest \
         ro.adb.secure=0 \
