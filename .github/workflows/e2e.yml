@@ -28,6 +28,10 @@ on:
         description: "Also run the heavy Tier 2 (beetroot build + boot the Magisk image)"
         type: boolean
         default: false
+      run_lsposed:
+        description: "Also run the LSPosed module-hook e2e (build image, flash Vector, assert a hook fires)"
+        type: boolean
+        default: false
   schedule:
     - cron: "0 6 * * *"
   pull_request:
@@ -211,6 +215,107 @@ jobs:
       - name: Teardown
         if: always()
         run: uv run beetroot destroy e2e-phone -y || true
+
+  tier-lsposed-hook:
+    # WIP scaffold (non-blocking): the full LSPosed module-hook e2e. Builds the
+    # Magisk image, flashes Vector (LSPosed) declaratively, then installs the
+    # bundled Xposed hook-test module, enables it in scope, and asserts a real
+    # method hook fired (BEETROOT_HOOK_FIRED). Verified locally on the binder:vm
+    # TCG VM; this runs the same `scripts/lsposed-hook-e2e.sh` flow on host
+    # binder. Heavy (multiple boots), so schedule / explicit dispatch only.
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_lsposed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    env:
+      ADB: 127.0.0.1:5555
+      TARGET: com.android.settings
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+      - uses: ./.github/actions/provide-binder
+
+      - name: Install adb
+        run: sudo apt-get install -y android-tools-adb
+
+      - name: Build the Beetroot Magisk image (no gapps — lightest variant)
+        run: uv run beetroot build none
+
+      - name: Create instance with Vector (LSPosed) flashed declaratively
+        run: |
+          set -euxo pipefail
+          uv run beetroot create lsposed-phone
+          # Vector module (matches examples/lsposed.yaml) + gapps:none to match
+          # the `build none` image tag.
+          cat > lsposed-phone/beetroot.yaml <<'EOF'
+          api_version: 4
+          android:
+            version: 14
+            gapps: none
+          modules:
+            - url: https://github.com/JingMatrix/Vector/releases/download/v2.0/Vector-v2.0-3021-Release.zip
+              sha256: d5e39669c02c2c699ab948eb8f3639b348eefb7749553224a9c62fa4a2f2dc18
+          magisk:
+            denylist:
+              - com.google.android.gms
+              - com.google.android.gms.unstable
+          EOF
+          uv run beetroot apply lsposed-phone
+          uv run beetroot up lsposed-phone
+
+      - name: Boot, then restart (2nd boot activates Zygisk + Vector)
+        run: |
+          set -uxo pipefail
+          wait_boot() {
+            adb connect "$ADB"; adb -s "$ADB" wait-for-device
+            for _ in $(seq 1 120); do
+              [ "$(adb -s "$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && return 0
+              sleep 5
+            done
+            echo "::error::Android did not boot in time"; return 1
+          }
+          wait_boot
+          # A Zygisk module goes live on the SECOND boot (magiskd reads the
+          # persisted zygisk=1 at post-fs-data and injects zygote at first start).
+          uv run beetroot restart lsposed-phone
+          wait_boot
+          adb -s "$ADB" root || true; sleep 3; adb connect "$ADB" || true
+          # Vector's lspd daemon must be running.
+          for _ in $(seq 1 30); do
+            adb -s "$ADB" shell 'ps -A' 2>/dev/null | grep -q '[l]spd' && break
+            sleep 5
+          done
+          adb -s "$ADB" shell 'ps -A' | grep '[l]spd'
+
+      - name: Install the hook module + enable it in scope
+        run: |
+          set -euxo pipefail
+          scripts/lsposed-hook-e2e.sh setup "$ADB" \
+            tests/fixtures/xposed-hook-module/beetroot-hook-test.apk "$TARGET"
+          # lspd loads newly-scoped modules at daemon start → reboot to apply.
+          uv run beetroot restart lsposed-phone
+
+      - name: Assert a real module hook fired
+        run: |
+          set -uxo pipefail
+          adb connect "$ADB"; adb -s "$ADB" wait-for-device
+          for _ in $(seq 1 120); do
+            [ "$(adb -s "$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+            sleep 5
+          done
+          scripts/lsposed-hook-e2e.sh check "$ADB" "$TARGET"
+
+      - name: Beetroot + container logs (always, for diagnosis)
+        if: always()
+        run: uv run beetroot logs lsposed-phone 2>&1 | tail -n 200 || true
+
+      - name: Teardown
+        if: always()
+        run: uv run beetroot destroy lsposed-phone -y || true
 
   tier-vm-qemu:
     # Boots the real `binder: vm` QEMU micro-VM backend and drives it through

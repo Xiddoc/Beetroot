@@ -4,6 +4,23 @@
 
 ### Features
 
+- **Full LSPosed module-hook e2e — proves a real Xposed hook fires (#29).**
+  Completes the LSPosed recipe with an end-to-end test of the *whole* pipeline:
+  flash Vector (LSPosed) → install an Xposed module **as an app** → enable it in
+  scope via `modules_config.db` → launch the target → assert the module's method
+  hook fired. Ships a minimal, self-contained Xposed module fixture
+  (`tests/fixtures/xposed-hook-module/` — sources + `build.sh` + prebuilt apk)
+  that hooks `android.app.Activity` `onCreate`/`onResume` and logs
+  `BEETROOT_HOOK_FIRED`, a reusable driver (`scripts/lsposed-hook-e2e.sh`,
+  `setup`/`check` phases around a reboot), a structural fixture test, and a
+  non-blocking `e2e.yml` `tier-lsposed-hook` CI job. **Verified live on the
+  `binder: vm` TCG VM**: launching Settings produced `BEETROOT_HOOK_FIRED
+  onCreate` and `onResume`. Docs:
+  [guides/lsposed § automated e2e](https://iliketo.party/Beetroot/guides/lsposed/#automated-end-to-end-test).
+  (Gotcha captured in the fixture: Vector obfuscates + remaps the
+  `de.robv.android.xposed` API, so a module's compile-only stubs must match the
+  real signatures exactly — `findAndHookMethod` returns `XC_MethodHook.Unhook`.)
+
 - **First-class LSPosed / Vector (Xposed) recipe (#29).** A new guide
   ([guides/lsposed.md](https://iliketo.party/Beetroot/guides/lsposed/)) plus a
   pinned `examples/lsposed.yaml` turn "run a real LSPosed install" into a
