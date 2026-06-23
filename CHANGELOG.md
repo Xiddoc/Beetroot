@@ -4,6 +4,30 @@
 
 ### Features
 
+- **First-class LSPosed / Vector (Xposed) recipe (#29).** A new guide
+  ([guides/lsposed.md](https://iliketo.party/Beetroot/guides/lsposed/)) plus a
+  pinned `examples/lsposed.yaml` turn "run a real LSPosed install" into a
+  declarative flow: add the Vector (LSPosed) Zygisk module to `modules:`, boot,
+  `beetroot restart` (Zygisk goes live on the second boot), then install an
+  Xposed module **as an app** (so the package manager populates its
+  `nativeLibraryDir` — the thing LSPatch-embedded patching can't do) and enable
+  it in scope **non-interactively** by writing LSPosed's
+  `/data/adb/lspd/config/modules_config.db` (`modules` + `scope` tables,
+  documented from the live v4 schema). **Verified end-to-end on the `binder: vm`
+  TCG VM**: the `lspd` daemon starts, Zygisk injects `zygote64` +
+  `system_server`, and Vector reports `version 2.0 (3021)`.
+- **`binder: vm` now persists redroid's `/data` across reboots.** The micro-VM
+  guest-init recreated the redroid container fresh every boot (`docker rm -f` +
+  `docker run`) with **no `/data` volume**, so the Magisk DB, MAGISKBIN, and
+  installed modules reset on every `beetroot down`/`up` — making a flash →
+  reboot → activate flow (which every Zygisk module, LSPosed included, needs)
+  impossible on the VM. guest-init now bind-mounts a directory on the
+  persistent guest rootfs as the container's `/data` (override with
+  `BEETROOT_GUEST_DATA_DIR`), matching the redroid `host`/`auto` backend's
+  persistent `/data`. Verified: `zygisk=1` and a flashed module survive a VM
+  reboot. (Leave `vm.boot_cache: false` while iterating — the warm-start cache
+  reverts to its checkpoint on resume by design.)
+
 - **`beetroot logs` now works for the `binder: vm` backend — the micro-VM is
   finally debuggable.** Previously `logs` was redroid-only (`docker compose
   logs`); a `vm` instance raised `'logs' is not supported by the 'vm'
