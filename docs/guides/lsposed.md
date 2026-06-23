@@ -131,7 +131,41 @@ beetroot shell <name> -c 'logcat -d | grep -iE "LSPosed|your-module-tag"'
 ```
 
 When the module's hooks fire you'll see its log lines and the LSPosed "loaded module" entries
-under `/data/adb/lspd/log/modules_*.log`.
+under `/data/adb/lspd/log/modules_*.log`. Note that a module's `XposedBridge.log(...)` output
+lands in that LSPosed module log (not `adb logcat`), which is the reliable channel to assert
+on headlessly.
+
+## Automated end-to-end test
+
+Beetroot ships a self-contained module-hook e2e so you can prove the whole pipeline works on a
+fresh instance:
+
+- **`tests/fixtures/xposed-hook-module/`** — a minimal prebuilt Xposed module
+  (`party.beetroot.hooktest`) that hooks `android.app.Activity` `onCreate`/`onResume` in any app
+  it's scoped to and logs `BEETROOT_HOOK_FIRED`. Sources + `build.sh` are included so you can
+  rebuild it.
+- **`scripts/lsposed-hook-e2e.sh`** — drives the flow against a booted, Vector-active instance:
+
+  ```bash
+  # 1) flash Vector (examples/lsposed.yaml), `beetroot up`, `beetroot restart` (2nd boot → active)
+  scripts/lsposed-hook-e2e.sh setup localhost:5555 \
+      tests/fixtures/xposed-hook-module/beetroot-hook-test.apk com.android.settings
+  beetroot restart <name>                       # lspd loads the newly-scoped module
+  scripts/lsposed-hook-e2e.sh check localhost:5555 com.android.settings
+  # [+] PASS — module hook fired: BEETROOT_HOOK_FIRED onResume pkg=com.android.settings
+  ```
+
+This is **verified on the `binder: vm` TCG VM**: launching Settings produced
+`BEETROOT_HOOK_FIRED onCreate` and `onResume`, proving a real Xposed method hook fired on a
+Beetroot instance end-to-end. The `e2e.yml` `tier-lsposed-hook` job runs the same flow in CI.
+
+!!! tip "Building a module against the Vector/LSPosed API"
+    Vector obfuscates the `de.robv.android.xposed.*` API and remaps your module's references to
+    its internal classes at load. Compile against the API as `compileOnly` (don't package it),
+    and match the **exact** signatures — e.g. `XposedHelpers.findAndHookMethod` returns
+    `XC_MethodHook.Unhook`. A wrong return type compiles fine but throws `NoSuchMethodError` at
+    runtime because the full (remapped) method descriptor no longer matches. See the fixture's
+    `stubs/`.
 
 ## Why a Beetroot rooted phone, not LSPatch on a vanilla AVD
 
