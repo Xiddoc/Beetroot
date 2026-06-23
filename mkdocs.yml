@@ -102,6 +102,7 @@ nav:
     - Multiple Instances: guides/multi-instance.md
     - Examples: guides/examples.md
     - Magisk Modules: guides/modules.md
+    - LSPosed / Vector (Xposed): guides/lsposed.md
     - Frida: guides/frida.md
     - Snapshots: guides/snapshots.md
     - Sandbox / CI quickstart (no-KVM TCG): guides/sandbox-quickstart.md
