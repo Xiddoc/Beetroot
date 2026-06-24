@@ -628,9 +628,7 @@ class TestBuildVmKernel:
         )
         assert 'make CC="ccache gcc" -j' in runner.calls[0].cmd[2]
 
-    def test_no_ccache_when_absent(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_no_ccache_when_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         runner = FakeRunner()
         ctx = tmp_path / "repo"
         _make_vm_context(ctx)
@@ -961,6 +959,36 @@ class TestRootfsAssembly:
         assert (root / "etc" / "beetroot" / "redroid-image").read_text(
             encoding="utf-8"
         ).strip() == "redroid/redroid:11.0.0-latest"
+
+    def _assembly(self, tmp_path: Path) -> builder._RootfsAssembly:
+        cfg = _make_rootfs_config(tmp_path)
+        work = tmp_path / "work"
+        work.mkdir(exist_ok=True)
+        return builder._RootfsAssembly(cfg, FakeRootfsRunner(), work)
+
+    def test_verify_guest_image_marker_raises_when_missing(self, tmp_path: Path) -> None:
+        # issue #97: a missing baked-image marker would make guest-init silently
+        # fall back to a legacy image; the build must fail loudly instead.
+        assembly = self._assembly(tmp_path)
+        assembly.root.mkdir(parents=True, exist_ok=True)
+        with pytest.raises(builder.BootstrapError, match="issue #97"):
+            assembly._verify_guest_image_marker()
+
+    def test_verify_guest_image_marker_raises_when_empty(self, tmp_path: Path) -> None:
+        # A partially-written marker (whitespace only) is treated as missing.
+        assembly = self._assembly(tmp_path)
+        marker = assembly._guest_image_marker()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("   \n", encoding="utf-8")
+        with pytest.raises(builder.BootstrapError, match="missing or empty"):
+            assembly._verify_guest_image_marker()
+
+    def test_verify_guest_image_marker_passes_when_present(self, tmp_path: Path) -> None:
+        assembly = self._assembly(tmp_path)
+        marker = assembly._guest_image_marker()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("redroid/redroid:14.0.0-latest\n", encoding="utf-8")
+        assembly._verify_guest_image_marker()  # no raise
 
     def test_busybox_applet_does_not_clobber_real_binary(self, tmp_path: Path) -> None:
         # `busybox --list` includes `busybox` itself; symlinking /bin/busybox ->

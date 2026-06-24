@@ -36,15 +36,21 @@
 
 set -u
 
-# The redroid image baked into /var/lib/docker is recorded here by build_rootfs
-# (issue #82) so the guest runs whatever Android version was baked, not a
-# hardcoded default. Falls back to the historical 11.0.0-latest only when the
-# marker is absent (a pre-#82 rootfs). An explicit REDROID_IMAGE env still wins.
+# Path of the baked-image marker build_rootfs writes (issue #82): the plain
+# upstream redroid image whose layers are baked into /var/lib/docker, so the
+# guest boots whatever Android version was baked rather than a hardcoded
+# default. resolve_redroid_image() (run first in main, after log() is defined)
+# consults it; an explicit REDROID_IMAGE env still wins.
 _BAKED_IMAGE_FILE="/etc/beetroot/redroid-image"
-if [ -z "${REDROID_IMAGE:-}" ] && [ -f "$_BAKED_IMAGE_FILE" ]; then
-    REDROID_IMAGE="$(cat "$_BAKED_IMAGE_FILE")"
-fi
-REDROID_IMAGE="${REDROID_IMAGE:-redroid/redroid:11.0.0-latest}"
+
+# Legacy fallback for a *pre-#82* rootfs that predates the marker. This is the
+# historical default ON PURPOSE — such a rootfs baked its 11.0.0 image into
+# /var/lib/docker, so falling back to any other tag would 404 at `docker run`.
+# It is deliberately NOT config.DEFAULT_ANDROID_VERSION: a *current* rootfs
+# always carries the marker, so reaching this fallback on a freshly-built rootfs
+# is a build bug. resolve_redroid_image() logs a loud WARN naming it rather than
+# silently resurrecting the "boots Android 11" bug (#82/#97).
+_LEGACY_FALLBACK_IMAGE="redroid/redroid:11.0.0-latest"
 ADB_TCP_PORT="${ADB_TCP_PORT:-5555}"
 CONTAINERD_SOCK="/run/containerd/containerd.sock"
 # TCG is slow: generous timeouts so a slow-but-progressing boot is not mistaken
@@ -62,6 +68,37 @@ die() {
     # Self-terminate so an automated run does not hang a whole VM cycle.
     sleep 3
     poweroff -f
+}
+
+resolve_redroid_image() {
+    # Decide which redroid image to boot, in precedence order:
+    #   1. an explicit REDROID_IMAGE env override (testing / manual runs);
+    #   2. the baked-image marker build_rootfs wrote (the normal path — boots
+    #      exactly the Android version the rootfs was built for, issue #82);
+    #   3. the legacy fallback, with a LOUD warning.
+    #
+    # The whole point of #82 is "never silently boot a different Android than
+    # the rootfs was built for." A current rootfs always carries the marker, so
+    # a missing/empty marker here means the rootfs is pre-#82, hand-assembled,
+    # or its bake was interrupted — a condition we want to hear about, not paper
+    # over by quietly resurrecting Android 11 (issue #97). So the fallback warns
+    # prominently and names the image it is about to boot.
+    if [ -n "${REDROID_IMAGE:-}" ]; then
+        log "using REDROID_IMAGE override: $REDROID_IMAGE"
+        return 0
+    fi
+    if [ -s "$_BAKED_IMAGE_FILE" ]; then
+        REDROID_IMAGE="$(cat "$_BAKED_IMAGE_FILE")"
+        if [ -n "$REDROID_IMAGE" ]; then
+            log "using baked redroid image from $_BAKED_IMAGE_FILE: $REDROID_IMAGE"
+            return 0
+        fi
+    fi
+    REDROID_IMAGE="$_LEGACY_FALLBACK_IMAGE"
+    log "WARN: no usable baked-image marker at $_BAKED_IMAGE_FILE (missing or" \
+        "empty); falling back to $REDROID_IMAGE. The rootfs may be stale or" \
+        "mis-built — a freshly-built rootfs always carries this marker, so if" \
+        "this is one, that is a bug (issue #97)."
 }
 
 mount_pseudo_filesystems() {
@@ -278,6 +315,7 @@ verify_adb_relay() {
 }
 
 main() {
+    resolve_redroid_image
     mount_pseudo_filesystems
     start_containerd
     start_dockerd
