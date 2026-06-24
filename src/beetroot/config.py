@@ -45,6 +45,11 @@ _AUTO_BUMPABLE_API_VERSIONS: Final = frozenset({1, 2, 3})
 # also used ``stealth:`` are covered by this path.
 _MIGRATION_REQUIRED_VERSIONS: Final = frozenset[int]()  # none yet beyond auto-bumpable
 
+# The single source of truth for the supported Android major versions. To add a
+# new version, see "Adding a new Android version" in AGENTS.md — the human-
+# readable enumerations elsewhere ("11, 12, 13, or 14") are kept in sync by
+# ``tests/test_android_version_extensibility.py``, which fails CI on drift
+# (issue #98).
 _VALID_ANDROID_VERSIONS = {11, 12, 13, 14}
 
 # Single source of truth for the Android major version a fresh ``beetroot

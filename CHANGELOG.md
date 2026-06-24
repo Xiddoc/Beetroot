@@ -265,6 +265,18 @@
   pre-abort rows in its `results` attribute).
 
 ### Quality & internals
+- **The supported Android-version list is now drift-checked and the "add a new
+  version" path is documented + tested (#98).** `config._VALID_ANDROID_VERSIONS`
+  has always been the single source of truth, but the human-readable "11, 12,
+  13, or 14" enumerations hand-copied into docstrings would silently lie when a
+  version was added, and both image-tag derivations were only spot-checked for a
+  couple versions. `tests/test_android_version_extensibility.py` now greps the
+  `config.py`/`builder.py` enumerations against the constant (failing CI on
+  drift) and parametrizes `base_image_tag` + `vm_redroid_image` across *every*
+  supported version, and AGENTS.md gains an "Adding a new Android version"
+  checklist that names the touch-points and the unverified upstream-tag
+  assumption (both `N.0.0_..._magisk` and `N.0.0-latest` must exist on Docker
+  Hub, or the version 404s at pull time).
 - **The whole CLI now speaks through one rich-rendered voice.** Every
   user-facing line — verb outcomes, the verbose step narration, next-step
   hints, advisories, errors, and the migration hints emitted from
