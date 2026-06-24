@@ -1,9 +1,11 @@
 """Tests for frida_download.py — download, cache, stage frida-server."""
+
 from __future__ import annotations
 
 import hashlib
 import lzma
 import stat
+import subprocess
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -12,6 +14,16 @@ import pytest
 
 from beetroot import frida_download, paths
 from beetroot.settings import settings
+
+
+def _redirect_resp(final_url: str) -> MagicMock:
+    """A mock urlopen response whose ``geturl()`` returns ``final_url``."""
+    resp = MagicMock()
+    resp.geturl.return_value = final_url
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
 
 FAKE_BINARY = b"ELF\x7f fake frida binary content"
 FAKE_COMPRESSED = lzma.compress(FAKE_BINARY)
@@ -218,47 +230,40 @@ class TestStageForInstance:
 class TestDownloadSha256:
     """T2 Agent 1: optional sha256 verification on the cached binary."""
 
-    def test_matching_sha256_succeeds(
-        self, isolated_registry: Path
-    ) -> None:
+    def test_matching_sha256_succeeds(self, isolated_registry: Path) -> None:
         expected = hashlib.sha256(FAKE_BINARY).hexdigest()
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
             result = frida_download.download(
-                VERSION, expected_sha256=expected,
+                VERSION,
+                expected_sha256=expected,
             )
         assert result.exists()
 
-    def test_mismatching_sha256_raises(
-        self, isolated_registry: Path
-    ) -> None:
+    def test_mismatching_sha256_raises(self, isolated_registry: Path) -> None:
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
             with pytest.raises(ValueError, match="sha256 mismatch"):
                 frida_download.download(
-                    VERSION, expected_sha256="0" * 64,
+                    VERSION,
+                    expected_sha256="0" * 64,
                 )
 
-    def test_sha256_case_insensitive(
-        self, isolated_registry: Path
-    ) -> None:
+    def test_sha256_case_insensitive(self, isolated_registry: Path) -> None:
         expected = hashlib.sha256(FAKE_BINARY).hexdigest().upper()
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
             result = frida_download.download(
-                VERSION, expected_sha256=expected,
+                VERSION,
+                expected_sha256=expected,
             )
         assert result.exists()
 
-    def test_none_sha256_skips_check(
-        self, isolated_registry: Path
-    ) -> None:
+    def test_none_sha256_skips_check(self, isolated_registry: Path) -> None:
         # The default ``expected_sha256=None`` must NOT do any
         # digest comparison — preserves the v0.3 no-sha behaviour.
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
             result = frida_download.download(VERSION)
         assert result.exists()
 
-    def test_cached_binary_sha256_verified_too(
-        self, isolated_registry: Path
-    ) -> None:
+    def test_cached_binary_sha256_verified_too(self, isolated_registry: Path) -> None:
         # Prime the cache with a non-matching binary, then call
         # download() with an expected_sha256 — verification must
         # fire on the cached file, NOT skip-because-cached.
@@ -271,9 +276,7 @@ class TestDownloadSha256:
                 expected_sha256=hashlib.sha256(FAKE_BINARY).hexdigest(),
             )
 
-    def test_sha256_mismatch_on_cached_file_deletes_cache(
-        self, isolated_registry: Path
-    ) -> None:
+    def test_sha256_mismatch_on_cached_file_deletes_cache(self, isolated_registry: Path) -> None:
         # A sha256 mismatch on a cached file must delete the bad artifact
         # so the next download() call re-fetches rather than re-failing
         # forever on a poisoned cache entry.
@@ -295,16 +298,15 @@ class TestDownloadSha256:
         out = frida_download.cached_binary(VERSION)
         assert not out.exists(), "output file should be deleted after mismatch on fresh download"
 
-    def test_stage_for_instance_forwards_sha256(
-        self, instance_root: Path
-    ) -> None:
+    def test_stage_for_instance_forwards_sha256(self, instance_root: Path) -> None:
         # T2 Agent 1: ``stage_for_instance`` must forward the digest
         # to ``download`` so a Frida(version=..., sha256=...) block
         # in beetroot.yaml fires the verification at apply time.
         with patch("urllib.request.urlopen", side_effect=_fake_urlopen):
             with pytest.raises(ValueError, match="sha256 mismatch"):
                 frida_download.stage_for_instance(
-                    instance_root, VERSION,
+                    instance_root,
+                    VERSION,
                     expected_sha256="b" * 64,
                 )
 
@@ -312,9 +314,7 @@ class TestDownloadSha256:
 class TestDownloadProgress:
     """Progress bar behaviour during frida-server downloads."""
 
-    def test_content_length_header_produces_determinate_bar(
-        self, isolated_registry: Path
-    ) -> None:
+    def test_content_length_header_produces_determinate_bar(self, isolated_registry: Path) -> None:
         # When the response includes a Content-Length header the progress bar
         # receives a non-None total so percentage and ETA columns are shown.
         captured_totals: list[float | None] = []
@@ -382,3 +382,134 @@ class TestDownloadProgress:
             result = frida_download.download(VERSION)
 
         assert result.read_bytes() == FAKE_BINARY
+
+
+class TestHostFridaToolsVersion:
+    def test_none_when_not_on_path(self) -> None:
+        with patch("beetroot.frida_download.shutil.which", return_value=None):
+            assert frida_download.host_frida_tools_version() is None
+
+    def test_returns_parsed_version(self) -> None:
+        with (
+            patch("beetroot.frida_download.shutil.which", return_value="/usr/bin/frida"),
+            patch("beetroot.frida_download.subprocess.run") as run,
+        ):
+            run.return_value = MagicMock(stdout="16.4.10\n")
+            assert frida_download.host_frida_tools_version() == "16.4.10"
+
+    def test_none_on_unparseable_output(self) -> None:
+        with (
+            patch("beetroot.frida_download.shutil.which", return_value="/usr/bin/frida"),
+            patch("beetroot.frida_download.subprocess.run") as run,
+        ):
+            run.return_value = MagicMock(stdout="not-a-version\n")
+            assert frida_download.host_frida_tools_version() is None
+
+    def test_none_on_subprocess_error(self) -> None:
+        with (
+            patch("beetroot.frida_download.shutil.which", return_value="/usr/bin/frida"),
+            patch(
+                "beetroot.frida_download.subprocess.run",
+                side_effect=subprocess.SubprocessError("boom"),
+            ),
+        ):
+            assert frida_download.host_frida_tools_version() is None
+
+
+class TestLatestReleaseTag:
+    def test_resolves_via_redirect(self) -> None:
+        url = "https://github.com/frida/frida/releases/tag/16.7.19"
+        with patch("urllib.request.urlopen", return_value=_redirect_resp(url)):
+            assert frida_download.latest_release_tag() == "16.7.19"
+
+    def test_unexpected_tag_raises(self) -> None:
+        # A redirect that doesn't land on a concrete tag must fail loudly,
+        # not stage a bogus "releases"-named binary.
+        url = "https://github.com/frida/frida/releases"
+        with (
+            patch("urllib.request.urlopen", return_value=_redirect_resp(url)),
+            pytest.raises(frida_download.FridaFetchError, match="unexpected tag"),
+        ):
+            frida_download.latest_release_tag()
+
+    def test_network_error_raises(self) -> None:
+        with (
+            patch("urllib.request.urlopen", side_effect=urllib.error.URLError("boom")),
+            pytest.raises(frida_download.FridaFetchError, match="could not resolve"),
+        ):
+            frida_download.latest_release_tag()
+
+
+class TestResolveVersion:
+    def test_pinned_returned_unchanged(self) -> None:
+        assert frida_download.resolve_version("16.4.10") == "16.4.10"
+
+    def test_latest_resolves(self) -> None:
+        url = "https://github.com/frida/frida/releases/tag/16.9.0"
+        with patch("urllib.request.urlopen", return_value=_redirect_resp(url)):
+            assert frida_download.resolve_version("latest") == "16.9.0"
+
+    def test_auto_uses_host_when_present(self) -> None:
+        with patch.object(frida_download, "host_frida_tools_version", return_value="16.4.10"):
+            assert frida_download.resolve_version("auto") == "16.4.10"
+
+    def test_auto_falls_back_to_latest_without_host(self) -> None:
+        url = "https://github.com/frida/frida/releases/tag/16.9.0"
+        with (
+            patch.object(frida_download, "host_frida_tools_version", return_value=None),
+            patch("urllib.request.urlopen", return_value=_redirect_resp(url)),
+        ):
+            assert frida_download.resolve_version("auto") == "16.9.0"
+
+    def test_unrecognized_raises(self) -> None:
+        with pytest.raises(frida_download.FridaFetchError, match="unrecognized"):
+            frida_download.resolve_version("bogus")
+
+
+class TestStageResolution:
+    def test_warns_on_client_server_skew(self, instance_root: Path) -> None:
+        with (
+            patch.object(frida_download, "host_frida_tools_version", return_value="16.5.0"),
+            patch("beetroot.frida_download.console.warn") as warn,
+            patch("urllib.request.urlopen", _fake_urlopen),
+        ):
+            frida_download.stage_for_instance(instance_root, "16.4.10")
+        warn.assert_called_once()
+
+    def test_no_warn_when_versions_match(self, instance_root: Path) -> None:
+        with (
+            patch.object(frida_download, "host_frida_tools_version", return_value="16.4.10"),
+            patch("beetroot.frida_download.console.warn") as warn,
+            patch("urllib.request.urlopen", _fake_urlopen),
+        ):
+            frida_download.stage_for_instance(instance_root, "16.4.10")
+        warn.assert_not_called()
+
+    def test_no_warn_when_host_absent(self, instance_root: Path) -> None:
+        with (
+            patch.object(frida_download, "host_frida_tools_version", return_value=None),
+            patch("beetroot.frida_download.console.warn") as warn,
+            patch("urllib.request.urlopen", _fake_urlopen),
+        ):
+            frida_download.stage_for_instance(instance_root, "16.4.10")
+        warn.assert_not_called()
+
+    def test_emits_note_when_version_resolved(self, instance_root: Path) -> None:
+        # auto → host 16.4.10 means the staged tag differs from the input, so a
+        # one-line note records what "auto" resolved to.
+        with (
+            patch.object(frida_download, "host_frida_tools_version", return_value="16.4.10"),
+            patch("beetroot.frida_download.console.note") as note,
+            patch("urllib.request.urlopen", _fake_urlopen),
+        ):
+            frida_download.stage_for_instance(instance_root, "auto")
+        note.assert_called_once()
+
+    def test_no_note_when_pinned(self, instance_root: Path) -> None:
+        with (
+            patch.object(frida_download, "host_frida_tools_version", return_value=None),
+            patch("beetroot.frida_download.console.note") as note,
+            patch("urllib.request.urlopen", _fake_urlopen),
+        ):
+            frida_download.stage_for_instance(instance_root, "16.4.10")
+        note.assert_not_called()

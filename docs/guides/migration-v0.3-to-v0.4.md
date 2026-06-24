@@ -248,12 +248,18 @@ time with a clear pydantic error rather than as a 404 from
 frida:
   version: "16.4"           # missing patch component
   version: "16.4.10-rc1"    # non-numeric
-  version: latest           # non-version-shaped
+  version: stable           # non-version-shaped, unknown keyword
 
 # OK
 frida:
   version: "16.4.10"
 ```
+
+!!! note "`latest` / `auto` became valid in a later release"
+    A subsequent release re-introduced the symbolic values `latest` and `auto`
+    (the new default) alongside the pinned `major.minor.patch` shape — see the
+    [`frida` config reference](../reference/config.md#frida). Only malformed or
+    unknown values still fail at load.
 
 A new optional `sha256` field is forwarded to the downloader; if set,
 the cached binary's digest is verified case-insensitively and a

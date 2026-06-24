@@ -22,6 +22,7 @@ from beetroot.config import (
     Ports,
     Resources,
     base_image_tag,
+    is_pinned_frida_version,
     load_yaml,
     render_env,
     vm_redroid_image,
@@ -125,12 +126,12 @@ class TestFridaOptional:
 
     def test_empty_frida_block_uses_model_default(self, tmp_path: Path) -> None:
         # The model's own default still applies when the block IS present
-        # but empty — `frida: {}` instantiates Frida(version="16.4.10").
+        # but empty — `frida: {}` instantiates Frida(version="auto").
         p = tmp_path / "cfg.yaml"
         p.write_text(yaml.safe_dump({"frida": {}}))
         cfg = load_yaml(p)
         assert cfg.frida is not None
-        assert cfg.frida.version == Frida().version
+        assert cfg.frida.version == Frida().version == "auto"
 
     def test_explicit_frida_version_preserved(self, tmp_path: Path) -> None:
         p = tmp_path / "cfg.yaml"
@@ -182,6 +183,30 @@ class TestFridaVersionRegex:
         with pytest.raises(ValidationError, match=r"major\.minor\.patch"):
             Frida(version=bad)
 
+    def test_default_version_is_auto(self) -> None:
+        assert Frida().version == "auto"
+
+    @pytest.mark.parametrize("symbolic", ["auto", "latest"])
+    def test_symbolic_versions_accepted(self, symbolic: str) -> None:
+        assert Frida(version=symbolic).version == symbolic
+
+    def test_sha256_rejected_with_symbolic_version(self) -> None:
+        # A digest pins one specific build, so it can't accompany a moving
+        # target (auto/latest) — issue #105.
+        for symbolic in ("auto", "latest"):
+            with pytest.raises(ValidationError, match="requires a pinned"):
+                Frida(version=symbolic, sha256="a" * 64)
+
+    def test_sha256_allowed_with_pinned_version(self) -> None:
+        assert Frida(version="16.4.10", sha256="a" * 64).version == "16.4.10"
+
+    def test_is_pinned_frida_version(self) -> None:
+        assert is_pinned_frida_version("16.4.10")
+        assert is_pinned_frida_version("100.0.0")
+        assert not is_pinned_frida_version("latest")
+        assert not is_pinned_frida_version("auto")
+        assert not is_pinned_frida_version("16.4")
+
 
 class TestFridaSha256:
     """T2 Agent 1: optional ``Frida.sha256`` is round-tripped via YAML."""
@@ -191,7 +216,7 @@ class TestFridaSha256:
 
     def test_explicit_sha256_preserved(self) -> None:
         digest = "a" * 64
-        assert Frida(sha256=digest).sha256 == digest
+        assert Frida(version="16.4.10", sha256=digest).sha256 == digest
 
     def test_yaml_roundtrip_with_sha256(self, tmp_path: Path) -> None:
         p = tmp_path / "cfg.yaml"

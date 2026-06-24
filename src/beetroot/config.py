@@ -102,6 +102,36 @@ _DENYLIST_PKG_RE: Final = re.compile(r"^[a-zA-Z0-9._]+$")
 # 404 from the cdn at download time. (T2 Agent 1.)
 _FRIDA_VERSION_RE: Final = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
+# Symbolic ``frida.version`` values resolved to a concrete tag at staging time
+# by :mod:`beetroot.frida_download` (issue #105):
+#   * ``auto`` (the default) — match the host's installed ``frida-tools``
+#     version so the staged server and the client you'll attach with agree on
+#     major+minor; falls back to ``latest`` when ``frida-tools`` isn't installed.
+#   * ``latest`` — resolve to the current upstream release at download time.
+# A pinned ``major.minor.patch`` still works exactly as before (reproducible).
+FRIDA_AUTO: Final = "auto"
+FRIDA_LATEST: Final = "latest"
+_FRIDA_SYMBOLIC_VERSIONS: Final = frozenset({FRIDA_AUTO, FRIDA_LATEST})
+
+
+def is_pinned_frida_version(v: str) -> bool:
+    """
+    Return ``True`` if ``v`` is a concrete ``major.minor.patch`` Frida tag.
+
+    The single source of truth for the pinned-tag shape, shared by the
+    :class:`Frida` validator and :mod:`beetroot.frida_download`'s resolver so
+    the two never disagree on what counts as "already concrete".
+
+    Args:
+        v: The candidate version string.
+
+    Returns:
+        ``True`` for a concrete tag (e.g. ``16.4.10``); ``False`` for the
+        symbolic ``auto`` / ``latest`` or any malformed value.
+    """
+    return bool(_FRIDA_VERSION_RE.match(v))
+
+
 # Docker size format: a number (optionally with decimal) followed by an
 # optional SI/binary suffix. Matches "3g", "512m", "1.5G", "256k", "1024"
 # (bare bytes). Rejects free-form strings like "3gb" or "512 mb" that
@@ -192,37 +222,54 @@ class Resources(BaseModel):
 
 class Frida(BaseModel):
     """
-    Frida-server version pinning for an instance.
+    Frida-server version selection for an instance.
 
     Attributes:
-        version: The frida release tag to download (e.g. ``16.4.10``).
-            Must match ``major.minor.patch`` (the upstream Frida tag
-            grammar); typos like ``"16.4"`` or ``"16.4.10-rc1"`` raise
-            a ValidationError at load time rather than 404-ing on the
-            CDN at ``frida_download.download`` time.
+        version: Which frida-server release to stage. One of:
+            ``auto`` (the default) — match the host's installed
+            ``frida-tools`` version, falling back to ``latest`` when it
+            isn't installed; ``latest`` — the current upstream release,
+            resolved at download time; or a pinned ``major.minor.patch``
+            tag (e.g. ``16.4.10``) for reproducibility. ``auto`` / ``latest``
+            are resolved to a concrete tag by
+            :mod:`beetroot.frida_download` at staging time; a malformed
+            pinned tag (``"16.4"``, ``"16.4.10-rc1"``) raises a
+            ValidationError at load time rather than 404-ing on the CDN.
         sha256: Optional expected hex digest of the decompressed
             frida-server binary. ``frida_download.download`` verifies
             the digest against the cached binary when set and raises
             ``ValueError`` on mismatch (defends against a hostile
-            mirror replacing the upstream release). Lowercase or
-            mixed-case hex are both accepted; comparison is
-            case-insensitive.
+            mirror replacing the upstream release). Only meaningful with a
+            pinned ``version`` — a digest can't match the moving target
+            ``auto`` / ``latest`` resolve to, so that combination is
+            rejected at load time. Lowercase or mixed-case hex are both
+            accepted; comparison is case-insensitive.
     """
 
-    version: str = "16.4.10"
+    version: str = FRIDA_AUTO
     sha256: str | None = None
 
     @field_validator("version")
     @classmethod
     def _check_version_shape(cls, v: str) -> str:
-        if not _FRIDA_VERSION_RE.match(v):
+        if v in _FRIDA_SYMBOLIC_VERSIONS or is_pinned_frida_version(v):
+            return v
+        raise ValueError(
+            f"frida.version {v!r} is not '{FRIDA_AUTO}', '{FRIDA_LATEST}', or a "
+            "major.minor.patch tag (e.g. '16.4.10'). Frida releases at "
+            "https://github.com/frida/frida/releases follow the pinned shape; "
+            "typos surface 404s at download time otherwise."
+        )
+
+    @model_validator(mode="after")
+    def _reject_sha256_with_symbolic_version(self) -> Self:
+        if self.sha256 is not None and self.version in _FRIDA_SYMBOLIC_VERSIONS:
             raise ValueError(
-                f"frida.version {v!r} is not a major.minor.patch tag "
-                "(e.g. '16.4.10'). Frida releases at "
-                "https://github.com/frida/frida/releases follow this "
-                "shape; typos surface 404s at download time otherwise."
+                f"frida.sha256 pins the digest of one specific build, so it "
+                f"requires a pinned frida.version; '{self.version}' resolves to a "
+                "moving target. Pin a major.minor.patch version, or drop sha256."
             )
-        return v
+        return self
 
 
 class Module(BaseModel):
