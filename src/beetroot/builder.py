@@ -47,6 +47,13 @@ GAPPS_FLAGS: Final[dict[GappsVariant, list[str]]] = {
 
 _DEFAULT_REDROID_URL: Final[str] = "https://github.com/ayasa520/redroid-script.git"
 
+# Throwaway ``container_name`` for the build-only ``docker compose build`` step.
+# Recent Docker Compose validates ``container_name`` (``[a-zA-Z0-9][a-zA-Z0-9_.-]+``)
+# even on ``build``, so the runtime-only ``${INSTANCE_NAME}`` must resolve to a
+# non-empty, pattern-valid string; the build never starts a container, so the
+# value is otherwise inert (issue #114).
+_BUILD_INSTANCE_NAME: Final[str] = "beetroot-build"
+
 
 def _default_work_dir() -> Path:
     """
@@ -290,6 +297,14 @@ def build_image(  # noqa: PLR0913  # 6 keyword-only params; each is a distinct i
     # ``Path.cwd()`` here (the old behaviour) broke programmatic / uv-tool
     # invocations from outside the repo: the Dockerfile would not be found and
     # the build would fail with a misleading "context not found" error.
+    #
+    # ``INSTANCE_NAME`` feeds the template's runtime-only ``container_name:
+    # ${INSTANCE_NAME}``; it is unset during a bare build, and recent Docker
+    # Compose *validates* ``container_name`` against ``[a-zA-Z0-9][a-zA-Z0-9_.-]+``
+    # at build time, aborting before the build with "container_name '' does not
+    # match pattern" (issue #114). The build produces a single shared
+    # ``beetroot:latest`` image and never starts a container, so the value is
+    # irrelevant beyond satisfying the pattern — pass a throwaway placeholder.
     with console.progress("Building Beetroot Docker layer"):
         run.run(
             [
@@ -301,7 +316,11 @@ def build_image(  # noqa: PLR0913  # 6 keyword-only params; each is a distinct i
                 str(ctx),
                 "build",
             ],
-            env={"BASE_IMAGE": tag, "BEETROOT_BUILD_CONTEXT": str(ctx)},
+            env={
+                "BASE_IMAGE": tag,
+                "BEETROOT_BUILD_CONTEXT": str(ctx),
+                "INSTANCE_NAME": _BUILD_INSTANCE_NAME,
+            },
         )
 
     return tag
