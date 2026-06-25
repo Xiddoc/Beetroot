@@ -417,6 +417,18 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **`binder: vm` warm resume now warns that it reverts `/data` (#123).** With
+  `vm.boot_cache: true`, every warm `up` resumes the first-boot checkpoint with
+  `-loadvm`, which rolls the whole machine — including the qcow2 overlay that
+  backs the guest's `/data` — back to that checkpoint. So everything written to
+  `/data` since then (installed apps, account logins, flashed-module / LSPosed
+  scope state) was silently discarded on every resume. The behaviour was
+  documented but never surfaced at runtime; `_up_cached()` now prints a
+  non-fatal advisory on each warm resume naming the reset and the remedy
+  (`vm.boot_cache: false` — *not* `beetroot snapshot`, which is redroid-only).
+  No schema change. The durable-and-fast fix (a separate `/data` disk excluded
+  from the checkpoint) and an explicit `lifecycle: ephemeral|durable` intent are
+  tracked as follow-ups.
 - **Hardened the micro-VM guest's missing-marker fallback so it can't silently
   re-introduce the "boots Android 11" bug (#97).** `guest-init.sh` reads the
   baked-image marker (`/etc/beetroot/redroid-image`, issue #82) to boot the

@@ -76,8 +76,10 @@ beetroot shell <name> -c 'ps -A | grep lspd'   # the daemon process
     instance's `data/` to `/data`, so this is automatic. The `binder: vm` micro-VM persists
     redroid's `/data` on the guest rootfs (a directory bind-mounted into the redroid
     container; override with `BEETROOT_GUEST_DATA_DIR`) — also automatic, but note the
-    `vm.boot_cache` warm-start *reverts* to its checkpoint each resume, so leave `boot_cache:
-    false` while iterating on a persistent LSPosed setup.
+    `vm.boot_cache` warm-start *reverts* to its checkpoint each resume (discarding the flashed
+    module, `zygisk=1`, and `modules_config.db` written after that checkpoint), so leave
+    `boot_cache: false` while iterating on a persistent LSPosed setup. Beetroot prints a runtime
+    warning on every warm resume to flag the `/data` reset.
 
 ## 3. Install an Xposed module as an app
 
