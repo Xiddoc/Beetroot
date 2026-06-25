@@ -820,6 +820,30 @@ class TestBuildVmKernel:
         extract_dir = tar_cmd[tar_cmd.index("-C") + 1]
         assert str(compile_cwd.parent) == extract_dir
 
+    def test_relative_context_and_out_dir_resolve_to_absolute_in_compile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Regression for the #74 cwd-boundary trap: the compile runs with
+        # cwd=<scratch source tree>, so a *relative* build_context / out_dir must
+        # be resolved to absolute paths first — else merge_config.sh can't find
+        # the vendored kernel.config and `cp ... bzImage` lands in the throwaway
+        # tree. Drive it with relative paths from a chdir'd cwd.
+        monkeypatch.chdir(tmp_path)
+        _make_vm_context(tmp_path / "repo")
+        runner = FakeRunner()
+        builder.build_vm_kernel(
+            out_dir=Path("out"),
+            build_context=Path("repo"),
+            runner=runner,
+            rootfs_build=_RootfsBuildRecorder(),
+            from_source=True,
+        )
+        compile_cmd = runner.calls[-1].cmd[2]
+        # The kernel.config arg to merge_config.sh is absolute.
+        assert f"{tmp_path}/repo/docker/vm/kernel.config" in compile_cmd
+        # The cp target (bzImage) is absolute, not relative to the scratch cwd.
+        assert f"cp arch/x86/boot/bzImage {tmp_path}/out/bzImage" in compile_cmd
+
     def test_kernel_source_url_derives_major_version_dir(self) -> None:
         assert builder._kernel_source_url("6.12.9") == (
             "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.9.tar.xz"

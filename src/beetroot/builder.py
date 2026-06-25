@@ -1274,11 +1274,16 @@ def build_vm_kernel(  # noqa: PLR0913  # 7 keyword-only params; each is a distin
         BootstrapError: If the kernel build or rootfs assembly fails.
     """
     ctx = build_context if build_context is not None else _build_context_from_env()
-    out = out_dir if out_dir is not None else paths.user_cache_dir(_VM_DIR)
+    # Resolve ``out`` to an absolute path: the source-compile step now runs with
+    # ``cwd`` set to the throwaway kernel-source tree (issue #74), so a relative
+    # ``out_dir`` would otherwise have its ``cp arch/x86/boot/bzImage`` target
+    # land inside that temp tree (then be deleted). ``kernel_config`` is resolved
+    # for the same reason — it's passed to ``merge_config.sh`` from the new cwd.
+    out = (out_dir if out_dir is not None else paths.user_cache_dir(_VM_DIR)).resolve()
     run = runner if runner is not None else DefaultRunner()
 
     vm_dir = _resolve_vm_dir(ctx)
-    kernel_config = vm_dir / _KERNEL_CONFIG
+    kernel_config = (vm_dir / _KERNEL_CONFIG).resolve()
     kernel_out = out / "bzImage"
     rootfs_out = out / "rootdisk.img"
 
