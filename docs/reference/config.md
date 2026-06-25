@@ -143,11 +143,15 @@ Frida server configuration. **Opt-in starting in v0.3** — omit the block entir
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `version` | string | `"16.4.10"` | Frida server version to download from GitHub releases. Applies when the `frida:` block IS present. Must match your host-side `frida-tools` major + minor version. |
-| `sha256` | string \| null | `null` | Optional expected hex digest of the decompressed `frida-server` binary. When set, it's verified against the downloaded binary at download time (case-insensitive); a mismatch raises an error rather than staging a tampered binary. |
+| `version` | string | `"auto"` | Which `frida-server` release to stage. One of: **`auto`** (default) — match your host's installed `frida-tools` version so the staged server and the client you attach with agree on major+minor, falling back to `latest` when `frida-tools` isn't installed; **`latest`** — the current upstream release, resolved at download time; or a pinned **`major.minor.patch`** tag (e.g. `"16.4.10"`) for reproducibility. `auto` / `latest` are resolved to a concrete tag at staging time; a malformed pinned tag fails at config-load. |
+| `sha256` | string \| null | `null` | Optional expected hex digest of the decompressed `frida-server` binary. When set, it's verified against the downloaded binary at download time (case-insensitive); a mismatch raises an error rather than staging a tampered binary. **Requires a pinned `version`** — a digest can't match the moving target `auto` / `latest` resolve to, so that combination is rejected at load. |
 
 ```yaml
-# Opt in:
+# Opt in, tracking your host frida-tools (recommended):
+frida:
+  version: auto
+
+# Or pin a specific server (reproducible; required if you set sha256):
 frida:
   version: "16.4.10"
 
@@ -156,6 +160,9 @@ frida:
 ```
 
 When opted in, the binary is downloaded from `github.com/frida/frida/releases`, decompressed (`.xz`), and cached at `~/.cache/beetroot/frida/` (respects `$XDG_CACHE_HOME`). The CLI then copies it into the instance directory at `frida-server`, which is bind-mounted into the container at `/data/local/tmp/frida-server`. When opted out, that same path is a 0-byte non-executable placeholder and `entrypoint.sh` skips the launch.
+
+!!! tip "Client / server version skew"
+    Frida requires the client and server to agree on **major + minor**. `version: auto` keeps them in lock-step automatically. If you pin a `version` (or use `latest`) that diverges from your host `frida-tools`, `beetroot apply` prints a one-line warning, because `beetroot frida` would otherwise fail to attach.
 
 ---
 

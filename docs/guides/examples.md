@@ -76,7 +76,7 @@ android:
 
 ### `with-frida.yaml`
 
-The baseline plus an explicit, version-pinned `frida-server`. Copy this over a freshly-generated `beetroot.yaml` whenever you want Frida on for that instance — the version pin must match your host-side `frida-tools` on major + minor.
+The baseline plus an explicit, version-pinned `frida-server`. Copy this over a freshly-generated `beetroot.yaml` whenever you want Frida on for that instance — the version pin must match your host-side `frida-tools` on major + minor. (Prefer `version: auto`, the default, to track your host `frida-tools` automatically; pin only when you need a reproducible server build. See the [`frida` config reference](../reference/config.md#frida).)
 
 ```yaml title="examples/with-frida.yaml"
 api_version: 4

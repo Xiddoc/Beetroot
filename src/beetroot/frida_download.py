@@ -14,12 +14,19 @@ from __future__ import annotations
 import hashlib
 import lzma
 import shutil
+import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import console, paths
+from . import config, console, paths
 from .settings import settings
+
+# GitHub's per-repo "latest release" endpoint 302-redirects to the concrete
+# ``.../releases/tag/<version>`` URL, so following the redirect and reading the
+# final tag resolves ``latest`` without hitting the rate-limited JSON API or
+# needing an auth token / User-Agent (issue #105).
+_LATEST_RELEASE_URL = "https://github.com/frida/frida/releases/latest"
 
 _CHUNK_SIZE = 1 << 16  # 64 KiB per read; balances memory and progress granularity
 
@@ -48,6 +55,99 @@ def release_url(version: str) -> str:
     return (
         f"https://github.com/frida/frida/releases/download/{version}/"
         f"frida-server-{version}-{settings.frida_arch}.xz"
+    )
+
+
+def host_frida_tools_version() -> str | None:
+    """
+    Return the host ``frida-tools`` version (from ``frida --version``), or ``None``.
+
+    ``None`` means there's no usable host client version to match against — the
+    ``frida`` CLI isn't on PATH (the optional ``[frida]`` extra) or its output
+    isn't a concrete ``major.minor.patch`` tag — so callers treat "no host
+    version" uniformly.
+
+    Returns:
+        The host client version (e.g. ``16.4.10``), or ``None``.
+    """
+    if shutil.which("frida") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["frida", "--version"],  # noqa: S607  # `frida` resolved via PATH; fixed argv
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=settings.http_timeout,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    version = result.stdout.strip()
+    return version if config.is_pinned_frida_version(version) else None
+
+
+def latest_release_tag() -> str:
+    """
+    Resolve the current frida release tag via the GitHub latest-release redirect.
+
+    Returns:
+        The concrete tag the ``latest`` release points at (e.g. ``16.7.19``).
+
+    Raises:
+        FridaFetchError: If the redirect can't be reached, or the resolved URL
+            doesn't end in a recognizable ``major.minor.patch`` tag.
+    """
+    try:
+        with urllib.request.urlopen(  # noqa: S310  # pinned https GitHub URL
+            _LATEST_RELEASE_URL, timeout=settings.http_timeout
+        ) as resp:
+            # urlopen follows the 302; geturl() is the resolved tag URL. Typed
+            # explicitly because urlopen's return type erases to ``Any``.
+            final_url: str = resp.geturl()
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise FridaFetchError(f"could not resolve frida 'latest' release: {e}") from e
+    tag = final_url.rstrip("/").rsplit("/", 1)[-1]
+    if not config.is_pinned_frida_version(tag):
+        raise FridaFetchError(
+            f"frida 'latest' resolved to an unexpected tag {tag!r} (from {final_url})"
+        )
+    return tag
+
+
+def resolve_version(version: str, *, host_version: str | None = None) -> str:
+    """
+    Resolve a (possibly symbolic) ``frida.version`` to a concrete release tag.
+
+    - a pinned ``major.minor.patch`` is returned unchanged (reproducible);
+    - ``auto`` resolves to the host ``frida-tools`` version when installed (so
+      the staged server matches the client you'll attach with), else ``latest``;
+    - ``latest`` resolves to the current upstream release.
+
+    Args:
+        version: The configured version (``auto`` / ``latest`` / a pinned tag).
+        host_version: An already-resolved host ``frida-tools`` version, if the
+            caller has one (e.g. :func:`stage_for_instance` computes it once and
+            reuses it for the skew check). ``None`` means "fetch it here" — used
+            only on the ``auto`` path, so a pinned/``latest`` resolve never
+            spawns ``frida --version``.
+
+    Returns:
+        A concrete ``major.minor.patch`` tag.
+
+    Raises:
+        FridaFetchError: On a network failure resolving ``auto`` / ``latest``,
+            or an unrecognized symbolic value.
+    """
+    if config.is_pinned_frida_version(version):
+        return version
+    if version == config.FRIDA_AUTO:
+        host = host_version if host_version is not None else host_frida_tools_version()
+        return host if host is not None else latest_release_tag()
+    if version == config.FRIDA_LATEST:
+        return latest_release_tag()
+    raise FridaFetchError(
+        f"unrecognized frida version {version!r} "
+        f"(expected '{config.FRIDA_AUTO}', '{config.FRIDA_LATEST}', or major.minor.patch)"
     )
 
 
@@ -154,6 +254,33 @@ def _check_sha256(path: Path, expected: str | None) -> None:
         )
 
 
+def _warn_on_client_skew(server_version: str, *, host_version: str | None = None) -> None:
+    """
+    Warn if the host ``frida-tools`` major+minor won't match ``server_version``.
+
+    Frida requires the client and server to agree on major+minor, so a server
+    that diverges from the host client breaks ``beetroot frida`` at *attach*
+    time. Surfaced as an actionable warning here, at staging time (issue #105).
+    No-op when ``frida-tools`` isn't installed (nothing to attach with yet).
+
+    Args:
+        server_version: The concrete tag being staged.
+        host_version: An already-resolved host ``frida-tools`` version; ``None``
+            fetches it. :func:`stage_for_instance` passes the value it already
+            computed so the host version is read at most once per stage.
+    """
+    host = host_version if host_version is not None else host_frida_tools_version()
+    if host is None:
+        return
+    if host.split(".")[:2] != server_version.split(".")[:2]:
+        console.warn(
+            f"staged frida-server {server_version} but the host frida-tools is "
+            f"{host}; Frida requires the client and server major+minor to match, "
+            "so `beetroot frida` will fail to attach. Set frida.version to "
+            f"'{config.FRIDA_AUTO}' (or pin {host}), or upgrade frida-tools."
+        )
+
+
 def stage_for_instance(
     instance_root: Path,
     version: str,
@@ -163,19 +290,32 @@ def stage_for_instance(
     """
     Copy the cached frida-server binary into the instance's directory.
 
+    The ``version`` is resolved first (``auto`` / ``latest`` → a concrete tag,
+    see :func:`resolve_version`), then a host-client/server skew warning is
+    surfaced before the binary is staged.
+
     Args:
         instance_root: The instance directory (the one containing
             ``beetroot.yaml``). The binary is written to
             ``<instance_root>/frida-server``.
-        version: Frida release tag.
+        version: Frida version selector — ``auto`` / ``latest`` / a pinned tag.
         expected_sha256: Optional hex digest forwarded to
             :func:`download` for integrity verification. Comparison
-            is case-insensitive.
+            is case-insensitive. Only valid with a pinned ``version``
+            (enforced by :class:`beetroot.config.Frida`).
 
     Returns:
         Path to the staged binary inside the instance directory.
     """
-    src = download(version, expected_sha256=expected_sha256)
+    # Read the host frida-tools version once and reuse it for both resolution
+    # (the ``auto`` path) and the skew check, so staging never spawns
+    # ``frida --version`` more than once.
+    host_version = host_frida_tools_version()
+    resolved = resolve_version(version, host_version=host_version)
+    if resolved != version:
+        console.note(f"frida version {version!r} resolved to {resolved}")
+    _warn_on_client_skew(resolved, host_version=host_version)
+    src = download(resolved, expected_sha256=expected_sha256)
     dst = paths.instance_frida(instance_root)
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src, dst)

@@ -4,6 +4,17 @@
 
 ### Features
 
+- **`frida.version` now accepts `auto` / `latest` and defaults to `auto` (#105).**
+  The frozen `16.4.10` default rotted with every upstream release. `frida.version`
+  now takes `auto` (the new default) — match the host's installed `frida-tools`
+  version so the staged server and the client you attach with agree on
+  major+minor, falling back to `latest` when `frida-tools` isn't installed —
+  `latest` (resolved to a concrete tag via GitHub's latest-release redirect at
+  download time), or a pinned `major.minor.patch` exactly as before
+  (reproducible, and now *required* if you also set `frida.sha256`, since a
+  digest can't match a moving target). `beetroot apply` warns when a pinned /
+  `latest` server's major+minor diverges from the host `frida-tools`, because
+  `beetroot frida` would otherwise fail to attach.
 - **Full LSPosed module-hook e2e — proves a real Xposed hook fires (#29).**
   Completes the LSPosed recipe with an end-to-end test of the *whole* pipeline:
   flash Vector (LSPosed) → install an Xposed module **as an app** → enable it in
