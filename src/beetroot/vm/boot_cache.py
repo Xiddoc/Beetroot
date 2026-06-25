@@ -33,6 +33,7 @@ runs over a stdlib ``AF_UNIX`` socket (tests drive it with a real local server).
 
 from __future__ import annotations
 
+import hashlib
 import socket
 import subprocess
 from pathlib import Path
@@ -46,6 +47,15 @@ SNAPSHOT_TAG = "beetroot-boot"
 # Per-instance artifact names (kept beside the QEMU pidfile in the instance dir).
 _OVERLAY_NAME = "vm-overlay.qcow2"
 _MONITOR_NAME = "qemu-monitor.sock"
+# Sidecar recording the digest of the kernel+rootfs the overlay was built from,
+# so a kernel/rootfs rebuild auto-invalidates a now-stale checkpoint (issue #126).
+_OVERLAY_KEY_NAME = "vm-overlay.cache-key"
+
+# Streaming read size for hashing the (multi-GB) rootfs without loading it all.
+_IDENTITY_CHUNK = 1024 * 1024
+# How much of the identity digest to keep. 16 hex (64 bits) is far past
+# collision risk for one instance's two input files and stays readable.
+_IDENTITY_HEX_LEN = 16
 
 # How long to wait for the HMP monitor handshake + savevm acknowledgement.
 # savevm of a multi-GB guest writes a few GiB to the overlay; under TCG that is
@@ -88,6 +98,119 @@ def monitor_path(instance_dir: Path) -> Path:
         ``savevm`` command after the first cold boot.
     """
     return instance_dir / _MONITOR_NAME
+
+
+def overlay_key_path(instance_dir: Path) -> Path:
+    """
+    Return the cache-key sidecar path recording the overlay's base identity.
+
+    Args:
+        instance_dir: The instance directory.
+
+    Returns:
+        ``<instance_dir>/vm-overlay.cache-key`` — the digest of the kernel +
+        rootfs the overlay was built from (issue #126).
+    """
+    return instance_dir / _OVERLAY_KEY_NAME
+
+
+def _hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        while chunk := fh.read(_IDENTITY_CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def base_identity(kernel: Path, rootfs: Path) -> str:
+    """
+    Compute a stable digest over the kernel + rootfs an overlay is built from.
+
+    Mirrors ``scripts/vm_cache_key.compute_cache_key``'s algorithm — each file's
+    basename plus its streamed SHA-256, folded in basename order so the result
+    is independent of argument order. A kernel or rootfs rebuild changes the
+    digest, which is what lets :func:`overlay_is_stale` invalidate a checkpoint
+    taken against the old artifacts (issue #126 / #49).
+
+    Args:
+        kernel: The guest ``bzImage`` the overlay boots.
+        rootfs: The raw rootfs image the overlay backs onto.
+
+    Returns:
+        A 16-hex-character identity digest.
+
+    Raises:
+        FileNotFoundError: If either input file does not exist.
+    """
+    combined = hashlib.sha256()
+    for path in sorted((kernel, rootfs), key=lambda p: p.name):
+        combined.update(path.name.encode())
+        combined.update(b"\0")
+        combined.update(_hash_file(path).encode())
+        combined.update(b"\0")
+    return combined.hexdigest()[:_IDENTITY_HEX_LEN]
+
+
+def record_identity(instance_dir: Path, kernel: Path, rootfs: Path) -> None:
+    """
+    Write the overlay's base-identity sidecar (the kernel + rootfs digest).
+
+    Called when the overlay is (re)created so a later kernel/rootfs change is
+    detectable. Arguments mirror :func:`base_identity`.
+
+    Args:
+        instance_dir: The instance directory the sidecar is written into.
+        kernel: The guest ``bzImage`` the overlay boots.
+        rootfs: The raw rootfs image the overlay backs onto.
+    """
+    overlay_key_path(instance_dir).write_text(base_identity(kernel, rootfs), encoding="utf-8")
+
+
+def read_identity(instance_dir: Path) -> str | None:
+    """
+    Return the recorded overlay base identity, or ``None`` if absent/unreadable.
+
+    Args:
+        instance_dir: The instance directory holding the sidecar.
+
+    Returns:
+        The recorded digest, or ``None`` when the sidecar is missing or empty.
+    """
+    try:
+        return overlay_key_path(instance_dir).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def overlay_is_stale(instance_dir: Path, kernel: Path, rootfs: Path) -> bool:
+    """
+    Return True iff the overlay's recorded identity ≠ the current kernel/rootfs.
+
+    A missing/unreadable sidecar (e.g. an overlay built before issue #126) also
+    counts as stale: we can't prove it matches the current artifacts, and
+    resuming a stale checkpoint is worse than one cold boot. The caller then
+    discards + recreates the overlay and re-checkpoints.
+
+    Args:
+        instance_dir: The instance directory holding the overlay + sidecar.
+        kernel: The currently-resolved guest kernel.
+        rootfs: The currently-resolved raw rootfs.
+
+    Returns:
+        ``True`` if the checkpoint should be invalidated, else ``False``.
+    """
+    return read_identity(instance_dir) != base_identity(kernel, rootfs)
+
+
+def discard_overlay(instance_dir: Path) -> None:
+    """
+    Remove the boot-cache overlay and its identity sidecar (forces a cold boot).
+
+    Args:
+        instance_dir: The instance directory.
+    """
+    overlay_path(instance_dir).unlink(missing_ok=True)
+    overlay_key_path(instance_dir).unlink(missing_ok=True)
 
 
 def create_overlay(base_rootfs: Path, overlay: Path) -> None:

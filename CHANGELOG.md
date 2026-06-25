@@ -21,6 +21,16 @@
 
 ### Features
 
+- **`binder: vm` `boot_cache` auto-invalidates when the kernel/rootfs changes
+  (#126).** The warm-start qcow2 overlay used to resume whatever checkpoint it
+  held — even one taken against a since-rebuilt kernel/rootfs — and the only
+  guard was a docs note telling you to delete `vm-overlay.qcow2` by hand. Now
+  Beetroot records a digest of the `vm.kernel` + `vm.rootfs` the overlay was
+  built from (`<instance>/vm-overlay.cache-key`, the same content-hash shape as
+  `scripts/vm_cache_key.py`); on each warm `up` it compares that against the
+  current artifacts and, on a mismatch (or a pre-#126 overlay with no recorded
+  identity), discards the stale checkpoint and cold-boots once to re-cache — no
+  manual cleanup. Resolves the "delete it yourself after rebuilding" footgun.
 - **New `beetroot reset` verb — drop an instance's `/data` while keeping the
   instance (#127).** Promotes the ad-hoc "`rm -rf data/`" fresh-start recipe to
   a first-class, confirmation-gated verb. `reset` stops the container and wipes

@@ -484,8 +484,21 @@ class VmDeviceBackend:
         monitor = boot_cache.monitor_path(self._root)
         # A stale monitor socket from a prior `down` would block QEMU's bind.
         monitor.unlink(missing_ok=True)
+        # Auto-invalidate a checkpoint taken against a now-changed kernel/rootfs
+        # (#126): resuming a snapshot booted from stale artifacts is worse than
+        # one cold boot. An overlay with no recorded identity (pre-#126) also
+        # counts as stale, so it is re-keyed on the next boot.
+        if overlay.exists() and boot_cache.overlay_is_stale(self._root, kernel, base_rootfs):
+            console.note(
+                f"{self._name!r} boot-cache overlay was built from a different "
+                "kernel/rootfs; discarding the stale checkpoint and cold-booting "
+                "once to re-cache."
+            )
+            boot_cache.discard_overlay(self._root)
         if not overlay.exists():
             boot_cache.create_overlay(base_rootfs, overlay)
+            # Record what this overlay was built from so a later rebuild invalidates it.
+            boot_cache.record_identity(self._root, kernel, base_rootfs)
         warm = boot_cache.snapshot_present(overlay)
         if warm:
             console.info(f"resuming cached boot snapshot for {self._name!r} (warm start)")

@@ -269,3 +269,77 @@ class TestSaveSnapshot:
 
         monkeypatch.setattr("beetroot.vm.boot_cache.socket.socket", lambda *_a, **_k: _FakeSock())
         assert boot_cache.save_snapshot(tmp_path / "qemu-monitor.sock") is False
+
+
+# ---------------------------------------------------------------------------
+# Overlay base-identity / auto-invalidation (issue #126)
+# ---------------------------------------------------------------------------
+
+
+class TestOverlayIdentity:
+    def _files(self, tmp_path: Path, *, k: bytes = b"KERNEL", r: bytes = b"ROOTFS") -> tuple[Path, Path]:
+        kernel = tmp_path / "bzImage"
+        kernel.write_bytes(k)
+        rootfs = tmp_path / "rootdisk.img"
+        rootfs.write_bytes(r)
+        return kernel, rootfs
+
+    def test_overlay_key_path(self, tmp_path: Path) -> None:
+        assert boot_cache.overlay_key_path(tmp_path) == tmp_path / "vm-overlay.cache-key"
+
+    def test_base_identity_stable_and_order_independent(self, tmp_path: Path) -> None:
+        kernel, rootfs = self._files(tmp_path)
+        first = boot_cache.base_identity(kernel, rootfs)
+        # Argument order must not matter (folded in basename order).
+        assert first == boot_cache.base_identity(rootfs, kernel)
+        assert len(first) == 16
+
+    def test_base_identity_changes_with_content(self, tmp_path: Path) -> None:
+        kernel, rootfs = self._files(tmp_path)
+        before = boot_cache.base_identity(kernel, rootfs)
+        kernel.write_bytes(b"REBUILT KERNEL")
+        assert boot_cache.base_identity(kernel, rootfs) != before
+
+    def test_record_and_read_roundtrip(self, tmp_path: Path) -> None:
+        kernel, rootfs = self._files(tmp_path)
+        boot_cache.record_identity(tmp_path, kernel, rootfs)
+        assert boot_cache.read_identity(tmp_path) == boot_cache.base_identity(kernel, rootfs)
+
+    def test_read_identity_none_when_absent(self, tmp_path: Path) -> None:
+        assert boot_cache.read_identity(tmp_path) is None
+
+    def test_read_identity_none_when_blank(self, tmp_path: Path) -> None:
+        boot_cache.overlay_key_path(tmp_path).write_text("   \n")
+        assert boot_cache.read_identity(tmp_path) is None
+
+    def test_read_identity_none_on_oserror(self, tmp_path: Path) -> None:
+        # A directory at the key path makes read_text raise OSError → None.
+        boot_cache.overlay_key_path(tmp_path).mkdir()
+        assert boot_cache.read_identity(tmp_path) is None
+
+    def test_overlay_is_stale_false_when_matching(self, tmp_path: Path) -> None:
+        kernel, rootfs = self._files(tmp_path)
+        boot_cache.record_identity(tmp_path, kernel, rootfs)
+        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs) is False
+
+    def test_overlay_is_stale_true_when_content_changed(self, tmp_path: Path) -> None:
+        kernel, rootfs = self._files(tmp_path)
+        boot_cache.record_identity(tmp_path, kernel, rootfs)
+        rootfs.write_bytes(b"REBUILT ROOTFS")
+        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs) is True
+
+    def test_overlay_is_stale_true_when_no_key(self, tmp_path: Path) -> None:
+        kernel, rootfs = self._files(tmp_path)
+        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs) is True
+
+    def test_discard_overlay_removes_overlay_and_key(self, tmp_path: Path) -> None:
+        kernel, rootfs = self._files(tmp_path)
+        boot_cache.overlay_path(tmp_path).write_bytes(b"q")
+        boot_cache.record_identity(tmp_path, kernel, rootfs)
+        boot_cache.discard_overlay(tmp_path)
+        assert not boot_cache.overlay_path(tmp_path).exists()
+        assert not boot_cache.overlay_key_path(tmp_path).exists()
+
+    def test_discard_overlay_is_idempotent(self, tmp_path: Path) -> None:
+        boot_cache.discard_overlay(tmp_path)  # nothing present → no error
+        assert not boot_cache.overlay_path(tmp_path).exists()
