@@ -1018,6 +1018,125 @@ class VmArtifacts(BaseModel):
     rootfs: Path
 
 
+class PreflightProblem(BaseModel):
+    """
+    One missing host prerequisite for ``beetroot build --vm-kernel``.
+
+    Attributes:
+        requirement: The missing tool / capability (e.g. ``socat``).
+        detail: Why it failed the check (not found, daemon down, …).
+        fix: The actionable remedy (the apt package or command to run).
+    """
+
+    model_config = ConfigDict(frozen=True)
+    requirement: str
+    detail: str
+    fix: str
+
+
+# (binary on PATH, apt package) the rootfs assembly + kernel fetch shell out to.
+_VM_PATH_TOOLS: Final[tuple[tuple[str, str], ...]] = (
+    ("curl", "curl"),
+    ("tar", "tar"),
+    ("ldd", "libc-bin"),
+    ("mke2fs", "e2fsprogs"),
+)
+
+# (resolved static-binary path attr on _RootfsConfig, apt package) staged
+# verbatim into the guest rootfs — these are looked up by absolute path, not
+# PATH, so a plain ``which`` wouldn't catch them.
+_VM_STATIC_BINS: Final[tuple[tuple[str, str], ...]] = (
+    ("busybox_bin", "busybox-static"),
+    ("socat_bin", "socat"),
+    ("xtables_multi", "iptables"),
+)
+
+# Probe timeout for the ``docker info`` daemon check (seconds).
+_DOCKER_INFO_TIMEOUT: Final[int] = 20
+
+
+def _docker_daemon_responsive() -> bool:
+    """Return ``True`` iff the host Docker daemon answers ``docker info``."""
+    try:
+        result = subprocess.run(  # noqa: S603  # docker bin from settings; fixed argv
+            [settings.docker_bin, "info"],
+            check=False,
+            capture_output=True,
+            timeout=_DOCKER_INFO_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def vm_build_preflight(*, redroid_tar: Path | None = None) -> list[PreflightProblem]:
+    """
+    Check every host prerequisite for ``beetroot build --vm-kernel`` in one pass.
+
+    Assembling the guest rootfs stages a few static host binaries
+    (``busybox``/``socat``/``iptables-legacy``), shells out to several more
+    (``curl``/``tar``/``ldd``/``mke2fs``), and bakes the redroid image via the
+    host Docker daemon. Each used to abort the build one at a time with a raw
+    ``[Errno 2]`` and no install hint, forcing repeated re-runs to enumerate the
+    prerequisites (issue #78). This reports them all together, each with the apt
+    package (or command) that fixes it, so a bare host is provisionable in one
+    shot.
+
+    Args:
+        redroid_tar: A pre-saved redroid image tarball (the ``REDROID_TAR`` env
+            knob). When set, the Docker-daemon check is skipped — the bake loads
+            from the tarball instead of pulling, so no running daemon is needed.
+
+    Returns:
+        One :class:`PreflightProblem` per missing prerequisite (empty when the
+        host is ready), each carrying an actionable ``fix``.
+    """
+    cfg = _RootfsConfig.from_env(out_image=Path("preflight"), vm_dir=Path("preflight"))
+    problems: list[PreflightProblem] = []
+    for attr, pkg in _VM_STATIC_BINS:
+        path: Path = getattr(cfg, attr)
+        if not path.is_file():
+            problems.append(
+                PreflightProblem(
+                    requirement=path.name,
+                    detail=f"static binary not found at {path}",
+                    fix=f"apt-get install {pkg}",
+                )
+            )
+    for tool, pkg in _VM_PATH_TOOLS:
+        if shutil.which(tool) is None:
+            problems.append(
+                PreflightProblem(
+                    requirement=tool, detail="not found on PATH", fix=f"apt-get install {pkg}"
+                )
+            )
+    # The host Docker CLI + a running daemon bake the redroid image — unless a
+    # pre-saved REDROID_TAR is supplied, which loads without pulling.
+    if redroid_tar is None:
+        if shutil.which(settings.docker_bin) is None:
+            problems.append(
+                PreflightProblem(
+                    requirement=settings.docker_bin,
+                    detail="Docker CLI not found on PATH",
+                    fix="install Docker Engine (apt-get install docker.io)",
+                )
+            )
+        elif not _docker_daemon_responsive():
+            problems.append(
+                PreflightProblem(
+                    requirement="Docker daemon",
+                    detail=f"`{settings.docker_bin} info` failed (daemon not running?)",
+                    fix=(
+                        "start the daemon (e.g. `sudo systemctl start docker`). If the "
+                        "redroid pull then hits a Docker Hub rate limit, point REDROID_TAR "
+                        "at a `docker save`d image tarball or use a registry mirror "
+                        "(e.g. mirror.gcr.io)."
+                    ),
+                )
+            )
+    return problems
+
+
 class _RootfsBuildFn(Protocol):
     """The :func:`build_rootfs` call shape, injectable so ``build_vm_kernel`` is unit-testable."""
 

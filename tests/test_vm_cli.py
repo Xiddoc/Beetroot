@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,7 +13,7 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-from beetroot import api, cli, config, console, registry
+from beetroot import api, builder, cli, config, console, registry
 from beetroot.backends import vm as vm_backend
 from beetroot.builder import VmArtifacts
 from beetroot.settings import Settings
@@ -27,6 +28,14 @@ runner = CliRunner()
 
 
 class TestBuildVmKernel:
+    @pytest.fixture(autouse=True)
+    def _ready_host(self) -> Iterator[None]:
+        # These tests exercise the build *dispatch*, not the host preflight
+        # (issue #78, tested separately below). Default to a ready host so the
+        # build path runs; the preflight-specific tests override this.
+        with patch("beetroot.cli.builder.vm_build_preflight", return_value=[]):
+            yield
+
     def test_vm_kernel_flag_builds_artifacts(self, cli_root: Path) -> None:
         with patch("beetroot.cli.builder.build_vm_kernel") as mock_b:
             mock_b.return_value = VmArtifacts(
@@ -34,9 +43,7 @@ class TestBuildVmKernel:
             )
             result = runner.invoke(cli.app, ["build", "--vm-kernel"])
         assert result.exit_code == 0, result.stderr
-        mock_b.assert_called_once_with(
-            android_version=14, from_source=False, build_context=None
-        )
+        mock_b.assert_called_once_with(android_version=14, from_source=False, build_context=None)
         assert "/c/bzImage" in result.stdout
         assert "/c/rootdisk.img" in result.stdout
 
@@ -47,9 +54,7 @@ class TestBuildVmKernel:
             )
             result = runner.invoke(cli.app, ["build", "--vm-kernel", "--android-version", "11"])
         assert result.exit_code == 0, result.stderr
-        mock_b.assert_called_once_with(
-            android_version=11, from_source=False, build_context=None
-        )
+        mock_b.assert_called_once_with(android_version=11, from_source=False, build_context=None)
 
     def test_vm_kernel_from_source_flag(self, cli_root: Path) -> None:
         with patch("beetroot.cli.builder.build_vm_kernel") as mock_b:
@@ -58,9 +63,7 @@ class TestBuildVmKernel:
             )
             result = runner.invoke(cli.app, ["build", "--vm-kernel", "--from-source"])
         assert result.exit_code == 0, result.stderr
-        mock_b.assert_called_once_with(
-            android_version=14, from_source=True, build_context=None
-        )
+        mock_b.assert_called_once_with(android_version=14, from_source=True, build_context=None)
 
     def test_vm_kernel_build_context_flag(self, cli_root: Path) -> None:
         with patch("beetroot.cli.builder.build_vm_kernel") as mock_b:
@@ -93,6 +96,47 @@ class TestBuildVmKernel:
             result = runner.invoke(cli.app, ["build", "--vm-kernel"])
         assert result.exit_code == 1
         assert "boom" in result.stderr
+
+
+class TestVmKernelPreflight:
+    def _problem(self) -> builder.PreflightProblem:
+        return builder.PreflightProblem(
+            requirement="socat",
+            detail="static binary not found at /usr/bin/socat",
+            fix="apt-get install socat",
+        )
+
+    def test_check_reports_ready_host(self, cli_root: Path) -> None:
+        with patch("beetroot.cli.builder.vm_build_preflight", return_value=[]):
+            result = runner.invoke(cli.app, ["build", "--vm-kernel", "--check"])
+        assert result.exit_code == 0, result.stderr
+        assert "all host prerequisites satisfied" in result.stdout
+
+    def test_check_lists_problems_and_exits_one(self, cli_root: Path) -> None:
+        with patch("beetroot.cli.builder.vm_build_preflight", return_value=[self._problem()]):
+            result = runner.invoke(cli.app, ["build", "--vm-kernel", "--check"])
+        assert result.exit_code == 1
+        # The missing requirement and its fix are surfaced.
+        assert "socat" in result.stderr
+        assert "apt-get install socat" in result.stderr
+
+    def test_check_without_vm_kernel_errors(self, cli_root: Path) -> None:
+        result = runner.invoke(cli.app, ["build", "--check"])
+        assert result.exit_code == 1
+        assert "--check only applies to --vm-kernel" in result.stderr
+
+    def test_preflight_blocks_build_when_problems(self, cli_root: Path) -> None:
+        # A real build (no --check) must NOT call build_vm_kernel when the host
+        # is missing prerequisites; it errors with the consolidated list.
+        with (
+            patch("beetroot.cli.builder.vm_build_preflight", return_value=[self._problem()]),
+            patch("beetroot.cli.builder.build_vm_kernel") as mock_b,
+        ):
+            result = runner.invoke(cli.app, ["build", "--vm-kernel"])
+        assert result.exit_code == 1
+        mock_b.assert_not_called()
+        assert "socat" in result.stderr
+        assert "apt-get install socat" in result.stderr
 
     def test_default_build_is_unaffected(self, cli_root: Path) -> None:
         with patch("beetroot.cli.builder.build_image") as mock_bi:
@@ -163,9 +207,7 @@ def _stub_adb_connect_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     success so these tests are deterministic and fast regardless of adb
     presence.
     """
-    monkeypatch.setattr(
-        vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None
-    )
+    monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None)
 
 
 @pytest.mark.usefixtures("_stub_adb_connect_wait")

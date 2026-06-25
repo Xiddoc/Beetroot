@@ -1269,3 +1269,111 @@ class TestSleepHelper:
         monkeypatch.setattr("beetroot.builder.time.sleep", slept.append)
         builder._sleep(0.0)
         assert slept == [0.0]
+
+
+class TestDockerDaemonResponsive:
+    def test_true_when_info_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "beetroot.builder.subprocess.run",
+            lambda *_a, **_k: subprocess.CompletedProcess(args=[], returncode=0),
+        )
+        assert builder._docker_daemon_responsive() is True
+
+    def test_false_when_info_nonzero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "beetroot.builder.subprocess.run",
+            lambda *_a, **_k: subprocess.CompletedProcess(args=[], returncode=1),
+        )
+        assert builder._docker_daemon_responsive() is False
+
+    def test_false_when_docker_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(*_a: object, **_k: object) -> object:
+            raise FileNotFoundError
+
+        monkeypatch.setattr("beetroot.builder.subprocess.run", _boom)
+        assert builder._docker_daemon_responsive() is False
+
+
+class TestVmBuildPreflight:
+    def _cfg(self, tmp_path: Path, *, present: tuple[str, ...]) -> builder._RootfsConfig:
+        # Build a _RootfsConfig whose static-binary paths point under tmp_path;
+        # create only the files named in ``present`` so the rest read as missing.
+        paths = {name: tmp_path / name for name in ("busybox", "socat", "xtables-legacy-multi")}
+        for name in present:
+            paths[name].write_bytes(b"\x7fELF")
+        return builder._RootfsConfig(
+            out_image=tmp_path / "rootdisk.img",
+            vm_dir=tmp_path / "vm",
+            docker_url="https://example/docker.tgz",
+            busybox_bin=paths["busybox"],
+            socat_bin=paths["socat"],
+            xtables_multi=paths["xtables-legacy-multi"],
+        )
+
+    def _ready(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        *,
+        present: tuple[str, ...] = ("busybox", "socat", "xtables-legacy-multi"),
+        which: object = None,
+        daemon: bool = True,
+    ) -> None:
+        cfg = self._cfg(tmp_path, present=present)
+        monkeypatch.setattr(builder._RootfsConfig, "from_env", lambda **_k: cfg)
+        monkeypatch.setattr("beetroot.builder.shutil.which", which or (lambda _n: "/usr/bin/found"))
+        monkeypatch.setattr(builder, "_docker_daemon_responsive", lambda: daemon)
+
+    def test_ready_host_has_no_problems(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._ready(monkeypatch, tmp_path)
+        assert builder.vm_build_preflight() == []
+
+    def test_missing_static_bin_reported_with_fix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._ready(monkeypatch, tmp_path, present=("busybox", "xtables-legacy-multi"))
+        problems = builder.vm_build_preflight()
+        assert [p.requirement for p in problems] == ["socat"]
+        assert problems[0].fix == "apt-get install socat"
+
+    def test_missing_path_tool_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._ready(
+            monkeypatch, tmp_path, which=lambda n: None if n == "curl" else "/usr/bin/found"
+        )
+        problems = builder.vm_build_preflight()
+        assert [p.requirement for p in problems] == ["curl"]
+        assert "curl" in problems[0].fix
+
+    def test_docker_cli_missing_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._ready(
+            monkeypatch, tmp_path, which=lambda n: None if n == "docker" else "/usr/bin/found"
+        )
+        problems = builder.vm_build_preflight()
+        assert [p.requirement for p in problems] == ["docker"]
+
+    def test_daemon_down_reported(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._ready(monkeypatch, tmp_path, daemon=False)
+        problems = builder.vm_build_preflight()
+        assert [p.requirement for p in problems] == ["Docker daemon"]
+        assert "REDROID_TAR" in problems[0].fix  # rate-limit guidance
+
+    def test_redroid_tar_skips_daemon_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._ready(monkeypatch, tmp_path, daemon=False)
+        # With a pre-saved tarball the bake never pulls, so a down daemon is fine.
+        assert builder.vm_build_preflight(redroid_tar=tmp_path / "redroid.tar") == []
+
+    def test_reports_everything_missing_in_one_pass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The whole point of #78: a bare host surfaces ALL gaps at once.
+        self._ready(monkeypatch, tmp_path, present=(), which=lambda _n: None, daemon=False)
+        names = {p.requirement for p in builder.vm_build_preflight()}
+        assert {"busybox", "socat", "xtables-legacy-multi", "curl", "tar"} <= names
