@@ -150,7 +150,7 @@ def _read_lifecycle(yaml_path: Path) -> Literal["ephemeral", "durable"]:
     """
     try:
         return config.load_yaml(yaml_path).lifecycle
-    except (OSError, ValueError, yaml.YAMLError):  # pragma: no cover  # advisory metadata
+    except (OSError, ValueError, yaml.YAMLError):
         return "durable"
 
 

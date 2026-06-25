@@ -124,6 +124,14 @@ class TestSnapshotManifestLifecycle:
         inst = api.Instance.create("alpha", lifecycle="ephemeral")
         assert snapshot._read_lifecycle(paths.instance_yaml(inst.root)) == "ephemeral"
 
+    def test_read_lifecycle_malformed_yaml_defaults_durable(self, tmp_path: Path) -> None:
+        # A malformed-but-existing config falls back to durable rather than
+        # failing the snapshot (the archive's own beetroot.yaml is the source
+        # of truth; the manifest field is advisory metadata).
+        bad = tmp_path / "beetroot.yaml"
+        bad.write_text("{:not yaml")
+        assert snapshot._read_lifecycle(bad) == "durable"
+
     def test_build_manifest_stamps_lifecycle(self) -> None:
         m = snapshot._build_manifest(
             name="x", source_index=1, path_layout={}, lifecycle="ephemeral"
