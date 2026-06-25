@@ -236,10 +236,11 @@ already-booted guest. Measured on this class of host (Android 14, pure TCG):
 !!! note "Resume is a fast *known-good boot*, not persistence"
     Each warm `up` reverts the guest to the checkpoint moment. That is ideal for
     a throwaway research sandbox (every session starts from an identical, warmed
-    Android), but it means in-guest changes do not carry across restarts. Use
-    `beetroot snapshot` to persist host-side research state, and delete
-    `alpha/vm-overlay.qcow2` to discard the cache (e.g. after rebuilding the
-    kernel/rootfs with `beetroot build --vm-kernel`).
+    Android), but it means in-guest changes (installed apps, logins, flashed-module
+    state) do not carry across restarts — Beetroot prints a warning on each warm
+    resume so this is never a silent surprise. Set `vm.boot_cache: false` if you need
+    `/data` to persist across restarts, and delete `alpha/vm-overlay.qcow2` to discard
+    the cache (e.g. after rebuilding the kernel/rootfs with `beetroot build --vm-kernel`).
 
 ## Tear down
 

@@ -502,6 +502,7 @@ class VmDeviceBackend:
         warm = boot_cache.snapshot_present(overlay)
         if warm:
             console.info(f"resuming cached boot snapshot for {self._name!r} (warm start)")
+            self._warn_on_boot_cache_data_revert()
         else:
             console.info(
                 f"no boot snapshot yet for {self._name!r}; cold-booting once, then caching"
@@ -669,6 +670,29 @@ class VmDeviceBackend:
             f"warning: instance {self._name!r} uses binder: vm, which boots an "
             "unmodified upstream redroid image. These beetroot.yaml settings have "
             "no effect under binder: vm: " + "; ".join(inert) + "."
+        )
+
+    def _warn_on_boot_cache_data_revert(self) -> None:
+        """
+        Warn that a ``vm.boot_cache`` warm resume reverts ``/data`` to its checkpoint.
+
+        The warm-start ``-loadvm`` resumes the whole machine — RAM, devices, and
+        the qcow2 overlay disk that backs the guest's ``/data`` — from the
+        first-boot checkpoint, so anything written to ``/data`` since then
+        (installed apps, account logins, flashed-module / LSPosed scope state) is
+        silently discarded on every ``up``. The behaviour is documented but was
+        never surfaced at runtime (issue #123); this advisory makes it visible at
+        the point of harm. The remedy is ``vm.boot_cache: false`` — *not*
+        ``beetroot snapshot``, which is redroid-only (issue #128). A non-fatal
+        note, matching :meth:`_warn_on_inert_vm_config`.
+        """
+        console.note(
+            f"warning: instance {self._name!r} uses vm.boot_cache, so this warm "
+            "resume reverts the guest to its first-boot checkpoint — everything "
+            "written to /data since then (installed apps, account logins, "
+            "flashed-module / LSPosed state) is discarded on every `up`. boot_cache "
+            "trades a durable /data for a fast known-good boot; set vm.boot_cache: "
+            "false in beetroot.yaml to keep /data across restarts."
         )
 
     def _wait_for_adb_connect(self) -> None:

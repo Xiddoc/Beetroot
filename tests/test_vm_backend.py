@@ -463,6 +463,40 @@ class TestLifecycle:
         assert argv[argv.index("-loadvm") + 1] == boot_cache.SNAPSHOT_TAG
         assert events == []  # neither overlay creation nor checkpoint
 
+    def test_up_cached_warm_warns_about_data_revert(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A warm resume rolls /data back to the first-boot checkpoint; the user
+        # must be told so a "my installs vanished" footgun is loud (issue #123).
+        backend = self._cached_backend(tmp_path, monkeypatch)
+        boot_cache.overlay_path(backend.root).write_bytes(b"qcow2")
+        monkeypatch.setattr("beetroot.vm.boot_cache.create_overlay", lambda *_a: None)
+        monkeypatch.setattr("beetroot.vm.boot_cache.snapshot_present", lambda _o: True)
+        monkeypatch.setattr("beetroot.vm.boot_cache.save_snapshot", lambda _m: True)
+        monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 1)
+        notes: list[str] = []
+        monkeypatch.setattr("beetroot.console.note", notes.append)
+        backend.up()
+        assert any("first-boot checkpoint" in n and "/data" in n for n in notes)
+        # The remedy is boot_cache:false, NOT `beetroot snapshot` (redroid-only).
+        assert any("vm.boot_cache: false" in n for n in notes)
+        assert not any("beetroot snapshot" in n for n in notes)
+
+    def test_up_cached_cold_does_not_warn_about_data_revert(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # On the cold (first) boot there is no checkpoint to revert to, so the
+        # #123 advisory must stay silent — it only applies to a warm resume.
+        backend = self._cached_backend(tmp_path, monkeypatch)
+        monkeypatch.setattr("beetroot.vm.boot_cache.create_overlay", lambda *_a: None)
+        monkeypatch.setattr("beetroot.vm.boot_cache.snapshot_present", lambda _o: False)
+        monkeypatch.setattr("beetroot.vm.boot_cache.save_snapshot", lambda _m: True)
+        monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 1)
+        notes: list[str] = []
+        monkeypatch.setattr("beetroot.console.note", notes.append)
+        backend.up()
+        assert not any("first-boot checkpoint" in n for n in notes)
+
     def test_up_cached_warns_when_checkpoint_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
