@@ -1,4 +1,4 @@
-api_version: 4
+api_version: 5
 magisk:
   denylist:
     - "not a valid package!"

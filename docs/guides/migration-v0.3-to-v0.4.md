@@ -14,16 +14,18 @@ list lives at the top of
 under **Breaking changes**. This page expands each bullet into the
 exact command or edit you run.
 
-!!! warning "Current release is `api_version: 4`"
+!!! warning "Current release is `api_version: 5`"
     This page documents the v0.3 → v0.4 hop and stops at `api_version: 3`.
-    The current Beetroot release is **`api_version: 4`**, which removed the
-    top-level `stealth:` key in favour of `magisk.denylist`. A YAML that
-    still contains a `stealth:` block is now rejected at load with a
-    migration hint — move `stealth.denylist` to `magisk.denylist` and set
-    `api_version: 4`. YAMLs that merely omit `api_version` (or pin one of
-    `1`/`2`/`3` *without* a `stealth:` block) auto-bump to `4` on load.
-    The [v0.4 → v0.6 guide](migration-v0.4-to-v0.6.md) walks through that
-    hop in full.
+    The current Beetroot release is **`api_version: 5`**. Two non-additive
+    renames have landed since v0.4: the top-level `stealth:` key moved to
+    `magisk.denylist` (v4), and `display.gpu_mode` (redroid's `host`/`guest`
+    vocabulary) became `display.rendering` (`gpu`/`software`/`auto`) (v5). A
+    YAML that still contains either old key is rejected at load with a
+    migration hint. YAMLs that merely omit `api_version` (or pin one of
+    `1`/`2`/`3`/`4` *without* a renamed key) auto-bump to `5` on load. The
+    [v0.4 → v0.6 guide](migration-v0.4-to-v0.6.md) walks through the
+    `stealth:` hop in full; `CHANGELOG.md` covers the `display.rendering`
+    rename.
 
 ## 1. Schema bump: `api_version: 2` → `api_version: 3`
 

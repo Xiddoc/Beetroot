@@ -97,6 +97,48 @@ def test_v04_api_version_with_stealth_raises_migration_error(
     assert "auto-upgraded" not in err
 
 
+def test_v06_api_version_without_gpu_mode_auto_bumps(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #106: v0.6's `api_version: 4` without a display.gpu_mode key is a clean
+    # rename-free bump — auto-upgrade to SUPPORTED_API_VERSION with a warning.
+    yaml_path = tmp_path / "beetroot.yaml"
+    yaml_path.write_text("api_version: 4\nandroid:\n  version: 14\n")
+
+    cfg = config.load_yaml(yaml_path)
+
+    assert cfg.api_version == config.SUPPORTED_API_VERSION
+    err = capsys.readouterr().err
+    assert "auto-upgraded api_version 4" in err
+    assert "apply" in err
+
+
+def test_v06_api_version_with_gpu_mode_raises_migration_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # #106: a YAML that used display.gpu_mode must fail with a clear migration
+    # error — the field was renamed to display.rendering in api_version 5.
+    # This path cannot silently auto-bump because the field was renamed.
+    yaml_path = tmp_path / "beetroot.yaml"
+    yaml_path.write_text(
+        "api_version: 4\n"
+        "android:\n  version: 14\n"
+        "display:\n  gpu_mode: host\n"
+    )
+
+    with pytest.raises(ValidationError) as exc_info:
+        config.load_yaml(yaml_path)
+    msg = str(exc_info.value)
+    # Must name the old key and the new key so the user knows what to change.
+    assert "gpu_mode" in msg
+    assert "rendering" in msg
+    assert "api_version" in msg
+    # The auto-bump line must NOT appear — the migration error wins cleanly.
+    err = capsys.readouterr().err
+    assert "auto-upgraded" not in err
+
+
 def test_explicit_current_api_version_does_not_warn(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

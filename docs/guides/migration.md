@@ -9,7 +9,7 @@ release you're upgrading *from* and work forward.
 ## How the schema version works
 
 Every `beetroot.yaml` carries a top-level `api_version: int`
-(`SUPPORTED_API_VERSION` in `src/beetroot/config.py`, currently **4**).
+(`SUPPORTED_API_VERSION` in `src/beetroot/config.py`, currently **5**).
 Two kinds of bump can happen:
 
 - **Additive bump** (e.g. `2` → `3`): new fields, no renames or removals.

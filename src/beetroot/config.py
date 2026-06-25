@@ -18,20 +18,24 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import console
 
-SUPPORTED_API_VERSION: Final = 4
+SUPPORTED_API_VERSION: Final = 5
 
 # Additive auto-bump: old YAMLs that hard-pinned one of these versions are
 # silently upgraded to SUPPORTED_API_VERSION on load with a one-line stderr
-# warning. The bumps are strictly additive — no fields renamed, only new
-# optional fields / validators added — so these YAMLs remain valid once the
-# field is rewritten. Persistence happens organically on the next
-# ``beetroot apply`` (which calls :func:`write_yaml`).
+# warning, *unless* they also carry a key that a non-additive bump renamed (the
+# stealth / gpu_mode handling below), in which case a migration error fires
+# instead. Persistence happens organically on the next ``beetroot apply``
+# (which calls :func:`write_yaml`).
 #
+# v0.6 → next (api_version 4 → 5): renamed ``display.gpu_mode`` to
+#   ``display.rendering`` with an intent vocabulary (gpu/software/auto). A YAML
+#   that does NOT use ``display.gpu_mode`` bumps silently; one that DOES gets a
+#   migration error (mirrors the 3 → 4 stealth handling).
 # v0.4 → v0.4 (api_version 2 → 3): added ``stealth.denylist`` per-package
 #   regex validator (strictly additive).
 # v0.3 → v0.4 (api_version 1 → 2): added opt-in frida block (strictly
 #   additive; old YAMLs without a frida block default to frida=None).
-_AUTO_BUMPABLE_API_VERSIONS: Final = frozenset({1, 2, 3})
+_AUTO_BUMPABLE_API_VERSIONS: Final = frozenset({1, 2, 3, 4})
 
 # Non-additive versions that require an explicit migration rather than a
 # silent auto-bump. If a YAML pins one of these and a migration path exists,
@@ -146,6 +150,43 @@ _DOCKER_SIZE_RE: Final = re.compile(r"^\d+(\.\d+)?[bkmgtBKMGT]?$")
 _API_VERSION_BUMP_WARNED: set[Path] = set()
 
 
+# Where DRM render nodes live; their presence means the host has a GPU the
+# privileged container can render through. Used by ``rendering: auto`` to pick
+# ``gpu`` vs ``software`` instead of blindly assuming a host GPU exists.
+_RENDER_NODE_DIR: Final = Path("/dev/dri")
+_RENDER_NODE_PATTERN: Final = "renderD*"
+
+# Maps the intent-named ``rendering`` value to redroid's own ``gpu_mode``
+# vocabulary (the string that goes into ``androidboot.redroid_gpu_mode``).
+# ``auto`` is resolved separately (it probes the host), so it isn't a key here.
+_RENDERING_TO_REDROID: Final = {"gpu": "host", "software": "guest"}
+
+
+def _host_has_render_node() -> bool:
+    """Return ``True`` if the host exposes a DRM render node (a usable GPU)."""
+    return any(_RENDER_NODE_DIR.glob(_RENDER_NODE_PATTERN))
+
+
+def resolve_rendering(rendering: str) -> str:
+    """
+    Map a ``display.rendering`` intent to redroid's ``gpu_mode`` string.
+
+    ``gpu`` → ``host`` (render via the host GPU), ``software`` → ``guest``
+    (SwiftShader software rendering), and ``auto`` probes the host for a DRM
+    render node — picking ``host`` when one exists, else ``guest`` — so a
+    headless / GPU-less box renders in software instead of silently misbehaving.
+
+    Args:
+        rendering: The validated ``display.rendering`` value.
+
+    Returns:
+        The redroid ``gpu_mode`` string (``host`` or ``guest``).
+    """
+    if rendering in _RENDERING_TO_REDROID:
+        return _RENDERING_TO_REDROID[rendering]
+    return "host" if _host_has_render_node() else "guest"
+
+
 class Display(BaseModel):
     """
     Display settings for the virtual Android screen.
@@ -154,13 +195,32 @@ class Display(BaseModel):
         width: Horizontal resolution in pixels (must be > 0).
         height: Vertical resolution in pixels (must be > 0).
         fps: Frame rate limit (must be > 0).
-        gpu_mode: GPU rendering mode passed to redroid (e.g. ``host``).
+        rendering: How redroid renders the framebuffer — the speed-vs-portability
+            axis, expressed as intent rather than redroid's ``host``/``guest``
+            vocabulary. ``gpu`` renders via the host GPU (fast, assumes a
+            GPU-capable host); ``software`` uses SwiftShader (always works,
+            slower); ``auto`` (the default) probes for a host render node and
+            picks ``gpu`` when present, else ``software`` — so a headless box
+            doesn't silently assume a GPU. Mapped to redroid's ``gpu_mode`` via
+            :func:`resolve_rendering` at ``.env`` render time.
     """
 
     width: int = Field(default=540, gt=0)
     height: int = Field(default=960, gt=0)
     fps: int = Field(default=3, gt=0)
-    gpu_mode: str = "host"
+    rendering: Literal["gpu", "software", "auto"] = "auto"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_gpu_mode(cls, data: object) -> object:
+        if isinstance(data, dict) and "gpu_mode" in data:
+            raise ValueError(
+                "display.gpu_mode was renamed to display.rendering in api_version 5. "
+                "Replace it with `rendering: gpu` (was gpu_mode: host), "
+                "`rendering: software` (was gpu_mode: guest), or `rendering: auto`, "
+                "and set `api_version: 5`. See CHANGELOG.md for the migration."
+            )
+        return data
 
 
 def _check_docker_size(field_name: str, v: str) -> str:
@@ -604,8 +664,9 @@ class InstanceConfig(BaseModel):
         if isinstance(data, dict) and "stealth" in data:
             raise ValueError(
                 "The 'stealth:' key was removed in api_version 4. "
-                "Move 'stealth.denylist' to 'magisk.denylist' and update "
-                "'api_version' to 4. See CHANGELOG.md for the migration."
+                "Move 'stealth.denylist' to 'magisk.denylist' and set "
+                f"'api_version' to {SUPPORTED_API_VERSION}. "
+                "See CHANGELOG.md for the migration."
             )
         return data
 
@@ -626,17 +687,18 @@ def load_yaml(path: Path) -> InstanceConfig:
 
     An empty file is treated as an all-defaults config.
 
-    **Auto-bump (additive versions):** YAMLs that pinned one of the
+    **Auto-bump (legacy versions):** YAMLs that pinned one of the
     versions in :data:`_AUTO_BUMPABLE_API_VERSIONS` are upgraded to
-    :data:`SUPPORTED_API_VERSION` on load with a one-line stderr warning,
-    because those bumps are strictly additive (no fields renamed). The bump
-    is persisted organically on the next ``beetroot apply``.
+    :data:`SUPPORTED_API_VERSION` on load with a one-line stderr warning —
+    *unless* they also carry a key that a non-additive bump renamed (see
+    below), in which case the migration error fires instead. The bump is
+    persisted organically on the next ``beetroot apply``.
 
-    **Migration error (non-additive versions):** api_version 3 used
-    ``stealth.denylist``; that key was moved to ``magisk.denylist`` in
-    api_version 4. A YAML that still contains a ``stealth:`` section raises
-    a clear, actionable error naming the renamed field rather than silently
-    mis-parsing.
+    **Migration error (non-additive renames):** ``stealth.denylist`` moved to
+    ``magisk.denylist`` in api_version 4, and ``display.gpu_mode`` became
+    ``display.rendering`` in api_version 5. A YAML that still contains a
+    ``stealth:`` section or a ``display.gpu_mode`` key raises a clear,
+    actionable error naming the renamed field rather than silently mis-parsing.
 
     Args:
         path: Absolute path to the YAML file.
@@ -645,19 +707,24 @@ def load_yaml(path: Path) -> InstanceConfig:
         A validated InstanceConfig populated from the file.
 
     Raises:
-        pydantic.ValidationError: If the YAML is invalid, contains
-            ``stealth:`` (renamed to ``magisk:`` in api_version 4), or
-            carries an unsupported ``api_version``.
+        pydantic.ValidationError: If the YAML is invalid, contains a renamed
+            key (``stealth:`` → ``magisk:`` in v4, ``display.gpu_mode`` →
+            ``display.rendering`` in v5), or carries an unsupported
+            ``api_version``.
     """
     raw = yaml.safe_load(path.read_text())
     if raw is None:
         raw = {}
     if isinstance(raw, dict) and raw.get("api_version") in _AUTO_BUMPABLE_API_VERSIONS:
-        # Skip the auto-bump notice when the YAML also contains a ``stealth:``
-        # key — that triggers a non-additive migration error below, and printing
-        # "auto-upgraded, run apply" before the error is contradictory. The
-        # migration error itself is the only message the user should see.
-        if "stealth" not in raw:
+        # Skip the auto-bump notice when the YAML also contains a key a
+        # non-additive bump renamed (``stealth:`` → magisk in v4, or
+        # ``display.gpu_mode`` → rendering in v5) — those trigger a migration
+        # error below, and printing "auto-upgraded, run apply" before the error
+        # is contradictory. The migration error is the only message to show.
+        renamed_key_present = "stealth" in raw or (
+            isinstance(raw.get("display"), dict) and "gpu_mode" in raw["display"]
+        )
+        if not renamed_key_present:
             # Dedup the warning by absolute path. ``beetroot ls`` over N
             # legacy instances would otherwise print N copies of the line,
             # and a single ``register bravo`` triple-prints because
@@ -753,7 +820,7 @@ def render_env(
         f"DISPLAY_WIDTH={cfg.display.width}",
         f"DISPLAY_HEIGHT={cfg.display.height}",
         f"DISPLAY_FPS={cfg.display.fps}",
-        f"DISPLAY_GPU={cfg.display.gpu_mode}",
+        f"DISPLAY_GPU={resolve_rendering(cfg.display.rendering)}",
         # Encoded as a comma-separated list because toybox sh has no array
         # support — the helper iterates over ``IFS=,``. Per-package shape is
         # already validated by the ``Magisk._check_packages`` regex, so we

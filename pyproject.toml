@@ -219,6 +219,13 @@ exclude_also = [
     "@overload",
 ]
 
+[tool.codespell]
+# Spelling gate (CI runs ``uvx codespell==<pin> src/ docs/ README.md
+# CHANGELOG.md``, which auto-reads this section). ``renderd`` is the Linux
+# DRM render-node device-name prefix (``/dev/dri/renderD*``), not a misspelt
+# "rendered" — the rendering: auto probe (issue #106) references it.
+ignore-words-list = "renderd"
+
 [tool.deptry]
 # Dependency hygiene gate (issue #21): undeclared imports (DEP001) and
 # declared-but-unused deps (DEP002) fail CI. CI runs it via

@@ -13,7 +13,7 @@
 # https://github.com/JingMatrix/Vector/releases, swap the URL, and recompute the
 # digest with `curl -sL <url> | sha256sum`.
 
-api_version: 4
+api_version: 5
 
 android:
   version: 14

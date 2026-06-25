@@ -16,8 +16,10 @@ command or edit you run.
 
 ## 1. Schema bump: `api_version: 3` → `api_version: 4` (non-additive)
 
-`SUPPORTED_API_VERSION` is now `4`, and unlike the additive `2` → `3` hop
-in v0.4, this one **renames a field**, so it is not a silent auto-bump.
+v0.6 raised `SUPPORTED_API_VERSION` to `4` (the current release is `5`; see
+[`CHANGELOG.md`](https://github.com/Xiddoc/beetroot/blob/main/CHANGELOG.md)),
+and unlike the additive `2` → `3` hop in v0.4, this one **renames a field**, so
+it is not a silent auto-bump.
 The top-level `stealth:` key is gone; its only populated field,
 `stealth.denylist`, moved under `magisk.denylist`.
 
@@ -39,9 +41,9 @@ magisk:
 ```
 
 YAMLs that merely omit `api_version`, or pin `1` / `2` / `3` *without* a
-`stealth:` block, still auto-bump to `4` on load (additive path), so a
-config that never used `stealth.denylist` needs no edit. Persist the bump
-with `beetroot apply <name>`.
+`stealth:` block, auto-bump on load to the current `api_version` (now `5`;
+the additive path), so a config that never used `stealth.denylist` needs no
+edit. Persist the bump with `beetroot apply <name>`.
 
 ## 2. The `env` verb was removed
 
@@ -173,7 +175,7 @@ reachability survived the upgrade. If `doctor` flags the denylist, double
 
 **`ValidationError` / migration hint mentioning `stealth:` at load.**
 §1 — your YAML still has a top-level `stealth:` block. Move
-`stealth.denylist` under `magisk.denylist` and set `api_version: 4`.
+`stealth.denylist` under `magisk.denylist` and set `api_version: 5`.
 
 **`No such command 'env'`.** §2 — the `env` verb was removed. Use
 `beetroot status <name> --json` for machine-readable data.

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- **`display.gpu_mode` → `display.rendering`; `api_version` bumped 4 → 5 (#106).**
+  The least-validated field in the schema (`gpu_mode: str = "host"` — not even a
+  `Literal`, so `gpu_mode: hostt` passed silently) is replaced by an intent-named,
+  validated enum `rendering: gpu | software | auto`, defaulting to `auto`. `auto`
+  probes the host for a DRM render node (`/dev/dri/renderD*`) and picks `gpu` when
+  present, else `software` — so a headless / GPU-less box renders in software
+  instead of silently misbehaving under the old aggressive `host` default. The
+  value is mapped to redroid's `gpu_mode` string internally (`gpu`→`host`,
+  `software`→`guest`). **Migration:** replace `display.gpu_mode: host` with
+  `rendering: gpu`, `gpu_mode: guest` with `rendering: software` (or just
+  `rendering: auto`), and set `api_version: 5`. A YAML that still carries
+  `display.gpu_mode` is rejected at load with this mapping; a YAML pinning
+  `api_version: 4` *without* `gpu_mode` auto-bumps to 5 on load (one-line
+  warning), exactly like the 3 → 4 `stealth:` handling.
+
 ### Features
 
 - **`frida.version` now accepts `auto` / `latest` and defaults to `auto` (#105).**

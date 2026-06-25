@@ -9,7 +9,7 @@ The schema is validated by Pydantic on every load. Fields you omit use the defau
 ## Top-level structure
 
 ```yaml
-api_version: 4
+api_version: 5
 android: ...
 display: ...
 resources: ...
@@ -28,29 +28,31 @@ Schema version this `beetroot.yaml` targets.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `api_version` | int | `4` | Schema version. Must match the value supported by this Beetroot release. |
+| `api_version` | int | `5` | Schema version. Must match the value supported by this Beetroot release. |
 
 ```yaml
-api_version: 4
+api_version: 5
 ```
 
 ### Versioning policy
 
 Each Beetroot release supports **exactly one** `api_version`. The current
-release supports `api_version: 4`. Loading a YAML that pins a different
+release supports `api_version: 5`. Loading a YAML that pins a different
 value raises one of two errors:
 
 - **Unknown / future version** (`0`, `99`, …): raises a `ValidationError`
   with a pointer to `CHANGELOG.md` for the migration steps.
 - **Non-additive migration required** (e.g. `api_version: 3` with a
-  `stealth:` key that was renamed to `magisk:` in v4): raises a clear
-  migration error naming the changed field and pointing at `CHANGELOG.md`.
+  `stealth:` key renamed to `magisk:` in v4, or `display.gpu_mode` renamed
+  to `display.rendering` in v5): raises a clear migration error naming the
+  changed field and pointing at `CHANGELOG.md`.
 
-**Auto-bump (additive legacy versions):** `api_version: 1` (v0.2),
-`api_version: 2` (v0.3), and `api_version: 3` (v0.4) are recognised
-legacy values and auto-bumped on load with a one-line warning, because
-those bumps added only new optional fields — nothing was renamed.
-Persistence happens on the next `beetroot apply`.
+**Auto-bump (legacy versions):** `api_version: 1` (v0.2), `2` (v0.3),
+`3` (v0.4), and `4` (v0.6) are recognised legacy values and auto-bumped on
+load with a one-line warning — *unless* the YAML still uses a key that a
+non-additive bump renamed (`stealth:` for 3→4, `display.gpu_mode` for 4→5),
+in which case the migration error fires instead. Persistence happens on the
+next `beetroot apply`.
 
 Omitting the field is equivalent to writing the currently supported value
 — existing instance YAMLs without `api_version` keep working. Pinning the
@@ -58,7 +60,7 @@ field explicitly is recommended once you're committing an instance YAML to
 source control, so that a future Beetroot release with a breaking schema
 change fails loud instead of silently reinterpreting your config.
 
-All [example YAMLs](../guides/examples.md) declare `api_version: 4`
+All [example YAMLs](../guides/examples.md) declare `api_version: 5`
 explicitly as the first field. When the schema breaks, the constant
 `SUPPORTED_API_VERSION` in `src/beetroot/config.py` is bumped and a
 migration entry is added to `CHANGELOG.md`.
@@ -94,18 +96,21 @@ Virtual display configuration for the Android framebuffer.
 | `width` | int | `540` | Framebuffer width in pixels. Must be > 0. |
 | `height` | int | `960` | Framebuffer height in pixels. Must be > 0. |
 | `fps` | int | `3` | Maximum framebuffer FPS. Must be > 0. 3 is enough for research; raise only if you need smooth UI. |
-| `gpu_mode` | string | `host` | GPU passthrough mode. `host` uses the host GPU (recommended). `guest` renders in software (slow). |
+| `rendering` | enum | `auto` | How redroid renders — the speed-vs-portability axis. `gpu` renders via the host GPU (fast, needs a GPU-capable host); `software` uses SwiftShader (always works, slower); `auto` (default) probes the host for a DRM render node (`/dev/dri/renderD*`) and picks `gpu` when present, else `software`. A typo (e.g. `rendering: gpuu`) fails at load. |
 
 ```yaml
 display:
   width: 540
   height: 960
   fps: 3
-  gpu_mode: host
+  rendering: auto
 ```
 
 !!! tip "Low FPS saves resources"
     The default 3 FPS is intentional. redroid's GPU passthrough still costs CPU even at low FPS. For headless research (no UI interaction needed), you can reduce to 1.
+
+!!! warning "Legacy `gpu_mode` field renamed"
+    `display.gpu_mode` (redroid's `host`/`guest` vocabulary) was renamed to `display.rendering` (intent: `gpu`/`software`/`auto`) in `api_version: 5`. Loading a YAML with the old field raises a `ValidationError` with the mapping (`gpu_mode: host` → `rendering: gpu`, `gpu_mode: guest` → `rendering: software`) — see `CHANGELOG.md`. The default also changed from the aggressive `host` (which assumed a host GPU) to `auto`, so a headless box renders in software instead of misbehaving.
 
 ---
 
@@ -250,11 +255,11 @@ magisk:
 
     ```
     The 'stealth:' key was removed in api_version 4.
-    Move 'stealth.denylist' to 'magisk.denylist' and update
-    'api_version' to 4. See CHANGELOG.md for the migration.
+    Move 'stealth.denylist' to 'magisk.denylist' and set
+    'api_version' to 5. See CHANGELOG.md for the migration.
     ```
 
-    Rename the key and bump `api_version` to `4` to fix it.
+    Rename the key and bump `api_version` to the current value (`5`) to fix it.
 
 ---
 
@@ -348,7 +353,7 @@ Caveats:
 ## Complete example
 
 ```yaml
-api_version: 4
+api_version: 5
 
 android:
   version: 14
@@ -357,7 +362,7 @@ display:
   width: 1080
   height: 1920
   fps: 10
-  gpu_mode: host
+  rendering: gpu
 
 resources:
   mem: 4g
