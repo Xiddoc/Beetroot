@@ -25,16 +25,34 @@ import pytest
 from beetroot import config
 from beetroot.builder import GappsVariant
 
-_SRC = Path(__file__).resolve().parents[1] / "src" / "beetroot"
+_ROOT = Path(__file__).resolve().parents[1]
+_SRC = _ROOT / "src" / "beetroot"
 _CONFIG_PY = _SRC / "config.py"
 _BUILDER_PY = _SRC / "builder.py"
 
+# Note: ``\d{2}`` assumes two-digit versions (11-14 today). A future single- or
+# triple-digit version would need this widened — but the constant literal would
+# then also stop matching, so the ``>= 3`` floor below trips and forces the edit.
 # A version enumeration: two or more 2-digit numbers (each optionally wrapped in
 # RST/markdown backticks) joined by commas, with an optional trailing "or". This
 # matches the constant literal ``{11, 12, 13, 14}``, the prose docstrings
 # ("11, 12, 13, or 14"), and the backtick form ("``11``, ``12``, ``13``, ``14``")
 # after whitespace is collapsed.
 _ENUM_RE = re.compile(r"\d{2}(?:[`\s]*,[`\s]*(?:or[`\s]+)?`*\d{2})+")
+
+# Doc pages that hand-copy the version list, paired with the phrasing style they
+# use. These are guarded by a *presence* check (the canonical phrase must
+# appear) rather than the generic scan, so an unrelated number list elsewhere on
+# the page can't false-positive. Keep this list in sync with the AGENTS.md
+# "Adding a new Android version" checklist.
+_README = _ROOT / "README.md"
+_CONFIG_MD = _ROOT / "docs" / "reference" / "config.md"
+_CI_WORKFLOW_MD = _ROOT / "docs" / "guides" / "ci-reusable-workflow.md"
+_DOC_SOURCES: list[tuple[Path, str]] = [
+    (_README, "oxford"),
+    (_CONFIG_MD, "backtick"),
+    (_CI_WORKFLOW_MD, "backtick"),
+]
 
 
 def _enumerations(path: Path) -> list[list[int]]:
@@ -54,6 +72,20 @@ def test_source_version_enumerations_match_constant() -> None:
             f"version enumeration {enumeration} disagrees with "
             f"_VALID_ANDROID_VERSIONS={expected}; update the docstring/source "
             "(or the constant) so they stay in sync (issue #98)."
+        )
+
+
+def test_doc_version_enumerations_match_constant() -> None:
+    versions = sorted(config._VALID_ANDROID_VERSIONS)
+    oxford = ", ".join(str(v) for v in versions[:-1]) + f", or {versions[-1]}"
+    backtick = ", ".join(f"`{v}`" for v in versions)
+    phrases = {"oxford": oxford, "backtick": backtick}
+    for path, style in _DOC_SOURCES:
+        phrase = phrases[style]
+        assert phrase in path.read_text(encoding="utf-8"), (
+            f"{path.relative_to(_ROOT)} should list the supported versions as "
+            f"{phrase!r} but doesn't; update it (or the constant) to match "
+            f"_VALID_ANDROID_VERSIONS={versions} (issue #98)."
         )
 
 
