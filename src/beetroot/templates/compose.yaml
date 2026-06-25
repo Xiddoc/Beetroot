@@ -45,6 +45,6 @@ services:
       - androidboot.redroid_width=${DISPLAY_WIDTH:-540}
       - androidboot.redroid_height=${DISPLAY_HEIGHT:-960}
       - androidboot.redroid_fps=${DISPLAY_FPS:-3}
-      - androidboot.redroid_gpu_mode=${DISPLAY_GPU:-host}
+      - androidboot.redroid_gpu_mode=${DISPLAY_GPU:-guest}
       - androidboot.use_memfd=true
       - androidboot.use_redroid_overlayfs=true

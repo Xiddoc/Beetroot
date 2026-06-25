@@ -9,7 +9,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from beetroot import paths
+from beetroot import config, paths
 from beetroot.config import (
     DEFAULT_ANDROID_VERSION,
     SUPPORTED_API_VERSION,
@@ -25,6 +25,7 @@ from beetroot.config import (
     is_pinned_frida_version,
     load_yaml,
     render_env,
+    resolve_rendering,
     vm_redroid_image,
     write_yaml,
 )
@@ -34,15 +35,15 @@ class TestApiVersion:
     def test_default_api_version_is_supported(self) -> None:
         cfg = InstanceConfig()
         assert cfg.api_version == SUPPORTED_API_VERSION
-        assert cfg.api_version == 4
+        assert cfg.api_version == 5
 
     def test_explicit_supported_version_succeeds(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": 4})
-        assert cfg.api_version == 4
+        cfg = InstanceConfig.model_validate({"api_version": 5})
+        assert cfg.api_version == 5
 
     def test_string_api_version_is_coerced(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": "4"})
-        assert cfg.api_version == 4
+        cfg = InstanceConfig.model_validate({"api_version": "5"})
+        assert cfg.api_version == 5
 
     def test_zero_api_version_raises(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
@@ -422,6 +423,63 @@ class TestDisplayBounds:
         assert Display(fps=1).fps == 1
 
 
+class TestRendering:
+    """`display.rendering` is a validated intent enum (issue #106)."""
+
+    def test_default_is_auto(self) -> None:
+        assert Display().rendering == "auto"
+
+    @pytest.mark.parametrize("value", ["gpu", "software", "auto"])
+    def test_valid_values_accepted(self, value: str) -> None:
+        assert Display.model_validate({"rendering": value}).rendering == value
+
+    def test_typo_rejected_at_load(self) -> None:
+        with pytest.raises(ValidationError):
+            Display.model_validate({"rendering": "hostt"})
+
+    def test_legacy_gpu_mode_rejected_with_migration_hint(self) -> None:
+        with pytest.raises(ValidationError, match=r"display\.rendering"):
+            Display.model_validate({"gpu_mode": "host"})
+
+    @pytest.mark.parametrize(
+        ("rendering", "expected"),
+        [("gpu", "host"), ("software", "guest")],
+    )
+    def test_resolve_rendering_maps_to_redroid_vocab(
+        self, rendering: str, expected: str
+    ) -> None:
+        assert resolve_rendering(rendering) == expected
+
+    def test_resolve_auto_uses_gpu_when_render_node_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("beetroot.config._host_has_render_node", lambda: True)
+        assert resolve_rendering("auto") == "host"
+
+    def test_resolve_auto_uses_software_without_render_node(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("beetroot.config._host_has_render_node", lambda: False)
+        assert resolve_rendering("auto") == "guest"
+
+    def test_render_env_emits_resolved_gpu_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # auto + no render node → software → redroid "guest"
+        monkeypatch.setattr("beetroot.config._host_has_render_node", lambda: False)
+        cfg = InstanceConfig()
+        result = render_env("alpha", cfg, {"adb": 5555, "frida": 27042, "frida_control": 27043})
+        assert "DISPLAY_GPU=guest" in result
+
+    def test_host_has_render_node_reflects_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(config, "_RENDER_NODE_DIR", tmp_path)
+        assert config._host_has_render_node() is False
+        (tmp_path / "renderD128").touch()
+        assert config._host_has_render_node() is True
+
+
 class TestModule:
     def test_url_only_is_valid(self) -> None:
         m = Module(url="https://example.com/mod.zip")
@@ -699,7 +757,7 @@ class TestRenderEnv:
     def test_contains_display_gpu(self) -> None:
         cfg = InstanceConfig()
         result = render_env("alpha", cfg, self._ports())
-        assert f"DISPLAY_GPU={cfg.display.gpu_mode}" in result
+        assert f"DISPLAY_GPU={resolve_rendering(cfg.display.rendering)}" in result
 
     def test_ends_with_newline(self) -> None:
         cfg = InstanceConfig()
@@ -803,13 +861,14 @@ class TestWriteLoadYamlRoundtrip:
 
     def test_custom_values_roundtrip(self, tmp_path: Path) -> None:
         raw = {
-            "display": {"width": 1080, "height": 1920, "fps": 60, "gpu_mode": "guest"},
+            "display": {"width": 1080, "height": 1920, "fps": 60, "rendering": "software"},
             "resources": {"mem": "6g", "cpus": 4.0, "shared_mem": "512m"},
         }
         p = tmp_path / "cfg.yaml"
         p.write_text(yaml.safe_dump(raw))
         cfg = load_yaml(p)
         assert cfg.display.width == 1080
+        assert cfg.display.rendering == "software"
         assert cfg.resources.mem == "6g"
         assert cfg.resources.shared_mem == "512m"
 
@@ -991,5 +1050,5 @@ class TestVmConfig:
 
     def test_empty_yaml_vm_block_uses_defaults(self) -> None:
         # binder: vm with no vm: section is valid (env defaults apply at runtime).
-        cfg = InstanceConfig.model_validate({"api_version": 4, "binder": "vm"})
+        cfg = InstanceConfig.model_validate({"api_version": 5, "binder": "vm"})
         assert cfg.vm.accel == "auto"

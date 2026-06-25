@@ -26,7 +26,7 @@ from hypothesis import given, settings
 from beetroot import config, ports
 
 _GappsLit = Literal["none", "lite", "full", "mindthegapps"]
-_GpuLit = Literal["host", "swiftshader_indirect", "guest"]
+_RenderingLit = Literal["gpu", "software", "auto"]
 
 _KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 # Characters that would force shell-evaluation if interpreted as a
@@ -48,16 +48,16 @@ def instance_configs(draw: st.DrawFn) -> config.InstanceConfig:
     width = draw(st.integers(min_value=240, max_value=4096))
     height = draw(st.integers(min_value=240, max_value=4096))
     fps = draw(st.integers(min_value=1, max_value=120))
-    gpu_mode: _GpuLit = draw(
-        st.sampled_from(["host", "swiftshader_indirect", "guest"]),
+    rendering: _RenderingLit = draw(
+        st.sampled_from(["gpu", "software", "auto"]),
     )
     pids_limit = draw(st.integers(min_value=64, max_value=65536))
     mem_reservation = draw(st.one_of(st.none(), st.sampled_from(["512m", "1g", "2g"])))
     memswap_limit = draw(st.one_of(st.none(), st.sampled_from(["2g", "4g"])))
     return config.InstanceConfig(
-        api_version=4,
+        api_version=config.SUPPORTED_API_VERSION,
         android=config.Android(version=android_version, gapps=gapps),
-        display=config.Display(width=width, height=height, fps=fps, gpu_mode=gpu_mode),
+        display=config.Display(width=width, height=height, fps=fps, rendering=rendering),
         resources=config.Resources(
             mem=mem,
             cpus=cpus,

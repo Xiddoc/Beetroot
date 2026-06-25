@@ -146,6 +146,11 @@ class TestCmdCreateEndToEndEnvBytes:
         alpha_root = cli_root / "alpha-elsewhere"
         bravo_root = cli_root / "deep" / "nested" / "bravo-elsewhere"
 
+        # `rendering: auto` resolves DISPLAY_GPU by probing the host for a DRM
+        # render node; pin "no render node" so the byte-exact .env is
+        # deterministic regardless of the test host's GPU (issue #106).
+        monkeypatch.setattr("beetroot.config._host_has_render_node", lambda: False)
+
         result = runner.invoke(cli.app, ["create", "alpha", "--path", str(alpha_root)])
         assert result.exit_code == 0, result.stderr
         # chdir into a subdir of alpha to confirm cwd doesn't leak into bravo.
@@ -177,7 +182,7 @@ class TestCmdCreateEndToEndEnvBytes:
             b"DISPLAY_WIDTH=540\n"
             b"DISPLAY_HEIGHT=960\n"
             b"DISPLAY_FPS=3\n"
-            b"DISPLAY_GPU=host\n"
+            b"DISPLAY_GPU=guest\n"
             b"BEETROOT_DENYLIST_PACKAGES=com.google.android.gms,"
             b"com.google.android.gms.unstable\n"
             b"BEETROOT_MAGISK_DB=/data/adb/magisk.db\n"
@@ -197,7 +202,7 @@ class TestCmdCreateEndToEndEnvBytes:
             b"DISPLAY_WIDTH=540\n"
             b"DISPLAY_HEIGHT=960\n"
             b"DISPLAY_FPS=3\n"
-            b"DISPLAY_GPU=host\n"
+            b"DISPLAY_GPU=guest\n"
             b"BEETROOT_DENYLIST_PACKAGES=com.google.android.gms,"
             b"com.google.android.gms.unstable\n"
             b"BEETROOT_MAGISK_DB=/data/adb/magisk.db\n"
