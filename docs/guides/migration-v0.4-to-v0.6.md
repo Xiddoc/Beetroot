@@ -16,8 +16,10 @@ command or edit you run.
 
 ## 1. Schema bump: `api_version: 3` → `api_version: 4` (non-additive)
 
-`SUPPORTED_API_VERSION` is now `4`, and unlike the additive `2` → `3` hop
-in v0.4, this one **renames a field**, so it is not a silent auto-bump.
+v0.6 raised `SUPPORTED_API_VERSION` to `4` (the current release is `5`; see
+[`CHANGELOG.md`](https://github.com/Xiddoc/beetroot/blob/main/CHANGELOG.md)),
+and unlike the additive `2` → `3` hop in v0.4, this one **renames a field**, so
+it is not a silent auto-bump.
 The top-level `stealth:` key is gone; its only populated field,
 `stealth.denylist`, moved under `magisk.denylist`.
 
