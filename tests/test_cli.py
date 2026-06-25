@@ -674,6 +674,59 @@ class TestCmdDestroy:
         assert registry.get("alpha") is None
 
 
+class TestCmdReset:
+    def _dirty(self, name: str) -> Path:
+        marker = paths.instance_data(registry.instance_path(name)) / "dirty.txt"
+        marker.write_text("state")
+        return marker
+
+    def test_reset_with_yes_wipes_data_keeps_registry(self, cli_root: Path) -> None:
+        runner.invoke(cli.app, ["create", "alpha"])
+        marker = self._dirty("alpha")
+        with _patched_subprocess():
+            result = runner.invoke(cli.app, ["reset", "alpha", "-y"])
+        assert result.exit_code == 0, result.stderr
+        assert not marker.exists()
+        # Identity preserved (unlike destroy).
+        assert registry.get("alpha") is not None
+
+    def test_reset_prompt_no_aborts(self, cli_root: Path) -> None:
+        runner.invoke(cli.app, ["create", "alpha"])
+        marker = self._dirty("alpha")
+        with _patched_subprocess():
+            result = runner.invoke(cli.app, ["reset", "alpha"], input="n\n")
+        assert result.exit_code == 0, result.stderr
+        assert "aborted" in result.stdout
+        assert marker.exists()  # nothing wiped
+
+    def test_reset_prompt_yes(self, cli_root: Path) -> None:
+        runner.invoke(cli.app, ["create", "alpha"])
+        marker = self._dirty("alpha")
+        with _patched_subprocess():
+            result = runner.invoke(cli.app, ["reset", "alpha"], input="y\n")
+        assert result.exit_code == 0, result.stderr
+        assert not marker.exists()
+
+    def test_reset_missing_instance_exits(self, cli_root: Path) -> None:
+        result = runner.invoke(cli.app, ["reset", "ghost", "-y"])
+        assert result.exit_code == 1
+        assert "no instance named" in result.stderr
+
+    def test_reset_compose_error_exits(self, cli_root: Path) -> None:
+        # If the container can't be stopped, reset() raises ComposeError before
+        # touching /data; the verb surfaces it as a non-zero exit.
+        runner.invoke(cli.app, ["create", "alpha"])
+        from beetroot import compose
+
+        def _boom(name: str, root: Path, *, volumes: bool = False) -> None:
+            raise compose.ComposeError("simulated failure")
+
+        with patch.object(compose, "down", side_effect=_boom):
+            result = runner.invoke(cli.app, ["reset", "alpha", "-y"])
+        assert result.exit_code == 1
+        assert "could not stop" in result.stderr
+
+
 # ---------------------------------------------------------------------------
 # cmd_ls
 # ---------------------------------------------------------------------------

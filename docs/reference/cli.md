@@ -221,6 +221,34 @@ Steps:
 
 ---
 
+## `reset`
+
+Drop an instance's `/data` (accumulated app state) while keeping the instance itself — the gated, first-class form of the old "`rm -rf data/`" fresh-start recipe.
+
+```
+beetroot reset <name> [-y]
+```
+
+| Argument / Flag | Type | Description |
+|----------------|------|-------------|
+| `name` | positional | Instance name |
+| `-y`, `--yes` | flag | Skip the confirmation prompt |
+
+Unlike `destroy`, `reset` keeps the instance's identity (registry row, port index) and its staged tooling — `frida-server` and `modules/` live **outside** `/data`, so they survive. It's the explicit counterpart to the silent `boot_cache` `/data` revert.
+
+Steps:
+
+1. (Optional) Prompts for confirmation unless `-y`.
+2. Stops the container (`docker compose down`, idempotent).
+3. Wipes and recreates the bind-mounted `data/` directory. redroid regenerates a clean `/data` from the base image on the next `up`.
+
+The instance is left **stopped** — run `beetroot up <name>` afterwards for a fresh `/data`.
+
+!!! note "redroid only (for now)"
+    `reset` is a redroid-backend verb. `binder: vm` keeps `/data` inside the guest (pending the split-data-disk work) and adb-adopted devices have no host-side `/data`, so both report a capability error. Manage state on those backends directly (a real device via its UI; a vm via a rebuild).
+
+---
+
 ## `forget`
 
 Deregister an instance from the registry without touching its host directory.

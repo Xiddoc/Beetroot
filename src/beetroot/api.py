@@ -490,6 +490,32 @@ class Snapshottable(Protocol):
         ...
 
 
+@runtime_checkable
+class Resettable(Protocol):
+    """
+    Capability sub-protocol: backends that can drop their ``/data`` in place.
+
+    Backends implement this to gain the ``beetroot reset`` verb — a
+    destructive "fresh start" that wipes accumulated app/``/data`` state
+    while keeping the instance's identity (registry row, port index) and
+    its staged tooling (``frida-server`` / ``modules/``). Only
+    :class:`Instance` (redroid) currently implements it; ``binder: vm``
+    keeps ``/data`` inside the guest (pending the split-data-disk work,
+    issue #125) and adb-backed devices have no host-side ``/data`` to wipe,
+    so both surface a capability error.
+    """
+
+    def reset(self, *, yes: bool = False) -> None:
+        """
+        Drop the backend's ``/data`` while keeping the instance.
+
+        Args:
+            yes: Must be ``True`` to proceed (the destructive op is gated;
+                the CLI prompts before passing ``yes=True``).
+        """
+        ...
+
+
 class Instance:
     """
     A single Beetroot research phone, identified by its on-disk directory.
@@ -981,6 +1007,50 @@ class Instance:
             shutil.rmtree(self._root)
         if compose_error is not None:
             raise compose_error
+
+    def reset(self, *, yes: bool = False) -> None:
+        """
+        Drop the instance's ``/data`` while keeping the instance and its tooling.
+
+        Stops the container (``compose.down``, idempotent), then wipes and
+        recreates the bind-mounted ``data/`` directory. redroid regenerates a
+        clean ``/data`` deterministically from the base image on the next
+        :meth:`up`. ``frida-server`` and ``modules/`` are staged **outside**
+        ``/data`` (see the bundled compose template), so the staged tooling
+        survives — this is the explicit, gated counterpart to the silent
+        ``boot_cache`` ``/data`` revert (issue #123). Unlike :meth:`destroy`
+        the registry row and port index are untouched, so the instance keeps
+        its identity.
+
+        The container is left stopped; run :meth:`up` for a fresh ``/data``.
+        The library API does NOT prompt on stdin — callers pass ``yes=True``
+        (the CLI verb :func:`beetroot.cli.reset` prompts first).
+
+        Args:
+            yes: Must be ``True`` to proceed. ``False`` (the default) raises
+                :class:`ValueError`.
+
+        Raises:
+            ValueError: If called with ``yes=False``.
+            compose.ComposeError: If stopping the container fails (the
+                ``data/`` directory is left untouched in that case).
+        """
+        if not yes:
+            raise ValueError(
+                "Instance.reset() requires yes=True to proceed. Confirm the "
+                "destructive operation in the calling code before invoking this "
+                "method (the CLI does this via typer.confirm before calling "
+                "reset(yes=True))."
+            )
+        with instance_lock(self._root, exclusive=True):
+            # Stop first: wiping the live bind-mounted ``data/`` out from under
+            # a running container would corrupt its view of ``/data``. down is
+            # idempotent, so this is a no-op when already stopped.
+            compose.down(self._name, self._root)
+            data = paths.instance_data(self._root)
+            if data.exists():
+                shutil.rmtree(data)
+            data.mkdir(parents=True, exist_ok=True)
 
     # ---- operations -------------------------------------------------------
 
