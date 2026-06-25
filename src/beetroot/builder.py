@@ -683,9 +683,38 @@ class _RootfsAssembly:
         """Fetch the static bundle, assemble the tree, pack the image, write the marker."""
         self._fetch_static_bundle()
         self._build_tree()
+        self._verify_guest_image_marker()
         self._pack_image()
         self._write_version_marker()
         return self.cfg.out_image
+
+    def _guest_image_marker(self) -> Path:
+        """Path of the baked-image marker guest-init.sh reads, inside the rootfs tree."""
+        return self.root / "etc" / "beetroot" / "redroid-image"
+
+    def _verify_guest_image_marker(self) -> None:
+        """
+        Fail the build if the guest baked-image marker is missing or empty.
+
+        guest-init.sh reads ``/etc/beetroot/redroid-image`` to boot the *baked*
+        Android version; if that marker is absent or empty the guest silently
+        falls back to a legacy image (issue #97). The marker is written in
+        :meth:`_build_tree`, but a future refactor that reorders assembly, or a
+        partially-written file, could leave it missing — surface that here, at
+        build time, rather than weeks later as a wrong-OS boot. Verified *before*
+        :meth:`_pack_image` bakes the tree into the ext4 image.
+
+        Raises:
+            BootstrapError: If the marker file does not exist or is empty.
+        """
+        marker = self._guest_image_marker()
+        if not marker.is_file() or not marker.read_text(encoding="utf-8").strip():
+            raise BootstrapError(
+                f"guest baked-image marker {marker} is missing or empty after rootfs "
+                "assembly; the micro-VM guest would silently fall back to a legacy "
+                "Android image instead of the version it was built for (issue #97). "
+                "Aborting the build."
+            )
 
     def _write_version_marker(self) -> None:
         """Record the baked Android version beside the image for up/apply skew checks."""
@@ -716,9 +745,9 @@ class _RootfsAssembly:
         self.runner.run(["cp", "-a", str(stage), str(self.root / "var" / "lib" / "docker")])
 
         console.info(f"recording baked redroid image {self.cfg.redroid_image} for guest-init")
-        beetroot_etc = self.root / "etc" / "beetroot"
-        beetroot_etc.mkdir(parents=True, exist_ok=True)
-        (beetroot_etc / "redroid-image").write_text(f"{self.cfg.redroid_image}\n", encoding="utf-8")
+        marker = self._guest_image_marker()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{self.cfg.redroid_image}\n", encoding="utf-8")
 
         console.info("installing guest-init.sh as /init")
         init_dst = self.root / "init"

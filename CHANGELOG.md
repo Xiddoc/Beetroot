@@ -356,6 +356,22 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **Hardened the micro-VM guest's missing-marker fallback so it can't silently
+  re-introduce the "boots Android 11" bug (#97).** `guest-init.sh` reads the
+  baked-image marker (`/etc/beetroot/redroid-image`, issue #82) to boot the
+  Android version the rootfs was built for, falling back to the historical
+  `redroid/redroid:11.0.0-latest` when it's absent. That fallback used to be
+  **silent**, so any future path where the marker went missing on an otherwise
+  current rootfs (a reordered bake, an interrupted write, a hand-assembled
+  rootfs) would quietly resurrect Android 11 with zero diagnostics. Now the
+  resolver is its own `resolve_redroid_image()` step (run first in `main`) that
+  **warns prominently** — naming the fallback image and pointing at #97 — and
+  also treats an empty/whitespace-only marker as missing. On the build side,
+  `build_rootfs` now verifies the marker exists and is non-empty *before*
+  packing the ext4 image, so a marker-write failure surfaces at build time
+  rather than weeks later as a wrong-OS boot. The `11.0.0` fallback is kept
+  on purpose (a pre-#82 rootfs baked that image into `/var/lib/docker`) and is
+  documented as the deliberate legacy value, not `DEFAULT_ANDROID_VERSION`.
 - **`beetroot build` no longer aborts on the empty `container_name` validation
   error (#114).** The bundled compose template carries the runtime-only
   `container_name: ${INSTANCE_NAME}`, which is unset during a bare build. Recent
