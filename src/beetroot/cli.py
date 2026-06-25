@@ -21,7 +21,7 @@ import sys
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 import pydantic
 import typer
@@ -188,6 +188,62 @@ def _resolve_lifecycle_names(names: list[str], all_flag: bool, verb: str) -> lis
     return filtered
 
 
+def _instance_lifecycle(name: str) -> str:
+    """
+    Best-effort read of an instance's ``lifecycle`` intent; defaults to durable.
+
+    Used by ``destroy`` to escalate its confirmation copy for a research phone
+    (#124). Any failure to resolve or parse the config — an orphan whose
+    ``beetroot.yaml`` is gone, a non-directory backend, a malformed YAML — falls
+    back to ``durable``, the safe default that escalates rather than soft-pedals
+    an irreversible wipe.
+
+    Args:
+        name: The registry name to look up.
+
+    Returns:
+        The instance's ``lifecycle`` value, or ``"durable"`` when it can't be
+        read.
+    """
+    meta = registry.get(name)
+    if meta is None or not isinstance(
+        meta.backend, registry.RedroidBackendConfig | registry.VmBackendConfig
+    ):
+        return "durable"
+    yaml_path = paths.instance_yaml(Path(meta.backend.absolute_path))
+    if not yaml_path.is_file():
+        return "durable"
+    try:
+        # pydantic.ValidationError is a ValueError subclass, so ValueError
+        # covers a schema-invalid YAML too; yaml.YAMLError covers a syntax one.
+        return config.load_yaml(yaml_path).lifecycle
+    except (OSError, ValueError, yaml.YAMLError):
+        return "durable"
+
+
+def _destroy_prompt(name: str) -> str:
+    """
+    Build the ``destroy`` confirmation copy, escalated for a durable instance.
+
+    A ``lifecycle: durable`` instance is a research phone whose ``/data`` is the
+    product's namesake guarantee — escalate the copy so an irreversible wipe
+    isn't a single muscle-memory ``<enter>`` (#124). An ``ephemeral`` instance
+    keeps the lighter copy.
+
+    Args:
+        name: The instance being destroyed.
+
+    Returns:
+        The confirmation prompt string.
+    """
+    if _instance_lifecycle(name) == "durable":
+        return (
+            f"Destroy DURABLE instance {name} and PERMANENTLY delete its /data? "
+            "That research-phone state cannot be recovered."
+        )
+    return f"Destroy {name} and all its data? This cannot be undone."
+
+
 # ---- verbs -----------------------------------------------------------------
 
 
@@ -201,6 +257,18 @@ def create(
     from_data: Annotated[
         Path | None,
         typer.Option("--from-data", help="Copy an existing data dir as the instance's /data."),
+    ] = None,
+    lifecycle: Annotated[
+        str | None,
+        typer.Option(
+            "--lifecycle",
+            help=(
+                "Persistence intent stamped into beetroot.yaml: 'durable' (a "
+                "long-lived research phone) or 'ephemeral' (throwaway). Omitted "
+                "key defaults to durable. A label + guardrails, not a runtime "
+                "switch — `down` never wipes /data for either."
+            ),
+        ),
     ] = None,
     preset: Annotated[
         str | None,
@@ -218,7 +286,12 @@ def create(
     plus android.version); every other field falls back to schema
     defaults. To start from a richer baseline, copy a file from the
     repo's examples/ directory over the generated beetroot.yaml.
+
+    Pass --lifecycle ephemeral|durable to record persistence intent in
+    the committed YAML (default durable preserves today's behaviour).
     """
+    if lifecycle is not None and lifecycle not in ("ephemeral", "durable"):
+        raise _error(f"--lifecycle must be 'ephemeral' or 'durable', got {lifecycle!r}.")
     if preset is not None:
         raise _error(
             f"--preset was removed in v0.3 — copy examples/{preset}.yaml over "
@@ -247,7 +320,11 @@ def create(
 
     console.step(f"allocating a port index and staging files for {name}")
     try:
-        inst = api.Instance.create(name, path=target_root)
+        inst = api.Instance.create(
+            name,
+            path=target_root,
+            lifecycle=cast("Literal['ephemeral', 'durable'] | None", lifecycle),
+        )
     except ValueError as e:
         raise _error(str(e)) from e
     p = inst.ports
@@ -621,10 +698,7 @@ def destroy(
     # Instance.destroy(yes=True) is always passed once the user has
     # confirmed here — the library API must not prompt on stdin.
     if not yes:
-        confirmed = typer.confirm(
-            f"Destroy {name} and all its data? This cannot be undone.",
-            default=False,
-        )
+        confirmed = typer.confirm(_destroy_prompt(name), default=False)
         if not confirmed:
             console.status("aborted")
             return

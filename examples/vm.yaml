@@ -15,7 +15,7 @@
 # `vm.boot_cache` warm-start below collapses repeat boots to ~10 s — see
 # docs/design/vm-rnd-log.md (Stage E).
 
-api_version: 5
+api_version: 6
 
 binder: vm
 

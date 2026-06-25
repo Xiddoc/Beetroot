@@ -376,11 +376,15 @@ class TestLifecycle:
             backend.up()
 
     def _cached_backend(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        lifecycle: str = "durable",
     ) -> vm_backend.VmDeviceBackend:
         kernel, rootfs = _stage_artifacts(monkeypatch, tmp_path)
         cfg = config.InstanceConfig(
             binder="vm",
+            lifecycle=lifecycle,  # type: ignore[arg-type]
             vm={"kernel": str(kernel), "rootfs": str(rootfs), "boot_cache": True},  # type: ignore[arg-type]
         )
         backend = _make_backend(tmp_path, cfg=cfg)
@@ -481,6 +485,22 @@ class TestLifecycle:
         # The remedy is boot_cache:false, NOT `beetroot snapshot` (redroid-only).
         assert any("vm.boot_cache: false" in n for n in notes)
         assert not any("beetroot snapshot" in n for n in notes)
+
+    def test_up_cached_warm_ephemeral_suppresses_data_revert_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #124: a `lifecycle: ephemeral` instance opted into a reset each boot,
+        # so the #123 /data-revert advisory is suppressed even on a warm resume.
+        backend = self._cached_backend(tmp_path, monkeypatch, lifecycle="ephemeral")
+        boot_cache.overlay_path(backend.root).write_bytes(b"qcow2")
+        monkeypatch.setattr("beetroot.vm.boot_cache.create_overlay", lambda *_a: None)
+        monkeypatch.setattr("beetroot.vm.boot_cache.snapshot_present", lambda _o: True)
+        monkeypatch.setattr("beetroot.vm.boot_cache.save_snapshot", lambda _m: True)
+        monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 1)
+        notes: list[str] = []
+        monkeypatch.setattr("beetroot.console.note", notes.append)
+        backend.up()
+        assert not any("first-boot checkpoint" in n for n in notes)
 
     def test_up_cached_cold_does_not_warn_about_data_revert(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

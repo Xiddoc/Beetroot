@@ -14,9 +14,9 @@ list lives at the top of
 under **Breaking changes**. This page expands each bullet into the
 exact command or edit you run.
 
-!!! warning "Current release is `api_version: 5`"
+!!! warning "Current release is `api_version: 6`"
     This page documents the v0.3 → v0.4 hop and stops at `api_version: 3`.
-    The current Beetroot release is **`api_version: 5`**. Two non-additive
+    The current Beetroot release is **`api_version: 6`**. Two non-additive
     renames have landed since v0.4: the top-level `stealth:` key moved to
     `magisk.denylist` (v4), and `display.gpu_mode` (redroid's `host`/`guest`
     vocabulary) became `display.rendering` (`gpu`/`software`/`auto`) (v5). A

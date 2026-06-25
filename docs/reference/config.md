@@ -9,7 +9,8 @@ The schema is validated by Pydantic on every load. Fields you omit use the defau
 ## Top-level structure
 
 ```yaml
-api_version: 5
+api_version: 6
+lifecycle: durable   # durable | ephemeral (optional; default durable)
 android: ...
 display: ...
 resources: ...
@@ -28,16 +29,16 @@ Schema version this `beetroot.yaml` targets.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `api_version` | int | `5` | Schema version. Must match the value supported by this Beetroot release. |
+| `api_version` | int | `6` | Schema version. Must match the value supported by this Beetroot release. |
 
 ```yaml
-api_version: 5
+api_version: 6
 ```
 
 ### Versioning policy
 
 Each Beetroot release supports **exactly one** `api_version`. The current
-release supports `api_version: 5`. Loading a YAML that pins a different
+release supports `api_version: 6`. Loading a YAML that pins a different
 value raises one of two errors:
 
 - **Unknown / future version** (`0`, `99`, …): raises a `ValidationError`
@@ -48,11 +49,12 @@ value raises one of two errors:
   changed field and pointing at `CHANGELOG.md`.
 
 **Auto-bump (legacy versions):** `api_version: 1` (v0.2), `2` (v0.3),
-`3` (v0.4), and `4` (v0.6) are recognised legacy values and auto-bumped on
-load with a one-line warning — *unless* the YAML still uses a key that a
+`3` (v0.4), `4` (v0.6), and `5` are recognised legacy values and auto-bumped
+on load with a one-line warning — *unless* the YAML still uses a key that a
 non-additive bump renamed (`stealth:` for 3→4, `display.gpu_mode` for 4→5),
-in which case the migration error fires instead. Persistence happens on the
-next `beetroot apply`.
+in which case the migration error fires instead. The 5→6 bump (the additive
+`lifecycle` field) is always silent. Persistence happens on the next
+`beetroot apply`.
 
 Omitting the field is equivalent to writing the currently supported value
 — existing instance YAMLs without `api_version` keep working. Pinning the
@@ -60,10 +62,39 @@ field explicitly is recommended once you're committing an instance YAML to
 source control, so that a future Beetroot release with a breaking schema
 change fails loud instead of silently reinterpreting your config.
 
-All [example YAMLs](../guides/examples.md) declare `api_version: 5`
+All [example YAMLs](../guides/examples.md) declare `api_version: 6`
 explicitly as the first field. When the schema breaks, the constant
 `SUPPORTED_API_VERSION` in `src/beetroot/config.py` is bumped and a
 migration entry is added to `CHANGELOG.md`.
+
+---
+
+## `lifecycle`
+
+Whether this instance's `/data` is meant to **survive** or is **throwaway**.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `lifecycle` | `durable` \| `ephemeral` | `durable` | Persistence *intent* — a label + guardrails, **not** a runtime persistence switch. |
+
+```yaml
+lifecycle: durable
+```
+
+- `durable` (default) — a long-lived "research phone" whose `/data` must
+  survive (the product's namesake guarantee). Preserves today's behaviour
+  exactly. `beetroot destroy` escalates its confirmation copy for these.
+- `ephemeral` — a throwaway instance (CI/E2E, comparative fleets, reset
+  between runs). Combined with `vm.boot_cache: true` it opts into the
+  warm-resume `/data` revert **quietly** (the runtime advisory is
+  suppressed — a reset each boot is exactly what `ephemeral` asked for).
+
+!!! warning "Label, not a switch"
+    `lifecycle` records intent and tunes guardrails; it never changes when
+    `/data` is wiped. `beetroot down` **never** wipes `/data` for either
+    value — only `destroy` / `reset` (and a `vm.boot_cache` warm resume) do.
+    Set it at create time with `beetroot create --lifecycle ephemeral|durable`,
+    or add the key to `beetroot.yaml` and `beetroot apply`.
 
 ---
 
@@ -256,10 +287,10 @@ magisk:
     ```
     The 'stealth:' key was removed in api_version 4.
     Move 'stealth.denylist' to 'magisk.denylist' and set
-    'api_version' to 5. See CHANGELOG.md for the migration.
+    'api_version' to 6. See CHANGELOG.md for the migration.
     ```
 
-    Rename the key and bump `api_version` to the current value (`5`) to fix it.
+    Rename the key and bump `api_version` to the current value (`6`) to fix it.
 
 ---
 
@@ -353,7 +384,7 @@ Caveats:
 ## Complete example
 
 ```yaml
-api_version: 5
+api_version: 6
 
 android:
   version: 14

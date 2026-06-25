@@ -21,6 +21,25 @@
 
 ### Features
 
+- **First-class `lifecycle: ephemeral | durable` persistence intent; `api_version`
+  bumped 5 → 6 (#124).** Beetroot is bimodal in practice — some instances are
+  long-lived "research phones" whose `/data` must survive (the namesake
+  guarantee), others are throwaway (CI/E2E, comparative fleets, reset between
+  runs). That intent used to live only in tribal knowledge and scattered flags
+  (`vm.boot_cache`, `destroy`, the `rm -rf data/` recipe). It's now a committed,
+  greppable, top-level `beetroot.yaml` field, **default `durable`** (preserves
+  today's contract exactly). It is a **label + guardrails, not a runtime
+  persistence switch**: `beetroot down` never wipes `/data` for either value;
+  only `destroy` / `reset` (and a `vm.boot_cache` warm resume) drop it. Effects:
+  `beetroot create --lifecycle ephemeral|durable` writes the key; `destroy`
+  escalates its confirmation copy for a `durable` instance; an `ephemeral`
+  instance opts into `vm.boot_cache`'s revert-on-resume **quietly** (the #123
+  advisory is suppressed — a reset each boot is what `ephemeral` asked for); and
+  the snapshot manifest stamps `lifecycle` (pre-field archives restore as
+  `durable`). The 5 → 6 bump is strictly additive — a YAML omitting `lifecycle`,
+  or pinning `api_version: 5`, auto-bumps on load (silent) and defaults to
+  `durable`. Migration: nothing required; optionally add `lifecycle:` and
+  `beetroot apply`.
 - **`beetroot build --vm-kernel` preflights all host prerequisites in one pass
   (#78).** Assembling the micro-VM rootfs used to fail on a single missing host
   dependency per run — busybox → socat → iptables → a running Docker daemon →

@@ -33,6 +33,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+import yaml
 import zstandard
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -89,6 +90,12 @@ class Manifest(BaseModel):
             (T4) and replayed into the destination's slot on restore.
             Default ``{}`` in v0.4; v0.6's ``Instance.create`` generator
             will populate the slot per-instance.
+        lifecycle: The source instance's persistence intent
+            (``ephemeral`` / ``durable``) at snapshot time (#124). Stamped
+            so a restored archive carries the same intent; an archive
+            produced before this field existed has no ``lifecycle`` key and
+            restores as ``durable`` (the default), preserving today's
+            contract.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -100,6 +107,7 @@ class Manifest(BaseModel):
     beetroot_version: str
     kind: Literal["redroid"] = "redroid"
     path_layout: dict[str, str] = Field(default_factory=dict)
+    lifecycle: Literal["ephemeral", "durable"] = "durable"
 
 
 def _ensure_suffix(dest: Path) -> Path:
@@ -115,9 +123,12 @@ def _build_manifest(
     name: str,
     source_index: int,
     path_layout: dict[str, str],
+    lifecycle: Literal["ephemeral", "durable"] = "durable",
 ) -> Manifest:
     """
     Build a fresh manifest carrying the source's ``stealth_paths`` blob (T4).
+
+    ``lifecycle`` records the source instance's persistence intent (#124).
     """
     return Manifest(
         name=name,
@@ -125,7 +136,22 @@ def _build_manifest(
         created_at=datetime.now(UTC).isoformat(),
         beetroot_version=importlib.metadata.version("beetroot"),
         path_layout=path_layout,
+        lifecycle=lifecycle,
     )
+
+
+def _read_lifecycle(yaml_path: Path) -> Literal["ephemeral", "durable"]:
+    """
+    Best-effort read of the source config's ``lifecycle`` (defaults to durable).
+
+    A malformed config falls back to ``durable`` rather than failing the
+    snapshot — the archive's own ``beetroot.yaml`` is the source of truth, and
+    the manifest field is advisory metadata (#124).
+    """
+    try:
+        return config.load_yaml(yaml_path).lifecycle
+    except (OSError, ValueError, yaml.YAMLError):  # pragma: no cover  # advisory metadata
+        return "durable"
 
 
 def _manifest_to_json(manifest: Manifest) -> bytes:
@@ -198,6 +224,7 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
         name=name,
         source_index=meta.index,
         path_layout=dict(backend.stealth_paths),
+        lifecycle=_read_lifecycle(yaml_path),
     )
 
     # Local import — api imports snapshot at module load, so a
