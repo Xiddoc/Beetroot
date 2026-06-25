@@ -84,6 +84,8 @@ runner can't load binder (a locked-down/self-hosted environment).
 | `working-directory` | `.` | Directory the `test-command` step runs in (your checked-out repo). Scopes **only** that step — the image build always runs in the Beetroot checkout. |
 | `runs-on` | `ubuntu-latest` | Runner label for the job. |
 | `beetroot-ref` | `master` | Git ref of `Xiddoc/Beetroot` to check out for the CLI + build context. Defaults to `master`. **If you pin an older ref in `uses:`, set this to the same ref** (see [Pinning the ref](#pinning-the-ref-do-this)). |
+| `capture-diagnostics` | `false` | When `true`, capture an on-device diagnostics bundle (logcat, a bounded dumpsys subset, a screencap PNG, `/data/tombstones`, and the LSPosed module logs when present) in teardown — **before** the instance is destroyed — and upload it as a workflow artifact. Best-effort (never fails the job). Default `false` adds no artifact and no cost, so existing callers are unaffected. See [Persisting test output](#persisting-test-output). |
+| `artifact-name` | `beetroot-diagnostics` | Name of the diagnostics artifact uploaded when `capture-diagnostics: true`. Give each matrix leg a unique name so concurrent legs don't collide on one artifact. Ignored when `capture-diagnostics: false`. |
 
 ## What the `test-command` gets
 
@@ -133,13 +135,38 @@ jobs:
 ```
 
 !!! tip "Persisting test output"
-    Teardown destroys the instance and only dumps the last ~200 log lines. The
-    reusable workflow can't add steps after your `test-command`, so to keep
-    artifacts (logs, screenshots, reports) handle them **from inside**
-    `test-command` — write a summary to `$GITHUB_STEP_SUMMARY`, or fail loudly
-    with the evidence printed inline. If you need full `actions/upload-artifact`,
-    call this workflow's pieces from a hand-rolled job instead (see
-    [Running in CI](running-in-ci.md)).
+    Set `capture-diagnostics: true` and the workflow collects an **on-device
+    diagnostics bundle** in its `always()` teardown — *before* it destroys the
+    instance — and uploads it as an artifact for you:
+
+    ```yaml
+    jobs:
+      test:
+        uses: Xiddoc/Beetroot/.github/workflows/beetroot-ci.yml@v0.4
+        with:
+          capture-diagnostics: true
+          artifact-name: beetroot-diagnostics   # optional; this is the default
+          test-command: |
+            adb -s "$ADB_SERIAL" install -r ./fixtures/target.apk
+            ./run-my-hook.sh
+    ```
+
+    The bundle contains `adb logcat -d`, a **bounded** `dumpsys` subset
+    (`activity`, `meminfo`, `window`, `package`, `battery` — not a full
+    `bugreport`), a `screencap` PNG, `/data/tombstones` (native crash dumps),
+    the LSPosed per-module logs from `/data/adb/lspd/log/` (where
+    `XposedBridge.log(...)` lands — see the [LSPosed guide](lsposed.md)), and the
+    host-side `beetroot logs` tail. Every probe is best-effort, so a missing
+    file (no tombstones, no LSPosed) never fails the job. Give each matrix leg a
+    distinct `artifact-name` so concurrent legs don't collide.
+
+    This closes the old gotcha — a reusable workflow can't add steps after your
+    `test-command`, so previously you had to smuggle evidence out from **inside**
+    it (a `$GITHUB_STEP_SUMMARY` write, or failing loudly with the evidence
+    printed inline) or abandon the reusable workflow for a hand-rolled job. The
+    in-`test-command` route still works for anything the bundle doesn't cover
+    (custom report files); for full control, call this workflow's pieces from a
+    hand-rolled job (see [Running in CI](running-in-ci.md)).
 
 ## Testing across a matrix
 
@@ -201,7 +228,10 @@ can omit `beetroot-ref`.
    `config.base_image_tag()` resolves to the exact image that was built.
 6. **`beetroot apply` + `beetroot up`** and wait for `sys.boot_completed`.
 7. **Run your `test-command`** with `$ADB_SERIAL` / `$FRIDA_HOST` set.
-8. **Always** dump logs and `beetroot destroy` on teardown.
+8. **Always** dump the host log tail; then, when `capture-diagnostics: true`,
+   collect the on-device diagnostics bundle and `upload-artifact` it **before**
+   `beetroot destroy` runs (so the device is still alive); finally `destroy` on
+   teardown.
 
 ## Limitations & gotchas
 

@@ -34,6 +34,28 @@
   daemon check is skipped when `REDROID_TAR` is set, and the daemon-down hint
   names the Docker Hub rate-limit workarounds (`REDROID_TAR` / a registry
   mirror).
+- **Opt-in on-device diagnostics capture in the reusable CI workflow (#118).**
+  The reusable workflow (`.github/workflows/beetroot-ci.yml`) used to capture
+  almost nothing when a caller's `test-command` failed — only the last ~200
+  lines of `beetroot logs` (host-side container/serial console), with **no
+  on-*device* diagnostics**, and because a reusable workflow structurally can't
+  add steps after the caller's `test-command`, callers couldn't bolt on their
+  own `actions/upload-artifact` either (a gotcha `docs/guides/ci-reusable-workflow.md`
+  documented). Two new inputs close the gap: `capture-diagnostics` (boolean,
+  default `false`) and `artifact-name` (default `beetroot-diagnostics`). When
+  `capture-diagnostics: true`, an `always()` step running **before** teardown
+  destroys the instance collects an on-device bundle — `adb logcat -d`, a
+  *bounded* `dumpsys` subset (`activity` / `meminfo` / `window` / `package` /
+  `battery`, never a full `bugreport`), a `screencap` PNG, `/data/tombstones`
+  (native crash dumps), and the LSPosed per-module logs from `/data/adb/lspd/log/`
+  (where `XposedBridge.log(...)` lands), plus the host-side `beetroot logs`
+  tail — and `actions/upload-artifact` (SHA-pinned, `if: always()`) uploads it
+  so it survives `beetroot destroy`. Every probe is best-effort (`|| true`, no
+  `set -e`), so a missing tool, an offline device, or an absent file never fails
+  the job. The default (`capture-diagnostics: false`) is byte-for-byte the prior
+  behaviour — no new artifact, no extra cost — so existing callers are
+  unaffected. Docs:
+  [CI integration § Persisting test output](https://iliketo.party/Beetroot/guides/ci-reusable-workflow/#persisting-test-output).
 - **`binder: vm` `boot_cache` auto-invalidates when the kernel/rootfs changes
   (#126).** The warm-start qcow2 overlay used to resume whatever checkpoint it
   held — even one taken against a since-rebuilt kernel/rootfs — and the only

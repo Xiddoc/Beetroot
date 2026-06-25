@@ -80,6 +80,26 @@ on:
           matches the workflow version.
         type: string
         default: ""
+      capture-diagnostics:
+        description: >-
+          When true, capture an on-device diagnostics bundle (adb logcat, a
+          bounded dumpsys, a screencap PNG, /data/tombstones, and the LSPosed
+          module logs when present) in the always() teardown — before the
+          instance is destroyed — and upload it as a workflow artifact. Every
+          collection step is best-effort and never fails the job. Default false
+          keeps the historical behaviour (no extra artifact, no extra cost), so
+          existing callers are unaffected. Use it to debug an on-device test
+          failure that the host-side `beetroot logs` tail can't explain.
+        type: boolean
+        default: false
+      artifact-name:
+        description: >-
+          Name of the diagnostics artifact uploaded when capture-diagnostics is
+          true. Set a unique value per matrix leg (interpolate the leg's
+          matrix value into the name) so concurrent legs don't collide on one
+          artifact name. Ignored when capture-diagnostics is false.
+        type: string
+        default: beetroot-diagnostics
     outputs:
       adb-serial:
         description: "adb serial of the booted instance (host:port)."
@@ -332,6 +352,57 @@ jobs:
         if: always()
         run: |
           uv run --project "$BEETROOT_SRC" beetroot logs "$BEETROOT_INSTANCE" 2>&1 | tail -n 200 || true
+
+      # Opt-in (capture-diagnostics: true). Runs in the always() teardown
+      # region *before* destroy, so the device is still alive. Every probe is
+      # best-effort — `|| true` and no `set -e`, so a missing tool, an offline
+      # device, or a non-root pull never fails the job. A reusable workflow
+      # can't add steps after the caller's test-command, so this is how callers
+      # get on-device evidence without smuggling it out of their command string.
+      - name: Capture on-device diagnostics
+        if: always() && inputs.capture-diagnostics
+        env:
+          DIAG_DIR: ${{ github.workspace }}/beetroot-diagnostics
+        run: |
+          set +e
+          mkdir -p "$DIAG_DIR"
+          adb connect "$ADB_SERIAL" || true
+          # Full device logcat (the host-side `beetroot logs` only sees the
+          # container/serial console, not Android's logcat ring buffer).
+          adb -s "$ADB_SERIAL" logcat -d > "$DIAG_DIR/logcat.txt" 2>&1 || true
+          # A bounded dumpsys subset — named sections only, never a full
+          # `dumpsys`/`bugreport` (those run minutes and emit tens of MiB under
+          # TCG). These cover the usual on-device failure modes (a crashed/ANR'd
+          # activity, memory pressure, the recent app-error history).
+          for section in activity meminfo window package battery; do
+            adb -s "$ADB_SERIAL" shell dumpsys "$section" \
+              > "$DIAG_DIR/dumpsys-$section.txt" 2>&1 || true
+          done
+          # Screenshot: capture on-device, then pull the PNG off.
+          adb -s "$ADB_SERIAL" shell screencap -p /data/local/tmp/beetroot-screen.png || true
+          adb -s "$ADB_SERIAL" pull /data/local/tmp/beetroot-screen.png \
+            "$DIAG_DIR/screen.png" || true
+          adb -s "$ADB_SERIAL" shell rm -f /data/local/tmp/beetroot-screen.png || true
+          # Native crash tombstones, if any (needs root/run-as; best-effort).
+          adb -s "$ADB_SERIAL" pull /data/tombstones "$DIAG_DIR/tombstones" || true
+          # LSPosed per-module logs — XposedBridge.log() lands here, not in
+          # logcat, so it's the reliable channel to assert a module fired
+          # (docs/guides/lsposed.md). Present only when LSPosed is installed.
+          adb -s "$ADB_SERIAL" pull /data/adb/lspd/log "$DIAG_DIR/lspd-log" || true
+          # Fold in the host-side log tail so the bundle is self-contained.
+          uv run --project "$BEETROOT_SRC" beetroot logs "$BEETROOT_INSTANCE" 2>&1 \
+            | tail -n 200 > "$DIAG_DIR/beetroot-logs.txt" || true
+          echo "Captured diagnostics into $DIAG_DIR:"
+          ls -lR "$DIAG_DIR" || true
+
+      - name: Upload the diagnostics bundle
+        if: always() && inputs.capture-diagnostics
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ github.workspace }}/beetroot-diagnostics
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Teardown
         if: always()
