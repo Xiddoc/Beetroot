@@ -1183,6 +1183,31 @@ class TestCmdSnapshot:
         assert result.exit_code == 1
         assert "no instance named" in result.stderr
 
+    def test_snapshot_vm_instance_exits_2_with_redroid_only_error(
+        self,
+        cli_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # #128: snapshotting a registered binder: vm instance through the
+        # CLI keeps the BackendCapabilityError exit code (2) but uses the
+        # specific redroid-only message rather than the generic one.
+        # Driven through cli.main() so the exit-code mapping runs.
+        root = cli_root / "vmphone"
+        root.mkdir()
+        config.write_yaml(root / "beetroot.yaml", config.InstanceConfig(binder="vm"))
+        registry.add_allocating(
+            "vmphone", backend=registry.VmBackendConfig(absolute_path=str(root))
+        )
+        monkeypatch.setattr("sys.argv", ["beetroot", "snapshot", "vmphone"])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "only supported for the redroid backend" in err
+        assert "vm backend" in err
+        assert "#128" in err
+
     def test_snapshot_surfaces_module_error(
         self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

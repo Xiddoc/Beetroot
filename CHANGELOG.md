@@ -417,6 +417,25 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **`beetroot snapshot`/`restore` now give a clear "redroid-only" error for a
+  `binder: vm` (or adb) instance instead of a misleading "not registered" one
+  (#128, low-risk half).** `snapshot`/`restore` pack and unpack the host-side
+  `data/` directory, which *is* the live Android `/data` only for the redroid
+  backend — a `binder: vm` instance keeps `/data` inside the guest rootfs
+  (`/var/lib/redroid-data`) and an adb device has no host-side `/data` at all,
+  so the host `data/` dir is vestigial for both. Snapshotting one used to fall
+  through `snapshot._find_registry_entry`'s redroid-only filter and raise a
+  confusing "instance at … is not registered" error even though the instance
+  *was* registered. Now `snapshot` (whether via `beetroot snapshot`, which keeps
+  its exit-code-2 capability contract, or the programmatic `snapshot.snapshot`)
+  and `restore` detect a registered-but-non-redroid backend and raise
+  `snapshot is only supported for the redroid backend; instance 'X' uses the vm
+  backend — vm snapshot is not yet supported (see issue #128).` The genuine
+  "not registered at all" and redroid name-collision messages are unchanged.
+  Cross-backend snapshots remain a tracked follow-up; the `data/`→`/data`
+  mapping is now documented as redroid-only in `CLAUDE.md`,
+  `docs/how-it-works/filesystem.md`, and `docs/guides/snapshots.md`. The
+  vestigial vm `data/` dir is left in place (out of scope).
 - **`binder: vm` warm resume now warns that it reverts `/data` (#123).** With
   `vm.boot_cache: true`, every warm `up` resumes the first-boot checkpoint with
   `-loadvm`, which rolls the whole machine — including the qcow2 overlay that

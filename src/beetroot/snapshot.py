@@ -216,6 +216,31 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
     return final_dest
 
 
+def unsupported_backend_message(verb: str, name: str, kind: str) -> str:
+    """
+    Build the "snapshot/restore is redroid-only" error message for a backend kind.
+
+    Single source of truth for the wording shared by :func:`_find_registry_entry`
+    (the programmatic ``snapshot`` path) and the CLI ``snapshot`` / ``restore``
+    verbs, so a ``binder: vm`` (or adb) instance gets one consistent, actionable
+    error instead of the misleading "not registered" message that
+    :func:`_find_registry_entry` used to raise for any non-redroid row.
+
+    Args:
+        verb: The verb being attempted (``"snapshot"`` or ``"restore"``).
+        name: The offending instance name.
+        kind: The instance's registered backend kind (e.g. ``"vm"``, ``"adb"``).
+
+    Returns:
+        A one-line error string naming the verb, the instance, and the
+        unsupported backend, and pointing at issue #128.
+    """
+    return (
+        f"{verb} is only supported for the redroid backend; instance {name!r} uses the "
+        f"{kind} backend — {kind} {verb} is not yet supported (see issue #128)."
+    )
+
+
 def _find_registry_entry(
     instance_root: Path,
 ) -> tuple[str, registry.InstanceMeta, registry.RedroidBackendConfig]:
@@ -226,17 +251,29 @@ def _find_registry_entry(
     :class:`registry.RedroidBackendConfig` — callers need the backend
     type-narrowed so they can reach ``backend.stealth_paths`` without
     re-asserting the kind (S101 forbids ``assert isinstance(...)``
-    bridges in src). Adb-backed entries are skipped because snapshots
-    are redroid-only (the ``kind: Literal["redroid"]`` discriminator
-    on :class:`Manifest`).
+    bridges in src).
+
+    Snapshots are redroid-only (the ``kind: Literal["redroid"]``
+    discriminator on :class:`Manifest`). A directory-backed but
+    non-redroid row matching ``instance_root`` — a ``binder: vm``
+    instance — raises the actionable
+    :func:`unsupported_backend_message` error rather than the
+    "not registered" message, which would mislead a user whose instance
+    *is* registered (#128). Adb-backed rows carry a serial, not a path,
+    so they can never match ``instance_root`` here; the CLI catches the
+    adb ``snapshot`` case via the capability gate instead.
     """
     target = instance_root.resolve()
     for name, meta in registry.list_instances().items():
         backend = meta.backend
-        if not isinstance(backend, registry.RedroidBackendConfig):
-            continue
-        if Path(backend.absolute_path).resolve() == target:
-            return name, meta, backend
+        if isinstance(backend, registry.RedroidBackendConfig):
+            if Path(backend.absolute_path).resolve() == target:
+                return name, meta, backend
+        elif (
+            isinstance(backend, registry.VmBackendConfig)
+            and Path(backend.absolute_path).resolve() == target
+        ):
+            raise SnapshotError(unsupported_backend_message("snapshot", name, backend.kind))
     raise SnapshotError(
         f"instance at {instance_root} is not registered; run `beetroot register <path>` first"
     )
@@ -419,11 +456,21 @@ def restore(
         The absolute path of the restored instance directory.
 
     Raises:
-        SnapshotError: If ``dest_name`` is already registered, if
-            ``dest_path`` exists and is non-empty without ``force``, or
-            if the archive is invalid.
+        SnapshotError: If ``dest_name`` is already registered (with a
+            redroid-specific message when the existing row is non-redroid,
+            #128), if ``dest_path`` exists and is non-empty without
+            ``force``, or if the archive is invalid.
     """
-    if registry.get(dest_name) is not None:
+    existing = registry.get(dest_name)
+    if existing is not None:
+        if not isinstance(existing.backend, registry.RedroidBackendConfig):
+            # The name is taken by a vm / adb instance. Restore only ever
+            # produces a redroid instance, so name it explicitly (#128)
+            # rather than the generic "already registered" hint reserved
+            # for a redroid-vs-redroid name clash.
+            raise SnapshotError(
+                unsupported_backend_message("restore", dest_name, existing.backend.kind)
+            )
         raise SnapshotError(
             f"instance {dest_name!r} already registered; pick a different --name <name>"
         )

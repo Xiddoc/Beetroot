@@ -407,6 +407,87 @@ class TestSnapshotErrors:
         assert manifest.source_index == 1
 
 
+class TestNonRedroidBackendSnapshot:
+    """#128: snapshotting / restoring a vm or adb instance fails clearly."""
+
+    def test_snapshot_vm_instance_raises_redroid_only_error(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # A *registered* binder: vm instance must not get the misleading
+        # "not registered" message — it gets the specific #128 error.
+        root = _make_instance(tmp_path / "vmphone")
+        registry.add_allocating(
+            "vmphone", backend=registry.VmBackendConfig(absolute_path=str(root))
+        )
+        with pytest.raises(snapshot.SnapshotError) as excinfo:
+            snapshot.snapshot(root, tmp_path / "out")
+        message = str(excinfo.value)
+        assert "only supported for the redroid backend" in message
+        assert "vmphone" in message
+        assert "vm backend" in message
+        assert "#128" in message
+        assert "not registered" not in message
+
+    def test_snapshot_unregistered_path_with_a_vm_row_present_still_not_registered(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # A vm row exists in the registry but does NOT match the target
+        # path: the vm-arm path comparison is False, so the genuine
+        # "not registered" message must still surface (branch coverage
+        # for the vm arm's path mismatch).
+        vm_root = _make_instance(tmp_path / "vmphone")
+        registry.add_allocating(
+            "vmphone", backend=registry.VmBackendConfig(absolute_path=str(vm_root))
+        )
+        other = _make_instance(tmp_path / "unregistered")
+        with pytest.raises(snapshot.SnapshotError, match="not registered"):
+            snapshot.snapshot(other, tmp_path / "out")
+
+    def test_restore_into_vm_named_instance_raises_redroid_only_error(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # Build a valid redroid archive, then aim restore at a name that
+        # is already a binder: vm instance. The clash gets the #128
+        # message, not the generic "already registered" hint.
+        src = _make_instance(tmp_path / "alpha")
+        registry.add_allocating("alpha", src)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+
+        vm_root = _make_instance(tmp_path / "vmphone")
+        registry.add_allocating(
+            "vmphone", backend=registry.VmBackendConfig(absolute_path=str(vm_root))
+        )
+        with pytest.raises(snapshot.SnapshotError) as excinfo:
+            snapshot.restore(archive, dest_name="vmphone", dest_path=tmp_path / "dst")
+        message = str(excinfo.value)
+        assert "restore is only supported for the redroid backend" in message
+        assert "#128" in message
+        # The destination directory must not have been created/registered.
+        assert not (tmp_path / "dst").exists()
+
+    def test_restore_into_adb_named_instance_raises_redroid_only_error(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        src = _make_instance(tmp_path / "alpha")
+        registry.add_allocating("alpha", src)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+
+        registry.add_allocating(
+            "adbphone", backend=registry.AdbBackendConfig(serial="emulator-5554")
+        )
+        with pytest.raises(snapshot.SnapshotError, match="adb backend") as excinfo:
+            snapshot.restore(archive, dest_name="adbphone", dest_path=tmp_path / "dst")
+        assert "#128" in str(excinfo.value)
+
+    def test_unsupported_backend_message_names_verb_kind_and_issue(self) -> None:
+        msg = snapshot.unsupported_backend_message("snapshot", "phone", "vm")
+        assert "snapshot is only supported for the redroid backend" in msg
+        assert "'phone'" in msg
+        assert "vm backend" in msg
+        assert "vm snapshot is not yet supported" in msg
+        assert "#128" in msg
+
+
 class TestPathLayoutForwardCompat:
     def test_non_empty_path_layout_round_trips(
         self, isolated_registry: Path, tmp_path: Path

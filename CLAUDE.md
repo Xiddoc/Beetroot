@@ -46,7 +46,7 @@ The build output goes to `site/` (gitignored). The GitHub Actions workflow at `.
 **Per-instance state lives in the instance directory itself** (any path on disk that contains a `beetroot.yaml`):
 - `beetroot.yaml` — the source of truth for this instance (display, resources, Frida version, modules, denylist). Commit it if you want a reproducible config.
 - `.env` — generated from `beetroot.yaml`; consumed by compose. Re-rendered on `beetroot apply`.
-- `data/` — bind-mounted to `/data` inside the container. Persists across restarts.
+- `data/` — **redroid backend only:** bind-mounted to `/data` inside the container; persists across restarts. Under `binder: vm` the guest's `/data` lives inside the guest rootfs (`/var/lib/redroid-data`, override with `BEETROOT_GUEST_DATA_DIR`), so this host-side `data/` dir is vestigial and not the live Android `/data`. This is why `beetroot snapshot`/`restore` are redroid-only — they pack/unpack `data/`, which holds nothing for a vm (or adb) instance (see issue #128).
 - `modules/` — bind-mounted read-only to `/flash_dir`. The CLI mirrors `beetroot.yaml`'s `modules:` list into here on `apply`.
 - `frida-server` — bind-mounted to `/data/local/tmp/frida-server`. Downloaded by the CLI from `github.com/frida/frida/releases` and decompressed on the host.
 
