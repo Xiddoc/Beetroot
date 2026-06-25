@@ -356,6 +356,16 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **`beetroot build` no longer aborts on the empty `container_name` validation
+  error (#114).** The bundled compose template carries the runtime-only
+  `container_name: ${INSTANCE_NAME}`, which is unset during a bare build. Recent
+  Docker Compose validates `container_name` against `[a-zA-Z0-9][a-zA-Z0-9_.-]+`
+  even at `build` time, so the Beetroot-layer build step failed before building
+  with `services.phone.container_name '' does not match pattern` — the base
+  image built fine, but `beetroot build` still exited 1. The build step now
+  passes a throwaway `INSTANCE_NAME=beetroot-build` in its env (the build never
+  starts a container, so the value is otherwise inert), satisfying the pattern
+  without touching the runtime template.
 - **The boot helpers couldn't find the `magisk` binary on a real boot — so
   none of the Magisk configuration ran.** `entrypoint.sh` is launched by Android
   init (`stealth.rc`'s `exec_background`), which inherits init's default service

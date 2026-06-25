@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from collections.abc import Sequence
@@ -172,6 +173,19 @@ class TestCommandSequence:
         tag = build_image(gapps="lite", android_version=14, runner=runner)
         assert runner.calls[3].env is not None
         assert runner.calls[3].env["BASE_IMAGE"] == tag
+
+    def test_docker_compose_build_sets_placeholder_instance_name(self) -> None:
+        # Regression for #114: recent Docker Compose validates the template's
+        # ``container_name: ${INSTANCE_NAME}`` even on ``build``, so the
+        # build-only env must carry a non-empty, pattern-valid placeholder or
+        # the build aborts before producing ``beetroot:latest``.
+        runner = FakeRunner()
+        build_image(runner=runner)
+        env = runner.calls[3].env
+        assert env is not None
+        name = env["INSTANCE_NAME"]
+        assert name
+        assert re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]+$", name)
 
     def test_docker_compose_build_points_at_bundled_template(self) -> None:
         from beetroot import paths
