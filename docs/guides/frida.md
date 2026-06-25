@@ -17,30 +17,43 @@ cp examples/with-frida.yaml alpha/beetroot.yaml
 beetroot apply alpha
 ```
 
-`examples/with-frida.yaml` declares the version-pin idiom for you. To enable Frida on an already-existing instance, edit its `beetroot.yaml` directly and add the block:
+`examples/with-frida.yaml` declares a pinned version for you. To enable Frida on an already-existing instance, edit its `beetroot.yaml` directly and add the block:
 
 ```yaml
 frida:
-  version: "16.4.10"
+  version: auto
 ```
 
 Then run `beetroot apply <name>` to download and stage the binary, and restart the instance.
 
-## Version pinning
+## Choosing a version
 
-Each instance pins its own Frida version in `beetroot.yaml` (once you've opted in):
+`frida.version` accepts three forms:
+
+| Value | Behaviour |
+|-------|-----------|
+| `auto` (**default**) | Match the host's installed `frida-tools` version, so the staged server and the client you'll attach with agree on major+minor. Falls back to `latest` when `frida-tools` isn't installed. |
+| `latest` | The current upstream release, resolved to a concrete tag at download time (via GitHub's latest-release redirect). |
+| a pinned `major.minor.patch` (e.g. `"16.4.10"`) | That exact server, for reproducibility. **Required** if you also set `sha256`. |
 
 ```yaml
+# Track your host frida-tools automatically (recommended):
+frida:
+  version: auto
+
+# Or pin a specific server (reproducible):
 frida:
   version: "16.4.10"
 ```
 
-You can optionally pin an expected `sha256` of the decompressed `frida-server` binary; if set, Beetroot verifies the cached binary against it (case-insensitive) and refuses to stage a mismatch — a guard against a hostile mirror.
+A malformed pin (`"16.4"`, `"16.4.10-rc1"`) fails at config-load. `auto`/`latest` resolve to a concrete tag at staging time, and the cache is keyed by that resolved tag.
+
+You can optionally pin an expected `sha256` of the decompressed `frida-server` binary; if set, Beetroot verifies the cached binary against it (case-insensitive) and refuses to stage a mismatch — a guard against a hostile mirror. Because a digest can only match one specific build, `sha256` **requires a pinned `version`** (combining it with `auto`/`latest` is rejected at load).
 
 Changing the version and running `beetroot apply <name>` re-downloads the binary into the instance directory at `frida-server`. The old binary is overwritten. Restart the instance to pick up the new server.
 
 !!! tip "Keep versions in sync"
-    The Frida server version and your host-side `frida-tools` version must match (major + minor). A mismatch causes connection errors. Pin both explicitly in your research environment.
+    Frida requires the client and server to agree on **major + minor**, or the connection fails. `version: auto` keeps them in lock-step automatically. If you pin a `version` (or use `latest`) that diverges from your host `frida-tools`, `beetroot apply` prints a one-line warning, because `beetroot frida` would otherwise fail to attach.
 
 ## `beetroot frida` wrapper
 

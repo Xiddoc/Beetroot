@@ -271,6 +271,13 @@ frida:
   sha256: "abcd0123..."   # hex; case-insensitive
 ```
 
+!!! note "`sha256` now requires an explicit `version`"
+    A later release changed the default `frida.version` from the frozen
+    `16.4.10` to `auto`, and a digest can't pin a moving target — so a block
+    with `sha256` but no `version` (which previously rode the frozen default)
+    is now rejected at load. If you have one, add the concrete `version:` the
+    digest was computed against.
+
 ## 11. Mount target `/flash_dir` → `/data/adb/modules_update/`
 
 v0.3 bind-mounted `<instance-dir>/modules/` to `/flash_dir` inside

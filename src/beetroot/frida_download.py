@@ -114,7 +114,7 @@ def latest_release_tag() -> str:
     return tag
 
 
-def resolve_version(version: str) -> str:
+def resolve_version(version: str, *, host_version: str | None = None) -> str:
     """
     Resolve a (possibly symbolic) ``frida.version`` to a concrete release tag.
 
@@ -125,6 +125,11 @@ def resolve_version(version: str) -> str:
 
     Args:
         version: The configured version (``auto`` / ``latest`` / a pinned tag).
+        host_version: An already-resolved host ``frida-tools`` version, if the
+            caller has one (e.g. :func:`stage_for_instance` computes it once and
+            reuses it for the skew check). ``None`` means "fetch it here" — used
+            only on the ``auto`` path, so a pinned/``latest`` resolve never
+            spawns ``frida --version``.
 
     Returns:
         A concrete ``major.minor.patch`` tag.
@@ -136,7 +141,7 @@ def resolve_version(version: str) -> str:
     if config.is_pinned_frida_version(version):
         return version
     if version == config.FRIDA_AUTO:
-        host = host_frida_tools_version()
+        host = host_version if host_version is not None else host_frida_tools_version()
         return host if host is not None else latest_release_tag()
     if version == config.FRIDA_LATEST:
         return latest_release_tag()
@@ -249,7 +254,7 @@ def _check_sha256(path: Path, expected: str | None) -> None:
         )
 
 
-def _warn_on_client_skew(server_version: str) -> None:
+def _warn_on_client_skew(server_version: str, *, host_version: str | None = None) -> None:
     """
     Warn if the host ``frida-tools`` major+minor won't match ``server_version``.
 
@@ -257,8 +262,14 @@ def _warn_on_client_skew(server_version: str) -> None:
     that diverges from the host client breaks ``beetroot frida`` at *attach*
     time. Surfaced as an actionable warning here, at staging time (issue #105).
     No-op when ``frida-tools`` isn't installed (nothing to attach with yet).
+
+    Args:
+        server_version: The concrete tag being staged.
+        host_version: An already-resolved host ``frida-tools`` version; ``None``
+            fetches it. :func:`stage_for_instance` passes the value it already
+            computed so the host version is read at most once per stage.
     """
-    host = host_frida_tools_version()
+    host = host_version if host_version is not None else host_frida_tools_version()
     if host is None:
         return
     if host.split(".")[:2] != server_version.split(".")[:2]:
@@ -296,10 +307,14 @@ def stage_for_instance(
     Returns:
         Path to the staged binary inside the instance directory.
     """
-    resolved = resolve_version(version)
+    # Read the host frida-tools version once and reuse it for both resolution
+    # (the ``auto`` path) and the skew check, so staging never spawns
+    # ``frida --version`` more than once.
+    host_version = host_frida_tools_version()
+    resolved = resolve_version(version, host_version=host_version)
     if resolved != version:
         console.note(f"frida version {version!r} resolved to {resolved}")
-    _warn_on_client_skew(resolved)
+    _warn_on_client_skew(resolved, host_version=host_version)
     src = download(resolved, expected_sha256=expected_sha256)
     dst = paths.instance_frida(instance_root)
     dst.parent.mkdir(parents=True, exist_ok=True)
