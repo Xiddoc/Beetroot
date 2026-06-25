@@ -15,6 +15,7 @@ time — wrapping them in a class would break Typer's dispatch.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from collections.abc import Sequence
@@ -1260,7 +1261,7 @@ def setup_deprecated(
 
 
 @app.command()
-def build(
+def build(  # noqa: PLR0913  # Typer verb: each parameter is a distinct user-facing CLI flag
     gapps: Annotated[
         _GappsVariant,
         typer.Argument(help="GMS variant to bake into the base image."),
@@ -1282,6 +1283,17 @@ def build(
             help=(
                 "With --vm-kernel: always compile the guest kernel from source "
                 "instead of fetching the matching prebuilt bzImage (~7 min)."
+            ),
+        ),
+    ] = False,
+    check: Annotated[
+        bool,
+        typer.Option(
+            "--check",
+            help=(
+                "With --vm-kernel: only run the host-prerequisite preflight "
+                "(busybox/socat/iptables/curl/tar/mke2fs/Docker) and report what's "
+                "missing — don't build. Exits 0 when the host is ready, 1 otherwise."
             ),
         ),
     ] = False,
@@ -1312,11 +1324,32 @@ def build(
     """
     Build the redroid base image, or (with --vm-kernel) the micro-VM artifacts.
     """
+    if check and not vm_kernel:
+        raise _error("--check only applies to --vm-kernel.")
     if vm_kernel:
         try:
             config.validate_android_version(android_version)
         except ValueError as e:
             raise _error(f"--android-version: {e}") from e
+        # Preflight: enumerate every missing host prerequisite in one pass
+        # (issue #78), so a bare host isn't a five-failures-deep guessing game.
+        _tar = os.environ.get("REDROID_TAR")
+        problems = builder.vm_build_preflight(redroid_tar=Path(_tar) if _tar else None)
+        if check:
+            for problem in problems:
+                console.warn(f"{problem.requirement}: {problem.detail} → fix: {problem.fix}")
+            if problems:
+                raise _error(
+                    f"vm build preflight: {len(problems)} host prerequisite(s) missing (see above)."
+                )
+            console.status("vm build preflight: all host prerequisites satisfied")
+            return
+        if problems:
+            detail = "; ".join(f"{p.requirement} → {p.fix}" for p in problems)
+            raise _error(
+                f"vm build preflight found {len(problems)} missing host prerequisite(s): "
+                f"{detail}. Install them, then re-run `beetroot build --vm-kernel`."
+            )
         try:
             artifacts = builder.build_vm_kernel(
                 android_version=android_version,

@@ -21,6 +21,19 @@
 
 ### Features
 
+- **`beetroot build --vm-kernel` preflights all host prerequisites in one pass
+  (#78).** Assembling the micro-VM rootfs used to fail on a single missing host
+  dependency per run — busybox → socat → iptables → a running Docker daemon →
+  the Docker Hub pull-rate limit — each a raw `[Errno 2]` with no install hint,
+  forcing ~5 full re-runs to enumerate the prerequisites. The build now runs a
+  preflight that checks every prerequisite (`busybox`/`socat`/`iptables-legacy`,
+  `curl`/`tar`/`ldd`/`mke2fs`, the Docker CLI + a responsive daemon) up front and
+  reports **all** of them together, each with the apt package (or command) that
+  fixes it, before building. `beetroot build --vm-kernel --check` runs just the
+  preflight (exit 0 = ready, 1 = missing prerequisites) without building. The
+  daemon check is skipped when `REDROID_TAR` is set, and the daemon-down hint
+  names the Docker Hub rate-limit workarounds (`REDROID_TAR` / a registry
+  mirror).
 - **`binder: vm` `boot_cache` auto-invalidates when the kernel/rootfs changes
   (#126).** The warm-start qcow2 overlay used to resume whatever checkpoint it
   held — even one taken against a since-rebuilt kernel/rootfs — and the only
