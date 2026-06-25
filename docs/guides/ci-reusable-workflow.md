@@ -77,7 +77,8 @@ runner can't load binder (a locked-down/self-hosted environment).
 |-------|---------|-------------|
 | `test-command` | — (**required**) | Shell command run once the instance is booted. Runs in `working-directory`. |
 | `binder` | `host` | `host` (native, fast) or `vm` (QEMU/TCG, no binder needed). |
-| `gapps` | `none` | GMS variant baked into the image: `none`, `lite`, `full`, `mindthegapps`. Ignored when `binder: vm`. |
+| `gapps` | `none` | GApps intent baked into the image: `none`, `minimal`, `full`. Ignored when `binder: vm`. |
+| `gapps-vendor` | `""` | Optional GApps vendor override: `litegapps`, `opengapps`, `mindthegapps`. Empty lets the intent pick. Cannot be combined with `gapps: none`. Ignored when `binder: vm`. |
 | `android-version` | `14` | Android major version: `11`, `12`, `13`, `14`. Ignored when `binder: vm`. |
 | `frida-version` | `""` | Pin a `frida-server` version (e.g. `16.4.10`); empty boots without Frida. Ignored when `binder: vm` (Frida over the vm backend is [not yet supported](../design/binderless-hosts-qemu-tcg.md)). |
 | `instance-name` | `ci` | Name of the instance to create. |
@@ -119,7 +120,7 @@ jobs:
   test:
     uses: Xiddoc/Beetroot/.github/workflows/beetroot-ci.yml@v0.4
     with:
-      gapps: lite            # the target app needs Play services
+      gapps: minimal         # the target app needs Play services
       frida-version: "16.4.10"
       test-command: |
         set -euo pipefail
@@ -178,7 +179,7 @@ jobs:
     strategy:
       matrix:
         android: ["13", "14"]
-        gapps: [none, lite]
+        gapps: [none, minimal]
     uses: Xiddoc/Beetroot/.github/workflows/beetroot-ci.yml@v0.4
     with:
       android-version: ${{ matrix.android }}

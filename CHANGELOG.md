@@ -4,6 +4,25 @@
 
 ### Breaking changes
 
+- **`android.gapps` split into intent + vendor; `api_version` bumped 6 → 7 (#107).**
+  The old `gapps: none | lite | full | mindthegapps` enum fused two axes: *intent*
+  (what you get) and *vendor* (which distribution bakes it). It's now split so the
+  easy path stays easy and the compatibility path stays possible:
+  `gapps: none | minimal | full` is the **intent** (the field 95% of users touch),
+  and a new optional `gapps_vendor: litegapps | opengapps | mindthegapps` is the
+  **vendor** escape hatch for apps that detect or prefer a specific GApps build.
+  Unset, the intent picks the vendor (`minimal` → LiteGApps, `full` → OpenGApps),
+  reproducing the historical base-image tags exactly. `gapps: none` and
+  `gapps: full` are unchanged. **Migration:** replace `gapps: lite` with
+  `gapps: minimal`, and `gapps: mindthegapps` with `gapps: full` +
+  `gapps_vendor: mindthegapps` (the resulting base image is byte-for-byte the
+  same), then set `api_version: 7`. A YAML still carrying a vendor-named `gapps`
+  is rejected at load with this mapping; a YAML pinning `api_version: 6` *without*
+  a vendor-named `gapps` auto-bumps to 7 on load (one-line warning), exactly like
+  the 5 → 6 `lifecycle` handling. `beetroot build` likewise takes the intent
+  positionally (default `minimal`) plus an optional `--gapps-vendor`; the reusable
+  CI workflow gains a matching `gapps-vendor` input.
+
 - **`display.gpu_mode` → `display.rendering`; `api_version` bumped 4 → 5 (#106).**
   The least-validated field in the schema (`gpu_mode: str = "host"` — not even a
   `Literal`, so `gpu_mode: hostt` passed silently) is replaced by an intent-named,

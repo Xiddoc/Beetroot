@@ -143,14 +143,16 @@ class TestVmKernelPreflight:
             mock_bi.return_value = "redroid/redroid:14.0.0_litegapps_houdini_magisk"
             result = runner.invoke(cli.app, ["build"])
         assert result.exit_code == 0
-        mock_bi.assert_called_once_with(gapps="lite", build_context=None)
+        mock_bi.assert_called_once_with(gapps="minimal", gapps_vendor=None, build_context=None)
 
     def test_build_context_flag_passes_to_image_build(self, cli_root: Path) -> None:
         with patch("beetroot.cli.builder.build_image") as mock_bi:
             mock_bi.return_value = "redroid/redroid:14.0.0_litegapps_houdini_magisk"
             result = runner.invoke(cli.app, ["build", "--build-context", "/src/checkout"])
         assert result.exit_code == 0
-        mock_bi.assert_called_once_with(gapps="lite", build_context=Path("/src/checkout"))
+        mock_bi.assert_called_once_with(
+            gapps="minimal", gapps_vendor=None, build_context=Path("/src/checkout")
+        )
 
 
 # ---------------------------------------------------------------------------

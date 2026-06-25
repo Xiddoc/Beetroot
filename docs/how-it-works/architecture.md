@@ -20,7 +20,7 @@ The `--env-file` supplies all the per-instance variables that the template reads
 
 ## Image build
 
-The Docker image (`docker/Dockerfile`) is a single-stage build from the redroid base. The base-image tag is **derived at runtime** from the instance's `beetroot.yaml` by `config.base_image_tag()` — e.g. `android: {version: 14, gapps: lite}` produces `redroid/redroid:14.0.0_litegapps_houdini_magisk`. The tag is injected into the build via the `BASE_IMAGE` ARG in `docker/Dockerfile` and `${BASE_IMAGE}` substitution in the bundled compose template.
+The Docker image (`docker/Dockerfile`) is a single-stage build from the redroid base. The base-image tag is **derived at runtime** from the instance's `beetroot.yaml` by `config.base_image_tag()` — e.g. `android: {version: 14, gapps: minimal}` produces `redroid/redroid:14.0.0_litegapps_houdini_magisk` (the intent resolves to a vendor via `config.resolve_gapps_vendor()`). The tag is injected into the build via the `BASE_IMAGE` ARG in `docker/Dockerfile` and `${BASE_IMAGE}` substitution in the bundled compose template.
 
 The only things added on top of the base are:
 

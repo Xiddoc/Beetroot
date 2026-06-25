@@ -119,12 +119,14 @@ class TestBootstrapErrorSurfacing:
     def test_build_surfaces_bootstrap_error(
         self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _boom(*, gapps: str, build_context: Path | None = None) -> str:
+        def _boom(
+            *, gapps: str, gapps_vendor: str | None = None, build_context: Path | None = None
+        ) -> str:
             raise builder.BootstrapError("simulated bootstrap failure")
 
         monkeypatch.setattr(builder, "build_image", _boom)
         code, err = _run_main_with_argv(
-            ["beetroot", "build", "lite"], monkeypatch
+            ["beetroot", "build", "minimal"], monkeypatch
         )
         assert code == 1
         assert "error:" in err
@@ -184,7 +186,7 @@ class TestHostileConfigSurfacing:
         # ``pydantic.ValidationError`` tracebacked; ``cli.main`` now nets it.
         CliRunner().invoke(cli.app, ["create", "alpha"])
         (cli_root / "alpha" / "beetroot.yaml").write_text(
-            'api_version: 6\nresources:\n  cpus: "lots"\n'
+            'api_version: 7\nresources:\n  cpus: "lots"\n'
         )
         code, err = _run_main_with_argv(
             ["beetroot", "status", "alpha"], monkeypatch

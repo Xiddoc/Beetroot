@@ -14,10 +14,9 @@ import pytest
 
 from beetroot import builder, config, kernel_download
 from beetroot.builder import (
-    GAPPS_FLAGS,
+    GAPPS_VENDOR_FLAGS,
     BootstrapError,
     DefaultRunner,
-    GappsVariant,
     build_image,
 )
 
@@ -51,21 +50,18 @@ class FakeRunner:
             raise BootstrapError(f"fake failure on {self.fail_on} (exit {self.fail_exit})")
 
 
-class TestGappsFlags:
-    def test_none_has_no_flags(self) -> None:
-        assert GAPPS_FLAGS["none"] == []
+class TestGappsVendorFlags:
+    def test_litegapps_uses_lg(self) -> None:
+        assert GAPPS_VENDOR_FLAGS["litegapps"] == ["-lg"]
 
-    def test_lite_uses_lg(self) -> None:
-        assert GAPPS_FLAGS["lite"] == ["-lg"]
-
-    def test_full_uses_g(self) -> None:
-        assert GAPPS_FLAGS["full"] == ["-g"]
+    def test_opengapps_uses_g(self) -> None:
+        assert GAPPS_VENDOR_FLAGS["opengapps"] == ["-g"]
 
     def test_mindthegapps_uses_mtg(self) -> None:
-        assert GAPPS_FLAGS["mindthegapps"] == ["-mtg"]
+        assert GAPPS_VENDOR_FLAGS["mindthegapps"] == ["-mtg"]
 
-    def test_covers_all_variants(self) -> None:
-        assert set(GAPPS_FLAGS.keys()) == {"none", "lite", "full", "mindthegapps"}
+    def test_covers_all_vendors(self) -> None:
+        assert set(GAPPS_VENDOR_FLAGS.keys()) == {"litegapps", "opengapps", "mindthegapps"}
 
 
 class TestBootstrapErrorType:
@@ -80,7 +76,7 @@ class TestBootstrapErrorType:
 class TestCommandSequence:
     def test_three_steps_in_order(self) -> None:
         runner = FakeRunner()
-        build_image(gapps="lite", runner=runner)
+        build_image(gapps="minimal", runner=runner)
         # rm -rf, git clone, uv run patcher, docker compose build → 4 calls
         assert len(runner.calls) == 4
         assert runner.calls[0].cmd[0] == "rm"
@@ -170,7 +166,7 @@ class TestCommandSequence:
 
     def test_docker_compose_build_passes_base_image_env(self) -> None:
         runner = FakeRunner()
-        tag = build_image(gapps="lite", android_version=14, runner=runner)
+        tag = build_image(gapps="minimal", android_version=14, runner=runner)
         assert runner.calls[3].env is not None
         assert runner.calls[3].env["BASE_IMAGE"] == tag
 
@@ -201,16 +197,26 @@ class TestGappsFlagInjection:
     @pytest.mark.parametrize(
         ("gapps", "expected_flag"),
         [
-            ("lite", "-lg"),
+            ("minimal", "-lg"),
             ("full", "-g"),
-            ("mindthegapps", "-mtg"),
         ],
     )
-    def test_variant_injects_correct_flag(self, gapps: GappsVariant, expected_flag: str) -> None:
+    def test_intent_injects_correct_flag(
+        self, gapps: config.GappsIntent, expected_flag: str
+    ) -> None:
         runner = FakeRunner()
         build_image(gapps=gapps, runner=runner)
         patcher = runner.calls[2].cmd
         assert expected_flag in patcher
+
+    def test_vendor_override_injects_vendor_flag(self) -> None:
+        # An explicit vendor wins over the intent's default vendor: full's
+        # default is OpenGApps (-g), but pinning mindthegapps must emit -mtg.
+        runner = FakeRunner()
+        build_image(gapps="full", gapps_vendor="mindthegapps", runner=runner)
+        patcher = runner.calls[2].cmd
+        assert "-mtg" in patcher
+        assert "-g" not in patcher
 
     def test_none_injects_no_gapps_flag(self) -> None:
         runner = FakeRunner()
@@ -225,18 +231,27 @@ class TestReturnedTag:
         ("gapps", "version"),
         [
             ("none", 14),
-            ("lite", 14),
+            ("minimal", 14),
             ("full", 13),
-            ("mindthegapps", 12),
         ],
     )
-    def test_tag_matches_config_base_image_tag(self, gapps: GappsVariant, version: int) -> None:
+    def test_tag_matches_config_base_image_tag(
+        self, gapps: config.GappsIntent, version: int
+    ) -> None:
         runner = FakeRunner()
         tag = build_image(gapps=gapps, android_version=version, runner=runner)
         expected = config.base_image_tag(config.Android(version=version, gapps=gapps))
         assert tag == expected
 
-    def test_lite_default(self) -> None:
+    def test_vendor_override_tag_matches_config(self) -> None:
+        runner = FakeRunner()
+        tag = build_image(gapps="full", gapps_vendor="mindthegapps", runner=runner)
+        expected = config.base_image_tag(
+            config.Android(gapps="full", gapps_vendor="mindthegapps")
+        )
+        assert tag == expected == "redroid/redroid:14.0.0_mindthegapps_houdini_magisk"
+
+    def test_minimal_default(self) -> None:
         runner = FakeRunner()
         tag = build_image(runner=runner)
         assert tag == "redroid/redroid:14.0.0_litegapps_houdini_magisk"
@@ -314,7 +329,7 @@ class TestDefaultRunnerInjection:
         with patch.object(builder, "DefaultRunner") as mock_cls:
             mock_inst = mock_cls.return_value
             mock_inst.run.return_value = None
-            build_image(gapps="lite")
+            build_image(gapps="minimal")
         mock_cls.assert_called_once()
         # Four subprocess invocations: rm, clone, patch, build
         assert mock_inst.run.call_count == 4

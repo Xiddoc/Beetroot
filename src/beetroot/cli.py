@@ -51,14 +51,23 @@ from .vm import qemu as vm_qemu
 _INSTANCE_NAME_RE = api._INSTANCE_NAME_RE  # noqa: SLF001  # intentional reuse of the api-layer regex so the two stay in lock-step
 
 
-class _GappsVariant(StrEnum):
+class _GappsIntent(StrEnum):
     """
-    GMS variants accepted by ``beetroot build``.
+    GApps intent accepted by ``beetroot build`` (issue #107).
     """
 
     none = "none"
-    lite = "lite"
+    minimal = "minimal"
     full = "full"
+
+
+class _GappsVendor(StrEnum):
+    """
+    Optional GApps vendor escape hatch for ``beetroot build`` (issue #107).
+    """
+
+    litegapps = "litegapps"
+    opengapps = "opengapps"
     mindthegapps = "mindthegapps"
 
 
@@ -1344,9 +1353,20 @@ def setup_deprecated(
 @app.command()
 def build(  # noqa: PLR0913  # Typer verb: each parameter is a distinct user-facing CLI flag
     gapps: Annotated[
-        _GappsVariant,
-        typer.Argument(help="GMS variant to bake into the base image."),
-    ] = _GappsVariant.lite,
+        _GappsIntent,
+        typer.Argument(help="GApps intent to bake into the base image."),
+    ] = _GappsIntent.minimal,
+    gapps_vendor: Annotated[
+        _GappsVendor | None,
+        typer.Option(
+            "--gapps-vendor",
+            help=(
+                "Pin a specific GApps distribution for app compatibility "
+                "instead of letting the intent pick one. Cannot be combined "
+                "with the 'none' intent."
+            ),
+        ),
+    ] = None,
     vm_kernel: Annotated[
         bool,
         typer.Option(
@@ -1446,7 +1466,14 @@ def build(  # noqa: PLR0913  # Typer verb: each parameter is a distinct user-fac
             "/ BEETROOT_VM_ROOTFS) at these paths and set binder: vm."
         )
         return
-    tag = builder.build_image(gapps=gapps.value, build_context=build_context)
+    # A contradictory ``--gapps-vendor`` with ``gapps none`` raises a
+    # pydantic ValidationError from config.Android; main()'s global handler
+    # converts it to the friendly ``error: ...`` + exit 1 contract.
+    tag = builder.build_image(
+        gapps=gapps.value,
+        gapps_vendor=gapps_vendor.value if gapps_vendor is not None else None,
+        build_context=build_context,
+    )
     console.status(f"base image built: {tag}")
 
 

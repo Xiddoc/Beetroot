@@ -25,6 +25,7 @@ from beetroot.config import (
     is_pinned_frida_version,
     load_yaml,
     render_env,
+    resolve_gapps_vendor,
     resolve_rendering,
     vm_redroid_image,
     write_yaml,
@@ -35,15 +36,15 @@ class TestApiVersion:
     def test_default_api_version_is_supported(self) -> None:
         cfg = InstanceConfig()
         assert cfg.api_version == SUPPORTED_API_VERSION
-        assert cfg.api_version == 6
+        assert cfg.api_version == 7
 
     def test_explicit_supported_version_succeeds(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": 6})
-        assert cfg.api_version == 6
+        cfg = InstanceConfig.model_validate({"api_version": 7})
+        assert cfg.api_version == 7
 
     def test_string_api_version_is_coerced(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": "6"})
-        assert cfg.api_version == 6
+        cfg = InstanceConfig.model_validate({"api_version": "7"})
+        assert cfg.api_version == 7
 
     def test_zero_api_version_raises(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
@@ -83,6 +84,15 @@ class TestApiVersion:
         # still raises (auto-bump only happens in load_yaml).
         with pytest.raises(ValidationError) as exc_info:
             InstanceConfig.model_validate({"api_version": 5})
+        msg = str(exc_info.value)
+        assert "not supported" in msg
+        assert "CHANGELOG" in msg
+
+    def test_v6_api_version_raises_via_direct_validate(self) -> None:
+        # #107 bumped SUPPORTED to 7; a direct validate of the now-legacy 6
+        # still raises (auto-bump only happens in load_yaml).
+        with pytest.raises(ValidationError) as exc_info:
+            InstanceConfig.model_validate({"api_version": 6})
         msg = str(exc_info.value)
         assert "not supported" in msg
         assert "CHANGELOG" in msg
@@ -240,9 +250,10 @@ class TestFridaSha256:
 
 
 class TestAndroidGapps:
-    def test_default_gapps_is_lite(self) -> None:
+    def test_default_gapps_is_minimal(self) -> None:
         a = Android()
-        assert a.gapps == "lite"
+        assert a.gapps == "minimal"
+        assert a.gapps_vendor is None
 
     def test_valid_gapps_none(self) -> None:
         a = Android(gapps="none")
@@ -252,13 +263,46 @@ class TestAndroidGapps:
         a = Android(gapps="full")
         assert a.gapps == "full"
 
-    def test_valid_gapps_mindthegapps(self) -> None:
-        a = Android(gapps="mindthegapps")
-        assert a.gapps == "mindthegapps"
+    def test_valid_gapps_vendor_override(self) -> None:
+        a = Android(gapps="full", gapps_vendor="mindthegapps")
+        assert a.gapps == "full"
+        assert a.gapps_vendor == "mindthegapps"
 
     def test_invalid_gapps_raises(self) -> None:
         with pytest.raises(ValidationError):
             Android(gapps="blah")  # type: ignore[arg-type]
+
+    def test_invalid_gapps_vendor_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            Android(gapps_vendor="blah")  # type: ignore[arg-type]
+
+    def test_legacy_lite_value_rejected_with_migration_hint(self) -> None:
+        with pytest.raises(ValidationError, match="gapps_vendor: litegapps"):
+            Android.model_validate({"gapps": "lite"})
+
+    def test_legacy_mindthegapps_value_rejected_with_migration_hint(self) -> None:
+        with pytest.raises(ValidationError, match="gapps_vendor: mindthegapps"):
+            Android.model_validate({"gapps": "mindthegapps"})
+
+    def test_vendor_with_none_intent_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="asks for no GApps"):
+            Android(gapps="none", gapps_vendor="litegapps")
+
+
+class TestResolveGappsVendor:
+    def test_none_intent_resolves_to_no_vendor(self) -> None:
+        assert resolve_gapps_vendor(Android(gapps="none")) is None
+
+    def test_minimal_defaults_to_litegapps(self) -> None:
+        assert resolve_gapps_vendor(Android(gapps="minimal")) == "litegapps"
+
+    def test_full_defaults_to_opengapps(self) -> None:
+        assert resolve_gapps_vendor(Android(gapps="full")) == "opengapps"
+
+    def test_explicit_vendor_overrides_intent_default(self) -> None:
+        assert resolve_gapps_vendor(Android(gapps="full", gapps_vendor="mindthegapps")) == (
+            "mindthegapps"
+        )
 
 
 class TestAndroidVersion:
@@ -281,8 +325,8 @@ class TestBaseImageTag:
     def test_full_gapps(self) -> None:
         assert base_image_tag(Android(gapps="full")) == "redroid/redroid:14.0.0_gapps_houdini_magisk"
 
-    def test_mindthegapps(self) -> None:
-        assert base_image_tag(Android(gapps="mindthegapps")) == "redroid/redroid:14.0.0_mindthegapps_houdini_magisk"
+    def test_mindthegapps_via_vendor(self) -> None:
+        assert base_image_tag(Android(gapps="full", gapps_vendor="mindthegapps")) == "redroid/redroid:14.0.0_mindthegapps_houdini_magisk"
 
     def test_version_reflected_in_tag(self) -> None:
         assert base_image_tag(Android(version=13)) == "redroid/redroid:13.0.0_litegapps_houdini_magisk"
@@ -1059,5 +1103,5 @@ class TestVmConfig:
 
     def test_empty_yaml_vm_block_uses_defaults(self) -> None:
         # binder: vm with no vm: section is valid (env defaults apply at runtime).
-        cfg = InstanceConfig.model_validate({"api_version": 6, "binder": "vm"})
+        cfg = InstanceConfig.model_validate({"api_version": 7, "binder": "vm"})
         assert cfg.vm.accel == "auto"

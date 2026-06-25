@@ -43,12 +43,19 @@ on:
         default: host
       gapps:
         description: >-
-          GMS variant baked into the image: none (default, fastest), lite,
-          full, or mindthegapps. 'none' has no Google Mobile Services — pick a
-          GApps variant if your target app needs Play services. Ignored when
-          binder: vm (the vm guest boots stock redroid).
+          GApps intent baked into the image: none (default, fastest), minimal,
+          or full. 'none' has no Google Mobile Services — pick minimal/full if
+          your target app needs Play services. Ignored when binder: vm (the vm
+          guest boots stock redroid).
         type: string
         default: none
+      gapps-vendor:
+        description: >-
+          Optional GApps vendor override for app compatibility: litegapps,
+          opengapps, or mindthegapps. Empty lets the intent pick the vendor.
+          Cannot be combined with gapps: none. Ignored when binder: vm.
+        type: string
+        default: ""
       android-version:
         description: "Android major version (11, 12, 13, or 14)."
         type: string
@@ -195,6 +202,7 @@ jobs:
         working-directory: .beetroot
         env:
           GAPPS: ${{ inputs.gapps }}
+          GAPPS_VENDOR: ${{ inputs.gapps-vendor }}
           ANDROID_VERSION: ${{ inputs.android-version }}
         # Call build_image() directly rather than `beetroot build`: the CLI verb
         # hardcodes Android 14, so it would mismatch a non-14 android-version
@@ -208,6 +216,7 @@ jobs:
 
           tag = build_image(
               gapps=os.environ["GAPPS"],
+              gapps_vendor=os.environ.get("GAPPS_VENDOR") or None,
               android_version=int(os.environ["ANDROID_VERSION"]),
           )
           print(f"built {tag}")
@@ -274,6 +283,7 @@ jobs:
           FRIDA_VERSION: ${{ inputs.frida-version }}
           ANDROID_VERSION: ${{ inputs.android-version }}
           GAPPS: ${{ inputs.gapps }}
+          GAPPS_VENDOR: ${{ inputs.gapps-vendor }}
           # Absolute so the heredoc finds the config wherever cwd is.
           CFG: ${{ github.workspace }}/${{ inputs.instance-name }}/beetroot.yaml
         run: |
@@ -284,7 +294,7 @@ jobs:
           # than appending — appending would duplicate the android: key. For the
           # host path, pin android.version + gapps so config.base_image_tag()
           # resolves to the exact tag `beetroot build` produced (the generated
-          # default gapps: lite would mismatch a none/full build).
+          # default gapps: minimal would mismatch a none/full build).
           uv run python - <<'PY'
           import os
           from pathlib import Path
@@ -300,6 +310,9 @@ jobs:
               cfg.setdefault("android", {})
               cfg["android"]["version"] = int(os.environ["ANDROID_VERSION"])
               cfg["android"]["gapps"] = os.environ["GAPPS"]
+              gapps_vendor = os.environ.get("GAPPS_VENDOR", "")
+              if gapps_vendor:
+                  cfg["android"]["gapps_vendor"] = gapps_vendor
               frida_version = os.environ.get("FRIDA_VERSION", "")
               if frida_version:
                   cfg["frida"] = {"version": frida_version}

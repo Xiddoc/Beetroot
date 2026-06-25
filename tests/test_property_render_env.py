@@ -25,7 +25,7 @@ from hypothesis import given, settings
 
 from beetroot import config, ports
 
-_GappsLit = Literal["none", "lite", "full", "mindthegapps"]
+_GappsLit = Literal["none", "minimal", "full"]
 _RenderingLit = Literal["gpu", "software", "auto"]
 
 _KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
@@ -41,7 +41,7 @@ def instance_configs(draw: st.DrawFn) -> config.InstanceConfig:
     """Generate a valid InstanceConfig spanning the most expressive fields."""
     android_version = draw(st.sampled_from([11, 12, 13, 14]))
     gapps: _GappsLit = draw(
-        st.sampled_from(["none", "lite", "full", "mindthegapps"]),
+        st.sampled_from(["none", "minimal", "full"]),
     )
     mem = draw(st.sampled_from(["1g", "2g", "3g", "4g", "8g"]))
     cpus = draw(st.floats(min_value=0.5, max_value=8.0, allow_nan=False, allow_infinity=False))
