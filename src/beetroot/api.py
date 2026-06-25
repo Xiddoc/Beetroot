@@ -562,6 +562,7 @@ class Instance:
         name: str,
         path: Path | None = None,
         cfg: config.InstanceConfig | None = None,
+        lifecycle: Literal["ephemeral", "durable"] | None = None,
     ) -> Instance:
         """
         Create a new instance directory and register it under ``name``.
@@ -576,17 +577,29 @@ class Instance:
             path: Directory to create. Defaults to ``./<name>``.
             cfg: Override the default minimal config. Defaults to a
                 fresh :class:`config.InstanceConfig`.
+            lifecycle: Persistence intent to stamp into the generated minimal
+                ``beetroot.yaml`` (``ephemeral`` or ``durable``). Only honoured
+                on the default-config path (``cfg is None``); when ``None`` (the
+                default) the key is omitted and the instance is ``durable`` by
+                schema default. Pass it together with an explicit ``cfg`` and a
+                ``ValueError`` is raised — set ``cfg.lifecycle`` instead.
 
         Returns:
             The newly created and registered :class:`Instance`.
 
         Raises:
-            ValueError: If ``name`` is already in the registry, or if
-                the resolved ports collide with another instance.
+            ValueError: If ``name`` is already in the registry, the resolved
+                ports collide with another instance, or ``lifecycle`` is passed
+                alongside an explicit ``cfg``.
             FileExistsError: If ``path`` already contains a
                 ``beetroot.yaml`` (use :meth:`register` to adopt it).
         """
         _validate_instance_name(name)
+        if cfg is not None and lifecycle is not None:
+            raise ValueError(
+                "pass lifecycle only with the default config (cfg=None); "
+                "set cfg.lifecycle on an explicit config instead"
+            )
         if registry.get(name) is not None:
             raise ValueError(f"instance {name!r} already exists in registry")
         target_root = (path if path is not None else Path(name)).resolve()
@@ -596,7 +609,9 @@ class Instance:
                 f"{yaml_path} already exists — use Instance.register(path) to adopt it"
             )
 
-        effective_cfg = cfg if cfg is not None else config.InstanceConfig()
+        effective_cfg = (
+            cfg if cfg is not None else config.InstanceConfig(lifecycle=lifecycle or "durable")
+        )
 
         # Track whether ``target_root`` existed before this call. If we
         # created it and the rest of the constructor blows up, we
@@ -612,7 +627,11 @@ class Instance:
         # schema-defaulted dump. Explicit configs go through
         # config.write_yaml so the model's own serialisation is honoured.
         if cfg is None:
-            yaml_path.write_text(_MINIMAL_BEETROOT_YAML)
+            # Stamp the lifecycle intent into the committed YAML only when the
+            # caller opted in (greppable, explicit); the default omits it and
+            # relies on the schema default (durable).
+            lifecycle_line = f"lifecycle: {lifecycle}\n" if lifecycle is not None else ""
+            yaml_path.write_text(_MINIMAL_BEETROOT_YAML + lifecycle_line)
         else:
             config.write_yaml(yaml_path, effective_cfg)
         # Atomic allocation + registration under one file lock. Two

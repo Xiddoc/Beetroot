@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import console
 
-SUPPORTED_API_VERSION: Final = 5
+SUPPORTED_API_VERSION: Final = 6
 
 # Additive auto-bump: old YAMLs that hard-pinned one of these versions are
 # silently upgraded to SUPPORTED_API_VERSION on load with a one-line stderr
@@ -27,6 +27,9 @@ SUPPORTED_API_VERSION: Final = 5
 # instead. Persistence happens organically on the next ``beetroot apply``
 # (which calls :func:`write_yaml`).
 #
+# next (api_version 5 → 6): added the top-level ``lifecycle: ephemeral |
+#   durable`` intent field (default ``durable``, strictly additive — old YAMLs
+#   without it default to durable, today's contract). Bumps silently.
 # v0.6 → next (api_version 4 → 5): renamed ``display.gpu_mode`` to
 #   ``display.rendering`` with an intent vocabulary (gpu/software/auto). A YAML
 #   that does NOT use ``display.gpu_mode`` bumps silently; one that DOES gets a
@@ -35,7 +38,7 @@ SUPPORTED_API_VERSION: Final = 5
 #   regex validator (strictly additive).
 # v0.3 → v0.4 (api_version 1 → 2): added opt-in frida block (strictly
 #   additive; old YAMLs without a frida block default to frida=None).
-_AUTO_BUMPABLE_API_VERSIONS: Final = frozenset({1, 2, 3, 4})
+_AUTO_BUMPABLE_API_VERSIONS: Final = frozenset({1, 2, 3, 4, 5})
 
 # Non-additive versions that require an explicit migration rather than a
 # silent auto-bump. If a YAML pins one of these and a migration path exists,
@@ -218,7 +221,8 @@ class Display(BaseModel):
                 "display.gpu_mode was renamed to display.rendering in api_version 5. "
                 "Replace it with `rendering: gpu` (was gpu_mode: host), "
                 "`rendering: software` (was gpu_mode: guest), or `rendering: auto`, "
-                "and set `api_version: 5`. See CHANGELOG.md for the migration."
+                f"and set `api_version: {SUPPORTED_API_VERSION}`. "
+                "See CHANGELOG.md for the migration."
             )
         return data
 
@@ -617,6 +621,18 @@ class InstanceConfig(BaseModel):
     Attributes:
         api_version: Schema version this YAML targets. Must equal
             :data:`SUPPORTED_API_VERSION`.
+        lifecycle: Whether this instance's ``/data`` is meant to **survive**
+            (``durable``, the default — a long-lived "research phone") or is
+            **throwaway** (``ephemeral`` — CI/E2E, comparative fleets, reset
+            between runs). This is a **label + guardrails, not a runtime
+            persistence switch**: ``beetroot down`` never wipes ``/data`` for
+            either value; only ``destroy`` / ``reset`` (and a ``vm.boot_cache``
+            warm resume) drop it. The label drives intent-aware behaviour —
+            ``destroy`` escalates its confirmation for a ``durable`` instance,
+            and an ``ephemeral`` instance opts into ``vm.boot_cache``'s
+            revert-on-resume **quietly** (the #123 advisory is suppressed,
+            because a reset each boot is exactly what ``ephemeral`` asked for).
+            ``durable`` preserves today's contract exactly.
         android: Android version and GApps flavour.
         display: Virtual screen geometry and frame rate.
         resources: Docker resource caps.
@@ -650,6 +666,7 @@ class InstanceConfig(BaseModel):
     """
 
     api_version: int = SUPPORTED_API_VERSION
+    lifecycle: Literal["ephemeral", "durable"] = "durable"
     android: Android = Field(default_factory=Android)
     display: Display = Field(default_factory=Display)
     resources: Resources = Field(default_factory=Resources)

@@ -139,6 +139,24 @@ def test_v06_api_version_with_gpu_mode_raises_migration_error(
     assert "auto-upgraded" not in err
 
 
+def test_v07_api_version_auto_bumps(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #124: the `lifecycle` field bumped SUPPORTED 5 → 6 additively, so a
+    # YAML pinned at 5 auto-upgrades with a warning (no renamed key).
+    yaml_path = tmp_path / "beetroot.yaml"
+    yaml_path.write_text("api_version: 5\nandroid:\n  version: 14\n")
+
+    cfg = config.load_yaml(yaml_path)
+
+    assert cfg.api_version == config.SUPPORTED_API_VERSION
+    # An auto-bumped, lifecycle-less YAML defaults to the durable contract.
+    assert cfg.lifecycle == "durable"
+    err = capsys.readouterr().err
+    assert "auto-upgraded api_version 5" in err
+    assert "apply" in err
+
+
 def test_explicit_current_api_version_does_not_warn(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -184,7 +184,7 @@ class TestHostileConfigSurfacing:
         # ``pydantic.ValidationError`` tracebacked; ``cli.main`` now nets it.
         CliRunner().invoke(cli.app, ["create", "alpha"])
         (cli_root / "alpha" / "beetroot.yaml").write_text(
-            'api_version: 5\nresources:\n  cpus: "lots"\n'
+            'api_version: 6\nresources:\n  cpus: "lots"\n'
         )
         code, err = _run_main_with_argv(
             ["beetroot", "status", "alpha"], monkeypatch

@@ -36,7 +36,7 @@ This is the stable v1.0 contract. Scripts wrapping the CLI can rely on these cod
 Initialize a new instance.
 
 ```
-beetroot create <name> [--path DIR] [--from-data PATH]
+beetroot create <name> [--path DIR] [--from-data PATH] [--lifecycle durable|ephemeral]
 ```
 
 | Argument / Flag | Type | Description |
@@ -44,11 +44,12 @@ beetroot create <name> [--path DIR] [--from-data PATH]
 | `name` | positional | Instance name (used as the Docker project name and the default directory name) |
 | `--path` | path | Where to create the instance directory. Default: `./<name>`. Resolved against `cwd`. |
 | `--from-data` | path | Copy an existing data directory as the new instance's `/data`. |
+| `--lifecycle` | `durable` \| `ephemeral` | Stamp the persistence intent into the generated `beetroot.yaml`. Omitted → the key isn't written and the instance is `durable` by default. See [`lifecycle`](config.md#lifecycle) — it's a label + guardrails, not a runtime switch (`down` never wipes `/data` for either). |
 
 **What it does:**
 
 1. Validates the name isn't already registered.
-2. Creates the instance directory and writes a minimal `beetroot.yaml` into it (`api_version` + `android.version`; every other field falls back to schema defaults). To start from a richer baseline, copy one of the [example YAMLs](../guides/examples.md) over the generated file and run `beetroot apply <name>`.
+2. Creates the instance directory and writes a minimal `beetroot.yaml` into it (`api_version` + `android.version`, plus `lifecycle` when `--lifecycle` is passed; every other field falls back to schema defaults). To start from a richer baseline, copy one of the [example YAMLs](../guides/examples.md) over the generated file and run `beetroot apply <name>`.
 3. Allocates the lowest free port index.
 4. Registers `name → absolute_path` in `~/.config/beetroot/instances.json`.
 5. If `--from-data` is given, copies the directory into `<instance>/data/`.

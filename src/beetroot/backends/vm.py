@@ -685,7 +685,13 @@ class VmDeviceBackend:
         the point of harm. The remedy is ``vm.boot_cache: false`` — *not*
         ``beetroot snapshot``, which is redroid-only (issue #128). A non-fatal
         note, matching :meth:`_warn_on_inert_vm_config`.
+
+        Suppressed for an ``lifecycle: ephemeral`` instance (issue #124): a
+        throwaway phone asked for a reset each boot, so the revert is the
+        intended behaviour, not a surprise worth warning about.
         """
+        if self._cfg.lifecycle == "ephemeral":
+            return
         console.note(
             f"warning: instance {self._name!r} uses vm.boot_cache, so this warm "
             "resume reverts the guest to its first-boot checkpoint — everything "

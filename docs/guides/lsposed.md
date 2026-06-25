@@ -26,7 +26,7 @@ Add Vector to your instance's `modules:` (or copy [`examples/lsposed.yaml`](http
 over a fresh `beetroot.yaml`):
 
 ```yaml
-api_version: 5
+api_version: 6
 
 android:
   version: 14

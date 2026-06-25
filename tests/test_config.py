@@ -35,15 +35,15 @@ class TestApiVersion:
     def test_default_api_version_is_supported(self) -> None:
         cfg = InstanceConfig()
         assert cfg.api_version == SUPPORTED_API_VERSION
-        assert cfg.api_version == 5
+        assert cfg.api_version == 6
 
     def test_explicit_supported_version_succeeds(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": 5})
-        assert cfg.api_version == 5
+        cfg = InstanceConfig.model_validate({"api_version": 6})
+        assert cfg.api_version == 6
 
     def test_string_api_version_is_coerced(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": "5"})
-        assert cfg.api_version == 5
+        cfg = InstanceConfig.model_validate({"api_version": "6"})
+        assert cfg.api_version == 6
 
     def test_zero_api_version_raises(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
@@ -74,6 +74,15 @@ class TestApiVersion:
     def test_v3_api_version_raises_via_direct_validate(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
             InstanceConfig.model_validate({"api_version": 3})
+        msg = str(exc_info.value)
+        assert "not supported" in msg
+        assert "CHANGELOG" in msg
+
+    def test_v5_api_version_raises_via_direct_validate(self) -> None:
+        # #124 bumped SUPPORTED to 6; a direct validate of the now-legacy 5
+        # still raises (auto-bump only happens in load_yaml).
+        with pytest.raises(ValidationError) as exc_info:
+            InstanceConfig.model_validate({"api_version": 5})
         msg = str(exc_info.value)
         assert "not supported" in msg
         assert "CHANGELOG" in msg
@@ -1050,5 +1059,5 @@ class TestVmConfig:
 
     def test_empty_yaml_vm_block_uses_defaults(self) -> None:
         # binder: vm with no vm: section is valid (env defaults apply at runtime).
-        cfg = InstanceConfig.model_validate({"api_version": 5, "binder": "vm"})
+        cfg = InstanceConfig.model_validate({"api_version": 6, "binder": "vm"})
         assert cfg.vm.accel == "auto"
