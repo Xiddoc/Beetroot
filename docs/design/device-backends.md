@@ -333,7 +333,7 @@ shape.
 * **PR5: CLI integration — `beetroot adopt <serial>`.** **DONE in v0.4
   (T5).** New verb registers an `AdbBackendConfig` row in the
   user-global registry so subsequent `beetroot shell <name>` /
-  `beetroot frida <name>` / `beetroot module <name>` dispatch to it
+  `beetroot frida-addr <name>` / `beetroot module <name>` dispatch to it
   via `Manager.resolve`. The registry schema's `kind` discriminator
   landed in T1's pydantic foundation (schema bumped to v3). Lifecycle
   verbs that don't generalise narrow via `cli._resolve_redroid` and

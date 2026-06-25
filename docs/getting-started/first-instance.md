@@ -120,4 +120,4 @@ beetroot up alpha
 - [Multiple Instances](../guides/multi-instance.md) — run several phones in parallel.
 - [Examples](../guides/examples.md) — start from `stealth.yaml` for anti-detection research.
 - [Magisk Modules](../guides/modules.md) — flash Shamiko, LSPosed, or your own hooks.
-- [Frida](../guides/frida.md) — attach scripts and use the `beetroot frida` wrapper.
+- [Frida](../guides/frida.md) — attach scripts via `frida -H "$(beetroot frida-addr <name>)"`.

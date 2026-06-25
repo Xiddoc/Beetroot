@@ -185,7 +185,7 @@ uv run beetroot shell alpha   # interactive shell on the guest
 ```
 
 !!! note "Frida on the `vm` backend"
-    `beetroot frida` is not yet wired for the `vm` backend — `doctor` reports a
+    Frida is not yet wired for the `vm` backend — `doctor` reports a
     clear "not yet supported on the vm backend" message rather than failing.
 
 ## Step 5 — take a screenshot

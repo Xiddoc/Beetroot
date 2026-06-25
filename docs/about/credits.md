@@ -21,7 +21,7 @@ Beetroot is a thin orchestration layer on top of several excellent open-source p
 
 ## Frida
 
-[Frida](https://frida.re/) — the dynamic instrumentation toolkit. Beetroot manages the Frida server binary per-instance, downloading it from GitHub releases and bind-mounting it into the container. `beetroot frida` wraps the host-side CLI for convenience.
+[Frida](https://frida.re/) — the dynamic instrumentation toolkit. Beetroot manages the Frida server binary per-instance, downloading it from GitHub releases and bind-mounting it into the container. `beetroot frida-addr` prints an instance's Frida address so you can point the host-side `frida` CLI at it.
 
 ## Shamiko / LSPosed
 

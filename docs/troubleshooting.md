@@ -136,11 +136,11 @@ beetroot logs alpha | grep -i frida
 
 ---
 
-## `beetroot frida` exits with "frida CLI not found"
+## `frida: command not found` when attaching to an instance
 
-**Symptom:** Running `beetroot frida <name>` fails immediately with `error: frida CLI not found. Install via uv tool install 'beetroot[frida]' or uv tool install frida-tools.`
+**Symptom:** `frida -H "$(beetroot frida-addr <name>)" ...` fails with `frida: command not found` (or your shell's equivalent). `beetroot frida-addr` itself succeeds and prints the address — it's the `frida` client that's missing.
 
-**Cause:** The host-side `frida` CLI is optional and isn't included in a plain `uv tool install`. The `beetroot frida` verb shells out to whatever `frida` binary is on your PATH, and finds none.
+**Cause:** The host-side `frida` CLI is optional and isn't included in a plain `uv tool install`. `beetroot frida-addr` only resolves and prints the port; attaching needs a `frida` binary on your PATH, and there's none.
 
 **Fix:** Reinstall with the `[frida]` extra so `frida-tools` is bundled alongside Beetroot:
 

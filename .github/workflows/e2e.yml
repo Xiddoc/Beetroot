@@ -440,7 +440,9 @@ jobs:
       - name: Frida over the VM is intentionally unsupported (assert the message)
         run: |
           set -uxo pipefail
-          out="$(uv run beetroot frida vmphone 2>&1 || true)"
+          # frida-addr fails loudly (exit 2) on the vm backend rather than
+          # emitting an address — assert the friendly message (issue #109).
+          out="$(uv run beetroot frida-addr vmphone 2>&1 || true)"
           echo "$out"
           echo "$out" | grep -qi 'not yet supported'
 

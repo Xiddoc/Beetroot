@@ -259,8 +259,8 @@ def _warn_on_client_skew(server_version: str, *, host_version: str | None = None
     Warn if the host ``frida-tools`` major+minor won't match ``server_version``.
 
     Frida requires the client and server to agree on major+minor, so a server
-    that diverges from the host client breaks ``beetroot frida`` at *attach*
-    time. Surfaced as an actionable warning here, at staging time (issue #105).
+    that diverges from the host client breaks ``frida`` at *attach* time.
+    Surfaced as an actionable warning here, at staging time (issue #105).
     No-op when ``frida-tools`` isn't installed (nothing to attach with yet).
 
     Args:
@@ -276,7 +276,7 @@ def _warn_on_client_skew(server_version: str, *, host_version: str | None = None
         console.warn(
             f"staged frida-server {server_version} but the host frida-tools is "
             f"{host}; Frida requires the client and server major+minor to match, "
-            "so `beetroot frida` will fail to attach. Set frida.version to "
+            "so `frida` will fail to attach. Set frida.version to "
             f"'{config.FRIDA_AUTO}' (or pin {host}), or upgrade frida-tools."
         )
 

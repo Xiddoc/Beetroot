@@ -132,6 +132,13 @@ def _registered_verbs() -> set[str]:
     return _parse_verbs(proc.stdout)
 
 
+# A registered verb name: lowercase, may contain hyphens (e.g. ``frida-addr``).
+# ``str.isidentifier()`` rejects hyphens, so a hyphenated verb would otherwise be
+# silently dropped from the known-verb set and every reference to it in the
+# CHANGELOG flagged as "unknown verb".
+_VERB_NAME = re.compile(r"[a-z][a-z0-9-]*$")
+
+
 def _parse_verbs(help_text: str) -> set[str]:
     """Extract registered verb names from ``beetroot --help`` output."""
     verbs: set[str] = set()
@@ -140,7 +147,7 @@ def _parse_verbs(help_text: str) -> set[str]:
         if not line:
             continue
         head = line.split(None, 1)[0]
-        if head.isidentifier() and head.islower():
+        if _VERB_NAME.fullmatch(head):
             verbs.add(head)
     typer_meta = {"options", "commands", "arguments", "usage"}
     return verbs - typer_meta

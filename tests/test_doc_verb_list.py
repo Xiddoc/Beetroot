@@ -13,7 +13,9 @@ from beetroot import cli
 
 CLI_REF = Path(__file__).resolve().parents[1] / "docs" / "reference" / "cli.md"
 
-HEADING_RX = re.compile(r"^##\s+`([a-z]+)`\s*$", re.MULTILINE)
+# Verb names may contain hyphens (e.g. ``frida-addr``), so allow them in the
+# heading capture — not just ``[a-z]+``.
+HEADING_RX = re.compile(r"^##\s+`([a-z][a-z-]*)`\s*$", re.MULTILINE)
 
 
 def _registered_verbs() -> set[str]:

@@ -7,7 +7,7 @@ Practical how-tos for common research workflows. These assume you've already com
 - **[Multiple Instances](multi-instance.md)** — run several research phones in parallel, understand port allocation, coordinate across instances.
 - **[Examples](examples.md)** — copy `default.yaml` / `stealth.yaml` / `no-gapps.yaml` / `with-frida.yaml` over a fresh instance, modify YAML, apply changes without rebuilding. Also covers the `adb-device.yaml` (adb-adopted device) and `vm.yaml` (QEMU micro-VM, `binder: vm`) reference configs.
 - **[Magisk Modules](modules.md)** — flash Shamiko, LSPosed, or custom hooks via URL or local path; verify with sha256.
-- **[Frida](frida.md)** — pin Frida versions per instance, use `beetroot frida` as a wrapper, attach scripts.
+- **[Frida](frida.md)** — pin Frida versions per instance, get the address with `beetroot frida-addr`, attach scripts.
 - **[Snapshots](snapshots.md)** — pack instance state into a `.tar.zst` archive with `beetroot snapshot`, restore with `beetroot restore`, fork an instance into siblings that run concurrently.
 - **[Sandbox / CI quickstart (no-KVM TCG)](sandbox-quickstart.md)** — the end-to-end runbook for booting a real rooted Android instance on a host with no kernel binder and no `/dev/kvm` via the `binder: vm` QEMU micro-VM: pick the backend, install prereqs, `build --vm-kernel`, `up`, and screenshot.
 - **[Running in CI / without kernel access](running-in-ci.md)** — why redroid needs the host's binder driver, how to load it on GitHub-hosted runners, and how to drive a remote device over ADB when you have no kernel access at all.

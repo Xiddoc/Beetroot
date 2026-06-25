@@ -23,6 +23,25 @@
   positionally (default `minimal`) plus an optional `--gapps-vendor`; the reusable
   CI workflow gains a matching `gapps-vendor` input.
 
+- **`frida` passthrough verb replaced by `beetroot frida-addr` (#109).**
+  The old `frida` passthrough verb was a thin wrapper that ran the host
+  `frida` CLI with `-H localhost:<frida_port>` prepended. Its only real value was
+  resolving the instance's stride-allocated Frida port — and to do it it consumed
+  every argument opaquely, which silently broke `frida`'s own shell completion,
+  `--help`, and flag validation. It's replaced by **`beetroot frida-addr <name>`**,
+  which prints just the address (`localhost:<frida_port>`) to stdout so you invoke
+  native `frida` directly and keep all of its ergonomics:
+
+  ```bash
+  frida -H "$(beetroot frida-addr alpha)" -n com.target.app
+  ```
+
+  The emitter needs nothing installed (it only resolves a port), generalises to
+  future transports (e.g. Frida Gadget, #3), and is less code than the wrapper.
+  **Migration:** where you ran the old `frida` passthrough verb, now run
+  `frida -H "$(beetroot frida-addr <name>)" <args...>`. The programmatic
+  `Instance.frida_cli(...)` API and the `[frida]` extra are unchanged.
+
 - **`display.gpu_mode` → `display.rendering`; `api_version` bumped 4 → 5 (#106).**
   The least-validated field in the schema (`gpu_mode: str = "host"` — not even a
   `Literal`, so `gpu_mode: hostt` passed silently) is replaced by an intent-named,
@@ -125,7 +144,7 @@
   (reproducible, and now *required* if you also set `frida.sha256`, since a
   digest can't match a moving target). `beetroot apply` warns when a pinned /
   `latest` server's major+minor diverges from the host `frida-tools`, because
-  `beetroot frida` would otherwise fail to attach.
+  the `frida` client would otherwise fail to attach.
 - **Full LSPosed module-hook e2e — proves a real Xposed hook fires (#29).**
   Completes the LSPosed recipe with an end-to-end test of the *whole* pipeline:
   flash Vector (LSPosed) → install an Xposed module **as an app** → enable it in
@@ -769,7 +788,7 @@
 - **Frida is not yet supported on the `binder: vm` backend** (#44 follow-up).
   The QEMU micro-VM runs redroid with `--network none`, and nothing yet
   forwards the guest Frida port or bind-mounts a staged `frida-server` into
-  the network-isolated guest. `beetroot frida <vm-instance>` and
+  the network-isolated guest. `beetroot frida-addr <vm-instance>` and
   `install_frida` therefore raise a friendly `BackendCapabilityError`
   rather than silently no-op; `beetroot doctor` omits the `frida.handshake`
   row for vm instances (it could never pass), and `ls` / `status` report the
@@ -848,7 +867,7 @@ CI pipeline itself.
   the `binder: vm` micro-VM, and drives it through the adb backend —
   asserting `beetroot ls --json` availability, `beetroot shell getprop
   sys.boot_completed`, the `doctor` `vm.process` / `vm.accel` rows, and
-  that `beetroot frida` reports its "not yet supported on the vm backend"
+  that `beetroot frida-addr` reports its "not yet supported on the vm backend"
   message. Gated like Tier 1 (nightly `schedule` / `workflow_dispatch` /
   PR `e2e` label). On GitHub-hosted runners there is no `/dev/kvm`, so it
   runs under TCG — a slow (~100 s+) but real boot; the kernel + rootfs

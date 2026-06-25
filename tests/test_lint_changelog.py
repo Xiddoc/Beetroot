@@ -201,6 +201,23 @@ def test_parse_verbs_does_not_invent_verbs_absent_from_help() -> None:
     assert "doctor" not in lint_changelog._parse_verbs(_PLAIN_HELP)
 
 
+def test_parse_verbs_captures_hyphenated_verb() -> None:
+    """Regression (#109): hyphenated verbs like ``frida-addr`` are real verbs.
+
+    ``str.isidentifier()`` rejects hyphens, so the old parser silently
+    dropped ``frida-addr`` and flagged every CHANGELOG reference to it as an
+    unknown verb. The verb-name pattern must accept hyphens.
+    """
+    help_text = _PLAIN_HELP.replace(
+        "│ create    Create a new instance directory and stage its files.               │",
+        "│ create     Create a new instance directory and stage its files.              │\n"
+        "│ frida-addr Print an instance's Frida address to stdout.                      │",
+    )
+    verbs = lint_changelog._parse_verbs(help_text)
+    assert "frida-addr" in verbs
+    assert "create" in verbs
+
+
 def test_parse_long_flags_reassembles_ansi_split_flag() -> None:
     """Rich emits ``--auto-install`` as ``-``/``-auto``/``-install``
     fragments with escapes in between; stripping must reassemble it."""

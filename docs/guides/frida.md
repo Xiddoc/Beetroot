@@ -5,7 +5,7 @@ Frida is **opt-in** starting in Beetroot v0.3. When you declare a `frida:` block
 If you omit the `frida:` block (the new default), the bind-mount is a 0-byte non-executable placeholder and `entrypoint.sh` skips the launch entirely — no `frida-server` process inside the container.
 
 !!! note "Host-side `frida-tools` is also optional"
-    The Frida server inside the container is managed for you when you opt in. The host-side `frida` CLI used by `beetroot frida` is a separate package and ships behind the `[frida]` extra — install it with `uv tool install 'beetroot[frida]'`. See [Installation › With Frida CLI](../getting-started/installation.md#with-frida-cli) for details.
+    The Frida server inside the container is managed for you when you opt in. The host-side `frida` CLI you attach with is a separate package and ships behind the `[frida]` extra — install it with `uv tool install 'beetroot[frida]'`. See [Installation › With Frida CLI](../getting-started/installation.md#with-frida-cli) for details. `beetroot frida-addr` itself only prints a port and needs nothing extra.
 
 ## Enabling Frida
 
@@ -53,49 +53,41 @@ You can optionally pin an expected `sha256` of the decompressed `frida-server` b
 Changing the version and running `beetroot apply <name>` re-downloads the binary into the instance directory at `frida-server`. The old binary is overwritten. Restart the instance to pick up the new server.
 
 !!! tip "Keep versions in sync"
-    Frida requires the client and server to agree on **major + minor**, or the connection fails. `version: auto` keeps them in lock-step automatically. If you pin a `version` (or use `latest`) that diverges from your host `frida-tools`, `beetroot apply` prints a one-line warning, because `beetroot frida` would otherwise fail to attach.
+    Frida requires the client and server to agree on **major + minor**, or the connection fails. `version: auto` keeps them in lock-step automatically. If you pin a `version` (or use `latest`) that diverges from your host `frida-tools`, `beetroot apply` prints a one-line warning, because the `frida` client would otherwise fail to attach.
 
-## `beetroot frida` wrapper
+## Connecting Frida — `beetroot frida-addr`
 
-`beetroot frida` invokes the host-side `frida` CLI with `-H localhost:<frida_port>` pre-populated for the named instance:
+Beetroot doesn't wrap the `frida` CLI. Wrapping it would mean opaque argument forwarding, which silently breaks frida's own shell completion, `--help`, and flag validation (see [issue #109](https://github.com/Xiddoc/Beetroot/issues/109)). Instead, `beetroot frida-addr` does the one thing the old wrapper actually saved you — resolving the instance's stride-allocated Frida port — and prints it to stdout, so you invoke native `frida` yourself:
 
 ```bash
-beetroot frida alpha -- -n com.target.app -l hook.js
+beetroot frida-addr alpha
+# → localhost:27042
+
+frida -H "$(beetroot frida-addr alpha)" -n com.target.app
 ```
 
-Everything after `--` is passed verbatim to `frida`. The `--` is optional but makes intent clear when `frida_args` start with `-`.
-
-Examples:
+Because `frida` is the program you actually run, you keep its completion, `--help`, and flag validation. The pattern composes into any frida workflow:
 
 ```bash
+ADDR="$(beetroot frida-addr alpha)"
+
 # Attach to a process by name
-beetroot frida alpha -n com.target.app
+frida -H "$ADDR" -n com.target.app
 
 # Spawn and attach
-beetroot frida alpha -f com.target.app --no-pause
+frida -H "$ADDR" -f com.target.app --no-pause
 
 # List running processes
-beetroot frida alpha -ps
+frida -H "$ADDR" -ps
 
 # Load a script
-beetroot frida alpha -n com.target.app -l /path/to/script.js
+frida -H "$ADDR" -n com.target.app -l /path/to/script.js
 ```
 
-!!! note "frida CLI required"
-    `beetroot frida` shells out to the `frida` binary on your PATH. The easiest way to get it is `uv tool install 'beetroot[frida]'`, which bundles `frida-tools` alongside Beetroot. Alternatively, `uv tool install frida-tools` works standalone.
+!!! note "frida CLI required to attach"
+    `beetroot frida-addr` only prints an address — it needs nothing extra. To actually attach you need the `frida` binary on your PATH; the easiest way to get it is `uv tool install 'beetroot[frida]'`, which bundles `frida-tools` alongside Beetroot. Alternatively, `uv tool install frida-tools` works standalone.
 
-## Connecting without the wrapper
-
-If you prefer to drive Frida directly, get the port from `beetroot status`:
-
-```bash
-FRIDA_DEVICE=$(beetroot status alpha | python3 -c "import json,sys; print(json.load(sys.stdin)['frida_address'])")
-# $FRIDA_DEVICE = localhost:27042
-
-frida -H "$FRIDA_DEVICE" -n com.target.app
-```
-
-Or hardcode from the [port table](../reference/ports.md) if you know the instance index.
+The same address is also available as the `frida_address` field of `beetroot status alpha` (JSON), or you can hardcode it from the [port table](../reference/ports.md) if you know the instance index.
 
 ## Using frida-tools Python API
 
@@ -126,8 +118,8 @@ The `frida-server` bind-mount becomes a 0-byte non-executable placeholder, and `
 
 ## Troubleshooting
 
-**`beetroot frida` says `frida CLI not found`.**
-Install the `[frida]` extra: `uv tool install 'beetroot[frida]'` (or `uv tool install frida-tools` if Beetroot is already installed without the extra).
+**`frida: command not found` when attaching.**
+`beetroot frida-addr` only prints the address; you still need the `frida` client to attach. Install the `[frida]` extra: `uv tool install 'beetroot[frida]'` (or `uv tool install frida-tools` if Beetroot is already installed without the extra).
 
 **Frida connects but can't enumerate processes.**
 The server might still be starting. Wait a few seconds after boot, or check: `beetroot shell alpha` then `ps -A | grep frida`. If it's not running, check `beetroot logs alpha` for download or launch errors.
