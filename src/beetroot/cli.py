@@ -290,8 +290,15 @@ def create(
     Pass --lifecycle ephemeral|durable to record persistence intent in
     the committed YAML (default durable preserves today's behaviour).
     """
+    # Narrow the typer-supplied str to the Literal both type checkers accept
+    # without a cast: mypy doesn't narrow `not in` membership (so a cast was
+    # needed), but pyright then flags that cast as redundant. An explicit
+    # per-value map satisfies both.
     if lifecycle is not None and lifecycle not in ("ephemeral", "durable"):
         raise _error(f"--lifecycle must be 'ephemeral' or 'durable', got {lifecycle!r}.")
+    resolved_lifecycle: Literal["ephemeral", "durable"] | None = (
+        None if lifecycle is None else "ephemeral" if lifecycle == "ephemeral" else "durable"
+    )
     if preset is not None:
         raise _error(
             f"--preset was removed in v0.3 — copy examples/{preset}.yaml over "
@@ -323,7 +330,7 @@ def create(
         inst = api.Instance.create(
             name,
             path=target_root,
-            lifecycle=cast("Literal['ephemeral', 'durable'] | None", lifecycle),
+            lifecycle=resolved_lifecycle,
         )
     except ValueError as e:
         raise _error(str(e)) from e
