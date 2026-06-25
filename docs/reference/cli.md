@@ -504,15 +504,16 @@ beetroot down <name> && beetroot up <name>
 
 ## `build`
 
-Build the redroid base image and Beetroot layer for a chosen GMS variant. One-time bootstrap; re-run when you want a fresh image.
+Build the redroid base image and Beetroot layer for a chosen GApps intent. One-time bootstrap; re-run when you want a fresh image.
 
 ```
-beetroot build [<gapps>] [--vm-kernel] [--from-source] [--check] [--android-version <N>]
+beetroot build [<gapps>] [--gapps-vendor <vendor>] [--vm-kernel] [--from-source] [--check] [--android-version <N>]
 ```
 
 | Argument / Flag | Type | Description |
 |-----------------|------|-------------|
-| `gapps` | positional, optional | GMS variant to bake into the base image. One of `none`, `lite` (default), `full`, `mindthegapps`. |
+| `gapps` | positional, optional | GApps **intent** to bake into the base image. One of `none`, `minimal` (default), `full`. |
+| `--gapps-vendor` | enum, optional | Pin a specific GApps **vendor** for app compatibility instead of letting the intent pick: `litegapps`, `opengapps`, `mindthegapps`. Cannot be combined with the `none` intent. |
 | `--vm-kernel` | flag | Build the `binder: vm` micro-VM guest kernel + rootfs instead of the redroid base image (for hosts with no kernel binder). Prints the resulting `vm.kernel` / `vm.rootfs` paths. |
 | `--from-source` | flag | With `--vm-kernel`: always compile the guest kernel from source (~7 min) instead of fetching the matching prebuilt `bzImage`. |
 | `--check` | flag | With `--vm-kernel`: only run the host-prerequisite **preflight** and report what's missing — don't build. Exits `0` when the host is ready, `1` otherwise. |

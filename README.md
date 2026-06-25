@@ -31,7 +31,7 @@ beetroot up alpha
 beetroot shell alpha
 ```
 
-Variants for `beetroot build`: `none`, `lite` (default), `full`, `mindthegapps`.
+GApps intent for `beetroot build`: `none`, `minimal` (default), `full`. Pin a specific distribution with `--gapps-vendor litegapps|opengapps|mindthegapps`.
 
 Hacking on Beetroot itself? `uv tool install .` from a checkout, or `uv sync` + `uv run beetroot <verb>`.
 

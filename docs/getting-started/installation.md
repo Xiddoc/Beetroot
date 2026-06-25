@@ -22,7 +22,7 @@ This verb:
 2. Runs the patcher with `uv` to produce a local Docker image tagged `redroid/redroid:14.0.0_litegapps_houdini_magisk`. The patcher bakes Magisk, LiteGapps (minimal GApps), and Houdini (ARM-on-x86\_64 translation) into the base redroid image.
 3. Runs `docker compose build` to layer `entrypoint.sh` and `stealth.rc` on top, producing the final Beetroot image.
 
-Pass a variant to pick a different GMS flavor: `beetroot build none | lite | full | mindthegapps` (default `lite`).
+Pass an intent to pick a different GApps level: `beetroot build none | minimal | full` (default `minimal`). To pin a specific distribution for app compatibility, add `--gapps-vendor litegapps | opengapps | mindthegapps`.
 
 Pass `--vm-kernel` to build the micro-VM guest kernel + rootfs instead of the redroid image — needed for `binder: vm` users on hosts where the host kernel can't provide binder.
 

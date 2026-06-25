@@ -31,53 +31,70 @@ def _patched_subprocess() -> AbstractContextManager[MagicMock]:
 
 
 class TestBuildParser:
-    def test_default_gapps_is_lite(self) -> None:
+    def test_default_gapps_is_minimal(self) -> None:
         with patch("beetroot.cli.builder.build_image") as mock_bs:
             mock_bs.return_value = "redroid/redroid:14.0.0_litegapps_houdini_magisk"
             result = runner.invoke(cli.app, ["build"])
         assert result.exit_code == 0
-        mock_bs.assert_called_once_with(gapps="lite", build_context=None)
+        mock_bs.assert_called_once_with(gapps="minimal", gapps_vendor=None, build_context=None)
 
-    @pytest.mark.parametrize("variant", ["none", "lite", "full", "mindthegapps"])
-    def test_each_variant_parses(self, variant: str) -> None:
+    @pytest.mark.parametrize("intent", ["none", "minimal", "full"])
+    def test_each_intent_parses(self, intent: str) -> None:
         with patch("beetroot.cli.builder.build_image") as mock_bs:
-            mock_bs.return_value = f"redroid/redroid:14.0.0_{variant}_houdini_magisk"
-            result = runner.invoke(cli.app, ["build", variant])
+            mock_bs.return_value = f"redroid/redroid:14.0.0_{intent}_houdini_magisk"
+            result = runner.invoke(cli.app, ["build", intent])
         assert result.exit_code == 0
-        mock_bs.assert_called_once_with(gapps=variant, build_context=None)
+        mock_bs.assert_called_once_with(gapps=intent, gapps_vendor=None, build_context=None)
 
-    def test_invalid_variant_exits(self) -> None:
+    @pytest.mark.parametrize("vendor", ["litegapps", "opengapps", "mindthegapps"])
+    def test_gapps_vendor_option_forwarded(self, vendor: str) -> None:
+        with patch("beetroot.cli.builder.build_image") as mock_bs:
+            mock_bs.return_value = "redroid/redroid:14.0.0_gapps_houdini_magisk"
+            result = runner.invoke(cli.app, ["build", "full", "--gapps-vendor", vendor])
+        assert result.exit_code == 0
+        mock_bs.assert_called_once_with(gapps="full", gapps_vendor=vendor, build_context=None)
+
+    def test_invalid_intent_exits(self) -> None:
         result = runner.invoke(cli.app, ["build", "blah"])
         assert result.exit_code != 0
         err = result.stderr
         assert "blah" in err
-        for variant in ("none", "lite", "full", "mindthegapps"):
-            assert variant in err
+        for intent in ("none", "minimal", "full"):
+            assert intent in err
 
-    def test_help_lists_variants(self) -> None:
+    def test_none_intent_with_vendor_exits(self) -> None:
+        # `build none --gapps-vendor X` is contradictory (no GApps, yet a vendor
+        # named). build_image constructs a config.Android which rejects it with a
+        # ValidationError *before* any clone/docker work — cli.main() maps it to
+        # error: ... + exit 1.
+        result = runner.invoke(cli.app, ["build", "none", "--gapps-vendor", "litegapps"])
+        assert result.exit_code == 1
+        assert "asks for no GApps" in str(result.exception)
+
+    def test_help_lists_intents(self) -> None:
         result = runner.invoke(cli.app, ["build", "--help"])
         assert result.exit_code == 0
         out = result.stdout
-        for variant in ("none", "lite", "full", "mindthegapps"):
-            assert variant in out
+        for intent in ("none", "minimal", "full"):
+            assert intent in out
 
 
 class TestBuildDispatch:
-    def test_cmd_build_invokes_bootstrap_with_lite_default(self) -> None:
+    def test_cmd_build_invokes_bootstrap_with_minimal_default(self) -> None:
         with patch("beetroot.cli.builder.build_image") as mock_bs:
             mock_bs.return_value = "redroid/redroid:14.0.0_litegapps_houdini_magisk"
             result = runner.invoke(cli.app, ["build"])
-        mock_bs.assert_called_once_with(gapps="lite", build_context=None)
+        mock_bs.assert_called_once_with(gapps="minimal", gapps_vendor=None, build_context=None)
         assert result.exit_code == 0
         assert "redroid/redroid:14.0.0_litegapps_houdini_magisk" in result.stdout
 
-    @pytest.mark.parametrize("variant", ["none", "lite", "full", "mindthegapps"])
-    def test_cmd_build_forwards_each_variant(self, variant: str) -> None:
+    @pytest.mark.parametrize("intent", ["none", "minimal", "full"])
+    def test_cmd_build_forwards_each_intent(self, intent: str) -> None:
         with patch("beetroot.cli.builder.build_image") as mock_bs:
-            mock_bs.return_value = f"redroid/redroid:14.0.0_{variant}_houdini_magisk"
-            result = runner.invoke(cli.app, ["build", variant])
+            mock_bs.return_value = f"redroid/redroid:14.0.0_{intent}_houdini_magisk"
+            result = runner.invoke(cli.app, ["build", intent])
         assert result.exit_code == 0
-        mock_bs.assert_called_once_with(gapps=variant, build_context=None)
+        mock_bs.assert_called_once_with(gapps=intent, gapps_vendor=None, build_context=None)
 
     def test_main_dispatches_build(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("sys.argv", ["beetroot", "build", "full"])
@@ -88,7 +105,7 @@ class TestBuildDispatch:
             with pytest.raises(SystemExit) as exc:
                 cli.main()
             assert exc.value.code == 0
-        mock_bs.assert_called_once_with(gapps="full", build_context=None)
+        mock_bs.assert_called_once_with(gapps="full", gapps_vendor=None, build_context=None)
 
 
 # ---------------------------------------------------------------------------

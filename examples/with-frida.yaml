@@ -3,7 +3,7 @@
 # Pin frida.version to match your host-side frida-tools (major + minor must agree).
 # Drop the `frida:` block (or copy examples/default.yaml) to disable frida entirely.
 
-api_version: 6
+api_version: 7
 
 android:
   version: 14

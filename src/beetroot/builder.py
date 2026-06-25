@@ -13,8 +13,8 @@ Public surface:
   ``subprocess.run(check=True)``; tests inject a recording fake.
 * :class:`BootstrapError` — raised when any step (clone, patch, build)
   fails.
-* :data:`GAPPS_FLAGS` — mapping from gapps variant to the patcher CLI flags
-  it needs.
+* :data:`GAPPS_VENDOR_FLAGS` — mapping from the resolved gapps vendor to the
+  patcher CLI flags it needs.
 * :func:`build_image` — entry point that orchestrates the three steps and
   returns the resulting image tag.
 """
@@ -29,19 +29,20 @@ import tempfile
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import IO, Final, Literal, Protocol
+from typing import IO, Final, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
 from . import config, console, kernel_download, paths
 from .settings import settings
 
-GappsVariant = Literal["none", "lite", "full", "mindthegapps"]
-
-GAPPS_FLAGS: Final[dict[GappsVariant, list[str]]] = {
-    "none": [],
-    "lite": ["-lg"],
-    "full": ["-g"],
+# The patcher CLI flag each GApps vendor needs. Keyed by the *resolved* vendor
+# (config.GappsVendor) rather than the user-facing intent, so the build matches
+# whatever ``config.resolve_gapps_vendor`` derives from a (gapps, gapps_vendor)
+# pair. The ``none`` intent resolves to no vendor and injects no flag.
+GAPPS_VENDOR_FLAGS: Final[dict[config.GappsVendor, list[str]]] = {
+    "litegapps": ["-lg"],
+    "opengapps": ["-g"],
     "mindthegapps": ["-mtg"],
 }
 
@@ -162,12 +163,17 @@ class DefaultRunner:
             ) from exc
 
 
-def _image_tag(android_version: int, gapps: GappsVariant) -> str:
+def _android_for(
+    android_version: int, gapps: config.GappsIntent, gapps_vendor: config.GappsVendor | None
+) -> config.Android:
     """
-    Compute the base-image tag for ``(version, gapps)``, mirroring config.base_image_tag.
+    Build the :class:`config.Android` for a ``(version, gapps, gapps_vendor)`` triple.
+
+    Centralises construction so the tag derivation and the patcher-flag
+    resolution both go through the same validated model (and the same
+    ``config.resolve_gapps_vendor`` rules).
     """
-    android = config.Android(version=android_version, gapps=gapps)
-    return config.base_image_tag(android)
+    return config.Android(version=android_version, gapps=gapps, gapps_vendor=gapps_vendor)
 
 
 def _clone_url_matches(work: Path, url: str) -> bool:
@@ -195,9 +201,10 @@ def _clone_url_matches(work: Path, url: str) -> bool:
     return False
 
 
-def build_image(  # noqa: PLR0913  # 6 keyword-only params; each is a distinct injectable concern
+def build_image(  # noqa: PLR0913  # 7 keyword-only params; each is a distinct injectable concern
     *,
-    gapps: GappsVariant = "lite",
+    gapps: config.GappsIntent = "minimal",
+    gapps_vendor: config.GappsVendor | None = None,
     android_version: int = config.DEFAULT_ANDROID_VERSION,
     redroid_script_url: str = _DEFAULT_REDROID_URL,
     work_dir: Path | None = None,
@@ -221,7 +228,11 @@ def build_image(  # noqa: PLR0913  # 6 keyword-only params; each is a distinct i
        (see below).
 
     Args:
-        gapps: GMS variant to bake in.
+        gapps: GApps intent to bake in (``none`` / ``minimal`` / ``full``).
+        gapps_vendor: Optional vendor override (``litegapps`` / ``opengapps`` /
+            ``mindthegapps``). ``None`` lets the intent pick the vendor. Must
+            not be combined with ``gapps: none`` (rejected by
+            :class:`config.Android`).
         android_version: Android major version. Must be one of ``11``,
             ``12``, ``13``, ``14`` — validated against
             :class:`beetroot.config.Android`.
@@ -255,7 +266,10 @@ def build_image(  # noqa: PLR0913  # 6 keyword-only params; each is a distinct i
         ctx = _default_build_context()
     run = runner if runner is not None else DefaultRunner()
 
-    tag = _image_tag(android_version, gapps)
+    android = _android_for(android_version, gapps, gapps_vendor)
+    tag = config.base_image_tag(android)
+    vendor = config.resolve_gapps_vendor(android)
+    gapps_flags = [] if vendor is None else GAPPS_VENDOR_FLAGS[vendor]
 
     # Step 1: clone the patcher — skip when an identical clone already exists
     # so a re-run doesn't discard already-downloaded Houdini / Magisk /
@@ -284,7 +298,7 @@ def build_image(  # noqa: PLR0913  # 6 keyword-only params; each is a distinct i
         "redroid.py",
         "-a",
         f"{android_version}.0.0",
-        *GAPPS_FLAGS[gapps],
+        *gapps_flags,
         "-i",
         "-m",
     ]

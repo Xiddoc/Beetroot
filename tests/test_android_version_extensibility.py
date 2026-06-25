@@ -23,7 +23,6 @@ from pathlib import Path
 import pytest
 
 from beetroot import config
-from beetroot.builder import GappsVariant
 
 _ROOT = Path(__file__).resolve().parents[1]
 _SRC = _ROOT / "src" / "beetroot"
@@ -98,11 +97,21 @@ def test_base_image_tag_well_formed_for_every_version(version: int) -> None:
 
 
 @pytest.mark.parametrize("version", sorted(config._VALID_ANDROID_VERSIONS))
-@pytest.mark.parametrize("gapps", ["none", "lite", "full", "mindthegapps"])
+@pytest.mark.parametrize("gapps", ["none", "minimal", "full"])
 def test_base_image_tag_starts_with_version_for_every_gapps(
-    version: int, gapps: GappsVariant
+    version: int, gapps: config.GappsIntent
 ) -> None:
     tag = config.base_image_tag(config.Android(version=version, gapps=gapps))
+    assert tag.startswith(f"redroid/redroid:{version}.0.0")
+    assert tag.endswith("_houdini_magisk")
+
+
+@pytest.mark.parametrize("version", sorted(config._VALID_ANDROID_VERSIONS))
+@pytest.mark.parametrize("vendor", sorted(config._VENDOR_SLUG))
+def test_base_image_tag_well_formed_for_every_vendor(version: int, vendor: str) -> None:
+    tag = config.base_image_tag(
+        config.Android(version=version, gapps="full", gapps_vendor=vendor)  # type: ignore[arg-type]
+    )
     assert tag.startswith(f"redroid/redroid:{version}.0.0")
     assert tag.endswith("_houdini_magisk")
 

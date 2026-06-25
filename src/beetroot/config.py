@@ -18,16 +18,21 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import console
 
-SUPPORTED_API_VERSION: Final = 6
+SUPPORTED_API_VERSION: Final = 7
 
 # Additive auto-bump: old YAMLs that hard-pinned one of these versions are
 # silently upgraded to SUPPORTED_API_VERSION on load with a one-line stderr
 # warning, *unless* they also carry a key that a non-additive bump renamed (the
-# stealth / gpu_mode handling below), in which case a migration error fires
-# instead. Persistence happens organically on the next ``beetroot apply``
+# stealth / gpu_mode / gapps handling below), in which case a migration error
+# fires instead. Persistence happens organically on the next ``beetroot apply``
 # (which calls :func:`write_yaml`).
 #
-# next (api_version 5 → 6): added the top-level ``lifecycle: ephemeral |
+# next (api_version 6 → 7): split ``android.gapps`` into an intent vocabulary
+#   (none/minimal/full) plus an optional ``android.gapps_vendor`` escape hatch
+#   (litegapps/opengapps/mindthegapps). ``gapps: none`` and ``gapps: full`` keep
+#   working unchanged; a YAML that wrote the now-vendor values ``gapps: lite`` or
+#   ``gapps: mindthegapps`` gets a migration error (mirrors the gpu_mode rename).
+# v0.6 → next (api_version 5 → 6): added the top-level ``lifecycle: ephemeral |
 #   durable`` intent field (default ``durable``, strictly additive — old YAMLs
 #   without it default to durable, today's contract). Bumps silently.
 # v0.6 → next (api_version 4 → 5): renamed ``display.gpu_mode`` to
@@ -38,7 +43,7 @@ SUPPORTED_API_VERSION: Final = 6
 #   regex validator (strictly additive).
 # v0.3 → v0.4 (api_version 1 → 2): added opt-in frida block (strictly
 #   additive; old YAMLs without a frida block default to frida=None).
-_AUTO_BUMPABLE_API_VERSIONS: Final = frozenset({1, 2, 3, 4, 5})
+_AUTO_BUMPABLE_API_VERSIONS: Final = frozenset({1, 2, 3, 4, 5, 6})
 
 # Non-additive versions that require an explicit migration rather than a
 # silent auto-bump. If a YAML pins one of these and a migration path exists,
@@ -421,17 +426,63 @@ class Magisk(BaseModel):
         return value
 
 
+# GApps intent — "what the user gets", the axis 95% of users touch.
+GappsIntent = Literal["none", "minimal", "full"]
+# GApps vendor — "how we bake it", the optional compatibility escape hatch.
+# These name the actual distributions the ``beetroot build`` patcher knows how
+# to install.
+GappsVendor = Literal["litegapps", "opengapps", "mindthegapps"]
+
+# The redroid base-image tag slug each vendor contributes. The single source of
+# truth shared by :func:`base_image_tag` and the ``beetroot build`` patcher's
+# flag table (``builder.GAPPS_VENDOR_FLAGS``), so a vendor's tag and its
+# patcher flag never drift apart.
+_VENDOR_SLUG: Final[dict[GappsVendor, str]] = {
+    "litegapps": "_litegapps",
+    "opengapps": "_gapps",
+    "mindthegapps": "_mindthegapps",
+}
+
+# The default vendor each non-``none`` intent resolves to when the user doesn't
+# pin one explicitly. ``minimal`` → LiteGApps (a slim Play Services), ``full``
+# → OpenGApps full suite. These preserve the historical tags exactly: the old
+# ``gapps: lite`` baked LiteGApps and the old ``gapps: full`` baked OpenGApps.
+_INTENT_DEFAULT_VENDOR: Final[dict[str, GappsVendor]] = {
+    "minimal": "litegapps",
+    "full": "opengapps",
+}
+
+# The two pre-split ``gapps`` values that named a vendor rather than an intent.
+# A YAML still carrying one of these gets a migration error pointing at the
+# new intent + ``gapps_vendor`` shape (mirrors the gpu_mode → rendering rename).
+_LEGACY_GAPPS_VENDOR_VALUES: Final = {"lite": "litegapps", "mindthegapps": "mindthegapps"}
+
+
 class Android(BaseModel):
     """
-    Android version and GApps flavour selection.
+    Android version and GApps selection.
+
+    GApps is split across two axes (issue #107): ``gapps`` is the **intent**
+    (what the user gets — nothing / a minimal Play Services / the full suite),
+    and ``gapps_vendor`` is an optional **escape hatch** for the compatibility
+    case where an app prefers a specific distribution. Most users only set
+    ``gapps``; Beetroot picks a sensible vendor for the chosen intent.
 
     Attributes:
         version: Android major version (11, 12, 13, or 14).
-        gapps: GApps bundle to bake into the base image.
+        gapps: GApps intent — ``none`` (no Play Services), ``minimal`` (a slim
+            Play Services, the default), or ``full`` (the full suite). Resolved
+            to a concrete vendor via :func:`resolve_gapps_vendor`.
+        gapps_vendor: Optional vendor override (``litegapps`` / ``opengapps`` /
+            ``mindthegapps``). ``None`` (the default) lets the intent pick the
+            vendor. Setting it pins a specific distribution for app
+            compatibility; it must not be combined with ``gapps: none`` (naming
+            a vendor while asking for no GApps is contradictory).
     """
 
     version: int = DEFAULT_ANDROID_VERSION
-    gapps: Literal["none", "lite", "full", "mindthegapps"] = "lite"
+    gapps: GappsIntent = "minimal"
+    gapps_vendor: GappsVendor | None = None
 
     @field_validator("version")
     @classmethod
@@ -448,18 +499,58 @@ class Android(BaseModel):
             )
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_gapps_vendor_value(cls, data: object) -> object:
+        if isinstance(data, dict) and data.get("gapps") in _LEGACY_GAPPS_VENDOR_VALUES:
+            old = data["gapps"]
+            vendor = _LEGACY_GAPPS_VENDOR_VALUES[old]
+            intent = "full" if old == "mindthegapps" else "minimal"
+            raise ValueError(
+                f"android.gapps: {old!r} was split into an intent + vendor in "
+                f"api_version {SUPPORTED_API_VERSION} (issue #107). {old!r} named a "
+                f"vendor, not an intent. Replace it with `gapps: {intent}` plus "
+                f"`gapps_vendor: {vendor}` (identical base image), and set "
+                f"`api_version: {SUPPORTED_API_VERSION}`. See CHANGELOG.md."
+            )
+        return data
 
-_GAPPS_SLUG = {
-    "none": "",
-    "lite": "_litegapps",
-    "full": "_gapps",
-    "mindthegapps": "_mindthegapps",
-}
+    @model_validator(mode="after")
+    def _reject_vendor_with_none(self) -> Self:
+        if self.gapps == "none" and self.gapps_vendor is not None:
+            raise ValueError(
+                f"android.gapps_vendor: {self.gapps_vendor!r} names a GApps "
+                "distribution, but android.gapps: none asks for no GApps at all. "
+                "Drop gapps_vendor, or set gapps to minimal/full."
+            )
+        return self
+
+
+def resolve_gapps_vendor(android: Android) -> GappsVendor | None:
+    """
+    Resolve the effective GApps vendor for an Android config.
+
+    An explicit ``gapps_vendor`` always wins. Otherwise the intent picks the
+    vendor: ``none`` → ``None`` (no GApps), ``minimal`` → LiteGApps, ``full``
+    → OpenGApps.
+
+    Args:
+        android: The Android section of an InstanceConfig.
+
+    Returns:
+        The vendor name (a key of :data:`_VENDOR_SLUG`), or ``None`` when the
+        intent is ``none``.
+    """
+    if android.gapps_vendor is not None:
+        return android.gapps_vendor
+    if android.gapps == "none":
+        return None
+    return _INTENT_DEFAULT_VENDOR[android.gapps]
 
 
 def base_image_tag(android: Android) -> str:
     """
-    Derive the redroid base-image tag from version + gapps flavour.
+    Derive the redroid base-image tag from version + resolved GApps vendor.
 
     Args:
         android: The Android section of an InstanceConfig.
@@ -468,7 +559,9 @@ def base_image_tag(android: Android) -> str:
         The Docker image tag, e.g.
         ``redroid/redroid:14.0.0_litegapps_houdini_magisk``.
     """
-    return f"redroid/redroid:{android.version}.0.0{_GAPPS_SLUG[android.gapps]}_houdini_magisk"
+    vendor = resolve_gapps_vendor(android)
+    slug = "" if vendor is None else _VENDOR_SLUG[vendor]
+    return f"redroid/redroid:{android.version}.0.0{slug}_houdini_magisk"
 
 
 def vm_redroid_image(version: int) -> str:
@@ -714,10 +807,13 @@ def load_yaml(path: Path) -> InstanceConfig:
     persisted organically on the next ``beetroot apply``.
 
     **Migration error (non-additive renames):** ``stealth.denylist`` moved to
-    ``magisk.denylist`` in api_version 4, and ``display.gpu_mode`` became
-    ``display.rendering`` in api_version 5. A YAML that still contains a
-    ``stealth:`` section or a ``display.gpu_mode`` key raises a clear,
-    actionable error naming the renamed field rather than silently mis-parsing.
+    ``magisk.denylist`` in api_version 4, ``display.gpu_mode`` became
+    ``display.rendering`` in api_version 5, and ``android.gapps``'s vendor
+    values (``lite`` / ``mindthegapps``) were split into an intent +
+    ``android.gapps_vendor`` in api_version 7. A YAML that still contains a
+    ``stealth:`` section, a ``display.gpu_mode`` key, or a vendor-named
+    ``android.gapps`` raises a clear, actionable error naming the renamed field
+    rather than silently mis-parsing.
 
     Args:
         path: Absolute path to the YAML file.
@@ -728,8 +824,9 @@ def load_yaml(path: Path) -> InstanceConfig:
     Raises:
         pydantic.ValidationError: If the YAML is invalid, contains a renamed
             key (``stealth:`` → ``magisk:`` in v4, ``display.gpu_mode`` →
-            ``display.rendering`` in v5), or carries an unsupported
-            ``api_version``.
+            ``display.rendering`` in v5, a vendor-named ``android.gapps`` →
+            ``gapps`` intent + ``gapps_vendor`` in v7), or carries an
+            unsupported ``api_version``.
     """
     raw = yaml.safe_load(path.read_text())
     if raw is None:
@@ -740,8 +837,13 @@ def load_yaml(path: Path) -> InstanceConfig:
         # ``display.gpu_mode`` → rendering in v5) — those trigger a migration
         # error below, and printing "auto-upgraded, run apply" before the error
         # is contradictory. The migration error is the only message to show.
-        renamed_key_present = "stealth" in raw or (
-            isinstance(raw.get("display"), dict) and "gpu_mode" in raw["display"]
+        renamed_key_present = (
+            "stealth" in raw
+            or (isinstance(raw.get("display"), dict) and "gpu_mode" in raw["display"])
+            or (
+                isinstance(raw.get("android"), dict)
+                and raw["android"].get("gapps") in _LEGACY_GAPPS_VENDOR_VALUES
+            )
         )
         if not renamed_key_present:
             # Dedup the warning by absolute path. ``beetroot ls`` over N

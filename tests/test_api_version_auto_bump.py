@@ -157,6 +157,46 @@ def test_v07_api_version_auto_bumps(
     assert "apply" in err
 
 
+def test_v06_api_version_without_legacy_gapps_auto_bumps(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #107: the gapps split bumped SUPPORTED 6 → 7. A YAML pinned at 6 with a
+    # still-valid gapps intent (or none) is a clean rename-free bump.
+    yaml_path = tmp_path / "beetroot.yaml"
+    yaml_path.write_text("api_version: 6\nandroid:\n  version: 14\n  gapps: full\n")
+
+    cfg = config.load_yaml(yaml_path)
+
+    assert cfg.api_version == config.SUPPORTED_API_VERSION
+    assert cfg.android.gapps == "full"
+    err = capsys.readouterr().err
+    assert "auto-upgraded api_version 6" in err
+    assert "apply" in err
+
+
+def test_v06_api_version_with_legacy_gapps_value_raises_migration_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # #107: a YAML that wrote the now-vendor value `gapps: lite` must fail with
+    # a clear migration error naming the intent + gapps_vendor replacement —
+    # this path cannot silently auto-bump because the value was split out.
+    yaml_path = tmp_path / "beetroot.yaml"
+    yaml_path.write_text("api_version: 6\nandroid:\n  version: 14\n  gapps: lite\n")
+
+    with pytest.raises(ValidationError) as exc_info:
+        config.load_yaml(yaml_path)
+    msg = str(exc_info.value)
+    # Must name the legacy value and the new intent + vendor replacement.
+    assert "lite" in msg
+    assert "minimal" in msg
+    assert "gapps_vendor: litegapps" in msg
+    assert "api_version" in msg
+    # The auto-bump line must NOT appear — the migration error wins cleanly.
+    err = capsys.readouterr().err
+    assert "auto-upgraded" not in err
+
+
 def test_explicit_current_api_version_does_not_warn(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

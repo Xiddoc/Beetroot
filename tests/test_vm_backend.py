@@ -844,7 +844,7 @@ class TestInertVmConfigWarning:
     ) -> None:
         cfg = config.InstanceConfig(
             binder="vm",
-            android={"gapps": "lite"},  # type: ignore[arg-type]
+            android={"gapps": "minimal"},  # type: ignore[arg-type]
             frida=config.Frida(version="16.4.10"),
             magisk=config.Magisk(denylist=["com.example.app"]),
         )
@@ -852,7 +852,7 @@ class TestInertVmConfigWarning:
         backend._warn_on_inert_vm_config()
         err = capsys.readouterr().err
         assert err.count("[beetroot]") == 1
-        assert "android.gapps: lite" in err
+        assert "android.gapps: minimal" in err
         assert "frida" in err
         assert "magisk.denylist" in err
 

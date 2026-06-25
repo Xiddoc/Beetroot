@@ -102,16 +102,28 @@ lifecycle: durable
 
 Android version + image-tag derivation. Beetroot computes the redroid base image tag from these fields via `config.base_image_tag()` — you don't write the long tag yourself.
 
+GApps is split across two axes (issue #107): an **intent** that says *what you get*, and an optional **vendor** escape hatch that says *which distribution bakes it* — for the rare app that detects or prefers a specific GApps build. Most configs only set `gapps`.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `version` | int | `14` | Android version. Valid: `11`, `12`, `13`, `14`. |
-| `gapps` | enum | `lite` | GMS variant baked into the base image tag. One of `none`, `lite`, `full`, `mindthegapps`. |
+| `gapps` | enum | `minimal` | GApps **intent**: `none` (no Play Services), `minimal` (a slim Play Services), or `full` (the full suite). |
+| `gapps_vendor` | enum | _(unset)_ | Optional **vendor** override: `litegapps`, `opengapps`, or `mindthegapps`. Unset lets the intent pick the vendor (`minimal` → LiteGApps, `full` → OpenGApps). Cannot be combined with `gapps: none`. |
 
 ```yaml
 android:
   version: 14
-  gapps: lite
+  gapps: minimal          # what you get; vendor is picked for you
+
+# Pin a specific distribution for app compatibility:
+android:
+  version: 14
+  gapps: full
+  gapps_vendor: mindthegapps
 ```
+
+!!! warning "Legacy `gapps: lite` / `gapps: mindthegapps` removed"
+    Before api_version 7, `gapps` fused intent and vendor into one enum (`none`/`lite`/`full`/`mindthegapps`). `none` and `full` are unchanged; the vendor-named values were split out. Replace `gapps: lite` with `gapps: minimal` and `gapps: mindthegapps` with `gapps: full` + `gapps_vendor: mindthegapps` (the base image is identical). Loading a YAML with the old value raises a `ValidationError` pointing at `CHANGELOG.md`.
 
 !!! warning "Legacy `base_image` field removed"
     The old `android.base_image: redroid/redroid:14.0.0_...` field was replaced by `android.version` in the current schema. Loading a YAML with the legacy field raises a `ValidationError` pointing at this migration — see `CHANGELOG.md`.
