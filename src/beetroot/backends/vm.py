@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Literal, Self
 
 from beetroot import builder, config, console, paths, ports, registry
 from beetroot.api import (
+    FRIDA_ADDRESS_UNSUPPORTED,
     AdbNotInstalledError,
     BackendCapabilityError,
     InstanceNotFoundError,
@@ -268,12 +269,13 @@ class VmDeviceBackend:
 
         Frida-over-VM is not yet wired through the network-isolated guest
         (issue #44), so this never names a reachable endpoint — it returns
-        the sentinel ``"unsupported"`` so ``ls`` / ``status`` rows don't
-        advertise a working ``localhost:<port>`` that Frida could never
-        connect to. The frida verbs themselves raise
-        :class:`~beetroot.api.BackendCapabilityError`.
+        the :data:`~beetroot.api.FRIDA_ADDRESS_UNSUPPORTED` sentinel so
+        ``ls`` / ``status`` rows don't advertise a working
+        ``localhost:<port>`` that Frida could never connect to. ``frida_cli``
+        and the ``frida-addr`` verb turn this into a loud
+        :class:`~beetroot.api.BackendCapabilityError` rather than emitting it.
         """
-        return "unsupported"
+        return FRIDA_ADDRESS_UNSUPPORTED
 
     @property
     def is_available(self) -> bool:

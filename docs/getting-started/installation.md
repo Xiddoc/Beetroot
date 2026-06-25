@@ -64,10 +64,10 @@ beetroot --show-completion
 
 ### With Frida CLI
 
-The host-side `frida` CLI (from [`frida-tools`](https://pypi.org/project/frida-tools/)) is only needed if you want to use `beetroot frida <name>`. It's exposed as an optional `[frida]` extra so a single command installs both:
+The host-side `frida` CLI (from [`frida-tools`](https://pypi.org/project/frida-tools/)) is only needed if you want to attach to an instance, e.g. `frida -H "$(beetroot frida-addr <name>)"`. It's exposed as an optional `[frida]` extra so a single command installs both:
 
 ```bash
-uv tool install 'beetroot[frida]'   # bundles frida-tools so `beetroot frida` works out of the box
+uv tool install 'beetroot[frida]'   # bundles frida-tools so `frida` is on your PATH
 ```
 
 If you're working out of a clone with `uv sync` (as in step 2 above) and want the extra in your project venv, run:
@@ -76,7 +76,7 @@ If you're working out of a clone with `uv sync` (as in step 2 above) and want th
 uv sync --extra frida
 ```
 
-Plain `uv tool install beetroot` (or plain `uv sync`) installs the CLI alone — `beetroot frida` will then error out with a hint pointing you back at this section. You can always add the extra later or `uv tool install frida-tools` separately.
+Plain `uv tool install beetroot` (or plain `uv sync`) installs the CLI alone — `beetroot frida-addr` still works (it only prints a port), but you won't have a `frida` binary to attach with until you add the extra later or `uv tool install frida-tools` separately.
 
 
 ## Updating

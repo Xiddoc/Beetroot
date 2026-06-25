@@ -136,6 +136,14 @@ class BackendCapabilityError(RuntimeError):
     """
 
 
+# Sentinel returned by :attr:`DeviceBackend.frida_address` when a backend has
+# no reachable Frida endpoint to name (today: the network-isolated ``vm`` guest,
+# issue #44). ``ls`` / ``status`` rows render it verbatim instead of advertising
+# a misleading ``localhost:<port>``; the ``frida-addr`` verb treats it as a loud
+# :class:`BackendCapabilityError` rather than printing it to stdout (issue #109).
+FRIDA_ADDRESS_UNSUPPORTED: Final = "unsupported"
+
+
 @runtime_checkable
 class DeviceBackend(Protocol):
     """
@@ -189,6 +197,10 @@ class DeviceBackend(Protocol):
     def frida_address(self) -> str:
         """
         Return the ``host:port`` Frida control endpoint.
+
+        Backends with no reachable Frida endpoint return the
+        :data:`FRIDA_ADDRESS_UNSUPPORTED` sentinel instead of a misleading
+        ``localhost:<port>``.
         """
         ...
 

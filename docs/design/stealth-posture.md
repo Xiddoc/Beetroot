@@ -215,13 +215,14 @@ list of target processes at fork time. There is no server process,
 no listening socket, no on-disk binary that isn't already a Zygisk
 module library, and the parent PID is Zygote (which is normal).
 
-For the host-side consumer: `beetroot frida` no longer connects via
+For the host-side consumer: the Frida transport no longer connects via
 TCP host port-forward to a server. Instead, the Gadget library opens
 a Unix socket on a configurable path inside `/data/local/tmp/` (also
-randomized), and `beetroot frida` shells out to `frida -H` against an
+randomized), and you point `frida -H` (via `beetroot frida-addr`) at an
 ADB-forwarded local port that wraps that socket. The CLI surface is
-unchanged; only the internal transport differs. Researchers who use
-the Python API switch from
+unchanged — `beetroot frida-addr` simply emits whatever endpoint the
+active transport needs; only the internal transport differs. Researchers
+who use the Python API switch from
 `frida.get_device_manager().add_remote_device("localhost:27042")` to
 `frida.get_usb_device().attach(target)` after running
 `adb forward tcp:27042 localfilesystem:<socket-path>` (the CLI's
@@ -425,7 +426,7 @@ control the device's filesystem or build:
 | §3.7 CI fingerprint audit| Yes                | **No.** CI doesn't have a real phone. Optional: opt-in nightly run against a researcher's spare device. |
 
 The CLI surface is unchanged — researchers who switch from emulator
-to device backend see the same `beetroot frida` / `beetroot apply`
+to device backend see the same `beetroot frida-addr` / `beetroot apply`
 commands. The backend abstraction (T9) hides the
 which-mitigations-apply detail behind feature flags on the backend
 class.
@@ -459,8 +460,8 @@ executes against. Complexity tags: **S** (≤1 day), **M** (2–3 days),
 - **Scope:** Implement §3.2. Add a `frida.mode: server | gadget`
   field to `beetroot.yaml` schema; in `gadget` mode, replace the
   server bind-mount with a Zygisk module bind-mount under the
-  randomized module dir from PR1; update `beetroot frida` to use
-  ADB-forwarded Unix socket transport.
+  randomized module dir from PR1; update the Frida transport (and what
+  `beetroot frida-addr` emits) to an ADB-forwarded Unix socket.
 - **Complexity:** L.
 - **Unblocks:** Eliminates §1.1's binary, socket, and listener
   indicators in one move. Required for stealth research against

@@ -431,7 +431,7 @@ def adopt(
     Adopt a rooted Android device that's already reachable via adb.
 
     Allocates a Beetroot port index for the device (so a follow-up
-    beetroot install_frida <name> and beetroot frida <name>
+    beetroot install_frida <name> and beetroot frida-addr <name>
     pick the same Frida port a redroid instance with the same index
     would have got), then writes an adb-kind row to the registry.
     Unlike beetroot create, no on-disk instance directory is made;
@@ -465,7 +465,8 @@ def adopt(
     console.status(f"adopted {resolved_name} → adb serial {serial} (index {index})")
     console.hint(
         f"next: beetroot shell {resolved_name} "
-        f"(or `beetroot frida {resolved_name}` once frida-server is running)"
+        f'(attach Frida with `frida -H "$(beetroot frida-addr {resolved_name})"` '
+        "once frida-server is running)"
     )
 
 
@@ -1194,33 +1195,38 @@ def modes(
     )
 
 
-@app.command(
-    name="frida",
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-)
-def frida(
-    ctx: typer.Context,
+@app.command(name="frida-addr")
+def frida_addr(
     name: Annotated[str, typer.Argument(help="Instance name.")],
 ) -> None:
     """
-    Invoke the frida CLI against an instance, forwarding extra arguments.
+    Print an instance's Frida address (``localhost:<frida_port>``) to stdout.
 
-    Any tokens after <name> (e.g. -n com.app, -f com.app -l script.js)
-    are passed verbatim to the underlying frida CLI, after Beetroot prepends
-    -H localhost:<frida_port>. Use -- to disambiguate frida flags from
-    Typer's own option-parsing if needed.
+    This resolves the toil the old ``beetroot frida`` passthrough existed for —
+    looking up an instance's stride-allocated Frida port — without wrapping the
+    ``frida`` CLI, so you keep frida's own shell completion, ``--help``, and
+    flag validation by invoking it directly (issue #109):
+
+        frida -H "$(beetroot frida-addr alpha)" -n com.target.app
+
+    The address composes into any frida workflow (and the Python API), and
+    generalises to future transports (e.g. Frida Gadget, #3) that aren't a
+    plain ``host:port``.
     """
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
-    try:
-        rc = backend.frida_cli(list(ctx.args))
-    except api.FridaNotInstalledError as e:
-        raise _error(str(e)) from e
-    if rc != 0:
-        # Propagate the subprocess exit code so research scripts that
-        # check ``$?`` after ``beetroot frida <name> ...`` see the
-        # underlying ``frida`` status.
-        raise typer.Exit(code=rc)
+    address = backend.frida_address
+    if address == api.FRIDA_ADDRESS_UNSUPPORTED:
+        # The vm backend (issue #44) has no reachable Frida endpoint. Fail loud
+        # with exit 2 instead of printing the sentinel to stdout — otherwise
+        # `frida -H "$(beetroot frida-addr <vm>)"` would silently run against
+        # the literal address "unsupported" and scripts checking $? would pass.
+        raise api.BackendCapabilityError(
+            f"Frida is not yet supported on the {backend.kind!r} backend, so "
+            f"frida-addr has no address to emit for {name!r}. See "
+            "https://github.com/Xiddoc/Beetroot/issues/44."
+        )
+    print(address)  # noqa: T201  # plain address on stdout for $(...) capture
 
 
 def _echo_module_rows(results: list[api.ModuleInstallResult]) -> None:

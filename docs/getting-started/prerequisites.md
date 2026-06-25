@@ -100,7 +100,7 @@ ADB is used by `beetroot shell` to attach to a running instance:
 
 ## Optional: Frida CLI
 
-If you want `beetroot frida <name>` to work, install the Frida CLI alongside Beetroot via the `[frida]` extra:
+If you want to attach the host `frida` CLI to an instance (e.g. `frida -H "$(beetroot frida-addr <name>)"`), install it alongside Beetroot via the `[frida]` extra:
 
 ```bash
 uv tool install 'beetroot[frida]'
@@ -117,6 +117,6 @@ The Frida *server* binary is managed entirely by Beetroot — you don't need to 
 - [ ] Docker Engine + Compose plugin installed; current user in `docker` group
 - [ ] `uv` installed and on `PATH`
 - [ ] `adb` on `PATH`
-- [ ] (Optional) `frida` CLI available if you want `beetroot frida`
+- [ ] (Optional) `frida` CLI available if you want to attach to an instance via `frida-addr`
 
 Once all boxes are checked, move on to [Installation](installation.md).

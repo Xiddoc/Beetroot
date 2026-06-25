@@ -952,68 +952,85 @@ class TestCmdShell:
 
 
 # ---------------------------------------------------------------------------
-# cmd_frida
+# cmd_frida_addr (issue #109: address-emitter, replaced the passthrough verb)
 # ---------------------------------------------------------------------------
 
 
-class TestCmdFrida:
-    def test_frida_invokes_frida_cli(self, cli_root: Path) -> None:
+class TestCmdFridaAddr:
+    def test_frida_addr_prints_address(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
-        with patch("subprocess.run", return_value=_ok_proc()) as mock_run:
-            result = runner.invoke(cli.app, ["frida", "alpha", "-n", "com.app"])
+        result = runner.invoke(cli.app, ["frida-addr", "alpha"])
         assert result.exit_code == 0, result.stderr
-        cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "frida"
-        assert "-H" in cmd
-        assert "localhost:27042" in cmd
-        assert "com.app" in cmd
+        # Index 0 → frida port 27042. The bare address on stdout is what
+        # `frida -H "$(beetroot frida-addr alpha)"` captures.
+        assert result.stdout.strip() == "localhost:27042"
 
-    def test_frida_no_frida_exits(self, cli_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_frida_addr_reflects_instance_index(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
+        runner.invoke(cli.app, ["create", "bravo"])
+        result = runner.invoke(cli.app, ["frida-addr", "bravo"])
+        assert result.exit_code == 0, result.stderr
+        # Index 1 → frida port 27052 (stride of 10).
+        assert result.stdout.strip() == "localhost:27052"
+
+    def test_frida_addr_missing_instance_exits(self, cli_root: Path) -> None:
+        result = runner.invoke(cli.app, ["frida-addr", "ghost"])
+        assert result.exit_code == 1
+
+    def test_frida_addr_needs_no_frida_tools(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The emitter only resolves a port — unlike the old passthrough verb it
+        # must not require the host `frida` binary to be installed.
         import shutil
 
+        runner.invoke(cli.app, ["create", "alpha"])
         monkeypatch.setattr(
             shutil,
             "which",
             lambda name: "/usr/bin/docker" if name == "docker" else None,
         )
-        result = runner.invoke(cli.app, ["frida", "alpha"])
-        assert result.exit_code == 1
-        assert "frida CLI not found" in result.stderr
-        assert "beetroot[frida]" in result.stderr
-
-    def test_frida_propagates_non_zero_exit_code(self, cli_root: Path) -> None:
-        # `frida -H ... -n com.app` exited 7 → `beetroot frida` must
-        # also exit 7. Research scripts checking `$?` need the real
-        # subprocess status, not 0.
-        runner.invoke(cli.app, ["create", "alpha"])
-        with patch(
-            "subprocess.run",
-            return_value=subprocess.CompletedProcess(args=[], returncode=7, stdout="", stderr=""),
-        ):
-            result = runner.invoke(cli.app, ["frida", "alpha", "-n", "com.app"])
-        assert result.exit_code == 7
-
-    def test_frida_forwards_remainder_args_verbatim(self, cli_root: Path) -> None:
-        """T4 behavior test — `beetroot frida alpha -- -l script.js` round-trips verbatim.
-
-        Mirrors the legacy argparse ``REMAINDER`` semantics: Beetroot consumes
-        only the instance name and a possible ``--`` separator, then forwards
-        every remaining argv token to the underlying ``frida`` CLI after
-        prepending ``-H localhost:<frida_port>``. The forwarded tokens must
-        preserve order and not be touched by Typer's option-parser.
-        """
-        runner.invoke(cli.app, ["create", "alpha"])
-        with patch("subprocess.run", return_value=_ok_proc()) as mock_run:
-            result = runner.invoke(cli.app, ["frida", "alpha", "--", "-l", "script.js"])
+        result = runner.invoke(cli.app, ["frida-addr", "alpha"])
         assert result.exit_code == 0, result.stderr
-        cmd = mock_run.call_args[0][0]
-        # Beetroot prepends frida -H localhost:<port>, then the user args.
-        assert cmd[0] == "frida"
-        assert cmd[1] == "-H"
-        assert cmd[2] == "localhost:27042"
-        # The remainder is forwarded in order, verbatim.
-        assert cmd[3:] == ["-l", "script.js"]
+        assert result.stdout.strip() == "localhost:27042"
+
+    def test_frida_addr_adb_backend_emits_index_port(self, cli_root: Path) -> None:
+        # An adopted adb-kind instance gets its own port index, so frida-addr
+        # reports the stride-allocated Frida port the same way a redroid row would.
+        result = runner.invoke(cli.app, ["adopt", "127.0.0.1:5555", "--name", "phone"])
+        assert result.exit_code == 0, result.stderr
+        result = runner.invoke(cli.app, ["frida-addr", "phone"])
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout.strip() == "localhost:27042"
+
+    def test_frida_addr_unsupported_backend_fails_loudly(
+        self,
+        cli_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # On a backend with no reachable Frida endpoint (the network-isolated
+        # vm guest, #44), frida_address returns the FRIDA_ADDRESS_UNSUPPORTED
+        # sentinel. The emitter must fail loudly (BackendCapabilityError → the
+        # documented exit 2 via cli.main()) rather than print "unsupported" +
+        # exit 0, which would feed `frida -H unsupported`.
+        runner.invoke(cli.app, ["create", "alpha"])
+
+        class _Unsupported:
+            kind = "vm"
+
+            @property
+            def frida_address(self) -> str:
+                return api.FRIDA_ADDRESS_UNSUPPORTED
+
+        monkeypatch.setattr(api.Manager, "resolve", staticmethod(lambda name: _Unsupported()))
+        monkeypatch.setattr("sys.argv", ["beetroot", "frida-addr", "alpha"])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 2
+        captured = capsys.readouterr()
+        assert "not yet supported" in captured.err
+        assert "unsupported" not in captured.out
 
 
 # ---------------------------------------------------------------------------
@@ -1087,7 +1104,7 @@ class TestTopLevelApp:
             "ls",
             "logs",
             "shell",
-            "frida",
+            "frida-addr",
             "module",
             "build",
         ):
@@ -1124,8 +1141,8 @@ class TestTopLevelApp:
         assert "--all" in result.stdout
         assert "--build" not in result.stdout
 
-    def test_frida_help_describes_passthrough(self) -> None:
-        result = runner.invoke(cli.app, ["frida", "--help"])
+    def test_frida_addr_help_describes_emitter(self) -> None:
+        result = runner.invoke(cli.app, ["frida-addr", "--help"])
         assert result.exit_code == 0
         assert "frida" in result.stdout.lower()
 

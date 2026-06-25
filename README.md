@@ -37,7 +37,7 @@ Hacking on Beetroot itself? `uv tool install .` from a checkout, or `uv sync` + 
 
 ### Frida CLI (optional)
 
-The host-side `frida` CLI is exposed via a `[frida]` extra. Install with `uv tool install 'beetroot[frida]'` to make `beetroot frida` work out of the box; plain installs omit it.
+The host-side `frida` CLI is exposed via a `[frida]` extra. Install with `uv tool install 'beetroot[frida]'` so a `frida` binary is on your PATH — point it at an instance with `frida -H "$(beetroot frida-addr <name>)"`; plain installs omit it (`beetroot frida-addr` still works, it only prints a port).
 
 ## What you get
 
@@ -47,7 +47,7 @@ The host-side `frida` CLI is exposed via a `[frida]` extra. Install with `uv too
 - **Frida server (opt-in, version-pinned per instance)** — declare a `frida:` block in `beetroot.yaml` (or copy [`examples/with-frida.yaml`](examples/with-frida.yaml) over the freshly-created file) and the CLI downloads, caches, and bind-mounts the matching `frida-server` into the container
 - **Drop-in Magisk module flashing** via `beetroot.yaml`
 - **`beetroot` CLI** — lifecycle (`create` / `register` / `up` / `down` / `destroy`), shell + module management, health checks (`status` / `doctor`), and a `build` bootstrap. See the [CLI reference](https://iliketo.party/Beetroot/reference/cli/) for every verb.
-- **Already have a rooted phone?** `beetroot adopt <adb-serial>` registers it under the same registry — the same `beetroot shell` / `beetroot frida` / `beetroot module` verbs dispatch via the host `adb` CLI instead of compose. No on-disk container; the device is managed outside Beetroot.
+- **Already have a rooted phone?** `beetroot adopt <adb-serial>` registers it under the same registry — the same `beetroot shell` / `beetroot frida-addr` / `beetroot module` verbs dispatch via the host `adb` CLI instead of compose. No on-disk container; the device is managed outside Beetroot.
 - **Runs on binderless hosts.** redroid needs the kernel `binder` driver; the `binder: auto|host|vm` switch picks how that's satisfied. `auto`/`host` use the host kernel's binder (loading the module if needed), while `vm` boots redroid inside a QEMU micro-VM that ships its own binder-enabled kernel — for hardened/`nomodule` sandboxes where the host can't provide it. See [`examples/vm.yaml`](examples/vm.yaml).
 - **Pluggable backends.** Beyond the in-tree redroid, adb, and vm backends, Beetroot ships a small extension surface so a third-party package can ship a custom backend (cloud-emulator service, network-adb gateway, …) in ~30 LOC + one `[project.entry-points."beetroot.backends"]` line. See [Adding a backend](https://iliketo.party/Beetroot/guides/adding-a-backend/) for the recipe.
 

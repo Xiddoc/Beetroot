@@ -83,7 +83,7 @@ Useful for picking up an instance dir cloned from a teammate, or after recoverin
 
 ## `adopt`
 
-Adopt a rooted Android device (real phone, third-party emulator, `adb connect`-ed network device) that's already reachable via the host `adb` CLI. Unlike `create`/`register`, no on-disk instance directory is made — the device is managed outside Beetroot. The adopted instance gets its own port index, so a follow-up `beetroot frida <name>` picks the same port a redroid instance with the same index would have got.
+Adopt a rooted Android device (real phone, third-party emulator, `adb connect`-ed network device) that's already reachable via the host `adb` CLI. Unlike `create`/`register`, no on-disk instance directory is made — the device is managed outside Beetroot. The adopted instance gets its own port index, so a follow-up `beetroot frida-addr <name>` reports the same port a redroid instance with the same index would have got.
 
 ```
 beetroot adopt <serial> [--name NAME] [--verify]
@@ -95,7 +95,7 @@ beetroot adopt <serial> [--name NAME] [--verify]
 | `--name` | string | Registry name. Defaults to `adb-<serial>` (lowercased, colons folded to hyphens, truncated to 24 chars). Required for IPv4-shaped serials (the default-name builder leaves dots in place and the registry-name grammar rejects them). |
 | `--verify`, `-V` | flag | Check that the serial is listed in `adb devices` as `device` before writing the registry row. If not found, exits 1 without registering. Default: off (allows registering a device before it connects). |
 
-Verbs that need an on-disk container (`up`, `down`, `restart`, `apply`, `destroy`, `snapshot`) raise `BackendCapabilityError` against an adopted device and exit with code 2 — distinct from the standard "instance not found" exit 1, so wrapping scripts can distinguish. Use `beetroot shell <name>` / `beetroot frida <name>` / `beetroot module <name>` for the universal verbs.
+Verbs that need an on-disk container (`up`, `down`, `restart`, `apply`, `destroy`, `snapshot`) raise `BackendCapabilityError` against an adopted device and exit with code 2 — distinct from the standard "instance not found" exit 1, so wrapping scripts can distinguish. Use `beetroot shell <name>` / `beetroot frida-addr <name>` / `beetroot module <name>` for the universal verbs.
 
 Adopted devices show up in `beetroot ls` like any other instance — `KIND` is `adb`, the ADB column shows the serial, and PATH is `-` (no on-disk directory). See [`ls`](#ls).
 
@@ -444,34 +444,32 @@ The modes reported are `redroid (binder: host / auto)`, `redroid (binder: vm, KV
 
 ---
 
-## `frida`
+## `frida-addr`
 
-Invoke the host-side `frida` CLI pre-configured for an instance.
+Print an instance's Frida address (`localhost:<frida_port>`) to stdout, so you can drive the native `frida` CLI yourself.
 
 ```
-beetroot frida <name> [frida_args ...]
+beetroot frida-addr <name>
 ```
 
 | Argument | Type | Description |
 |----------|------|-------------|
 | `name` | positional | Instance name |
-| `frida_args` | remainder | Arguments passed verbatim to `frida -H localhost:<frida_port>` |
 
-Requires `frida` on your PATH. Install via `uv tool install 'beetroot[frida]'` (bundles `frida-tools` alongside Beetroot) or `uv tool install frida-tools` separately.
+`frida-addr` does the one thing the old `beetroot frida` passthrough verb existed for — resolving an instance's stride-allocated Frida port — without wrapping `frida`. That matters: a passthrough wrapper forwards arguments opaquely, which silently breaks `frida`'s own shell completion, `--help`, and flag validation. Emitting just the address lets you invoke native `frida` directly, keeping all of its ergonomics (see [issue #109](https://github.com/Xiddoc/Beetroot/issues/109)). The emitter needs nothing installed; to actually attach you need the host `frida` CLI (`uv tool install 'beetroot[frida]'` or `uv tool install frida-tools`).
 
 Examples:
 
 ```bash
-beetroot frida alpha -n com.target.app
-beetroot frida alpha -f com.target.app --no-pause -l script.js
-beetroot frida alpha -ps    # list processes
+beetroot frida-addr alpha
+# → localhost:27042
+
+frida -H "$(beetroot frida-addr alpha)" -n com.target.app
+frida -H "$(beetroot frida-addr alpha)" -f com.target.app --no-pause -l script.js
+frida -H "$(beetroot frida-addr alpha)" -ps    # list processes
 ```
 
-If a forwarded flag conflicts with one of Beetroot's own options (rare, but possible if `frida-tools` ever ships a flag that overlaps with Beetroot's), use `--` as a separator. Everything after `--` is passed verbatim to the underlying `frida` CLI:
-
-```bash
-beetroot frida alpha -- -l script.js
-```
+The same value is also the `frida_address` field of `beetroot status <name>` (JSON).
 
 ---
 
