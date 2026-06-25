@@ -103,3 +103,17 @@ class TestLifecycleCapability:
         _, adb_name = _two_instances
         backend = api.Manager.resolve(adb_name)
         assert not isinstance(backend, api.Snapshottable)
+
+    def test_redroid_satisfies_resettable(
+        self, _two_instances: tuple[str, str]  # noqa: PT019
+    ) -> None:
+        redroid_name, _ = _two_instances
+        backend = api.Manager.resolve(redroid_name)
+        assert isinstance(backend, api.Resettable)
+
+    def test_adb_does_not_satisfy_resettable(
+        self, _two_instances: tuple[str, str]  # noqa: PT019
+    ) -> None:
+        _, adb_name = _two_instances
+        backend = api.Manager.resolve(adb_name)
+        assert not isinstance(backend, api.Resettable)

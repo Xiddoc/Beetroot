@@ -483,6 +483,55 @@ class TestInstanceDestroy:
         assert root.exists()
 
 
+class TestInstanceReset:
+    def test_reset_yes_false_raises_value_error(self, cli_root: Path) -> None:
+        # Mirrors destroy: the library API must NOT prompt on stdin.
+        inst = api.Instance.create("alpha")
+        with pytest.raises(ValueError, match="yes=True"):
+            inst.reset(yes=False)
+
+    def test_reset_yes_false_is_default(self, cli_root: Path) -> None:
+        inst = api.Instance.create("alpha")
+        with pytest.raises(ValueError, match="yes=True"):
+            inst.reset()
+
+    def test_reset_wipes_data_keeps_tooling_and_registry(self, cli_root: Path) -> None:
+        inst = api.Instance.create("alpha")
+        data = paths.instance_data(inst.root)
+        frida = paths.instance_frida(inst.root)
+        modules = paths.instance_modules(inst.root)
+        # Simulate accumulated /data state and confirm tooling is staged.
+        (data / "app-state.txt").write_text("dirty")
+        assert frida.exists()
+        assert modules.exists()
+
+        with _patched_subprocess() as mock_run:
+            inst.reset(yes=True)
+
+        # /data wiped + recreated empty; tooling + identity survive.
+        assert data.is_dir()
+        assert list(data.iterdir()) == []
+        assert frida.exists()
+        assert modules.exists()
+        assert registry.get("alpha") is not None
+        # The container was stopped first (compose down).
+        assert any("down" in c.args[0] for c in mock_run.call_args_list)
+
+    def test_reset_compose_error_leaves_data_intact(self, cli_root: Path) -> None:
+        # down runs before the wipe, so a down failure must leave /data alone.
+        inst = api.Instance.create("alpha")
+        marker = paths.instance_data(inst.root) / "marker.txt"
+        marker.write_text("keep me")
+
+        def _boom(name: str, root: Path, *, volumes: bool = False) -> None:
+            raise compose.ComposeError("simulated")
+
+        with patch.object(compose, "down", side_effect=_boom):
+            with pytest.raises(compose.ComposeError, match="simulated"):
+                inst.reset(yes=True)
+        assert marker.exists()
+
+
 # ---------------------------------------------------------------------------
 # Instance operations: shell, frida_cli, logs, add_module, snapshot
 # ---------------------------------------------------------------------------

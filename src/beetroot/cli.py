@@ -701,6 +701,40 @@ def destroy(
 
 
 @app.command()
+def reset(
+    name: Annotated[str, typer.Argument(help="Instance name to reset.")],
+    yes: Annotated[
+        bool,
+        typer.Option("-y", "--yes", help="Skip confirmation."),
+    ] = False,
+) -> None:
+    """
+    Drop an instance's /data (app state) while keeping the instance and tooling.
+    """
+    _ensure_exists(name)
+    # Prompt in the CLI, not the library — Instance.reset(yes=True) is only
+    # called once the user has confirmed (the library never blocks on stdin).
+    if not yes:
+        confirmed = typer.confirm(
+            f"Reset {name}? This wipes its /data (installed apps, accounts, "
+            "flashed-module / LSPosed scope state) but keeps the instance, "
+            "Frida, and modules.",
+            default=False,
+        )
+        if not confirmed:
+            console.status("aborted")
+            return
+    backend = api.Manager.resolve(name)
+    resettable = cast(api.Resettable, _require(backend, api.Resettable, "reset"))
+    console.step(f"resetting {name} (stopping container, wiping /data)")
+    try:
+        resettable.reset(yes=True)
+    except compose.ComposeError as e:
+        raise _error(f"could not stop {name} to reset it: {e}") from e
+    console.status(f"reset {name} — run 'beetroot up {name}' for a fresh /data")
+
+
+@app.command()
 def forget(
     name: Annotated[str, typer.Argument(help="Instance name to deregister.")],
 ) -> None:

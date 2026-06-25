@@ -145,7 +145,14 @@ This is fine for a transient snapshot you'll throw away in the same session. For
 
 ## Fresh start without snapshot
 
-If you want to reset to a pristine Android install without recreating the instance (keeping the same ports and config):
+If you want to reset to a pristine Android install without recreating the instance (keeping the same ports and config), use `beetroot reset`:
+
+```bash
+beetroot reset alpha          # prompts; add -y to skip
+beetroot up alpha
+```
+
+`reset` stops the container and wipes the `data/` directory (redroid regenerates a clean `/data` on the next `up`), keeping the instance's registry row, port index, and staged tooling. It's the first-class form of the manual recipe:
 
 ```bash
 beetroot down alpha
@@ -153,7 +160,7 @@ rm -rf "$(beetroot ls --json | jq -r '.alpha.path')/data"
 beetroot up alpha
 ```
 
-Android will go through first-time setup again. Frida and modules are unaffected — they're staged separately.
+Android will go through first-time setup again. Frida and modules are unaffected — they're staged separately (outside `/data`).
 
 ## Full wipe and recreate
 

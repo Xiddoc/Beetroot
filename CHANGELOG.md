@@ -21,6 +21,17 @@
 
 ### Features
 
+- **New `beetroot reset` verb — drop an instance's `/data` while keeping the
+  instance (#127).** Promotes the ad-hoc "`rm -rf data/`" fresh-start recipe to
+  a first-class, confirmation-gated verb. `reset` stops the container and wipes
+  the bind-mounted `data/` (redroid regenerates a clean `/data` from the base
+  image on the next `up`), but — unlike `destroy` — keeps the instance's
+  identity (registry row, port index) and its staged tooling (`frida-server` /
+  `modules/` live outside `/data`). It's the explicit counterpart to the silent
+  `boot_cache` `/data` revert, and the clean between-runs reset primitive for
+  the Frida / CI loops. redroid-only for now (a new `Resettable` capability
+  sub-protocol); `binder: vm` keeps `/data` in the guest and adb devices have no
+  host-side `/data`, so both report a capability error.
 - **`frida.version` now accepts `auto` / `latest` and defaults to `auto` (#105).**
   The frozen `16.4.10` default rotted with every upstream release. `frida.version`
   now takes `auto` (the new default) — match the host's installed `frida-tools`
