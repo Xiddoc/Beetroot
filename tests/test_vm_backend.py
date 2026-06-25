@@ -393,6 +393,15 @@ class TestLifecycle:
         )
         return backend
 
+    @staticmethod
+    def _artifacts(backend: vm_backend.VmDeviceBackend) -> tuple[Path, Path]:
+        # _cached_backend pins vm.kernel/vm.rootfs to staged paths; narrow the
+        # str | None config fields for the boot-cache identity assertions.
+        kernel, rootfs = backend._cfg.vm.kernel, backend._cfg.vm.rootfs
+        assert kernel is not None
+        assert rootfs is not None
+        return Path(kernel), Path(rootfs)
+
     def test_up_cached_cold_creates_overlay_and_checkpoints(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -428,9 +437,12 @@ class TestLifecycle:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         backend = self._cached_backend(tmp_path, monkeypatch)
-        # Overlay already present → create_overlay must NOT run; snapshot exists
-        # → resume with -loadvm and do NOT re-checkpoint.
+        # Overlay already present AND keyed to the current kernel/rootfs → not
+        # stale, so create_overlay must NOT run; snapshot exists → resume with
+        # -loadvm and do NOT re-checkpoint.
         boot_cache.overlay_path(backend.root).write_bytes(b"qcow2")
+        kernel, rootfs = self._artifacts(backend)
+        boot_cache.record_identity(backend.root, kernel, rootfs)
         events: list[str] = []
         launched: dict[str, list[str]] = {}
         monkeypatch.setattr(
@@ -463,6 +475,46 @@ class TestLifecycle:
         monkeypatch.setattr("beetroot.console.warn", warnings.append)
         backend.up()
         assert any("cold-boot again" in w for w in warnings)
+
+    def test_up_cached_invalidates_stale_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An overlay keyed to a DIFFERENT kernel/rootfs (here: no recorded
+        # identity) must be discarded and cold-booted, not resumed (#126).
+        backend = self._cached_backend(tmp_path, monkeypatch)
+        kernel, rootfs = self._artifacts(backend)
+        boot_cache.overlay_path(backend.root).write_bytes(b"stale-qcow2")
+        boot_cache.overlay_key_path(backend.root).write_text("deadbeefdeadbeef")  # mismatched
+        events: list[str] = []
+        notes: list[str] = []
+        monkeypatch.setattr(
+            "beetroot.vm.boot_cache.create_overlay", lambda *_a: events.append("overlay")
+        )
+        # After discard the overlay is gone, so this cold-boot path checkpoints.
+        monkeypatch.setattr("beetroot.vm.boot_cache.snapshot_present", lambda _o: False)
+        monkeypatch.setattr("beetroot.vm.boot_cache.save_snapshot", lambda _m: True)
+        monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 1)
+        monkeypatch.setattr("beetroot.console.note", notes.append)
+        backend.up()
+        # The stale overlay was discarded (file removed), a fresh one created,
+        # and the sidecar re-keyed to the current kernel/rootfs.
+        assert any("discarding the stale checkpoint" in n for n in notes)
+        assert "overlay" in events
+        assert boot_cache.read_identity(backend.root) == boot_cache.base_identity(kernel, rootfs)
+
+    def test_up_cached_cold_records_identity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A fresh cold cached boot keys the overlay to its kernel/rootfs so a
+        # later rebuild can invalidate it.
+        backend = self._cached_backend(tmp_path, monkeypatch)
+        kernel, rootfs = self._artifacts(backend)
+        monkeypatch.setattr("beetroot.vm.boot_cache.create_overlay", lambda *_a: None)
+        monkeypatch.setattr("beetroot.vm.boot_cache.snapshot_present", lambda _o: False)
+        monkeypatch.setattr("beetroot.vm.boot_cache.save_snapshot", lambda _m: True)
+        monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 1)
+        backend.up()
+        assert boot_cache.read_identity(backend.root) == boot_cache.base_identity(kernel, rootfs)
 
     def test_up_cached_cold_skips_checkpoint_when_boot_times_out(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

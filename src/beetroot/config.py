@@ -570,10 +570,12 @@ class Vm(BaseModel):
             ``savevm``; every subsequent ``up`` *resumes* that checkpoint
             (``-loadvm``) instead of cold-booting — ~10 s vs ~minutes under
             TCG (issue #49/#83). The checkpoint lives in the instance
-            directory (``vm-overlay.qcow2``); delete it to discard the cache
-            (e.g. after rebuilding the kernel/rootfs). Resume reverts the
-            guest to the checkpoint each time, so it is a fast *known-good
-            boot*, not a persistence mechanism. Requires ``qemu-img``.
+            directory (``vm-overlay.qcow2``) and auto-invalidates when the
+            kernel/rootfs changes — a digest of both is recorded beside it, so
+            the next ``up`` after a ``build --vm-kernel`` cold-boots once to
+            re-cache (issue #126); delete it by hand to reset otherwise. Resume
+            reverts the guest to the checkpoint each time, so it is a fast
+            *known-good boot*, not a persistence mechanism. Requires ``qemu-img``.
     """
 
     kernel: str | None = None
