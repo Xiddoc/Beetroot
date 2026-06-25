@@ -1003,6 +1003,62 @@ def _resolve_vm_dir(build_context: Path | None) -> Path:
 # matching prebuilt bzImage exists for the new version.
 KERNEL_VERSION: Final = "6.12.9"
 
+# Where the pinned kernel source tarball is fetched from when the prebuilt
+# fetch misses and the build falls back to a source compile (issue #74). The
+# major-version directory (``v6.x`` for 6.12.9) is derived from KERNEL_VERSION,
+# mirroring the ``curl … | tar -xf`` dance vm-kernel-release.yml does before it
+# compiles — so the CLI fallback is self-contained on a fresh host instead of
+# assuming the cwd already holds an extracted ``linux-<version>`` tree.
+_KERNEL_CDN_BASE: Final = "https://cdn.kernel.org/pub/linux/kernel"
+
+
+def _kernel_source_url(version: str) -> str:
+    """
+    Return the cdn.kernel.org URL for the pinned kernel source tarball.
+
+    The major-version directory (``v6.x`` for a ``6.x.y`` release) is derived
+    from ``version`` so a KERNEL_VERSION bump needs no second edit here.
+
+    Args:
+        version: The pinned kernel version (e.g. ``6.12.9``).
+
+    Returns:
+        The full HTTPS URL of the ``linux-<version>.tar.xz`` source tarball.
+    """
+    major = version.split(".", 1)[0]
+    return f"{_KERNEL_CDN_BASE}/v{major}.x/linux-{version}.tar.xz"
+
+
+def _fetch_kernel_source(run: SubprocessRunner, work: Path) -> Path:
+    """
+    Download + extract the pinned ``linux-<KERNEL_VERSION>`` source into ``work``.
+
+    The source-compile fallback runs ``make defconfig`` (and friends) from
+    inside an extracted kernel tree; without this the fallback assumed the
+    current working directory already *was* such a tree and otherwise died with
+    ``No rule to make target 'defconfig'`` on a fresh host (issue #74). Fetching
+    + extracting into a caller-supplied scratch dir makes the compile path
+    self-contained, mirroring what ``vm-kernel-release.yml`` does before it
+    builds.
+
+    Args:
+        run: The subprocess dispatcher (``curl`` + ``tar`` shell out).
+        work: Scratch directory the tarball is downloaded into and extracted
+            within.
+
+    Returns:
+        The path of the extracted ``linux-<KERNEL_VERSION>`` source tree.
+
+    Raises:
+        BootstrapError: If the download or extraction fails.
+    """
+    url = _kernel_source_url(KERNEL_VERSION)
+    tarball = work / f"linux-{KERNEL_VERSION}.tar.xz"
+    console.info(f"fetching kernel source {url}")
+    run.run(["curl", "-fsSL", url, "-o", str(tarball)])
+    run.run(["tar", "-xf", str(tarball), "-C", str(work)])
+    return work / f"linux-{KERNEL_VERSION}"
+
 
 class VmArtifacts(BaseModel):
     """
@@ -1218,11 +1274,16 @@ def build_vm_kernel(  # noqa: PLR0913  # 7 keyword-only params; each is a distin
         BootstrapError: If the kernel build or rootfs assembly fails.
     """
     ctx = build_context if build_context is not None else _build_context_from_env()
-    out = out_dir if out_dir is not None else paths.user_cache_dir(_VM_DIR)
+    # Resolve ``out`` to an absolute path: the source-compile step now runs with
+    # ``cwd`` set to the throwaway kernel-source tree (issue #74), so a relative
+    # ``out_dir`` would otherwise have its ``cp arch/x86/boot/bzImage`` target
+    # land inside that temp tree (then be deleted). ``kernel_config`` is resolved
+    # for the same reason — it's passed to ``merge_config.sh`` from the new cwd.
+    out = (out_dir if out_dir is not None else paths.user_cache_dir(_VM_DIR)).resolve()
     run = runner if runner is not None else DefaultRunner()
 
     vm_dir = _resolve_vm_dir(ctx)
-    kernel_config = vm_dir / _KERNEL_CONFIG
+    kernel_config = (vm_dir / _KERNEL_CONFIG).resolve()
     kernel_out = out / "bzImage"
     rootfs_out = out / "rootdisk.img"
 
@@ -1248,7 +1309,14 @@ def build_vm_kernel(  # noqa: PLR0913  # 7 keyword-only params; each is a distin
         # dir is persisted. The benchmark lane, which intentionally times a cold
         # compile, sets CCACHE_DISABLE=1 (ccache then just execs the real gcc).
         cc_prefix = 'CC="ccache gcc" ' if shutil.which("ccache") is not None else ""
-        with console.progress("Building micro-VM guest kernel (binder + cgroup + PSI)"):
+        with (
+            console.progress("Building micro-VM guest kernel (binder + cgroup + PSI)"),
+            # Fetch + extract the pinned kernel source into a throwaway tree and
+            # build there (issue #74) — the fallback is now self-contained
+            # rather than assuming the cwd already holds an extracted tree.
+            tempfile.TemporaryDirectory(prefix="beetroot-kernel-src-") as src_work,
+        ):
+            source_tree = _fetch_kernel_source(run, Path(src_work))
             run.run(
                 [
                     "sh",
@@ -1260,6 +1328,7 @@ def build_vm_kernel(  # noqa: PLR0913  # 7 keyword-only params; each is a distin
                     f'make olddefconfig && make {cc_prefix}-j"$(nproc)" bzImage && '
                     f"cp arch/x86/boot/bzImage {kernel_out}",
                 ],
+                cwd=source_tree,
             )
 
     # Step 2: assemble the ext4 rootfs (busybox + Docker static + guest init).

@@ -452,6 +452,20 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **`beetroot build --vm-kernel`'s source-compile fallback is now self-contained
+  (#74).** When the prebuilt-kernel fetch misses (config edited, version bumped,
+  release unpublished, or network blocked) the build falls back to compiling the
+  guest kernel from source. That fallback ran `make defconfig` (and friends) in
+  the current working directory but never fetched the kernel tree, so unless the
+  cwd already *was* an extracted `linux-<version>` tree it died immediately with
+  `No rule to make target 'defconfig'` — leaving a fresh host (no prebuilt asset
+  **and** no kernel tree) with no working path. The fallback now fetches the
+  pinned `linux-<version>.tar.xz` from `cdn.kernel.org`, extracts it into a
+  throwaway scratch tree, and compiles there (mirroring what
+  `vm-kernel-release.yml` does), so a prebuilt miss degrades to a slow-but-working
+  compile instead of a hard error. (The companion fix — publishing the missing
+  release asset so the *fast* path also works — already landed via the
+  per-fingerprint `vm-kernel-<version>-<fp>` immutable-release scheme.)
 - **`beetroot snapshot`/`restore` now give a clear "redroid-only" error for a
   `binder: vm` (or adb) instance instead of a misleading "not registered" one
   (#128, low-risk half).** `snapshot`/`restore` pack and unpack the host-side

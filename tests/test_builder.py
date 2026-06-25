@@ -569,14 +569,18 @@ class TestBuildVmKernel:
         artifacts = builder.build_vm_kernel(
             out_dir=out, build_context=ctx, runner=runner, rootfs_build=rec, from_source=True
         )
-        # The kernel compile is the only remaining shell step; the rootfs is
-        # assembled in pure Python via the injected build_rootfs.
-        assert len(runner.calls) == 1
-        kernel_cmd = runner.calls[0].cmd
+        # The compile fallback now fetches + extracts the kernel source first
+        # (curl, tar) and then runs the shell compile; the rootfs is assembled
+        # in pure Python via the injected build_rootfs.
+        assert [c.cmd[0] for c in runner.calls] == ["curl", "tar", "sh"]
+        kernel_cmd = runner.calls[-1].cmd
         assert kernel_cmd[0] == "sh"
         assert kernel_cmd[1] == "-c"
         assert "kernel.config" in kernel_cmd[2]
         assert "bzImage" in kernel_cmd[2]
+        # The compile runs from inside the freshly-extracted source tree.
+        assert runner.calls[-1].cwd is not None
+        assert runner.calls[-1].cwd.name == f"linux-{builder.KERNEL_VERSION}"
         assert rec.calls == [(out / "rootdisk.img", ctx / "docker" / "vm")]
         assert artifacts.kernel == out / "bzImage"
         assert artifacts.rootfs == out / "rootdisk.img"
@@ -626,7 +630,7 @@ class TestBuildVmKernel:
             rootfs_build=_RootfsBuildRecorder(),
             from_source=True,
         )
-        assert 'make CC="ccache gcc" -j' in runner.calls[0].cmd[2]
+        assert 'make CC="ccache gcc" -j' in runner.calls[-1].cmd[2]
 
     def test_no_ccache_when_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         runner = FakeRunner()
@@ -640,7 +644,7 @@ class TestBuildVmKernel:
             rootfs_build=_RootfsBuildRecorder(),
             from_source=True,
         )
-        cmd = runner.calls[0].cmd[2]
+        cmd = runner.calls[-1].cmd[2]
         assert 'CC="ccache gcc"' not in cmd
         assert 'make -j"$(nproc)" bzImage' in cmd
 
@@ -776,9 +780,77 @@ class TestBuildVmKernel:
             rootfs_build=rec,
             kernel_fetch=failing_fetch,
         )
-        # Fetch failed -> compiled from source (the shell step ran).
-        assert len(runner.calls) == 1
-        assert "bzImage" in runner.calls[0].cmd[2]
+        # Fetch failed -> compiled from source: the source tree is fetched +
+        # extracted (curl, tar) and the shell compile then runs.
+        assert [c.cmd[0] for c in runner.calls] == ["curl", "tar", "sh"]
+        assert "bzImage" in runner.calls[-1].cmd[2]
+
+    def test_compile_fallback_fetches_and_extracts_kernel_source(self, tmp_path: Path) -> None:
+        # On a fresh host (no prebuilt) the fallback must be self-contained: it
+        # downloads linux-<version>.tar.xz from cdn.kernel.org, extracts it, and
+        # compiles from the extracted tree rather than assuming the cwd is one
+        # (issue #74).
+        runner = FakeRunner()
+        ctx = tmp_path / "repo"
+        _make_vm_context(ctx)
+        builder.build_vm_kernel(
+            out_dir=tmp_path / "out",
+            build_context=ctx,
+            runner=runner,
+            rootfs_build=_RootfsBuildRecorder(),
+            from_source=True,
+        )
+        curl_cmd = runner.calls[0].cmd
+        tar_cmd = runner.calls[1].cmd
+        assert curl_cmd[0] == "curl"
+        # cdn.kernel.org URL with the major-version dir derived from the version.
+        url = next(a for a in curl_cmd if a.startswith("https://"))
+        assert url == builder._kernel_source_url(builder.KERNEL_VERSION)
+        assert "cdn.kernel.org" in url
+        assert "/v6.x/" in url
+        # downloaded to a tarball that tar then extracts.
+        assert curl_cmd[-1].endswith(f"linux-{builder.KERNEL_VERSION}.tar.xz")
+        assert tar_cmd[0] == "tar"
+        assert "-xf" in tar_cmd
+        # tar extracts into the scratch dir the sh compile then builds inside:
+        # the compile cwd is <scratch>/linux-<version>, and tar's -C target is
+        # that same <scratch> parent.
+        compile_cwd = runner.calls[-1].cwd
+        assert compile_cwd is not None
+        extract_dir = tar_cmd[tar_cmd.index("-C") + 1]
+        assert str(compile_cwd.parent) == extract_dir
+
+    def test_relative_context_and_out_dir_resolve_to_absolute_in_compile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Regression for the #74 cwd-boundary trap: the compile runs with
+        # cwd=<scratch source tree>, so a *relative* build_context / out_dir must
+        # be resolved to absolute paths first — else merge_config.sh can't find
+        # the vendored kernel.config and `cp ... bzImage` lands in the throwaway
+        # tree. Drive it with relative paths from a chdir'd cwd.
+        monkeypatch.chdir(tmp_path)
+        _make_vm_context(tmp_path / "repo")
+        runner = FakeRunner()
+        builder.build_vm_kernel(
+            out_dir=Path("out"),
+            build_context=Path("repo"),
+            runner=runner,
+            rootfs_build=_RootfsBuildRecorder(),
+            from_source=True,
+        )
+        compile_cmd = runner.calls[-1].cmd[2]
+        # The kernel.config arg to merge_config.sh is absolute.
+        assert f"{tmp_path}/repo/docker/vm/kernel.config" in compile_cmd
+        # The cp target (bzImage) is absolute, not relative to the scratch cwd.
+        assert f"cp arch/x86/boot/bzImage {tmp_path}/out/bzImage" in compile_cmd
+
+    def test_kernel_source_url_derives_major_version_dir(self) -> None:
+        assert builder._kernel_source_url("6.12.9") == (
+            "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.9.tar.xz"
+        )
+        assert builder._kernel_source_url("5.15.0") == (
+            "https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.15.0.tar.xz"
+        )
 
 
 # ---------------------------------------------------------------------------
