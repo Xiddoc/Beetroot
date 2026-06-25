@@ -712,6 +712,20 @@ class TestCmdReset:
         assert result.exit_code == 1
         assert "no instance named" in result.stderr
 
+    def test_reset_compose_error_exits(self, cli_root: Path) -> None:
+        # If the container can't be stopped, reset() raises ComposeError before
+        # touching /data; the verb surfaces it as a non-zero exit.
+        runner.invoke(cli.app, ["create", "alpha"])
+        from beetroot import compose
+
+        def _boom(name: str, root: Path, *, volumes: bool = False) -> None:
+            raise compose.ComposeError("simulated failure")
+
+        with patch.object(compose, "down", side_effect=_boom):
+            result = runner.invoke(cli.app, ["reset", "alpha", "-y"])
+        assert result.exit_code == 1
+        assert "could not stop" in result.stderr
+
 
 # ---------------------------------------------------------------------------
 # cmd_ls

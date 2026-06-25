@@ -1,6 +1,7 @@
 """Tests for the OOP api.py — Instance, Manager, DeviceBackend."""
 from __future__ import annotations
 
+import shutil
 import subprocess
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -516,6 +517,18 @@ class TestInstanceReset:
         assert registry.get("alpha") is not None
         # The container was stopped first (compose down).
         assert any("down" in c.args[0] for c in mock_run.call_args_list)
+
+    def test_reset_when_data_dir_already_gone(self, cli_root: Path) -> None:
+        # If data/ was already removed by hand, reset just recreates it
+        # (exercises the `if data.exists()` false branch).
+        inst = api.Instance.create("alpha")
+        data = paths.instance_data(inst.root)
+        shutil.rmtree(data)
+        assert not data.exists()
+        with _patched_subprocess():
+            inst.reset(yes=True)
+        assert data.is_dir()
+        assert list(data.iterdir()) == []
 
     def test_reset_compose_error_leaves_data_intact(self, cli_root: Path) -> None:
         # down runs before the wipe, so a down failure must leave /data alone.
