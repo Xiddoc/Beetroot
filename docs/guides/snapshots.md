@@ -2,6 +2,9 @@
 
 Beetroot's `snapshot` and `restore` verbs pack and unpack an instance's host-side state as a single `.tar.zst` archive. Use snapshots to roll back a research instance to a known-good baseline, hand off an instance to a colleague, or fork one instance into many to run a comparative experiment.
 
+!!! warning "Redroid backend only"
+    `snapshot` and `restore` work on the **redroid** backend only — they pack and unpack the instance's host-side `data/` directory, which *is* the live Android `/data` for a redroid container. A **`binder: vm`** instance keeps its `/data` inside the guest rootfs (`/var/lib/redroid-data`), and an **`adb`**-adopted device has no host-side `/data` at all, so there is nothing for the archive to capture in either case. Running `beetroot snapshot <name>` (or `restore` aimed at such a name) against a vm or adb instance fails fast with a clear `error: snapshot is only supported for the redroid backend; instance '<name>' uses the vm backend — vm snapshot is not yet supported (see issue #128).` Cross-backend snapshots are tracked as a follow-up; for now use a redroid (`binder: auto`/`host`) instance to snapshot.
+
 ## When to snapshot
 
 A snapshot is the right tool when you need to capture an instance's *complete persisted state* and later re-create it byte-for-byte:

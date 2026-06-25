@@ -1382,7 +1382,17 @@ def snapshot(
     """
     _ensure_exists(name)
     backend = api.Manager.resolve(name)
-    snappable = cast(api.Snapshottable, _require(backend, api.Snapshottable, "snapshot"))
+    if not isinstance(backend, api.Snapshottable):
+        # A registered non-redroid instance (vm / adb) gets the specific
+        # #128 message instead of the generic capability one. Still a
+        # BackendCapabilityError so the exit code stays 2 (the documented
+        # "verb doesn't apply to this backend" code), and the adb case is
+        # caught here because an adb row carries no on-disk path for
+        # snapshot.snapshot()'s lookup to match against.
+        raise api.BackendCapabilityError(
+            snapshot_mod.unsupported_backend_message("snapshot", name, backend.kind)
+        )
+    snappable = cast(api.Snapshottable, backend)
     dest = output if output is not None else Path(f"{name}.tar.zst")
     console.step(f"packing {name} → {dest}")
     try:

@@ -217,7 +217,11 @@ class TestAdoptedInstanceDispatch:
             ["beetroot", "snapshot", "phone"], monkeypatch,
         )
         assert code == 2
-        assert "not supported" in err
+        # #128: the generic "not supported by the adb backend" message is
+        # replaced by the redroid-only one, still exiting 2.
+        assert "only supported for the redroid backend" in err
+        assert "adb" in err
+        assert "#128" in err
 
 
 class TestModuleVerbAdbDispatch:
