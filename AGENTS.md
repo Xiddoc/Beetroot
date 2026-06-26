@@ -92,7 +92,7 @@ A small set of tests *do* shell out to docker for real, and they self-gate so a 
 
     ```bash
     apt-get install -y qemu-system-x86            # the TCG (software-emulated) QEMU
-    uv run beetroot build --vm-kernel             # fetches prebuilt bzImage (~12 MiB) if one matches the config, else compiles (~7 min); then assembles the rootfs. Pass --from-source to force a compile.
+    uv run beetroot build --vm-kernel             # fetches prebuilt bzImage (~12 MiB) if one matches the config, else compiles (~7 min); also fetches a prebuilt zstd rootfs (#79) if one matches, else bakes it locally. Pass --from-source to force a local build of both.
     uv run beetroot create <name>                 # then copy examples/vm.yaml over <name>/beetroot.yaml
     uv run beetroot apply <name> && uv run beetroot up <name>
     ```

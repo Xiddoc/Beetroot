@@ -1,0 +1,140 @@
+---
+# Publishes a prebuilt binder: vm guest rootfs so fresh hosts (CI runners,
+# Claude Code on the web sandboxes) can `beetroot build --vm-kernel` and fetch
+# a ready-baked, zstd-compressed ext4 image over plain HTTPS instead of pulling
+# + baking a ~2 GiB redroid image locally (which needs a Docker daemon).
+#
+# Each rootfs gets its own release tagged vm-rootfs-<version>-<fingerprint> with
+# the .img.zst + .sha256 attached AT creation — which keeps publishing
+# compatible with immutable releases (an immutable release freezes its assets at
+# creation, so a single rolling release can't be appended to). The CLI
+# (beetroot.rootfs_download) computes the same composite fingerprint over the
+# three rootfs-determining inputs (Android version, Docker bundle version,
+# guest-init.sh) and only fetches an exact match — so any input change correctly
+# misses and the CLI falls back to a local bake. Runs on demand and whenever
+# guest-init.sh changes on master.
+name: rootfs-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      android_version:
+        description: Android major version to bake (11, 12, 13, or 14)
+        required: false
+        default: "14"
+  push:
+    branches: [master]
+    paths:
+      - src/beetroot/templates/vm/guest-init.sh
+      - .github/workflows/rootfs-release.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write  # create the per-fingerprint 'vm-rootfs-<ver>-<fp>' release
+    strategy:
+      fail-fast: false
+      matrix:
+        # A push (guest-init.sh changed) republishes every supported version;
+        # a manual dispatch targets just the requested one (filtered below).
+        android_version: ["11", "12", "13", "14"]
+    env:
+      # Keep DOCKER_VERSION in sync with builder._DEFAULT_DOCKER_VERSION.
+      DOCKER_VERSION: "27.5.1"
+      AV: ${{ matrix.android_version }}
+    steps:
+      - name: Skip versions not requested on manual dispatch
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WANT: ${{ github.event.inputs.android_version }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${AV}" != "${WANT}" ]; then
+            echo "run=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "run=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install the host prerequisites for the rootfs bake
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            busybox-static socat iptables e2fsprogs curl zstd libc-bin
+
+      - name: Sync uv project deps
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euxo pipefail
+          pipx install uv
+          uv sync
+
+      - name: Compute the composite rootfs fingerprint
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euxo pipefail
+          # Reproduce beetroot.rootfs_download.composite_fingerprint: the SHA-256
+          # of the newline-delimited preimage 'android=<N>\ndocker=<ver>\n
+          # guest-init=<sha256-of-file>\n', truncated to 12 hex chars.
+          gi="$(sha256sum src/beetroot/templates/vm/guest-init.sh | cut -d' ' -f1)"
+          fp="$(printf 'android=%s\ndocker=%s\nguest-init=%s\n' \
+            "${AV}" "${DOCKER_VERSION}" "${gi}" | sha256sum | cut -c1-12)"
+          asset="rootfs-${AV}-${fp}.img.zst"
+          {
+            echo "FP=${fp}"
+            echo "ASSET=${asset}"
+            echo "TAG=vm-rootfs-${AV}-${fp}"
+          } >>"$GITHUB_ENV"
+
+      - name: Bake the guest rootfs (reuses the tested builder.build_rootfs)
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euxo pipefail
+          uv run python -c "
+          from pathlib import Path
+          from beetroot import builder
+          builder.build_rootfs(
+              out_image=Path('rootdisk.img'),
+              vm_dir=Path('src/beetroot/templates/vm'),
+              android_version=int('${AV}'),
+          )
+          "
+
+      - name: Compress + checksum the rootfs image
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euxo pipefail
+          zstd -19 rootdisk.img -o "${ASSET}"
+          sha256sum "${ASSET}" >"${ASSET}.sha256"
+
+      - name: Publish the per-fingerprint vm-rootfs release
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          # Attach the image + sidecar AT creation: immutable releases freeze
+          # their assets at creation, so create-with-asset is the only path that
+          # works (a later `gh release upload` would 422). Idempotent — an
+          # existing release for this fingerprint is already complete, so skip.
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists; nothing to publish"
+          else
+            notes="Prebuilt binder: vm guest rootfs (Android ${AV}, fingerprint"
+            notes="${notes} ${FP}), fetched by 'beetroot build --vm-kernel'."
+            gh release create "${TAG}" "${ASSET}" "${ASSET}.sha256" \
+              --title "binder: vm guest rootfs Android ${AV} (${FP})" \
+              --notes "${notes}"
+          fi

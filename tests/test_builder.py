@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from beetroot import builder, config, kernel_download
+from beetroot import builder, config, kernel_download, rootfs_download
 from beetroot.builder import (
     GAPPS_VENDOR_FLAGS,
     BootstrapError,
@@ -246,9 +246,7 @@ class TestReturnedTag:
     def test_vendor_override_tag_matches_config(self) -> None:
         runner = FakeRunner()
         tag = build_image(gapps="full", gapps_vendor="mindthegapps", runner=runner)
-        expected = config.base_image_tag(
-            config.Android(gapps="full", gapps_vendor="mindthegapps")
-        )
+        expected = config.base_image_tag(config.Android(gapps="full", gapps_vendor="mindthegapps"))
         assert tag == expected == "redroid/redroid:14.0.0_mindthegapps_houdini_magisk"
 
     def test_minimal_default(self) -> None:
@@ -565,6 +563,13 @@ class _RootfsBuildRecorder:
         return out_image
 
 
+def _no_prebuilt_rootfs(
+    *, android_version: int, fingerprint: str, out_image: Path, docker_version: str
+) -> Path:
+    """A rootfs_fetch stub that always misses, forcing the local-bake fallback."""
+    raise rootfs_download.RootfsFetchError("HTTP 404")
+
+
 def _make_vm_context(ctx: Path) -> Path:
     """Create a ``<ctx>/docker/vm`` with the assets ``_resolve_vm_dir`` requires."""
     vm = ctx / "docker" / "vm"
@@ -770,7 +775,12 @@ class TestBuildVmKernel:
             return out_path
 
         artifacts = builder.build_vm_kernel(
-            out_dir=out, build_context=ctx, runner=runner, rootfs_build=rec, kernel_fetch=fake_fetch
+            out_dir=out,
+            build_context=ctx,
+            runner=runner,
+            rootfs_build=rec,
+            kernel_fetch=fake_fetch,
+            rootfs_fetch=_no_prebuilt_rootfs,
         )
         # Prebuilt fetched -> no source compile (no shell step), rootfs still built.
         assert runner.calls == []
@@ -794,6 +804,7 @@ class TestBuildVmKernel:
             runner=runner,
             rootfs_build=rec,
             kernel_fetch=failing_fetch,
+            rootfs_fetch=_no_prebuilt_rootfs,
         )
         # Fetch failed -> compiled from source: the source tree is fetched +
         # extracted (curl, tar) and the shell compile then runs.
@@ -866,6 +877,126 @@ class TestBuildVmKernel:
         assert builder._kernel_source_url("5.15.0") == (
             "https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.15.0.tar.xz"
         )
+
+    def test_fetches_prebuilt_rootfs_and_skips_bake(self, tmp_path: Path) -> None:
+        runner = FakeRunner()
+        rec = _RootfsBuildRecorder()
+        ctx = tmp_path / "repo"
+        _make_vm_context(ctx)
+        out = tmp_path / "out"
+        fetch_calls: list[tuple[int, str, Path, str]] = []
+
+        def fake_kernel_fetch(*, version: str, fingerprint: str, out_path: Path) -> Path:
+            out_path.write_bytes(b"prebuilt-kernel")
+            return out_path
+
+        def fake_rootfs_fetch(
+            *, android_version: int, fingerprint: str, out_image: Path, docker_version: str
+        ) -> Path:
+            fetch_calls.append((android_version, fingerprint, out_image, docker_version))
+            out_image.write_bytes(b"prebuilt-rootfs")
+            return out_image
+
+        artifacts = builder.build_vm_kernel(
+            out_dir=out,
+            build_context=ctx,
+            runner=runner,
+            rootfs_build=rec,
+            kernel_fetch=fake_kernel_fetch,
+            rootfs_fetch=fake_rootfs_fetch,
+        )
+        # Prebuilt rootfs fetched -> local bake skipped entirely.
+        assert rec.calls == []
+        assert len(fetch_calls) == 1
+        av, _fp, out_image, docker_version = fetch_calls[0]
+        assert av == config.DEFAULT_ANDROID_VERSION
+        assert out_image == out / "rootdisk.img"
+        assert docker_version == builder._DEFAULT_DOCKER_VERSION
+        assert artifacts.rootfs == out / "rootdisk.img"
+
+    def test_falls_back_to_local_bake_when_no_prebuilt_rootfs(self, tmp_path: Path) -> None:
+        runner = FakeRunner()
+        rec = _RootfsBuildRecorder()
+        ctx = tmp_path / "repo"
+        _make_vm_context(ctx)
+        out = tmp_path / "out"
+
+        def fake_kernel_fetch(*, version: str, fingerprint: str, out_path: Path) -> Path:
+            out_path.write_bytes(b"prebuilt-kernel")
+            return out_path
+
+        def failing_rootfs_fetch(
+            *, android_version: int, fingerprint: str, out_image: Path, docker_version: str
+        ) -> Path:
+            raise rootfs_download.RootfsFetchError("HTTP 404")
+
+        builder.build_vm_kernel(
+            out_dir=out,
+            build_context=ctx,
+            runner=runner,
+            rootfs_build=rec,
+            android_version=11,
+            kernel_fetch=fake_kernel_fetch,
+            rootfs_fetch=failing_rootfs_fetch,
+        )
+        # Fetch missed -> local bake invoked with the right out/vm_dir/version.
+        assert rec.calls == [(out / "rootdisk.img", ctx / "docker" / "vm")]
+        assert rec.android_versions == [11]
+
+    def test_from_source_skips_rootfs_fetch(self, tmp_path: Path) -> None:
+        runner = FakeRunner()
+        rec = _RootfsBuildRecorder()
+        ctx = tmp_path / "repo"
+        _make_vm_context(ctx)
+
+        def never_fetch(
+            *, android_version: int, fingerprint: str, out_image: Path, docker_version: str
+        ) -> Path:
+            pytest.fail("rootfs_fetch must not be called when from_source=True")
+
+        builder.build_vm_kernel(
+            out_dir=tmp_path / "out",
+            build_context=ctx,
+            runner=runner,
+            rootfs_build=rec,
+            from_source=True,
+            rootfs_fetch=never_fetch,
+        )
+        # --from-source forces a local bake of the rootfs too.
+        assert rec.calls == [(tmp_path / "out" / "rootdisk.img", ctx / "docker" / "vm")]
+
+    def test_rootfs_fetch_fingerprint_matches_composite(self, tmp_path: Path) -> None:
+        runner = FakeRunner()
+        rec = _RootfsBuildRecorder()
+        ctx = tmp_path / "repo"
+        vm = _make_vm_context(ctx)
+        seen: list[str] = []
+
+        def fake_kernel_fetch(*, version: str, fingerprint: str, out_path: Path) -> Path:
+            out_path.write_bytes(b"k")
+            return out_path
+
+        def fake_rootfs_fetch(
+            *, android_version: int, fingerprint: str, out_image: Path, docker_version: str
+        ) -> Path:
+            seen.append(fingerprint)
+            out_image.write_bytes(b"r")
+            return out_image
+
+        builder.build_vm_kernel(
+            out_dir=tmp_path / "out",
+            build_context=ctx,
+            runner=runner,
+            rootfs_build=rec,
+            kernel_fetch=fake_kernel_fetch,
+            rootfs_fetch=fake_rootfs_fetch,
+        )
+        expected = rootfs_download.composite_fingerprint(
+            android_version=config.DEFAULT_ANDROID_VERSION,
+            docker_version=builder._DEFAULT_DOCKER_VERSION,
+            guest_init_path=vm / "guest-init.sh",
+        )
+        assert seen == [expected]
 
 
 # ---------------------------------------------------------------------------

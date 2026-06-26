@@ -120,8 +120,14 @@ This produces two artifacts under `~/.cache/beetroot/vm/`:
 
 - `bzImage` — the binder-enabled guest kernel. The command fetches a
   **prebuilt** bzImage (~12 MiB) when one matches the pinned config; otherwise
-  it compiles from source (~7 min). Pass `--from-source` to force a compile.
+  it compiles from source (~7 min).
 - `rootdisk.img` — the ext4 rootfs with the redroid image baked in (~8 GiB).
+  The command fetches a **prebuilt**, zstd-compressed rootfs when one matches
+  the Android version + a fingerprint of the rootfs inputs; otherwise it bakes
+  locally (pulls + bakes ~2 GB of redroid, needs a Docker daemon).
+
+Pass `--from-source` to force a local build of **both** artifacts (compile the
+kernel, bake the rootfs).
 
 !!! tip "Run from a checkout, or a `uv tool install`"
     Contributors hacking on a source checkout use the `uv run beetroot …` prefix
