@@ -18,6 +18,10 @@ name: rootfs-release
 on:
   workflow_dispatch:
     inputs:
+      # The "11, 12, 13, or 14" enumeration here and the matrix below MUST track
+      # config._VALID_ANDROID_VERSIONS. tests/test_android_version_extensibility
+      # ::test_rootfs_release_workflow_versions_match_constant fails CI on drift,
+      # so adding Android 15 can't silently skip publishing a 15 rootfs.
       android_version:
         description: Android major version to bake (11, 12, 13, or 14)
         required: false
@@ -42,6 +46,7 @@ jobs:
       matrix:
         # A push (guest-init.sh changed) republishes every supported version;
         # a manual dispatch targets just the requested one (filtered below).
+        # Drift-guarded against config._VALID_ANDROID_VERSIONS (see input above).
         android_version: ["11", "12", "13", "14"]
     env:
       # Keep DOCKER_VERSION in sync with builder._DEFAULT_DOCKER_VERSION.

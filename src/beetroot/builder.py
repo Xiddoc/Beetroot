@@ -427,6 +427,38 @@ _DEFAULT_REDROID_IMAGE: Final[str] = config.vm_redroid_image(config.DEFAULT_ANDR
 # ``rootdisk.img.android-version``).
 _ROOTFS_VERSION_MARKER_SUFFIX: Final[str] = ".android-version"
 
+# Power-user env knobs that change *what* the local bake produces but are NOT
+# folded into the prebuilt rootfs fingerprint (the fingerprint keys only on the
+# Android version, the pinned Docker bundle version, and ``guest-init.sh``). If
+# any is set, the published prebuilt would silently ignore the override, so the
+# fetch is skipped and a local bake is forced. ``REDROID_TAR`` in particular is
+# the documented Docker-Hub-rate-limit workaround — it must keep working
+# (issue #79).
+_ROOTFS_BAKE_OVERRIDE_ENV: Final[tuple[str, ...]] = (
+    "REDROID_IMAGE",
+    "REDROID_TAR",
+    "IMAGE_SIZE_MB",
+    "DOCKER_URL",
+)
+
+
+def rootfs_bake_override_set() -> str | None:
+    """
+    Return the first set rootfs-bake override env var, or ``None`` if none is set.
+
+    These knobs (``REDROID_IMAGE`` / ``REDROID_TAR`` / ``IMAGE_SIZE_MB`` /
+    ``DOCKER_URL``) change the baked bytes without being part of the prebuilt
+    fingerprint, so a prebuilt fetch would silently bypass them. The caller
+    (:func:`build_vm_kernel`) treats any of them as a directive to skip the
+    prebuilt rootfs fetch and bake locally instead, keeping the documented
+    overrides honest (issue #79).
+
+    Returns:
+        The name of the first override env var that is set (non-empty), or
+        ``None`` when none is — in which case the prebuilt fetch is safe.
+    """
+    return next((name for name in _ROOTFS_BAKE_OVERRIDE_ENV if os.environ.get(name)), None)
+
 
 def rootfs_version_marker(out_image: Path) -> Path:
     """
@@ -1104,10 +1136,22 @@ class PreflightProblem(BaseModel):
     fix: str
 
 
-# (binary on PATH, apt package) the rootfs assembly + kernel fetch shell out to.
-_VM_PATH_TOOLS: Final[tuple[tuple[str, str], ...]] = (
+# (binary on PATH, apt package) the *lightweight* path needs: the prebuilt
+# fetch downloads over plain HTTPS (no external tool) but the source-compile
+# kernel fallback still fetches + extracts the kernel tarball via curl/tar, so
+# these are required whenever a prebuilt kernel fetch could miss. Split out from
+# the bake-only PATH tools below so a host that only *fetches* both artifacts
+# isn't gated on the heavyweight rootfs-bake toolchain (issue #79).
+_VM_FETCH_PATH_TOOLS: Final[tuple[tuple[str, str], ...]] = (
     ("curl", "curl"),
     ("tar", "tar"),
+)
+
+# (binary on PATH, apt package) only the local rootfs *bake* shells out to:
+# ``ldd`` resolves the static-binary shared libs and ``mke2fs`` packs the ext4
+# image. Enforced only when a bake actually runs (a prebuilt miss or
+# ``--from-source``), never on the pure-fetch path.
+_VM_BAKE_PATH_TOOLS: Final[tuple[tuple[str, str], ...]] = (
     ("ldd", "libc-bin"),
     ("mke2fs", "e2fsprogs"),
 )
@@ -1139,18 +1183,47 @@ def _docker_daemon_responsive() -> bool:
     return result.returncode == 0
 
 
-def vm_build_preflight(*, redroid_tar: Path | None = None) -> list[PreflightProblem]:
+def vm_fetch_preflight() -> list[PreflightProblem]:
     """
-    Check every host prerequisite for ``beetroot build --vm-kernel`` in one pass.
+    Check the *lightweight* host prerequisites the prebuilt-fetch path needs.
 
-    Assembling the guest rootfs stages a few static host binaries
-    (``busybox``/``socat``/``iptables-legacy``), shells out to several more
-    (``curl``/``tar``/``ldd``/``mke2fs``), and bakes the redroid image via the
-    host Docker daemon. Each used to abort the build one at a time with a raw
-    ``[Errno 2]`` and no install hint, forcing repeated re-runs to enumerate the
-    prerequisites (issue #78). This reports them all together, each with the apt
-    package (or command) that fixes it, so a bare host is provisionable in one
-    shot.
+    The default ``beetroot build --vm-kernel`` fetches both guest artifacts as
+    prebuilt release assets over plain HTTPS — it needs **no** Docker daemon and
+    none of the static rootfs-bake binaries. The only host tools that path can
+    still reach for are ``curl`` + ``tar``: the kernel prebuilt fetch can miss
+    (config edited, version bumped, release not published, network blocked) and
+    degrade to a self-contained source compile that downloads + extracts the
+    kernel tarball. These are cheap and almost always present, so they're checked
+    up front; the heavyweight rootfs-bake toolchain is checked separately, only
+    when a bake actually runs (see :func:`vm_bake_preflight`).
+
+    Returns:
+        One :class:`PreflightProblem` per missing fetch-path tool (empty when the
+        host is ready), each carrying an actionable ``fix``.
+    """
+    problems: list[PreflightProblem] = []
+    for tool, pkg in _VM_FETCH_PATH_TOOLS:
+        if shutil.which(tool) is None:
+            problems.append(
+                PreflightProblem(
+                    requirement=tool, detail="not found on PATH", fix=f"apt-get install {pkg}"
+                )
+            )
+    return problems
+
+
+def vm_bake_preflight(*, redroid_tar: Path | None = None) -> list[PreflightProblem]:
+    """
+    Check the host prerequisites the *local rootfs bake* needs.
+
+    Assembling the guest rootfs locally stages a few static host binaries
+    (``busybox``/``socat``/``iptables-legacy``), shells out to ``ldd``/``mke2fs``,
+    and bakes the redroid image via the host Docker daemon. Each used to abort the
+    build one at a time with a raw ``[Errno 2]`` and no install hint (issue #78);
+    this reports them all together, each with the apt package (or command) that
+    fixes it. These are enforced **only when a bake actually runs** — a prebuilt
+    rootfs miss or ``--from-source`` — so a fresh dockerless/busyboxless host that
+    fetches the prebuilt rootfs is never gated on them (issue #79).
 
     Args:
         redroid_tar: A pre-saved redroid image tarball (the ``REDROID_TAR`` env
@@ -1158,8 +1231,8 @@ def vm_build_preflight(*, redroid_tar: Path | None = None) -> list[PreflightProb
             from the tarball instead of pulling, so no running daemon is needed.
 
     Returns:
-        One :class:`PreflightProblem` per missing prerequisite (empty when the
-        host is ready), each carrying an actionable ``fix``.
+        One :class:`PreflightProblem` per missing bake prerequisite (empty when
+        the host is ready), each carrying an actionable ``fix``.
     """
     cfg = _RootfsConfig.from_env(out_image=Path("preflight"), vm_dir=Path("preflight"))
     problems: list[PreflightProblem] = []
@@ -1173,7 +1246,7 @@ def vm_build_preflight(*, redroid_tar: Path | None = None) -> list[PreflightProb
                     fix=f"apt-get install {pkg}",
                 )
             )
-    for tool, pkg in _VM_PATH_TOOLS:
+    for tool, pkg in _VM_BAKE_PATH_TOOLS:
         if shutil.which(tool) is None:
             problems.append(
                 PreflightProblem(
@@ -1207,6 +1280,27 @@ def vm_build_preflight(*, redroid_tar: Path | None = None) -> list[PreflightProb
     return problems
 
 
+def vm_build_preflight(*, redroid_tar: Path | None = None) -> list[PreflightProblem]:
+    """
+    Report **every** host prerequisite for ``beetroot build --vm-kernel``.
+
+    The union of :func:`vm_fetch_preflight` (the lightweight fetch-path tools)
+    and :func:`vm_bake_preflight` (the heavyweight local-bake toolchain). This is
+    what ``beetroot build --vm-kernel --check`` surfaces — a single pass over the
+    full superset so a researcher provisioning a host sees everything either path
+    might need at once, even though a default (fetch-only) build needs only the
+    fetch subset.
+
+    Args:
+        redroid_tar: A pre-saved redroid image tarball (the ``REDROID_TAR`` env
+            knob). When set, the Docker-daemon check is skipped.
+
+    Returns:
+        One :class:`PreflightProblem` per missing prerequisite across both paths.
+    """
+    return vm_fetch_preflight() + vm_bake_preflight(redroid_tar=redroid_tar)
+
+
 class _RootfsBuildFn(Protocol):
     """The :func:`build_rootfs` call shape, injectable so ``build_vm_kernel`` is unit-testable."""
 
@@ -1230,6 +1324,14 @@ class _KernelFetchFn(Protocol):
         ...
 
 
+class _BakePreflightFn(Protocol):
+    """The :func:`vm_bake_preflight` call shape, injectable for testing."""
+
+    def __call__(self, *, redroid_tar: Path | None = None) -> list[PreflightProblem]:
+        """Return the host prerequisites missing for a local rootfs bake."""
+        ...
+
+
 class _RootfsFetchFn(Protocol):
     """The :func:`rootfs_download.fetch_prebuilt` call shape, injectable for testing."""
 
@@ -1240,7 +1342,7 @@ class _RootfsFetchFn(Protocol):
         ...
 
 
-def build_vm_kernel(  # noqa: PLR0913  # 8 keyword-only params; each is a distinct injectable concern
+def build_vm_kernel(  # noqa: PLR0913  # 9 keyword-only params; each is a distinct injectable concern
     *,
     out_dir: Path | None = None,
     build_context: Path | None = None,
@@ -1250,6 +1352,7 @@ def build_vm_kernel(  # noqa: PLR0913  # 8 keyword-only params; each is a distin
     from_source: bool = False,
     kernel_fetch: _KernelFetchFn = kernel_download.fetch_prebuilt,
     rootfs_fetch: _RootfsFetchFn = rootfs_download.fetch_prebuilt,
+    bake_preflight: _BakePreflightFn | None = None,
 ) -> VmArtifacts:
     """
     Build the micro-VM guest kernel + rootfs for the ``binder: vm`` backend.
@@ -1275,7 +1378,14 @@ def build_vm_kernel(  # noqa: PLR0913  # 8 keyword-only params; each is a distin
        yet published, or network blocked) it falls back to assembling the
        rootfs locally via :func:`build_rootfs` (busybox-static + Docker static
        bundle + ``guest-init.sh`` as ``/init``). ``from_source=True`` forces a
-       local bake of the rootfs too.
+       local bake of the rootfs too, as does setting any rootfs-bake override
+       env var (``REDROID_TAR`` / ``REDROID_IMAGE`` / ``IMAGE_SIZE_MB`` /
+       ``DOCKER_URL``) — those change the baked bytes without being part of the
+       prebuilt fingerprint, so the prebuilt would silently ignore them. The
+       heavyweight bake-only host prerequisites (busybox/socat/iptables/ldd/
+       mke2fs + a responsive Docker daemon) are enforced via
+       :func:`vm_bake_preflight` **only when a bake will actually run**, so the
+       default fetch-only path needs none of them.
 
     Args:
         out_dir: Directory the ``bzImage`` and ``rootdisk.img`` are written
@@ -1295,20 +1405,29 @@ def build_vm_kernel(  # noqa: PLR0913  # 8 keyword-only params; each is a distin
             testing. Defaults to :class:`DefaultRunner`.
         rootfs_build: Inject the rootfs assembler for testing. Defaults to
             :func:`build_rootfs`.
-        from_source: Skip both prebuilt fetches and always build locally —
-            compile the kernel from source and bake the rootfs locally.
+        from_source: Skip both prebuilt fetches and always build both guest
+            artifacts locally — compile the kernel from source and bake the
+            rootfs locally.
         kernel_fetch: Inject the prebuilt kernel fetcher for testing. Defaults
             to :func:`kernel_download.fetch_prebuilt`.
         rootfs_fetch: Inject the prebuilt rootfs fetcher for testing. Defaults
             to :func:`rootfs_download.fetch_prebuilt`.
+        bake_preflight: Inject the bake-only host-prerequisite check for testing.
+            Defaults to :func:`vm_bake_preflight`; called only when a local
+            rootfs bake is about to run.
 
     Returns:
         The :class:`VmArtifacts` naming the built kernel + rootfs paths.
 
     Raises:
-        BootstrapError: If the kernel build or rootfs assembly fails.
+        BootstrapError: If the kernel build or rootfs assembly fails, or if a
+            local rootfs bake is required but the host is missing bake-only
+            prerequisites (see :func:`vm_bake_preflight`).
     """
     ctx = build_context if build_context is not None else _build_context_from_env()
+    # Resolved at call time (not as a default arg) so monkeypatching
+    # ``builder.vm_bake_preflight`` in tests takes effect.
+    bake_check = bake_preflight if bake_preflight is not None else vm_bake_preflight
     # Resolve ``out`` to an absolute path: the source-compile step now runs with
     # ``cwd`` set to the throwaway kernel-source tree (issue #74), so a relative
     # ``out_dir`` would otherwise have its ``cp arch/x86/boot/bzImage`` target
@@ -1367,11 +1486,16 @@ def build_vm_kernel(  # noqa: PLR0913  # 8 keyword-only params; each is a distin
             )
 
     # Step 2: obtain the ext4 rootfs — prebuilt fetch (fast, no dockerd) with a
-    # local-bake fallback, unless the caller forces from_source. The Docker
-    # bundle version is read from the same source _RootfsConfig.from_env reads,
-    # so the fingerprint matches whatever a local bake would have used.
+    # local-bake fallback, unless the caller forces from_source. A power-user
+    # bake-override env var (REDROID_TAR/REDROID_IMAGE/IMAGE_SIZE_MB/DOCKER_URL)
+    # changes the baked bytes without being part of the prebuilt fingerprint, so
+    # an override forces a local bake too — otherwise the prebuilt would silently
+    # ignore it (issue #79). The Docker bundle version is read from the same
+    # source _RootfsConfig.from_env reads, so the fingerprint matches whatever a
+    # local bake would have used.
     rootfs_fetched = False
-    if not from_source:
+    override = rootfs_bake_override_set()
+    if not from_source and override is None:
         docker_version = os.environ.get("DOCKER_VERSION", _DEFAULT_DOCKER_VERSION)
         rootfs_fp = rootfs_download.composite_fingerprint(
             android_version=android_version,
@@ -1391,8 +1515,29 @@ def build_vm_kernel(  # noqa: PLR0913  # 8 keyword-only params; each is a distin
             rootfs_fetched = True
         except rootfs_download.RootfsFetchError as e:
             console.info(f"no matching prebuilt rootfs ({e}); baking locally")
+    elif not from_source and override is not None:
+        console.info(
+            f"{override} is set; skipping the prebuilt rootfs fetch and baking locally "
+            "(the override changes the baked bytes and is not part of the prebuilt fingerprint)"
+        )
 
     if not rootfs_fetched:
+        # A bake is about to run — enforce the heavyweight bake-only host
+        # prerequisites now (busybox/socat/iptables/ldd/mke2fs + a responsive
+        # Docker daemon), so a fetch-only host that fell back to a bake gets one
+        # consolidated, actionable error instead of a raw ``[Errno 2]`` mid-bake
+        # (issue #78 / #79). REDROID_TAR loads without pulling, so it relaxes the
+        # daemon check.
+        redroid_tar = os.environ.get("REDROID_TAR")
+        bake_problems = bake_check(redroid_tar=Path(redroid_tar) if redroid_tar else None)
+        if bake_problems:
+            detail = "; ".join(f"{p.requirement} → {p.fix}" for p in bake_problems)
+            raise BootstrapError(
+                f"the guest rootfs must be baked locally (no matching prebuilt, "
+                f"--from-source, or an override env var), but {len(bake_problems)} host "
+                f"prerequisite(s) for the bake are missing: {detail}. Install them, then "
+                "re-run `beetroot build --vm-kernel`."
+            )
         with console.progress("Assembling micro-VM guest rootfs"):
             rootfs_build(out_image=rootfs_out, vm_dir=vm_dir, android_version=android_version)
 

@@ -580,6 +580,14 @@ def _make_vm_context(ctx: Path) -> Path:
 
 
 class TestBuildVmKernel:
+    @pytest.fixture(autouse=True)
+    def _ready_bake_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # These tests exercise the build *dispatch*, not the bake-only host
+        # preflight (issue #79, covered by dedicated tests below). Default to a
+        # ready host so the local-bake path proceeds; enforcement tests inject a
+        # failing bake_preflight explicitly.
+        monkeypatch.setattr(builder, "vm_bake_preflight", lambda **_k: [])
+
     def test_runs_kernel_then_rootfs_steps(self, tmp_path: Path) -> None:
         runner = FakeRunner()
         rec = _RootfsBuildRecorder()
@@ -997,6 +1005,117 @@ class TestBuildVmKernel:
             guest_init_path=vm / "guest-init.sh",
         )
         assert seen == [expected]
+
+    @pytest.mark.parametrize(
+        ("env_var", "value"),
+        [
+            ("REDROID_TAR", "/saved/redroid.tar"),
+            ("REDROID_IMAGE", "redroid/redroid:14.0.0-latest"),
+            ("IMAGE_SIZE_MB", "4096"),
+            ("DOCKER_URL", "https://example/docker.tgz"),
+        ],
+    )
+    def test_bake_override_env_skips_rootfs_fetch_and_bakes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env_var: str, value: str
+    ) -> None:
+        # Review finding #3: a power-user bake-override env var changes the baked
+        # bytes but is NOT in the prebuilt fingerprint, so it must force a local
+        # bake — the prebuilt fetch is skipped entirely so the override is honoured.
+        monkeypatch.setenv(env_var, value)
+        runner = FakeRunner()
+        rec = _RootfsBuildRecorder()
+        ctx = tmp_path / "repo"
+        _make_vm_context(ctx)
+
+        def fake_kernel_fetch(*, version: str, fingerprint: str, out_path: Path) -> Path:
+            out_path.write_bytes(b"k")
+            return out_path
+
+        def never_fetch(
+            *, android_version: int, fingerprint: str, out_image: Path, docker_version: str
+        ) -> Path:
+            pytest.fail(f"rootfs_fetch must not run when {env_var} is set")
+
+        builder.build_vm_kernel(
+            out_dir=tmp_path / "out",
+            build_context=ctx,
+            runner=runner,
+            rootfs_build=rec,
+            kernel_fetch=fake_kernel_fetch,
+            rootfs_fetch=never_fetch,
+        )
+        assert rec.calls == [(tmp_path / "out" / "rootdisk.img", ctx / "docker" / "vm")]
+
+    def test_bake_preflight_failure_aborts_local_bake(self, tmp_path: Path) -> None:
+        # Review finding #1/#78: when a bake actually runs (prebuilt miss) but the
+        # host is missing bake-only prerequisites, build_vm_kernel raises a
+        # consolidated, actionable BootstrapError BEFORE attempting the bake.
+        runner = FakeRunner()
+        rec = _RootfsBuildRecorder()
+        ctx = tmp_path / "repo"
+        _make_vm_context(ctx)
+
+        def fake_kernel_fetch(*, version: str, fingerprint: str, out_path: Path) -> Path:
+            out_path.write_bytes(b"k")
+            return out_path
+
+        def failing_bake_preflight(
+            *, redroid_tar: Path | None = None
+        ) -> list[builder.PreflightProblem]:
+            return [
+                builder.PreflightProblem(
+                    requirement="socat",
+                    detail="static binary not found",
+                    fix="apt-get install socat",
+                )
+            ]
+
+        with pytest.raises(BootstrapError) as exc:
+            builder.build_vm_kernel(
+                out_dir=tmp_path / "out",
+                build_context=ctx,
+                runner=runner,
+                rootfs_build=rec,
+                kernel_fetch=fake_kernel_fetch,
+                rootfs_fetch=_no_prebuilt_rootfs,
+                bake_preflight=failing_bake_preflight,
+            )
+        msg = str(exc.value)
+        assert "socat" in msg
+        assert "apt-get install socat" in msg
+        assert rec.calls == []  # the bake itself was never attempted
+
+    def test_bake_preflight_passes_redroid_tar_through(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # REDROID_TAR both forces a local bake (override) and relaxes the daemon
+        # check — assert it's threaded into the bake preflight call.
+        monkeypatch.setenv("REDROID_TAR", str(tmp_path / "redroid.tar"))
+        runner = FakeRunner()
+        rec = _RootfsBuildRecorder()
+        ctx = tmp_path / "repo"
+        _make_vm_context(ctx)
+        seen_tar: list[Path | None] = []
+
+        def fake_kernel_fetch(*, version: str, fingerprint: str, out_path: Path) -> Path:
+            out_path.write_bytes(b"k")
+            return out_path
+
+        def recording_bake_preflight(
+            *, redroid_tar: Path | None = None
+        ) -> list[builder.PreflightProblem]:
+            seen_tar.append(redroid_tar)
+            return []
+
+        builder.build_vm_kernel(
+            out_dir=tmp_path / "out",
+            build_context=ctx,
+            runner=runner,
+            rootfs_build=rec,
+            kernel_fetch=fake_kernel_fetch,
+            bake_preflight=recording_bake_preflight,
+        )
+        assert seen_tar == [tmp_path / "redroid.tar"]
 
 
 # ---------------------------------------------------------------------------

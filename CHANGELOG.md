@@ -64,19 +64,38 @@
   locally — pulling + baking a ~2 GB redroid image into `/var/lib/docker`, which
   needs a running Docker daemon and a Docker Hub round-trip a fresh host
   (CI runner, Claude Code on the web sandbox) can't get cheaply. The rootfs is
-  now **fetched prebuilt by default**, mirroring the existing prebuilt-kernel
-  scheme: a new `beetroot.rootfs_download` module computes a composite
-  fingerprint over the three inputs that determine the baked bytes (Android
-  major version, pinned Docker static-bundle version, and `guest-init.sh`),
-  downloads the matching zstd-compressed ext4 image + its `.sha256` sidecar from
-  a per-fingerprint immutable GitHub release (`vm-rootfs-<version>-<fp>`),
-  verifies the digest before decompressing, writes the image atomically, and
-  writes the `.android-version` skew marker the local bake also writes. On any
-  miss (an input changed, the release isn't published, or the network is
-  blocked) it falls back to the local bake. `--from-source` now forces a local
-  build of **both** the kernel and the rootfs. A sibling `rootfs-release.yml`
-  workflow bakes + publishes one release per (version, fingerprint). No schema /
-  `api_version` change — purely additive.
+  now **fetched prebuilt by default**, reusing the prebuilt-kernel scheme's
+  per-fingerprint-immutable-release + `.sha256`-sidecar mechanics: a new
+  `beetroot.rootfs_download` module computes a composite fingerprint over three
+  rootfs-shaping inputs (Android major version, pinned Docker static-bundle
+  version, and `guest-init.sh`), downloads the matching zstd-compressed ext4
+  image + its `.sha256` sidecar from a per-fingerprint immutable GitHub release
+  (`vm-rootfs-<version>-<fp>`), verifies the digest of the **streamed**
+  compressed bytes before stream-decompressing to disk (neither the multi-GiB
+  payload nor the ~8 GiB image is ever held in memory), and writes the
+  `.android-version` skew marker the local bake also writes. On any miss (a
+  fingerprinted input changed, the release isn't published, or the network is
+  blocked) it falls back to the local bake. **Fingerprint caveat:** unlike the
+  kernel fingerprint (a hash of a single vendored config file that *fully*
+  determines the build), this fingerprint does **not** cover every input to the
+  baked bytes — the local bake also folds in host-resolved static-binary
+  versions (busybox/socat/iptables + libc), `adbprobe`, and the resolved redroid
+  image. Same-fingerprint *prebuilts* are byte-identical (CI pins those), but a
+  *local* bake on a host with different static binaries can legitimately differ;
+  this is a documented, weaker invariant than the kernel scheme, not a
+  one-to-one mirror. The power-user bake-override env vars
+  (`REDROID_TAR`/`REDROID_IMAGE`/`IMAGE_SIZE_MB`/`DOCKER_URL`) sit outside the
+  fingerprint, so setting any of them **skips the prebuilt fetch and forces a
+  local bake** — keeping the documented `REDROID_TAR` rate-limit workaround
+  honest. The heavyweight bake-only host prerequisites
+  (busybox/socat/iptables/`ldd`/`mke2fs` + a responsive Docker daemon) are now
+  enforced **only when a local bake actually runs**, so the default fetch path
+  works on a dockerless/busybox-less host; the lightweight `curl`/`tar` fetch
+  prerequisites are still checked up front. `--from-source` forces a local build
+  of **both** the kernel and the rootfs. A sibling `rootfs-release.yml` workflow
+  bakes + publishes one release per (version, fingerprint), with its
+  `DOCKER_VERSION` and Android-version matrix drift-guarded against the CLI by
+  unit tests. No schema / `api_version` change — purely additive.
 
 - **First-class `lifecycle: ephemeral | durable` persistence intent; `api_version`
   bumped 5 → 6 (#124).** Beetroot is bimodal in practice — some instances are

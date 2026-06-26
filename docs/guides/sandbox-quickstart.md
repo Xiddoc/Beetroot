@@ -48,8 +48,19 @@ device to `beetroot adopt`, so the TCG VM is the self-contained option.)
 
 ## Step 1 — install the host prerequisites
 
-The micro-VM build pulls and bakes a redroid image, assembles a busybox + static
-Docker rootfs, and packs it into an ext4 disk, then QEMU boots it. You need:
+!!! note "Most of these are only needed for a **local rootfs bake**"
+    `beetroot build --vm-kernel` is fetch-first: by default it downloads a
+    prebuilt kernel **and** a prebuilt rootfs over plain HTTPS, which needs only
+    `qemu-system-x86` (to boot), `adb` (to attach), and `curl`/`tar` (the
+    kernel source-compile fallback). The `busybox-static`/`socat`/`iptables`/
+    `e2fsprogs` toolchain and a running **Docker daemon** are needed **only when
+    a local rootfs bake actually runs** — a prebuilt miss, `--from-source`, or a
+    bake-override env var (`REDROID_TAR`/`REDROID_IMAGE`/`IMAGE_SIZE_MB`/
+    `DOCKER_URL`). Install the full set below to be ready for either path.
+
+The micro-VM build pulls and bakes a redroid image (on the local-bake path),
+assembles a busybox + static Docker rootfs, and packs it into an ext4 disk, then
+QEMU boots it. You need:
 
 | Tool | Why | Ubuntu/Debian package |
 |------|-----|-----------------------|
@@ -109,6 +120,12 @@ If the sandbox's network policy blocks or rate-limits Docker Hub, the
     ```bash
     REDROID_TAR=/path/to/redroid.tar uv run beetroot build --vm-kernel
     ```
+
+    Setting `REDROID_TAR` is a **local-bake** workaround: because it changes the
+    baked bytes and isn't part of the prebuilt fingerprint, it also **forces a
+    local bake** (the prebuilt rootfs fetch is skipped) so your tarball is
+    actually used. The same is true of `REDROID_IMAGE`, `IMAGE_SIZE_MB`, and
+    `DOCKER_URL`.
 
 ## Step 2 — build the guest kernel + rootfs
 

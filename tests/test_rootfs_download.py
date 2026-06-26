@@ -191,3 +191,35 @@ def test_fetch_prebuilt_url_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             out_image=tmp_path / "rootdisk.img",
             docker_version="27.5.1",
         )
+
+
+@pytest.mark.parametrize(
+    ("exc", "match"),
+    [
+        (urllib.error.HTTPError("u", 404, "nf", hdrs=None, fp=None), "HTTP 404"),  # type: ignore[arg-type]
+        (TimeoutError(), "timed out"),
+        (urllib.error.URLError("down"), "cannot reach"),
+    ],
+)
+def test_fetch_prebuilt_sidecar_fetch_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc: Exception, match: str
+) -> None:
+    # The image streams fine but the .sha256 sidecar fetch fails — exercises the
+    # error mapping in _fetch_bytes (used only for the sidecar after the move to
+    # a streamed image download, issue #79).
+    url = rootfs_download.release_url("14", "abc123def456")
+    payload = zstandard.ZstdCompressor().compress(b"ext4")
+
+    def fake_urlopen(req_url: str, timeout: float) -> _FakeResp:
+        if req_url == url:
+            return _FakeResp(payload)
+        raise exc
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    with pytest.raises(rootfs_download.RootfsFetchError, match=match):
+        rootfs_download.fetch_prebuilt(
+            android_version=14,
+            fingerprint="abc123def456",
+            out_image=tmp_path / "rootdisk.img",
+            docker_version="27.5.1",
+        )
