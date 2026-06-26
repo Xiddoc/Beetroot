@@ -31,9 +31,10 @@ class TestBuildVmKernel:
     @pytest.fixture(autouse=True)
     def _ready_host(self) -> Iterator[None]:
         # These tests exercise the build *dispatch*, not the host preflight
-        # (issue #78, tested separately below). Default to a ready host so the
-        # build path runs; the preflight-specific tests override this.
-        with patch("beetroot.cli.builder.vm_build_preflight", return_value=[]):
+        # (issue #78, tested separately below). A real build now gates only on
+        # the lightweight fetch-path preflight; default to a ready host so the
+        # build path runs. The preflight-specific tests override this.
+        with patch("beetroot.cli.builder.vm_fetch_preflight", return_value=[]):
             yield
 
     def test_vm_kernel_flag_builds_artifacts(self, cli_root: Path) -> None:
@@ -125,18 +126,43 @@ class TestVmKernelPreflight:
         assert result.exit_code == 1
         assert "--check only applies to --vm-kernel" in result.stderr
 
-    def test_preflight_blocks_build_when_problems(self, cli_root: Path) -> None:
-        # A real build (no --check) must NOT call build_vm_kernel when the host
-        # is missing prerequisites; it errors with the consolidated list.
+    def test_fetch_preflight_blocks_build_when_problems(self, cli_root: Path) -> None:
+        # A real build (no --check) must NOT call build_vm_kernel when the
+        # lightweight fetch-path prerequisites (curl/tar) are missing; it errors
+        # with the consolidated list.
+        curl_missing = builder.PreflightProblem(
+            requirement="curl", detail="not found on PATH", fix="apt-get install curl"
+        )
         with (
-            patch("beetroot.cli.builder.vm_build_preflight", return_value=[self._problem()]),
+            patch("beetroot.cli.builder.vm_fetch_preflight", return_value=[curl_missing]),
             patch("beetroot.cli.builder.build_vm_kernel") as mock_b,
         ):
             result = runner.invoke(cli.app, ["build", "--vm-kernel"])
         assert result.exit_code == 1
         mock_b.assert_not_called()
-        assert "socat" in result.stderr
-        assert "apt-get install socat" in result.stderr
+        assert "curl" in result.stderr
+        assert "apt-get install curl" in result.stderr
+
+    def test_real_build_does_not_gate_on_bake_toolchain(self, cli_root: Path) -> None:
+        # The BLOCKER fix (review finding #1): a real build on a host with NO
+        # docker/busybox/socat must NOT abort before build_vm_kernel — the
+        # default path fetches both prebuilt artifacts and needs none of the
+        # bake toolchain. Drive it with the fetch-path preflight clean (curl/tar
+        # present) but assert the CLI never consults the bake superset and
+        # dispatches straight to build_vm_kernel.
+        with (
+            patch("beetroot.cli.builder.vm_fetch_preflight", return_value=[]) as mock_fetch,
+            patch("beetroot.cli.builder.vm_build_preflight") as mock_full,
+            patch("beetroot.cli.builder.build_vm_kernel") as mock_b,
+        ):
+            mock_b.return_value = VmArtifacts(
+                kernel=Path("/c/bzImage"), rootfs=Path("/c/rootdisk.img")
+            )
+            result = runner.invoke(cli.app, ["build", "--vm-kernel"])
+        assert result.exit_code == 0, result.stderr
+        mock_fetch.assert_called_once_with()
+        mock_full.assert_not_called()  # bake superset is only for --check
+        mock_b.assert_called_once()
 
     def test_default_build_is_unaffected(self, cli_root: Path) -> None:
         with patch("beetroot.cli.builder.build_image") as mock_bi:

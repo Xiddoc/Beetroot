@@ -1388,8 +1388,10 @@ def build(  # noqa: PLR0913  # Typer verb: each parameter is a distinct user-fac
         typer.Option(
             "--from-source",
             help=(
-                "With --vm-kernel: always compile the guest kernel from source "
-                "instead of fetching the matching prebuilt bzImage (~7 min)."
+                "With --vm-kernel: build BOTH guest artifacts locally instead "
+                "of fetching the matching prebuilt assets — compile the kernel "
+                "from source (~7 min) and bake the rootfs locally (needs the "
+                "Docker daemon + busybox/socat/iptables toolchain)."
             ),
         ),
     ] = False,
@@ -1438,11 +1440,11 @@ def build(  # noqa: PLR0913  # Typer verb: each parameter is a distinct user-fac
             config.validate_android_version(android_version)
         except ValueError as e:
             raise _error(f"--android-version: {e}") from e
-        # Preflight: enumerate every missing host prerequisite in one pass
-        # (issue #78), so a bare host isn't a five-failures-deep guessing game.
+        # --check surfaces the FULL superset both paths might need in one pass
+        # (issue #78), so a researcher provisioning a host sees everything at once.
         _tar = os.environ.get("REDROID_TAR")
-        problems = builder.vm_build_preflight(redroid_tar=Path(_tar) if _tar else None)
         if check:
+            problems = builder.vm_build_preflight(redroid_tar=Path(_tar) if _tar else None)
             for problem in problems:
                 console.warn(f"{problem.requirement}: {problem.detail} → fix: {problem.fix}")
             if problems:
@@ -1451,10 +1453,17 @@ def build(  # noqa: PLR0913  # Typer verb: each parameter is a distinct user-fac
                 )
             console.status("vm build preflight: all host prerequisites satisfied")
             return
-        if problems:
-            detail = "; ".join(f"{p.requirement} → {p.fix}" for p in problems)
+        # A real build only enforces the LIGHTWEIGHT fetch-path prerequisites
+        # (curl/tar) up front — the default fetch-only path needs nothing else,
+        # so a fresh dockerless/busyboxless host that the prebuilt targets isn't
+        # aborted here (issue #79). The heavyweight bake-only toolchain is
+        # enforced *inside* build_vm_kernel, and only when a local bake actually
+        # runs (a prebuilt miss, --from-source, or a bake-override env var).
+        fetch_problems = builder.vm_fetch_preflight()
+        if fetch_problems:
+            detail = "; ".join(f"{p.requirement} → {p.fix}" for p in fetch_problems)
             raise _error(
-                f"vm build preflight found {len(problems)} missing host prerequisite(s): "
+                f"vm build preflight found {len(fetch_problems)} missing host prerequisite(s): "
                 f"{detail}. Install them, then re-run `beetroot build --vm-kernel`."
             )
         try:

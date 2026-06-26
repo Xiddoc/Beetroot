@@ -21,13 +21,15 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
-from beetroot import config
+from beetroot import builder, config
 
 _ROOT = Path(__file__).resolve().parents[1]
 _SRC = _ROOT / "src" / "beetroot"
 _CONFIG_PY = _SRC / "config.py"
 _BUILDER_PY = _SRC / "builder.py"
+_ROOTFS_RELEASE_YML = _ROOT / ".github" / "workflows" / "rootfs-release.yml"
 
 # Note: ``\d{2}`` assumes two-digit versions (11-14 today). A future single- or
 # triple-digit version would need this widened — but the constant literal would
@@ -91,9 +93,7 @@ def test_doc_version_enumerations_match_constant() -> None:
 @pytest.mark.parametrize("version", sorted(config._VALID_ANDROID_VERSIONS))
 def test_base_image_tag_well_formed_for_every_version(version: int) -> None:
     tag = config.base_image_tag(config.Android(version=version))
-    assert re.fullmatch(
-        rf"redroid/redroid:{version}\.0\.0_litegapps_houdini_magisk", tag
-    ), tag
+    assert re.fullmatch(rf"redroid/redroid:{version}\.0\.0_litegapps_houdini_magisk", tag), tag
 
 
 @pytest.mark.parametrize("version", sorted(config._VALID_ANDROID_VERSIONS))
@@ -129,3 +129,40 @@ def test_validate_accepts_every_supported_version(version: int) -> None:
 
 def test_default_version_is_supported() -> None:
     assert config.DEFAULT_ANDROID_VERSION in config._VALID_ANDROID_VERSIONS
+
+
+def test_rootfs_release_workflow_versions_match_constant() -> None:
+    # rootfs-release.yml hard-codes the supported-version list in two places (the
+    # publish matrix + the workflow_dispatch input description). Both must track
+    # config._VALID_ANDROID_VERSIONS or adding Android 15 silently skips
+    # publishing a 15 rootfs (issue #79, review finding #5).
+    doc = yaml.safe_load(_ROOTFS_RELEASE_YML.read_text(encoding="utf-8"))
+    expected = sorted(config._VALID_ANDROID_VERSIONS)
+
+    matrix = doc["jobs"]["build-and-publish"]["strategy"]["matrix"]["android_version"]
+    assert sorted(int(v) for v in matrix) == expected, (
+        f"rootfs-release.yml publish matrix {matrix} disagrees with "
+        f"_VALID_ANDROID_VERSIONS={expected}; update the matrix (issue #79)."
+    )
+
+    # PyYAML parses `on:` as the boolean key True, so look it up that way.
+    description = doc[True]["workflow_dispatch"]["inputs"]["android_version"]["description"]
+    found_in_desc = sorted(int(n) for n in re.findall(r"\d{2}", description))
+    assert found_in_desc == expected, (
+        f"rootfs-release.yml android_version input description {description!r} disagrees "
+        f"with _VALID_ANDROID_VERSIONS={expected}; update it (issue #79)."
+    )
+
+
+def test_rootfs_release_workflow_docker_version_matches_builder() -> None:
+    # rootfs-release.yml bakes with a hard-coded DOCKER_VERSION env that feeds the
+    # composite fingerprint; it must equal builder._DEFAULT_DOCKER_VERSION or the
+    # workflow publishes assets under a fingerprint the CLI never asks for — the
+    # publish<->fetch contract silently breaks (issue #79, review finding #7).
+    doc = yaml.safe_load(_ROOTFS_RELEASE_YML.read_text(encoding="utf-8"))
+    workflow_docker_version = doc["jobs"]["build-and-publish"]["env"]["DOCKER_VERSION"]
+    assert workflow_docker_version == builder._DEFAULT_DOCKER_VERSION, (
+        f"rootfs-release.yml DOCKER_VERSION={workflow_docker_version!r} disagrees with "
+        f"builder._DEFAULT_DOCKER_VERSION={builder._DEFAULT_DOCKER_VERSION!r}; the published "
+        "rootfs fingerprint would not match what the CLI fetches (issue #79)."
+    )
