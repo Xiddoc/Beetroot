@@ -33,7 +33,7 @@ from typing import IO, Final, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from . import config, console, kernel_download, paths
+from . import config, console, kernel_download, paths, rootfs_download
 from .settings import settings
 
 # The patcher CLI flag each GApps vendor needs. Keyed by the *resolved* vendor
@@ -1230,7 +1230,17 @@ class _KernelFetchFn(Protocol):
         ...
 
 
-def build_vm_kernel(  # noqa: PLR0913  # 7 keyword-only params; each is a distinct injectable concern
+class _RootfsFetchFn(Protocol):
+    """The :func:`rootfs_download.fetch_prebuilt` call shape, injectable for testing."""
+
+    def __call__(
+        self, *, android_version: int, fingerprint: str, out_image: Path, docker_version: str
+    ) -> Path:
+        """Download the prebuilt rootfs for (android_version, fingerprint) to ``out_image``."""
+        ...
+
+
+def build_vm_kernel(  # noqa: PLR0913  # 8 keyword-only params; each is a distinct injectable concern
     *,
     out_dir: Path | None = None,
     build_context: Path | None = None,
@@ -1239,6 +1249,7 @@ def build_vm_kernel(  # noqa: PLR0913  # 7 keyword-only params; each is a distin
     rootfs_build: _RootfsBuildFn = build_rootfs,
     from_source: bool = False,
     kernel_fetch: _KernelFetchFn = kernel_download.fetch_prebuilt,
+    rootfs_fetch: _RootfsFetchFn = rootfs_download.fetch_prebuilt,
 ) -> VmArtifacts:
     """
     Build the micro-VM guest kernel + rootfs for the ``binder: vm`` backend.
@@ -1255,9 +1266,16 @@ def build_vm_kernel(  # noqa: PLR0913  # 7 keyword-only params; each is a distin
        tree's ``merge_config.sh`` + ``make`` (the heavyweight compile stays a
        shell step the injected :class:`SubprocessRunner` dispatches). Pass
        ``from_source=True`` to skip the fetch and always compile.
-    2. Assemble the ext4 rootfs via :func:`build_rootfs` (busybox-static +
-       Docker static bundle + ``guest-init.sh`` as ``/init``) — pure-Python,
-       no longer a shell script.
+    2. Obtain the ext4 rootfs. By default this **fetches a prebuilt rootfs**
+       matching the Android version + a composite fingerprint over (Android
+       version, Docker bundle version, ``guest-init.sh``) from the repo's
+       GitHub release (a zstd-compressed image over plain HTTPS) — so a fresh
+       host skips the ~2 GiB redroid pull + local bake (and needs no Docker
+       daemon). If no matching prebuilt exists (an input changed, release not
+       yet published, or network blocked) it falls back to assembling the
+       rootfs locally via :func:`build_rootfs` (busybox-static + Docker static
+       bundle + ``guest-init.sh`` as ``/init``). ``from_source=True`` forces a
+       local bake of the rootfs too.
 
     Args:
         out_dir: Directory the ``bzImage`` and ``rootdisk.img`` are written
@@ -1277,9 +1295,12 @@ def build_vm_kernel(  # noqa: PLR0913  # 7 keyword-only params; each is a distin
             testing. Defaults to :class:`DefaultRunner`.
         rootfs_build: Inject the rootfs assembler for testing. Defaults to
             :func:`build_rootfs`.
-        from_source: Skip the prebuilt fetch and always compile the kernel.
-        kernel_fetch: Inject the prebuilt fetcher for testing. Defaults to
-            :func:`kernel_download.fetch_prebuilt`.
+        from_source: Skip both prebuilt fetches and always build locally —
+            compile the kernel from source and bake the rootfs locally.
+        kernel_fetch: Inject the prebuilt kernel fetcher for testing. Defaults
+            to :func:`kernel_download.fetch_prebuilt`.
+        rootfs_fetch: Inject the prebuilt rootfs fetcher for testing. Defaults
+            to :func:`rootfs_download.fetch_prebuilt`.
 
     Returns:
         The :class:`VmArtifacts` naming the built kernel + rootfs paths.
@@ -1345,8 +1366,34 @@ def build_vm_kernel(  # noqa: PLR0913  # 7 keyword-only params; each is a distin
                 cwd=source_tree,
             )
 
-    # Step 2: assemble the ext4 rootfs (busybox + Docker static + guest init).
-    with console.progress("Assembling micro-VM guest rootfs"):
-        rootfs_build(out_image=rootfs_out, vm_dir=vm_dir, android_version=android_version)
+    # Step 2: obtain the ext4 rootfs — prebuilt fetch (fast, no dockerd) with a
+    # local-bake fallback, unless the caller forces from_source. The Docker
+    # bundle version is read from the same source _RootfsConfig.from_env reads,
+    # so the fingerprint matches whatever a local bake would have used.
+    rootfs_fetched = False
+    if not from_source:
+        docker_version = os.environ.get("DOCKER_VERSION", _DEFAULT_DOCKER_VERSION)
+        rootfs_fp = rootfs_download.composite_fingerprint(
+            android_version=android_version,
+            docker_version=docker_version,
+            guest_init_path=vm_dir / "guest-init.sh",
+        )
+        try:
+            rootfs_fetch(
+                android_version=android_version,
+                fingerprint=rootfs_fp,
+                out_image=rootfs_out,
+                docker_version=docker_version,
+            )
+            console.success(
+                f"fetched prebuilt guest rootfs (Android {android_version}, {rootfs_fp})"
+            )
+            rootfs_fetched = True
+        except rootfs_download.RootfsFetchError as e:
+            console.info(f"no matching prebuilt rootfs ({e}); baking locally")
+
+    if not rootfs_fetched:
+        with console.progress("Assembling micro-VM guest rootfs"):
+            rootfs_build(out_image=rootfs_out, vm_dir=vm_dir, android_version=android_version)
 
     return VmArtifacts(kernel=kernel_out, rootfs=rootfs_out)

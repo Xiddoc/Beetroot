@@ -59,6 +59,25 @@
 
 ### Features
 
+- **Prebuilt, zstd-compressed `binder: vm` guest rootfs fetch (#79).**
+  `beetroot build --vm-kernel` previously always assembled the guest rootfs
+  locally — pulling + baking a ~2 GB redroid image into `/var/lib/docker`, which
+  needs a running Docker daemon and a Docker Hub round-trip a fresh host
+  (CI runner, Claude Code on the web sandbox) can't get cheaply. The rootfs is
+  now **fetched prebuilt by default**, mirroring the existing prebuilt-kernel
+  scheme: a new `beetroot.rootfs_download` module computes a composite
+  fingerprint over the three inputs that determine the baked bytes (Android
+  major version, pinned Docker static-bundle version, and `guest-init.sh`),
+  downloads the matching zstd-compressed ext4 image + its `.sha256` sidecar from
+  a per-fingerprint immutable GitHub release (`vm-rootfs-<version>-<fp>`),
+  verifies the digest before decompressing, writes the image atomically, and
+  writes the `.android-version` skew marker the local bake also writes. On any
+  miss (an input changed, the release isn't published, or the network is
+  blocked) it falls back to the local bake. `--from-source` now forces a local
+  build of **both** the kernel and the rootfs. A sibling `rootfs-release.yml`
+  workflow bakes + publishes one release per (version, fingerprint). No schema /
+  `api_version` change — purely additive.
+
 - **First-class `lifecycle: ephemeral | durable` persistence intent; `api_version`
   bumped 5 → 6 (#124).** Beetroot is bimodal in practice — some instances are
   long-lived "research phones" whose `/data` must survive (the namesake

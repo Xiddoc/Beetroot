@@ -418,3 +418,31 @@ The kernel/rootfs paths can also come from the `BEETROOT_VM_KERNEL` /
 `BEETROOT_VM_ROOTFS` environment variables (and the QEMU binary from
 `BEETROOT_QEMU_BIN`) instead of the `vm:` block. The expensive TCG path is
 never engaged automatically — `binder: vm` is always an explicit opt-in.
+
+### Prebuilt artifacts (skip the compile + the bake)
+
+`beetroot build --vm-kernel` does not always build locally. Both of its
+artifacts are fetched as prebuilt GitHub release assets when one matching the
+local inputs exists, falling back to a local build otherwise:
+
+- **The kernel** (`beetroot.kernel_download`) fetches a prebuilt `bzImage`
+  (~12 MiB) keyed on the pinned kernel version + a fingerprint of the bundled
+  `kernel.config`, instead of the ~7-min source compile.
+- **The rootfs** (`beetroot.rootfs_download`, issue #79) fetches a
+  zstd-compressed ext4 image instead of pulling + baking a ~2 GiB redroid image
+  into `/var/lib/docker` locally (which needs a running Docker daemon). The
+  asset is keyed per Android version + a **composite fingerprint** over the
+  three inputs that determine the baked bytes: the Android major version, the
+  pinned Docker static-bundle version, and `guest-init.sh`. Change any of those
+  and the fingerprint changes, the prebuilt no longer matches, and the build
+  falls back to a local bake — so you can never boot a stale prebuilt rootfs.
+
+Each prebuilt lives in its own per-fingerprint immutable release
+(`vm-kernel-<ver>-<fp>` / `vm-rootfs-<ver>-<fp>`), published by
+`.github/workflows/vm-kernel-release.yml` and
+`.github/workflows/rootfs-release.yml`. The fetch path downloads the asset plus
+a `.sha256` sidecar, **verifies the digest before decompressing**, then writes
+the image atomically (the rootfs fetch also writes the `.android-version`
+marker so the version-skew check treats a fetched image identically to a baked
+one). Pass `--from-source` to skip both fetches and build the kernel and rootfs
+locally.
