@@ -4,6 +4,40 @@
 
 ### Breaking changes
 
+- **`ports` generalised to a list of named guest→host mappings; `api_version` bumped 7 → 8 (#108).**
+  The old `ports:` block was a fixed mapping that only overrode the HOST side of
+  exactly three well-known services (`ports: {adb, frida, frida_control}`); the
+  guest side was hardcoded in the compose template. It's now a **list** of
+  `{service, guest, host}` mappings supporting arbitrary services and explicit
+  guest ports:
+
+  ```yaml
+  ports:
+    - {service: adb, guest: 5555, host: 9000}   # pin a well-known host port
+    - {service: frida, guest: 27042}            # host unset → stride default
+    - {guest: 8080, host: 9090}                 # arbitrary, explicit host
+    - {service: metrics, guest: 9100}           # arbitrary, auto-allocated host
+  ```
+
+  `service` is optional (`adb` / `frida` / `frida_control` are the well-known
+  names the stride allocator and the `adb_address` / `frida_address` accessors
+  key off). `host` unset auto-allocates — a stride base for a well-known service,
+  or a dedicated extra-pool slot (`40000 + index*10 + slot`) for an arbitrary
+  one. An instance can auto-allocate at most `STRIDE` (10) arbitrary host-unset
+  ports before pre-validation rejects it (the next slot would spill into the next
+  index's window); pin explicit host ports for entries beyond that. The
+  variable-length port list can't live in the flat `.env`, so it is
+  rendered into a per-instance `compose.override.yaml` that the CLI layers on top
+  of the bundled template with a second `-f`. **Migration:** rewrite the old
+  mapping as a list and set `api_version: 8`. A YAML still carrying the old
+  mapping form with only well-known keys is migrated losslessly on load (one-line
+  note) and auto-bumps; a mapping with any non-well-known key raises a migration
+  error naming the new list shape; a YAML pinning `api_version: 7` with a
+  list-form (or absent) `ports` auto-bumps silently, exactly like the 6 → 7
+  `gapps` handling. Under `binder: vm` only adb is forwarded to the guest;
+  arbitrary mappings beyond the well-known services are ignored (`beetroot up`
+  warns, mirroring the gapps/frida vm-inert advisories).
+
 - **`android.gapps` split into intent + vendor; `api_version` bumped 6 → 7 (#107).**
   The old `gapps: none | lite | full | mindthegapps` enum fused two axes: *intent*
   (what you get) and *vendor* (which distribution bakes it). It's now split so the

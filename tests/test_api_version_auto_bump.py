@@ -6,6 +6,7 @@ renamed); the 3→4 bump moves ``stealth.denylist`` to ``magisk.denylist``.
 A v0.4 YAML that did NOT use ``stealth:`` at all bumps silently; one that
 DID use ``stealth:`` gets a clear migration error (D1/D3).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,9 +17,7 @@ from pydantic import ValidationError
 from beetroot import config
 
 
-def test_v02_api_version_auto_bumps(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_v02_api_version_auto_bumps(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     yaml_path = tmp_path / "beetroot.yaml"
     yaml_path.write_text("api_version: 1\nandroid:\n  version: 14\n")
 
@@ -32,9 +31,7 @@ def test_v02_api_version_auto_bumps(
     assert "apply" in err
 
 
-def test_v03_api_version_auto_bumps(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_v03_api_version_auto_bumps(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # T1's schema bump: v0.3's `api_version: 2` auto-upgrades to the
     # current default. Same dedup, same one-shot warning, same call to
     # action.
@@ -121,11 +118,7 @@ def test_v06_api_version_with_gpu_mode_raises_migration_error(
     # error — the field was renamed to display.rendering in api_version 5.
     # This path cannot silently auto-bump because the field was renamed.
     yaml_path = tmp_path / "beetroot.yaml"
-    yaml_path.write_text(
-        "api_version: 4\n"
-        "android:\n  version: 14\n"
-        "display:\n  gpu_mode: host\n"
-    )
+    yaml_path.write_text("api_version: 4\nandroid:\n  version: 14\ndisplay:\n  gpu_mode: host\n")
 
     with pytest.raises(ValidationError) as exc_info:
         config.load_yaml(yaml_path)
@@ -139,9 +132,7 @@ def test_v06_api_version_with_gpu_mode_raises_migration_error(
     assert "auto-upgraded" not in err
 
 
-def test_v07_api_version_auto_bumps(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_v07_api_version_auto_bumps(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # #124: the `lifecycle` field bumped SUPPORTED 5 → 6 additively, so a
     # YAML pinned at 5 auto-upgrades with a warning (no renamed key).
     yaml_path = tmp_path / "beetroot.yaml"
@@ -201,10 +192,7 @@ def test_explicit_current_api_version_does_not_warn(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     yaml_path = tmp_path / "beetroot.yaml"
-    yaml_path.write_text(
-        f"api_version: {config.SUPPORTED_API_VERSION}\n"
-        "android:\n  version: 14\n"
-    )
+    yaml_path.write_text(f"api_version: {config.SUPPORTED_API_VERSION}\nandroid:\n  version: 14\n")
 
     cfg = config.load_yaml(yaml_path)
 
@@ -241,11 +229,7 @@ def test_v02_yaml_with_frida_block_round_trips(tmp_path: Path) -> None:
     # A v0.2 YAML that carries the frida block (v0.2's default
     # behavior) should auto-bump cleanly and preserve the block.
     yaml_path = tmp_path / "beetroot.yaml"
-    yaml_path.write_text(
-        "api_version: 1\n"
-        "android:\n  version: 14\n"
-        'frida:\n  version: "16.4.10"\n'
-    )
+    yaml_path.write_text('api_version: 1\nandroid:\n  version: 14\nfrida:\n  version: "16.4.10"\n')
 
     cfg = config.load_yaml(yaml_path)
     assert cfg.api_version == config.SUPPORTED_API_VERSION
@@ -254,7 +238,8 @@ def test_v02_yaml_with_frida_block_round_trips(tmp_path: Path) -> None:
 
 
 def test_auto_bump_warning_deduplicates_per_path(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     # CR #2 finding A2: the warning used to fire on every load.
     # `beetroot ls` over 5 v0.2 instances → 5+ warning lines; a
@@ -282,7 +267,8 @@ def test_auto_bump_warning_deduplicates_per_path(
 
 
 def test_auto_bump_warning_fires_per_distinct_path(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Dedup is keyed by path — two different YAML files each get
     # their own one-shot warning.

@@ -9,7 +9,7 @@ The schema is validated by Pydantic on every load. Fields you omit use the defau
 ## Top-level structure
 
 ```yaml
-api_version: 6
+api_version: 8
 lifecycle: durable   # durable | ephemeral (optional; default durable)
 android: ...
 display: ...
@@ -29,32 +29,34 @@ Schema version this `beetroot.yaml` targets.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `api_version` | int | `6` | Schema version. Must match the value supported by this Beetroot release. |
+| `api_version` | int | `8` | Schema version. Must match the value supported by this Beetroot release. |
 
 ```yaml
-api_version: 6
+api_version: 8
 ```
 
 ### Versioning policy
 
 Each Beetroot release supports **exactly one** `api_version`. The current
-release supports `api_version: 6`. Loading a YAML that pins a different
+release supports `api_version: 8`. Loading a YAML that pins a different
 value raises one of two errors:
 
 - **Unknown / future version** (`0`, `99`, …): raises a `ValidationError`
   with a pointer to `CHANGELOG.md` for the migration steps.
 - **Non-additive migration required** (e.g. `api_version: 3` with a
-  `stealth:` key renamed to `magisk:` in v4, or `display.gpu_mode` renamed
-  to `display.rendering` in v5): raises a clear migration error naming the
-  changed field and pointing at `CHANGELOG.md`.
+  `stealth:` key renamed to `magisk:` in v4, `display.gpu_mode` renamed
+  to `display.rendering` in v5, a vendor-named `android.gapps` in v7, or
+  a `ports:` mapping with a non-well-known key in v8): raises a clear
+  migration error naming the changed field and pointing at `CHANGELOG.md`.
 
-**Auto-bump (legacy versions):** `api_version: 1` (v0.2), `2` (v0.3),
-`3` (v0.4), `4` (v0.6), and `5` are recognised legacy values and auto-bumped
-on load with a one-line warning — *unless* the YAML still uses a key that a
-non-additive bump renamed (`stealth:` for 3→4, `display.gpu_mode` for 4→5),
-in which case the migration error fires instead. The 5→6 bump (the additive
-`lifecycle` field) is always silent. Persistence happens on the next
-`beetroot apply`.
+**Auto-bump (legacy versions):** `api_version: 1` (v0.2) through `7` are
+recognised legacy values and auto-bumped on load with a one-line warning —
+*unless* the YAML still uses a key that a non-additive bump renamed
+(`stealth:` for 3→4, `display.gpu_mode` for 4→5, a vendor-named
+`android.gapps` for 6→7), in which case the migration error fires instead.
+The additive bumps (the `lifecycle` field for 5→6, the lossless `ports`
+mapping → list translation for 7→8) are silent. Persistence happens on the
+next `beetroot apply`.
 
 Omitting the field is equivalent to writing the currently supported value
 — existing instance YAMLs without `api_version` keep working. Pinning the
@@ -62,7 +64,7 @@ field explicitly is recommended once you're committing an instance YAML to
 source control, so that a future Beetroot release with a breaking schema
 change fails loud instead of silently reinterpreting your config.
 
-All [example YAMLs](../guides/examples.md) declare `api_version: 6`
+All [example YAMLs](../guides/examples.md) declare `api_version: 8`
 explicitly as the first field. When the schema breaks, the constant
 `SUPPORTED_API_VERSION` in `src/beetroot/config.py` is bumped and a
 migration entry is added to `CHANGELOG.md`.
@@ -242,31 +244,43 @@ modules:
 
 ## `ports`
 
-Optional per-instance port overrides. Each field is independently optional — set only the ones you want to pin; the rest fall back to the [stride-of-10 allocator](./ports.md) on the instance's index.
+A **list** of guest→host port mappings (since `api_version: 8`, issue #108). Each entry is a `{service, guest, host}` mapping; the list defaults to the three well-known services with auto-allocated host ports.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `adb` | int | stride (`5555 + index*10`) | Host port mapped to the container's ADB (5555). |
-| `frida` | int | stride (`27042 + index*10`) | Host port mapped to the container's Frida data port (27042). |
-| `frida_control` | int | stride (`27043 + index*10`) | Host port mapped to the container's Frida control port (27043). |
+| `service` | string \| null | `null` | Optional label. `adb` / `frida` / `frida_control` are the **well-known** names the [stride allocator](./ports.md) and the `adb_address` / `frida_address` accessors key off; any other string is a free-form label for an arbitrary mapping. |
+| `guest` | int | *(required)* | The container-side (guest) port this mapping exposes (1..65535). |
+| `host` | int \| null | `null` (auto-allocate) | The host-side port. `null` auto-allocates — a [stride base](./ports.md) for a well-known service, or a dedicated extra-pool slot (`40000 + index*10 + slot`) for an arbitrary one. An integer pins the host port. |
 
 ```yaml
-# Pin only ADB, let Frida take the stride defaults
+# Default (omit the block): the three well-known services, stride-allocated.
 ports:
-  adb: 9000
+  - {service: adb, guest: 5555}
+  - {service: frida, guest: 27042}
+  - {service: frida_control, guest: 27043}
 
-# Pin everything
+# Pin ADB to a stable host port; forward an arbitrary in-guest service.
 ports:
-  adb: 9000
-  frida: 9001
-  frida_control: 9002
+  - {service: adb, guest: 5555, host: 9000}   # explicit host port
+  - {service: frida, guest: 27042}            # host unset → stride default
+  - {service: frida_control, guest: 27043}
+  - {guest: 8080, host: 9090}                 # arbitrary, explicit host
+  - {service: metrics, guest: 9100}           # arbitrary, auto-allocated host
 ```
 
-If you omit the block entirely (the default), every port is allocated by the stride scheme. If you pin a port that another instance already uses, `beetroot create` and `beetroot apply` exit with a clear error before staging:
+If you omit the block entirely (the default), the three well-known services are stride-allocated. The list is validated: duplicate `service` names, duplicate `guest` ports, and duplicate explicit `host` ports are all rejected at load time. If a resolved host port collides with another instance, `beetroot create` and `beetroot apply` exit with a clear error before staging:
 
 ```
 error: port 5555 (adb) collides with instance 'alpha' (which also uses 5555). Pin or remove one.
 ```
+
+The variable-length port list is written to a per-instance `compose.override.yaml` (regenerated on every `apply`, like `.env`) which the CLI layers on top of the bundled compose template — a flat `.env` can't expand into a YAML list.
+
+!!! warning "Migrating from the old `ports` mapping (api_version 7)"
+    The old fixed mapping (`ports: {adb: 9000, frida: ..., frida_control: ...}`) was replaced by the list form. A YAML still carrying the old mapping with only well-known keys is migrated losslessly on load (one-line note) and auto-bumps to `8`; a mapping with any other key raises a `ValidationError` naming the list shape. Rewrite the block as a list and set `api_version: 8`.
+
+!!! note "Arbitrary mappings under `binder: vm`"
+    The `binder: vm` backend forwards only adb to the guest; arbitrary mappings beyond the well-known services are ignored (`beetroot up` warns, mirroring the gapps/frida vm-inert advisories).
 
 !!! tip "Why pin a port?"
     The most common reason is to keep a stable, memorable port across destroy/recreate cycles, or to coordinate with external tools (a CI pipeline, a fixed firewall rule, an IDE's run config) that already point at a specific host port. The stride allocator's index can shift if instances at lower indices are destroyed and recreated.
@@ -299,10 +313,10 @@ magisk:
     ```
     The 'stealth:' key was removed in api_version 4.
     Move 'stealth.denylist' to 'magisk.denylist' and set
-    'api_version' to 6. See CHANGELOG.md for the migration.
+    'api_version' to 8. See CHANGELOG.md for the migration.
     ```
 
-    Rename the key and bump `api_version` to the current value (`6`) to fix it.
+    Rename the key and bump `api_version` to the current value (`8`) to fix it.
 
 ---
 
@@ -396,7 +410,7 @@ Caveats:
 ## Complete example
 
 ```yaml
-api_version: 6
+api_version: 8
 
 android:
   version: 14
@@ -429,7 +443,8 @@ magisk:
     - com.target.app
 
 ports:
-  adb: 9000
-  frida: 9001
-  frida_control: 9002
+  - {service: adb, guest: 5555, host: 9000}
+  - {service: frida, guest: 27042, host: 9001}
+  - {service: frida_control, guest: 27043, host: 9002}
+  - {service: app-debug, guest: 8080, host: 9090}
 ```

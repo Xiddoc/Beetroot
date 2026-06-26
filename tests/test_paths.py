@@ -1,4 +1,5 @@
 """Tests for paths.py — filesystem layout accessors."""
+
 from __future__ import annotations
 
 import importlib.resources
@@ -28,9 +29,7 @@ class TestInstanceRootDiscovery:
         monkeypatch.chdir(sub)
         assert paths.instance_root() == tmp_path.resolve()
 
-    def test_multi_level_walk(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_multi_level_walk(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         project = tmp_path / "foo" / "bar" / "baz"
         project.mkdir(parents=True)
         (project / "beetroot.yaml").touch()
@@ -126,8 +125,11 @@ class TestBundledComposeFile:
         )
 
     def test_bundled_compose_file_contains_substitutions(self) -> None:
+        # Ports moved to the per-instance compose.override.yaml in v8 (issue
+        # #108), so the bundled template no longer references ADB_PORT /
+        # FRIDA_PORT; the remaining well-known substitutions still must be here.
         text = paths.bundled_compose_file().read_text()
-        for var in ("INSTANCE_NAME", "ADB_PORT", "FRIDA_PORT", "FRIDA_PORT_CONTROL"):
+        for var in ("INSTANCE_NAME", "BASE_IMAGE", "MEM_LIMIT", "DISPLAY_WIDTH"):
             assert f"${{{var}}}" in text or f"${{{var}:-" in text
 
     def test_bundled_compose_file_is_stable_across_calls(self) -> None:
@@ -184,20 +186,16 @@ class TestBundledComposeFile:
         # module load. Direct attribute access on ``paths.importlib``
         # works at runtime but doesn't satisfy mypy strict-mode export
         # checks; using the canonical module reference does.
-        monkeypatch.setattr(
-            importlib.resources, "files", lambda _pkg: _Files()
-        )
-        monkeypatch.setattr(
-            importlib.resources, "as_file", _fake_as_file
-        )
+        monkeypatch.setattr(importlib.resources, "files", lambda _pkg: _Files())
+        monkeypatch.setattr(importlib.resources, "as_file", _fake_as_file)
 
         result = paths.bundled_compose_file()
         assert result.is_file()
         assert result.read_bytes() == b"zipped: compose content\n"
         # The cache lives under user_cache_dir("templates").
-        assert (
-            result.parent == paths.user_cache_dir("templates")
-        ), f"unexpected cache location: {result}"
+        assert result.parent == paths.user_cache_dir("templates"), (
+            f"unexpected cache location: {result}"
+        )
 
         # Hit the "cache already exists with identical bytes" branch
         # (no write). Clear the in-memory cache so the helper re-runs
@@ -229,9 +227,7 @@ class TestBundledVmDir:
     def test_stable_across_calls(self) -> None:
         assert paths.bundled_vm_dir() == paths.bundled_vm_dir()
 
-    def test_handles_zip_install(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_handles_zip_install(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         # Simulate a wheel install: the package data has no real filesystem
         # path (``is_file()`` is False), so the helper must extract every asset
         # into the user cache and return that directory.
@@ -289,17 +285,13 @@ class TestUserRegistryFile:
     ) -> None:
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         monkeypatch.setenv("HOME", str(tmp_path))
-        assert paths.user_registry_file() == (
-            tmp_path / ".config" / "beetroot" / "instances.json"
-        )
+        assert paths.user_registry_file() == (tmp_path / ".config" / "beetroot" / "instances.json")
 
     def test_respects_xdg_config_home(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "myxdg"))
-        assert paths.user_registry_file() == (
-            tmp_path / "myxdg" / "beetroot" / "instances.json"
-        )
+        assert paths.user_registry_file() == (tmp_path / "myxdg" / "beetroot" / "instances.json")
 
 
 class TestUserCacheDir:
@@ -308,17 +300,11 @@ class TestUserCacheDir:
     ) -> None:
         monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
         monkeypatch.setenv("HOME", str(tmp_path))
-        assert paths.user_cache_dir("frida") == (
-            tmp_path / ".cache" / "beetroot" / "frida"
-        )
+        assert paths.user_cache_dir("frida") == (tmp_path / ".cache" / "beetroot" / "frida")
 
-    def test_respects_xdg_cache_home(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
+    def test_respects_xdg_cache_home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "mycache"))
-        assert paths.user_cache_dir("modules") == (
-            tmp_path / "mycache" / "beetroot" / "modules"
-        )
+        assert paths.user_cache_dir("modules") == (tmp_path / "mycache" / "beetroot" / "modules")
 
     def test_subdir_is_a_path_segment(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

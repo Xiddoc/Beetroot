@@ -11,6 +11,7 @@ environment to stdout — no docker involved) through ``DefaultRunner``
 and asserts both the explicit override key and the inherited ``PATH``
 are present in the captured output.
 """
+
 from __future__ import annotations
 
 import os
@@ -67,14 +68,13 @@ def test_default_runner_env_merges_via_subprocess_call(
     captured: dict[str, object] = {}
     real_run = subprocess.run
 
-    def _spy(
-        cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
+    def _spy(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured.update(kwargs)
         # kwargs is loosely typed for the spy; the real_run call
         # returns CompletedProcess[Any] which mypy widens to Any.
         result: subprocess.CompletedProcess[str] = real_run(  # type: ignore[call-overload]
-            cmd, **kwargs,  # pyright: ignore[reportArgumentType]
+            cmd,
+            **kwargs,  # pyright: ignore[reportArgumentType]
         )
         return result
 

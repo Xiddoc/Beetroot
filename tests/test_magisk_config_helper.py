@@ -20,6 +20,7 @@ These tests source ``magisk-config.sh`` from ``sh`` with a fake
 into a log file so the test can assert on the exact statements that
 were issued (and the order).
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -30,9 +31,7 @@ import pytest
 HELPER = Path(__file__).parent.parent / "docker" / "magisk-config.sh"
 
 
-def _fake_magisk(
-    zygisk_select_value: str = "1", *, daemon_reachable: bool = True
-) -> str:
+def _fake_magisk(zygisk_select_value: str = "1", *, daemon_reachable: bool = True) -> str:
     """Return a sh script that records every ``magisk --sqlite`` invocation.
 
     Args:
@@ -104,9 +103,7 @@ def test_default_denylist_enrols_gms_pair(tmp_path: Path) -> None:
     code, _out, queries = _run_helper(
         tmp_path,
         env={
-            "BEETROOT_DENYLIST_PACKAGES": (
-                "com.google.android.gms,com.google.android.gms.unstable"
-            )
+            "BEETROOT_DENYLIST_PACKAGES": ("com.google.android.gms,com.google.android.gms.unstable")
         },
     )
     assert code == 0
@@ -148,10 +145,7 @@ def test_zygisk_post_write_verification_succeeds(tmp_path: Path) -> None:
         zygisk_value="1",
     )
     assert code == 0
-    selects = [
-        q for q in queries
-        if "SELECT value FROM settings WHERE key='zygisk'" in q
-    ]
+    selects = [q for q in queries if "SELECT value FROM settings WHERE key='zygisk'" in q]
     assert selects, "helper did not verify zygisk landed in the DB"
 
 
@@ -202,9 +196,7 @@ def test_daemon_wait_succeeds_within_budget(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("packages", [",,", ",com.app,", " "])
-def test_malformed_csv_does_not_inject_empty_rows(
-    tmp_path: Path, packages: str
-) -> None:
+def test_malformed_csv_does_not_inject_empty_rows(tmp_path: Path, packages: str) -> None:
     # CSVs with extra commas (``,,``, leading/trailing) must not produce
     # empty package rows in the denylist table — those would be a
     # quiet correctness bug and a tiny SQL footprint widening.

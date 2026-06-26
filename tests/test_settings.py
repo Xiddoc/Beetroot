@@ -12,6 +12,7 @@ must not pick up. Worse, running the CLI from an instance dir whose
 These tests pin the post-T2 contract: ``Settings`` reads ONLY from
 ``os.environ``; the cwd's .env is irrelevant.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,15 +23,15 @@ from beetroot import settings
 
 
 def test_settings_ignores_cwd_dot_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The current working directory's .env is the per-instance compose
     # env file, NOT a Beetroot CLI config. v0.3 auto-loaded it via
     # ``env_file=".env"`` and would have at least walked the file
     # parsing every line. v0.4 ignores the file entirely.
     (tmp_path / ".env").write_text(
-        "INSTANCE_NAME=foo\nADB_PORT=5555\n"
-        "BEETROOT_DOCKER_BIN=/should-not-leak\n"
+        "INSTANCE_NAME=foo\nADB_PORT=5555\nBEETROOT_DOCKER_BIN=/should-not-leak\n"
     )
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("BEETROOT_DOCKER_BIN", raising=False)
@@ -53,7 +54,8 @@ def test_settings_still_reads_process_env(
 
 
 def test_settings_construction_inside_instance_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A regression test that mirrors the exact failure mode: an
     # instance directory whose .env has keys that don't match any

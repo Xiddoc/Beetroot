@@ -16,6 +16,7 @@ The fix:
 4. ``cli.main()`` also catches bare ``FileNotFoundError`` as a belt-and-
    suspenders fallback for verbs that target an orphan by name.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -56,7 +57,8 @@ class TestManagerListSkipsOrphans:
         assert api.Manager.list_orphans() == ["alpha", "charlie"]
 
     def test_unparseable_yaml_treated_as_orphan(
-        self, cli_root: Path,
+        self,
+        cli_root: Path,
     ) -> None:
         # T2 (v0.3.1 deferred): a beetroot.yaml that can't be parsed
         # (corrupted bytes, api_version mismatch, hand-edited junk)
@@ -67,6 +69,7 @@ class TestManagerListSkipsOrphans:
         api.Instance.create("bravo")
         # Corrupt alpha's beetroot.yaml so load_yaml raises.
         from beetroot import paths
+
         paths.instance_yaml(registry.instance_path("alpha")).write_text(
             "this: is: not: valid: yaml: at: all: }}}}\n"
         )
@@ -77,13 +80,15 @@ class TestManagerListSkipsOrphans:
         assert "alpha" in api.Manager.list_orphans()
 
     def test_api_version_mismatch_treated_as_orphan(
-        self, cli_root: Path,
+        self,
+        cli_root: Path,
     ) -> None:
         # Same orphan-surfacing contract for a beetroot.yaml that
         # parses as YAML but fails pydantic validation (e.g. an
         # api_version we don't support any more).
         api.Instance.create("alpha")
         from beetroot import paths
+
         # Future api_version that pydantic will reject.
         paths.instance_yaml(registry.instance_path("alpha")).write_text(
             "api_version: 999\nandroid:\n  version: 14\n"
@@ -108,9 +113,7 @@ class TestCliLsSurfacesOrphans:
         assert "alpha" in result.stderr
         assert "beetroot destroy" in result.stderr
 
-    def test_ls_with_mix_shows_both_table_and_orphan_line(
-        self, cli_root: Path
-    ) -> None:
+    def test_ls_with_mix_shows_both_table_and_orphan_line(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
         runner.invoke(cli.app, ["create", "bravo"])
         shutil.rmtree(registry.instance_path("alpha"))
@@ -138,9 +141,7 @@ class TestCliLsSurfacesOrphans:
         assert "alpha" in result.stderr
         assert "bravo" in result.stderr
 
-    def test_ls_json_includes_orphan_skip_line_on_stderr(
-        self, cli_root: Path
-    ) -> None:
+    def test_ls_json_includes_orphan_skip_line_on_stderr(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
         runner.invoke(cli.app, ["create", "bravo"])
         shutil.rmtree(registry.instance_path("alpha"))
@@ -170,7 +171,9 @@ class TestDestroyOrphan:
         assert api.Manager.list_orphans() == []
 
     def test_destroy_orphan_fallback_removes_registry_before_rmtree(
-        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        cli_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # C7 ordering invariant: the CLI orphan-fallback path must call
         # registry.remove BEFORE shutil.rmtree. If registry.remove raises,
@@ -225,7 +228,7 @@ class TestCliMainCatchesFileNotFound:
 
 class TestOrphanDoesNotBlockOtherVerbs:
     """The final-CR finding: an orphan in the registry was cascading
-    through ``registry.all_resolved_ports`` → ``_check_port_collisions``
+    through ``registry.all_resolved_host_ports`` → ``_check_port_collisions``
     and confusing every other verb (``create``, ``register``, ``apply``,
     ``restore``) with a ``FileNotFoundError`` pointing at the orphan's
     YAML instead of the YAML the user was operating on.
@@ -249,10 +252,10 @@ class TestOrphanDoesNotBlockOtherVerbs:
         result = runner.invoke(cli.app, ["apply", "bravo"])
         assert result.exit_code == 0, result.stderr
 
-    def test_all_resolved_ports_skips_orphans(self, cli_root: Path) -> None:
+    def test_all_resolved_host_ports_skips_orphans(self, cli_root: Path) -> None:
         api.Instance.create("alpha")
         api.Instance.create("bravo")
         shutil.rmtree(registry.instance_path("alpha"))
-        resolved = registry.all_resolved_ports()
+        resolved = registry.all_resolved_host_ports()
         assert "alpha" not in resolved
         assert "bravo" in resolved

@@ -5,6 +5,7 @@ These tests don't shell out to ``uv run beetroot --help`` — they
 exercise the pure-Python markdown / inline-code extraction by
 calling the helpers directly with synthetic CHANGELOG content.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -73,7 +74,9 @@ def test_check_invocations_rejects_unknown_verb() -> None:
     sources = [(5, "beetroot doctor --foo")]
     known = {"create", "up", "down"}
     errors = lint_changelog._check_invocations(
-        sources, known, flag_cache={"create": {"--help"}},
+        sources,
+        known,
+        flag_cache={"create": {"--help"}},
     )
     assert len(errors) == 1
     assert "unknown beetroot verb" in errors[0]
@@ -84,7 +87,9 @@ def test_check_invocations_accepts_known_verb_and_flag() -> None:
     sources = [(5, "beetroot create alpha --path /tmp/alpha")]
     known = {"create"}
     errors = lint_changelog._check_invocations(
-        sources, known, flag_cache={"create": {"--help", "--path"}},
+        sources,
+        known,
+        flag_cache={"create": {"--help", "--path"}},
     )
     assert errors == []
 
@@ -98,7 +103,9 @@ def test_check_invocations_rejects_invented_inline_flag() -> None:
     sources = [(5, "beetroot create --foo")]
     known = {"create"}
     errors = lint_changelog._check_invocations(
-        sources, known, flag_cache={"create": {"--help", "--path"}},
+        sources,
+        known,
+        flag_cache={"create": {"--help", "--path"}},
     )
     assert len(errors) == 1
     assert "unknown flag '--foo'" in errors[0]
@@ -121,7 +128,9 @@ def test_python_import_in_inline_span_is_not_a_cli_invocation() -> None:
     ]
     known = {"create", "up", "down"}
     errors = lint_changelog._check_invocations(
-        sources, known, flag_cache={"create": {"--help"}},
+        sources,
+        known,
+        flag_cache={"create": {"--help"}},
     )
     assert errors == []
 
@@ -135,11 +144,13 @@ def test_python_import_skip_does_not_swallow_real_invocation_in_same_paragraph()
     """
     sources = [
         (5, "from beetroot import frida_download"),  # skipped
-        (5, "beetroot doctor --foo"),                 # scanned
+        (5, "beetroot doctor --foo"),  # scanned
     ]
     known = {"create"}
     errors = lint_changelog._check_invocations(
-        sources, known, flag_cache={"create": {"--help"}},
+        sources,
+        known,
+        flag_cache={"create": {"--help"}},
     )
     assert len(errors) == 1
     assert "unknown beetroot verb 'doctor'" in errors[0]
@@ -163,12 +174,19 @@ _PLAIN_HELP = """\
 # The same help as Rich renders it under GitHub Actions (terminal mode
 # forced by the GITHUB_ACTIONS env var): verb names wrapped in SGR
 # escapes, box-drawing characters dimmed.
-_ANSI_HELP = _PLAIN_HELP.replace(
-    "│ create ", "\x1b[2m│\x1b[0m \x1b[1;36mcreate\x1b[0m ",
-).replace(
-    "│ module ", "\x1b[2m│\x1b[0m \x1b[1;36mmodule\x1b[0m ",
-).replace(
-    "--auto-install", "\x1b[1;36m-\x1b[0m\x1b[1;36m-auto\x1b[0m\x1b[1;36m-install\x1b[0m",
+_ANSI_HELP = (
+    _PLAIN_HELP.replace(
+        "│ create ",
+        "\x1b[2m│\x1b[0m \x1b[1;36mcreate\x1b[0m ",
+    )
+    .replace(
+        "│ module ",
+        "\x1b[2m│\x1b[0m \x1b[1;36mmodule\x1b[0m ",
+    )
+    .replace(
+        "--auto-install",
+        "\x1b[1;36m-\x1b[0m\x1b[1;36m-auto\x1b[0m\x1b[1;36m-install\x1b[0m",
+    )
 )
 
 

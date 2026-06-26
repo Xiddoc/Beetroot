@@ -10,6 +10,7 @@ This test drives all three from the same workspace, in the same
 ordering a real upgrading user would see, and pins the stdout/stderr
 shape at each step.
 """
+
 from __future__ import annotations
 
 import json
@@ -33,9 +34,7 @@ def _write_v02_instance(root: Path) -> None:
     root.mkdir(parents=True)
     # v0.2 YAML: api_version 1 + a frida block (the v0.2 default).
     (root / "beetroot.yaml").write_text(
-        "api_version: 1\n"
-        "android:\n  version: 14\n"
-        'frida:\n  version: "16.4.10"\n'
+        'api_version: 1\nandroid:\n  version: 14\nfrida:\n  version: "16.4.10"\n'
     )
 
 
@@ -52,16 +51,16 @@ def _write_v02_registry(root: Path, instance_name: str) -> None:
     )
 
 
-def test_v02_to_v03_walkthrough(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_v02_to_v03_walkthrough(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Point XDG at a fresh subdir so the v0.3 registry starts empty.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
 
     # Stub frida-server download so we don't hit the network.
     def _fake_download(
-        version: str, *, expected_sha256: str | None = None,
+        version: str,
+        *,
+        expected_sha256: str | None = None,
     ) -> Path:
         out = frida_download.cached_binary(version)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -71,8 +70,10 @@ def test_v02_to_v03_walkthrough(
         return out
 
     monkeypatch.setattr(frida_download, "download", _fake_download)
-    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}"
-                        if name in {"docker", "adb", "frida"} else None)
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: f"/usr/bin/{name}" if name in {"docker", "adb", "frida"} else None,
+    )
     # Use the real shutil for the rest of the suite — only `which` is faked.
     _ = shutil  # quiet pyflakes; the real module is patched via attr lookup.
 

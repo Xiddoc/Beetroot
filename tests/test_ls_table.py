@@ -5,6 +5,7 @@ order. This test runs the verb in an empty-registry env, captures the
 header line, and asserts that header appears verbatim in each known
 doc that pastes it.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -45,9 +46,7 @@ def _live_header() -> str:
     return result.stdout.splitlines()[0]
 
 
-def test_live_header_matches_expected_columns(
-    isolated_registry: Path, tmp_path: Path
-) -> None:
+def test_live_header_matches_expected_columns(isolated_registry: Path, tmp_path: Path) -> None:
     """The verb's live header must contain every expected column in order."""
     # Drop one synthetic entry so `ls` walks the populated branch — the
     # `Manager.list()` path needs a registered instance whose dir exists.
@@ -69,9 +68,7 @@ def test_live_header_matches_expected_columns(
     cursor = 0
     for col in LS_TABLE_COLUMNS:
         idx = header.find(col, cursor)
-        assert idx >= 0, (
-            f"Column {col!r} missing from live `ls` header: {header!r}"
-        )
+        assert idx >= 0, f"Column {col!r} missing from live `ls` header: {header!r}"
         cursor = idx + len(col)
 
 

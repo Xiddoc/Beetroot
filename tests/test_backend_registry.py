@@ -7,6 +7,7 @@ programmatically (in-process) or via the
 ``[project.entry-points."beetroot.backends"]`` group; both paths are
 exercised here.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
@@ -82,17 +83,13 @@ def _stub_registered() -> Iterator[None]:
 class TestProtocolConformance:
     """Both :class:`Instance` and an adb-shaped stub satisfy the Protocol."""
 
-    def test_instance_satisfies_protocol(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_instance_satisfies_protocol(self, isolated_registry: Path, tmp_path: Path) -> None:
         # ``Instance`` is the v0.3 backend; it has to keep satisfying
         # the expanded :class:`DeviceBackend` Protocol after T1's
         # additions (``name``, ``kind``, ``shell``, ``frida_cli``).
         root = tmp_path / "alpha"
         root.mkdir()
-        (root / "beetroot.yaml").write_text(
-            "api_version: 3\nandroid:\n  version: 14\n"
-        )
+        (root / "beetroot.yaml").write_text("api_version: 3\nandroid:\n  version: 14\n")
         registry.add_allocating("alpha", root)
         inst = api.Instance.load("alpha")
         assert isinstance(inst, api.DeviceBackend)
@@ -101,17 +98,13 @@ class TestProtocolConformance:
         stub = _StubBackend("phone", AdbBackendConfig(serial="emulator-5554"))
         assert isinstance(stub, api.DeviceBackend)
 
-    def test_instance_kind_is_redroid(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_instance_kind_is_redroid(self, isolated_registry: Path, tmp_path: Path) -> None:
         # The new ``kind`` property defaults to the redroid
         # discriminator; this is the runtime-readable echo of the
         # registry's ``backend.kind``.
         root = tmp_path / "alpha"
         root.mkdir()
-        (root / "beetroot.yaml").write_text(
-            "api_version: 3\nandroid:\n  version: 14\n"
-        )
+        (root / "beetroot.yaml").write_text("api_version: 3\nandroid:\n  version: 14\n")
         registry.add_allocating("alpha", root)
         assert api.Instance.load("alpha").kind == "redroid"
 
@@ -128,9 +121,7 @@ class TestRegisterBackend:
     def test_duplicate_registration_raises(self) -> None:
         backends.register_backend("dup-stub", _StubBackend)
         try:
-            with pytest.raises(
-                backends.BackendRegistrationError, match="already registered"
-            ):
+            with pytest.raises(backends.BackendRegistrationError, match="already registered"):
                 backends.register_backend("dup-stub", _StubBackend)
         finally:
             backends._BACKEND_REGISTRY.pop("dup-stub", None)
@@ -139,11 +130,10 @@ class TestRegisterBackend:
         class _NotABackend:
             pass
 
-        with pytest.raises(
-            backends.BackendRegistrationError, match="from_meta"
-        ):
+        with pytest.raises(backends.BackendRegistrationError, match="from_meta"):
             backends.register_backend(
-                "broken", _NotABackend,  # type: ignore[arg-type]
+                "broken",
+                _NotABackend,  # type: ignore[arg-type]
             )
 
     def test_get_unknown_kind_raises(self) -> None:
@@ -165,9 +155,7 @@ class TestManagerResolve:
     ) -> None:
         root = tmp_path / "alpha"
         root.mkdir()
-        (root / "beetroot.yaml").write_text(
-            "api_version: 3\nandroid:\n  version: 14\n"
-        )
+        (root / "beetroot.yaml").write_text("api_version: 3\nandroid:\n  version: 14\n")
         registry.add_allocating("alpha", root)
         resolved = api.Manager.resolve("alpha")
         assert isinstance(resolved, api.Instance)
@@ -175,7 +163,8 @@ class TestManagerResolve:
 
     @pytest.mark.usefixtures("_stub_registered")
     def test_resolve_stub_dispatches(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         # Wire a fake registry row for kind ``"test-stub"`` and assert
         # ``Manager.resolve`` constructs the stub class via its
@@ -204,15 +193,11 @@ class TestManagerResolve:
         assert isinstance(resolved, _StubBackend)
         assert resolved.name == "phone"
 
-    def test_resolve_unknown_name_raises(
-        self, isolated_registry: Path
-    ) -> None:
+    def test_resolve_unknown_name_raises(self, isolated_registry: Path) -> None:
         with pytest.raises(api.InstanceNotFoundError, match="ghost"):
             api.Manager.resolve("ghost")
 
-    def test_resolve_missing_backend_class_raises(
-        self, isolated_registry: Path
-    ) -> None:
+    def test_resolve_missing_backend_class_raises(self, isolated_registry: Path) -> None:
         # An adb-kind row whose backend class hasn't been registered
         # surfaces a friendly InstanceNotFoundError, not a bare KeyError.
         path = paths.user_registry_file()
@@ -240,14 +225,10 @@ class TestManagerResolve:
 class TestInstanceFromMeta:
     """Construction via the dispatcher-friendly ``from_meta`` classmethod."""
 
-    def test_from_meta_redroid(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_from_meta_redroid(self, isolated_registry: Path, tmp_path: Path) -> None:
         root = tmp_path / "alpha"
         root.mkdir()
-        (root / "beetroot.yaml").write_text(
-            "api_version: 3\nandroid:\n  version: 14\n"
-        )
+        (root / "beetroot.yaml").write_text("api_version: 3\nandroid:\n  version: 14\n")
         registry.add_allocating("alpha", root)
         backend = registry.RedroidBackendConfig(absolute_path=str(root))
         inst = api.Instance.from_meta("alpha", backend)
@@ -255,16 +236,12 @@ class TestInstanceFromMeta:
 
     def test_from_meta_adb_raises(self) -> None:
         backend = AdbBackendConfig(serial="emulator-5554")
-        with pytest.raises(
-            api.InstanceNotFoundError, match="adb"
-        ):
+        with pytest.raises(api.InstanceNotFoundError, match="adb"):
             api.Instance.from_meta("phone", backend)
 
 
 class TestEntryPointDiscovery:
-    def test_entry_point_load_is_idempotent(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_entry_point_load_is_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Reset the loaded flag and stub ``entry_points`` to count calls.
         monkeypatch.setattr(backends, "_ENTRY_POINTS_LOADED", False)
         fake = MagicMock(return_value=[])
@@ -274,16 +251,16 @@ class TestEntryPointDiscovery:
         backends._load_entry_point_backends()
         assert fake.call_count == 1
 
-    def test_entry_point_registers_third_party(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_entry_point_registers_third_party(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Synthesise a third-party entry point pointing at the stub.
         fake_ep = MagicMock()
         fake_ep.name = "ep-stub"
         fake_ep.load.return_value = _StubBackend
         monkeypatch.setattr(backends, "_ENTRY_POINTS_LOADED", False)
         monkeypatch.setattr(
-            backends, "entry_points", lambda group: [fake_ep],
+            backends,
+            "entry_points",
+            lambda group: [fake_ep],
         )
         backends._BACKEND_REGISTRY.pop("ep-stub", None)
         try:
@@ -292,9 +269,7 @@ class TestEntryPointDiscovery:
         finally:
             backends._BACKEND_REGISTRY.pop("ep-stub", None)
 
-    def test_entry_point_skips_already_registered(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_entry_point_skips_already_registered(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Pre-register the same kind, then run the entry-point loader.
         # The loader must NOT raise BackendRegistrationError just
         # because the in-tree path beat it to the punch.
@@ -305,7 +280,9 @@ class TestEntryPointDiscovery:
             fake_ep.load.return_value = _StubBackend
             monkeypatch.setattr(backends, "_ENTRY_POINTS_LOADED", False)
             monkeypatch.setattr(
-                backends, "entry_points", lambda group: [fake_ep],
+                backends,
+                "entry_points",
+                lambda group: [fake_ep],
             )
             backends._load_entry_point_backends()
         finally:

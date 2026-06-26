@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 from docker_daemon import daemon_available
 
-from beetroot import api, config, paths, registry, snapshot
+from beetroot import api, compose, config, paths, registry, snapshot
 
 # These restore flows free the source slot via ``destroy`` → ``compose down``,
 # which needs a live Docker daemon; skip (don't fail) when there isn't one.
@@ -50,8 +50,13 @@ def _assert_invariants(name: str, *, expect_frida: bool) -> None:
     assert env_path.is_file(), f"no .env at {env_path}"
     env = _parse_env(env_path.read_text())
     assert env.get("INSTANCE_NAME") == name, env
-    assert "ADB_PORT" in env
-    assert "FRIDA_PORT" in env
+    # (a2) the per-instance compose ports override exists and carries the
+    # well-known guest mappings (issue #108 moved ports out of .env).
+    override_path = paths.instance_compose_override(inst.root)
+    assert override_path.is_file(), f"no compose.override.yaml at {override_path}"
+    override_text = override_path.read_text()
+    assert ":5555" in override_text
+    assert ":27042" in override_text
     # (b) frida-server exists. Placeholder when no frida block;
     # executable when there is one.
     frida_path = paths.instance_frida(inst.root)
@@ -64,7 +69,7 @@ def _assert_invariants(name: str, *, expect_frida: bool) -> None:
         assert frida_path.stat().st_mode & 0o111 == 0
     # (c) load round-trips and ports don't collide against the rest of
     # the registry.
-    others = {n: p for n, p in registry.all_resolved_ports().items() if n != name}
+    others = {n: p for n, p in registry.all_resolved_host_ports().items() if n != name}
     assert registry.find_port_collision(inst.ports, others) is None
 
 
@@ -136,6 +141,46 @@ def test_apply_leaves_instance_ready_to_up(cli_root: Path) -> None:
     _assert_invariants("alpha", expect_frida=False)
 
 
+def test_up_regenerates_missing_compose_override(
+    cli_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # BLOCKER guard (issue #108): an instance whose compose.override.yaml was
+    # deleted (pre-v8, or a manual rm) would boot with ZERO published ports
+    # because the bundled template publishes none. ``up`` must self-heal the
+    # override before starting compose.
+    api.Instance.create("alpha")
+    inst = api.Instance.load("alpha")
+    override = paths.instance_compose_override(inst.root)
+    override.unlink()
+    assert not override.is_file()
+
+    called: list[tuple[str, Path]] = []
+    monkeypatch.setattr(compose, "up", lambda name, root: called.append((name, root)))
+
+    inst.up()
+
+    assert override.is_file(), "up() did not regenerate the missing override"
+    assert ":5555" in override.read_text()
+    assert called == [("alpha", inst.root)]
+
+
+def test_up_does_not_restage_when_override_present(
+    cli_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # When the override already exists, ``up`` must NOT re-stage (no needless
+    # work, and no clobbering an override the user may have tweaked between
+    # apply and up): it just starts compose.
+    api.Instance.create("alpha")
+    inst = api.Instance.load("alpha")
+    staged: list[str] = []
+    monkeypatch.setattr(compose, "up", lambda name, root: None)
+    monkeypatch.setattr(inst, "_stage_local", lambda: staged.append("staged"))
+
+    inst.up()
+
+    assert staged == []
+
+
 # ---------------------------------------------------------------------------
 # Negative case: prove the invariants helper detects a port-collision
 # regression. If the operation forgets to refuse a collision, the
@@ -152,9 +197,15 @@ def test_invariants_helper_detects_collision_regression(cli_root: Path) -> None:
     # (bypassing api.Instance.create's collision check).
     target = cli_root / "bravo"
     target.mkdir()
+    pinned = [
+        config.PortMapping(
+            service=m.service, guest=m.guest, host=5555 if m.service == "adb" else None
+        )
+        for m in config._default_port_mappings()
+    ]
     config.write_yaml(
         target / "beetroot.yaml",
-        config.InstanceConfig(ports=config.Ports(adb=5555)),
+        config.InstanceConfig(ports=pinned),
     )
     registry.add_allocating("bravo", target)
     with pytest.raises(AssertionError):

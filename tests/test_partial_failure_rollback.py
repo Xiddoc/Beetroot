@@ -326,7 +326,13 @@ class TestRestoreRollback:
         # collision → rollback. The rolled-back state must have no
         # registry entry AND no leftover directory.
         src = cli_root / "src"
-        cfg = config.InstanceConfig(ports=config.Ports(adb=5555))
+        pinned = [
+            config.PortMapping(
+                service=m.service, guest=m.guest, host=5555 if m.service == "adb" else None
+            )
+            for m in config._default_port_mappings()
+        ]
+        cfg = config.InstanceConfig(ports=pinned)
         api.Instance.create("src", path=src, cfg=cfg)
         archive = snapshot.snapshot(src, cli_root / "src.tar.zst")
 

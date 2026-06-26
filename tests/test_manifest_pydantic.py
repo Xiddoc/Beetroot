@@ -5,6 +5,7 @@ model with ``frozen=True, extra="forbid"``. These tests pin the
 forward-compat shape (the ``kind`` discriminator + ``path_layout``) and
 the rejection of unknown future keys.
 """
+
 from __future__ import annotations
 
 import io
@@ -30,7 +31,9 @@ def _make_instance(root: Path) -> Path:
 
 
 def _repack_with_custom_manifest(
-    archive: Path, new_archive: Path, manifest_bytes: bytes,
+    archive: Path,
+    new_archive: Path,
+    manifest_bytes: bytes,
 ) -> Path:
     dctx = zstandard.ZstdDecompressor()
     members: list[tuple[tarfile.TarInfo, bytes]] = []
@@ -101,9 +104,7 @@ class TestManifestModel:
 
 
 class TestManifestArchiveRoundTrip:
-    def test_archive_round_trips_path_layout(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_archive_round_trips_path_layout(self, isolated_registry: Path, tmp_path: Path) -> None:
         # Snapshot today writes ``path_layout: {}``; the archive
         # round-trip preserves whatever the manifest carries.
         src = _make_instance(tmp_path / "alpha")
@@ -133,7 +134,9 @@ class TestManifestArchiveRoundTrip:
             "path_layout": {"frida": "/data/local/tmp/x"},
         }
         _repack_with_custom_manifest(
-            archive, replaced, json.dumps(forged).encode("utf-8"),
+            archive,
+            replaced,
+            json.dumps(forged).encode("utf-8"),
         )
         parsed = snapshot.read_manifest(replaced)
         assert parsed.path_layout == {"frida": "/data/local/tmp/x"}
@@ -156,14 +159,14 @@ class TestManifestArchiveRoundTrip:
             "future_field_v0_6": "surprise",
         }
         _repack_with_custom_manifest(
-            archive, broken, json.dumps(forged).encode("utf-8"),
+            archive,
+            broken,
+            json.dumps(forged).encode("utf-8"),
         )
         with pytest.raises(snapshot.SnapshotError, match="validation failed"):
             snapshot.read_manifest(broken)
 
-    def test_wrong_kind_rejected(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_wrong_kind_rejected(self, isolated_registry: Path, tmp_path: Path) -> None:
         # v0.4 snapshots are redroid-only; an adb-shaped manifest must
         # be rejected so a future v0.6 cross-backend snapshot story
         # doesn't accidentally land on a v0.4 host.
@@ -181,7 +184,9 @@ class TestManifestArchiveRoundTrip:
             "path_layout": {},
         }
         _repack_with_custom_manifest(
-            archive, broken, json.dumps(forged).encode("utf-8"),
+            archive,
+            broken,
+            json.dumps(forged).encode("utf-8"),
         )
         with pytest.raises(snapshot.SnapshotError, match="validation failed"):
             snapshot.read_manifest(broken)

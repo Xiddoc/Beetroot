@@ -5,9 +5,12 @@ The compose template ships inside the wheel (see
 :func:`paths.bundled_compose_file`); the per-instance state lives under
 the instance directory (``--project-directory <instance_dir>``). We always
 invoke compose with ``-p <project>`` set to the instance name and
-``--env-file`` pointing at the instance's generated .env. Compose is
-authoritative for container state — the registry only knows about
-allocation, not runtime status.
+``--env-file`` pointing at the instance's generated .env. When the instance
+has a generated ``compose.override.yaml`` (the variable-length ``ports:``
+list, issue #108) it is layered on with a second ``-f``; the override is
+omitted when absent so ``down`` / ``ps`` / ``logs`` still work before the
+first ``apply``. Compose is authoritative for container state — the registry
+only knows about allocation, not runtime status.
 """
 
 from __future__ import annotations
@@ -71,18 +74,26 @@ def _ensure_docker() -> None:
 
 def _base_cmd(name: str, instance_root: Path) -> list[str]:
     _ensure_docker()
-    return [
+    cmd = [
         settings.docker_bin,
         "compose",
         "-p",
         name,
         "-f",
         str(paths.bundled_compose_file()),
+    ]
+    # Layer the per-instance ports override (issue #108) only when it exists,
+    # so down/ps/logs still work before the first ``apply`` has staged it.
+    override = paths.instance_compose_override(instance_root)
+    if override.is_file():
+        cmd += ["-f", str(override)]
+    cmd += [
         "--project-directory",
         str(instance_root),
         "--env-file",
         str(paths.instance_env(instance_root)),
     ]
+    return cmd
 
 
 def run(

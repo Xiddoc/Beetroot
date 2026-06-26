@@ -6,6 +6,7 @@ user-input → final-artifact behavior tests for the path refactor
 (the ``fix/ports-resolver-self-collision`` pattern, generalised to also
 assert on the resulting ``.env`` content).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,12 +16,20 @@ import pytest
 from typer.testing import CliRunner
 
 from beetroot import cli, paths, registry
-from beetroot.config import InstanceConfig, Ports, write_yaml
+from beetroot.config import InstanceConfig, PortMapping, _default_port_mappings, write_yaml
 
 runner = CliRunner()
 
 
-def _write_pinned_yaml(root: Path, ports: Ports) -> None:
+def _pinned(**hosts: int) -> list[PortMapping]:
+    """Return the seeded well-known mappings with explicit host overrides applied."""
+    return [
+        PortMapping(service=m.service, guest=m.guest, host=hosts.get(m.service or ""))
+        for m in _default_port_mappings()
+    ]
+
+
+def _write_pinned_yaml(root: Path, ports: list[PortMapping]) -> None:
     """Write a beetroot.yaml that pins specific port overrides.
 
     ``frida=None`` keeps ``_stage_instance`` off the network — without
@@ -53,7 +62,7 @@ class TestCmdCreateCollision:
         allocator would otherwise hand bravo.
         """
         assert runner.invoke(cli.app, ["create", "alpha"]).exit_code == 0
-        _write_pinned_yaml(registry.instance_path("alpha"), Ports(adb=5565))
+        _write_pinned_yaml(registry.instance_path("alpha"), _pinned(adb=5565))
         assert runner.invoke(cli.app, ["apply", "alpha"]).exit_code == 0
 
         result = runner.invoke(cli.app, ["create", "bravo"])
@@ -76,7 +85,7 @@ class TestCmdApplyCollision:
         runner.invoke(cli.app, ["create", "alpha"])
         runner.invoke(cli.app, ["create", "bravo"])
         bravo_root = registry.instance_path("bravo")
-        _write_pinned_yaml(bravo_root, Ports(adb=5555))
+        _write_pinned_yaml(bravo_root, _pinned(adb=5555))
         result = runner.invoke(cli.app, ["apply", "bravo"])
         assert result.exit_code == 1
         assert "5555" in result.stderr
@@ -87,7 +96,7 @@ class TestCmdApplyCollision:
         runner.invoke(cli.app, ["create", "alpha"])
         runner.invoke(cli.app, ["create", "bravo"])
         bravo_root = registry.instance_path("bravo")
-        _write_pinned_yaml(bravo_root, Ports(adb=5555))
+        _write_pinned_yaml(bravo_root, _pinned(adb=5555))
         result = runner.invoke(cli.app, ["apply", "bravo"])
         assert result.exit_code == 1
         assert result.stderr.rstrip("\n") == (
@@ -99,17 +108,15 @@ class TestCmdApplyCollision:
         runner.invoke(cli.app, ["create", "alpha"])
         runner.invoke(cli.app, ["create", "bravo"])
         bravo_root = registry.instance_path("bravo")
-        _write_pinned_yaml(bravo_root, Ports(frida=27042))
+        _write_pinned_yaml(bravo_root, _pinned(frida=27042))
         result = runner.invoke(cli.app, ["apply", "bravo"])
         assert result.exit_code == 1
         assert "27042" in result.stderr
 
-    def test_apply_detects_new_collision_against_other_instance(
-        self, cli_root: Path
-    ) -> None:
+    def test_apply_detects_new_collision_against_other_instance(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])
         runner.invoke(cli.app, ["create", "bravo"])
-        _write_pinned_yaml(registry.instance_path("bravo"), Ports(adb=5555))
+        _write_pinned_yaml(registry.instance_path("bravo"), _pinned(adb=5555))
         result = runner.invoke(cli.app, ["apply", "bravo"])
         assert result.exit_code == 1
         assert "5555" in result.stderr
@@ -119,7 +126,7 @@ class TestCmdApplyCollision:
 
         runner.invoke(cli.app, ["create", "alpha"])
         runner.invoke(cli.app, ["create", "bravo"])
-        _write_pinned_yaml(registry.instance_path("bravo"), Ports(adb=5555))
+        _write_pinned_yaml(registry.instance_path("bravo"), _pinned(adb=5555))
         # T8 moved staging onto Instance._stage; the collision precheck
         # in Instance.apply must still bail out before it runs.
         with patch.object(api.Instance, "_stage") as fake_stage:
@@ -127,6 +134,25 @@ class TestCmdApplyCollision:
             assert result.exit_code == 1
             assert "5555" in result.stderr
             fake_stage.assert_not_called()
+
+    def test_apply_arbitrary_port_collision_detected(self, cli_root: Path) -> None:
+        # issue #108: a cross-instance clash over an *arbitrary* host port
+        # (not just the three well-known services) must be caught — this
+        # exercises all_resolved_host_ports enumerating arbitrary entries.
+        runner.invoke(cli.app, ["create", "alpha"])
+        runner.invoke(cli.app, ["create", "bravo"])
+        arbitrary = [*_default_port_mappings(), PortMapping(guest=8080, host=51000)]
+        _write_pinned_yaml(registry.instance_path("alpha"), arbitrary)
+        assert runner.invoke(cli.app, ["apply", "alpha"]).exit_code == 0
+        # bravo pins the SAME arbitrary host port → collide.
+        _write_pinned_yaml(
+            registry.instance_path("bravo"),
+            [*_default_port_mappings(), PortMapping(guest=9090, host=51000)],
+        )
+        result = runner.invoke(cli.app, ["apply", "bravo"])
+        assert result.exit_code == 1
+        assert "51000" in result.stderr
+        assert "alpha" in result.stderr
 
 
 class TestCmdCreateEndToEndEnvBytes:
@@ -168,13 +194,13 @@ class TestCmdCreateEndToEndEnvBytes:
         # (defaults to the GMS pair) and switched the stealth-path
         # defaults from empty to the known-safe v0.3 container paths;
         # this pins the full byte-for-byte ordering of the .env so
-        # render_env can't drift silently.
+        # render_env can't drift silently. Since v8 (issue #108) the
+        # port mappings moved OUT of .env and into compose.override.yaml,
+        # so the .env no longer carries ADB_PORT / FRIDA_PORT lines —
+        # those are asserted on the override artifact below.
         expected_alpha = (
             b"INSTANCE_NAME=alpha\n"
             b"BASE_IMAGE=redroid/redroid:14.0.0_litegapps_houdini_magisk\n"
-            b"ADB_PORT=5555\n"
-            b"FRIDA_PORT=27042\n"
-            b"FRIDA_PORT_CONTROL=27043\n"
             b"MEM_LIMIT=3g\n"
             b"CPUS=2.0\n"
             b"SHM_SIZE=256m\n"
@@ -192,9 +218,6 @@ class TestCmdCreateEndToEndEnvBytes:
         expected_bravo = (
             b"INSTANCE_NAME=bravo\n"
             b"BASE_IMAGE=redroid/redroid:14.0.0_litegapps_houdini_magisk\n"
-            b"ADB_PORT=5565\n"
-            b"FRIDA_PORT=27052\n"
-            b"FRIDA_PORT_CONTROL=27053\n"
             b"MEM_LIMIT=3g\n"
             b"CPUS=2.0\n"
             b"SHM_SIZE=256m\n"
@@ -211,6 +234,17 @@ class TestCmdCreateEndToEndEnvBytes:
         )
         assert alpha_env_bytes == expected_alpha
         assert bravo_env_bytes == expected_bravo
+
+        # The variable-length port list is now the override artifact — assert
+        # each instance gets its stride-allocated host ports there (issue #108).
+        alpha_override = paths.instance_compose_override(alpha_root).read_text()
+        bravo_override = paths.instance_compose_override(bravo_root).read_text()
+        assert '"5555:5555"' in alpha_override
+        assert '"27042:27042"' in alpha_override
+        assert '"27043:27043"' in alpha_override
+        assert '"5565:5555"' in bravo_override
+        assert '"27052:27042"' in bravo_override
+        assert '"27053:27043"' in bravo_override
 
     def test_apply_from_subdir_of_instance_finds_root_via_cwd(
         self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -230,3 +264,30 @@ class TestCmdCreateEndToEndEnvBytes:
         result = runner.invoke(cli.app, ["apply", "alpha"])
         assert result.exit_code == 0, result.stderr
         assert paths.instance_env(alpha_root).exists()
+
+    def test_arbitrary_and_explicit_ports_in_override_end_to_end(self, cli_root: Path) -> None:
+        # The crux artifact, end-to-end: create with an explicit-host arbitrary
+        # mapping plus an auto-allocated one, then assert the staged override
+        # YAML carries every resolved entry (issue #108).
+        import yaml
+
+        from beetroot import api, config
+
+        root = cli_root / "gamma"
+        cfg = config.InstanceConfig(
+            ports=[
+                *config._default_port_mappings(),
+                config.PortMapping(guest=8080, host=9000),
+                config.PortMapping(guest=8081),
+            ],
+            frida=None,
+        )
+        api.Instance.create("gamma", path=root, cfg=cfg)
+        doc = yaml.safe_load(paths.instance_compose_override(root).read_text())
+        assert set(doc["services"]["phone"]["ports"]) == {
+            "5555:5555",
+            "27042:27042",
+            "27043:27043",
+            "9000:8080",
+            "40000:8081",
+        }

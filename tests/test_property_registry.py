@@ -11,6 +11,7 @@ longer self-describing.
 Pinned to derandomized hypothesis settings so CI failures reproduce
 exactly.
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -48,7 +49,12 @@ def redroid_meta(draw: st.DrawFn) -> InstanceMeta:
     return InstanceMeta(
         backend=backend,
         index=draw(st.integers(min_value=0, max_value=10_000)),
-        created_at=draw(st.datetimes(min_value=datetime(2020, 1, 1, tzinfo=UTC).replace(tzinfo=None), max_value=datetime(2050, 1, 1, tzinfo=UTC).replace(tzinfo=None))).replace(tzinfo=UTC),
+        created_at=draw(
+            st.datetimes(
+                min_value=datetime(2020, 1, 1, tzinfo=UTC).replace(tzinfo=None),
+                max_value=datetime(2050, 1, 1, tzinfo=UTC).replace(tzinfo=None),
+            )
+        ).replace(tzinfo=UTC),
     )
 
 
@@ -59,7 +65,12 @@ def adb_meta(draw: st.DrawFn) -> InstanceMeta:
     return InstanceMeta(
         backend=backend,
         index=draw(st.integers(min_value=0, max_value=10_000)),
-        created_at=draw(st.datetimes(min_value=datetime(2020, 1, 1, tzinfo=UTC).replace(tzinfo=None), max_value=datetime(2050, 1, 1, tzinfo=UTC).replace(tzinfo=None))).replace(tzinfo=UTC),
+        created_at=draw(
+            st.datetimes(
+                min_value=datetime(2020, 1, 1, tzinfo=UTC).replace(tzinfo=None),
+                max_value=datetime(2050, 1, 1, tzinfo=UTC).replace(tzinfo=None),
+            )
+        ).replace(tzinfo=UTC),
     )
 
 

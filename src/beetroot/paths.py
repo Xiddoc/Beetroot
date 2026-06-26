@@ -77,6 +77,18 @@ def instance_env(root: Path) -> Path:
     return root / ".env"
 
 
+def instance_compose_override(root: Path) -> Path:
+    """
+    Return ``<root>/compose.override.yaml`` — the per-instance compose overlay.
+
+    Carries the variable-length ``ports:`` list (issue #108) that a flat
+    ``.env`` can't express; the CLI layers it on top of the bundled template
+    with a second ``-f`` when it exists. Regenerated from ``beetroot.yaml`` on
+    each ``beetroot apply``, like ``.env``.
+    """
+    return root / "compose.override.yaml"
+
+
 def instance_data(root: Path) -> Path:
     """
     Return ``<root>/data/`` — bind-mounted to ``/data`` inside the container.

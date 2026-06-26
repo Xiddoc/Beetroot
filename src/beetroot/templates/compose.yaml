@@ -36,10 +36,10 @@ services:
       BEETROOT_FRIDA_BIN: ${BEETROOT_FRIDA_BIN:-/data/local/tmp/frida-server}
       BEETROOT_DENYLIST_PACKAGES: ${BEETROOT_DENYLIST_PACKAGES:-}
 
-    ports:
-      - "${ADB_PORT}:5555"
-      - "${FRIDA_PORT}:27042"
-      - "${FRIDA_PORT_CONTROL}:27043"
+    # The ``ports:`` mapping is supplied per-instance via the generated
+    # compose.override.yaml (issue #108) — a flat .env can't expand into a
+    # variable-length YAML list. The CLI layers that file on with a second
+    # ``-f`` when it exists; see config.render_compose_ports_override.
 
     command:
       - androidboot.redroid_width=${DISPLAY_WIDTH:-540}

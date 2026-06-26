@@ -37,13 +37,14 @@ research-stealth  redroid  1    localhost:5565        localhost:27052       runn
 
 ## Pinning ports
 
-By default ports are allocated from the stride table above. To pin a port for a specific instance (for example, to keep a stable host port across destroy/recreate cycles, or to coordinate with a tool that targets a fixed port), add a `ports:` block to its `beetroot.yaml`:
+By default ports are allocated from the stride table above. Since `api_version: 8` the `ports:` block is a **list** of `{service, guest, host}` mappings (issue #108). To pin a port for a specific instance (for example, to keep a stable host port across destroy/recreate cycles, or to coordinate with a tool that targets a fixed port), give the entry an explicit `host`:
 
 ```yaml
 ports:
-  adb: 9000           # pin ADB to 9000
-  # frida: 9001       # optional — omit to take the stride default
-  # frida_control: 9002
+  - {service: adb, guest: 5555, host: 9000}   # pin ADB to 9000
+  - {service: frida, guest: 27042}            # host unset → stride default
+  - {service: frida_control, guest: 27043}
+  - {guest: 8080, host: 9090}                 # forward an arbitrary in-guest port
 ```
 
 Then re-stage:
@@ -53,7 +54,7 @@ beetroot apply research-clean
 beetroot down research-clean && beetroot up research-clean
 ```
 
-Each field is independently optional. Fields you omit fall back to the stride allocation, so you can pin one port (say, ADB) and leave the Frida ports on stride.
+An entry whose `host` is unset falls back to the stride allocation, so you can pin one port (say, ADB) and leave the Frida ports on stride. You can also forward arbitrary in-guest ports beyond the three well-known services.
 
 If you pin a port that another instance already uses, `beetroot create` and `beetroot apply` exit with a clear error before staging:
 

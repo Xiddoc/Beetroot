@@ -1,4 +1,5 @@
 """Shared fixtures for the beetroot test suite."""
+
 from __future__ import annotations
 
 import subprocess
@@ -118,9 +119,7 @@ def _reset_consoles() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _assume_binder_ready(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _assume_binder_ready(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Default every test to a binder-capable host unless it opts out.
 
     The ``up`` preflight and the redroid ``doctor`` host check both call
@@ -150,9 +149,7 @@ def _assume_binder_ready(
 
 
 @pytest.fixture
-def isolated_registry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Path:
+def isolated_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect the XDG dirs Beetroot consumes to per-test tmp subdirs.
 
     The user-global registry lives under ``$XDG_CONFIG_HOME/beetroot/`` and
@@ -167,9 +164,7 @@ def isolated_registry(
 
 
 @pytest.fixture
-def isolated_instance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Path:
+def isolated_instance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Create a minimal instance dir, chdir into it, return its path.
 
     Writes ``tmp_path/instance/beetroot.yaml`` with the minimum valid
@@ -229,7 +224,10 @@ def stub_run_failures(
             captured.append(list(cmd))
             if cmd == ["adb", "devices"]:
                 return subprocess.CompletedProcess(
-                    args=cmd, returncode=0, stdout=devices_stdout, stderr="",
+                    args=cmd,
+                    returncode=0,
+                    stdout=devices_stdout,
+                    stderr="",
                 )
             failing = should_fail(cmd)
             return subprocess.CompletedProcess(
@@ -246,9 +244,7 @@ def stub_run_failures(
 
 
 @pytest.fixture
-def cli_root(
-    isolated_registry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Path:
+def cli_root(isolated_registry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Composite fixture: XDG isolation + stubbed externals + chdir into tmp.
 
     Every subprocess invocation is short-circuited at the test level, so
@@ -269,7 +265,9 @@ def cli_root(
     from beetroot import frida_download
 
     def _fake_download(
-        version: str, *, expected_sha256: str | None = None,
+        version: str,
+        *,
+        expected_sha256: str | None = None,
     ) -> Path:
         out = frida_download.cached_binary(version)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -281,6 +279,7 @@ def cli_root(
         # must see the same ValueError they would in production.
         if expected_sha256 is not None:
             import hashlib
+
             actual = hashlib.sha256(out.read_bytes()).hexdigest()
             if actual.lower() != expected_sha256.lower():
                 raise ValueError(

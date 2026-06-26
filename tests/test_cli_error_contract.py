@@ -12,6 +12,7 @@ exception, then assert the CLI's user-visible contract:
 * stderr starts with "error:"
 * stderr does NOT contain "Traceback"
 """
+
 from __future__ import annotations
 
 import io
@@ -28,9 +29,7 @@ _CORPUS_DIR = Path(__file__).parent / "corpus"
 _CORPUS_FILES = sorted(_CORPUS_DIR.glob("*.yaml"))
 
 
-def _run_main_with_argv(
-    argv: list[str], monkeypatch: pytest.MonkeyPatch
-) -> tuple[int, str]:
+def _run_main_with_argv(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> tuple[int, str]:
     """Drive cli.main() under a faked argv. Returns (exit_code, stderr)."""
     monkeypatch.setattr(sys, "argv", argv)
     buf = io.StringIO()
@@ -52,9 +51,7 @@ class TestComposeErrorSurfacing:
             raise compose.ComposeError("simulated compose up failure")
 
         monkeypatch.setattr(compose, "up", _boom)
-        code, err = _run_main_with_argv(
-            ["beetroot", "up", "alpha"], monkeypatch
-        )
+        code, err = _run_main_with_argv(["beetroot", "up", "alpha"], monkeypatch)
         assert code == 1
         assert "error:" in err
         assert "simulated compose up failure" in err
@@ -71,9 +68,7 @@ class TestComposeErrorSurfacing:
         # `destroy` deliberately catches ComposeError inside the verb;
         # the `down` verb does NOT, so it should surface here.
         monkeypatch.setattr(compose, "down", _boom)
-        code, err = _run_main_with_argv(
-            ["beetroot", "down", "alpha"], monkeypatch
-        )
+        code, err = _run_main_with_argv(["beetroot", "down", "alpha"], monkeypatch)
         assert code == 1
         assert "error:" in err
         assert "simulated down" in err
@@ -88,9 +83,7 @@ class TestComposeErrorSurfacing:
             raise compose.ComposeError("restart kaboom")
 
         monkeypatch.setattr(compose, "down", _boom)
-        code, err = _run_main_with_argv(
-            ["beetroot", "restart", "alpha"], monkeypatch
-        )
+        code, err = _run_main_with_argv(["beetroot", "restart", "alpha"], monkeypatch)
         assert code == 1
         assert "error:" in err
         assert "restart kaboom" in err
@@ -108,9 +101,7 @@ class TestComposeErrorSurfacing:
         # build verb is exercised below.
         CliRunner().invoke(cli.app, ["create", "alpha"])
         # No exception expected for plain apply.
-        code, err = _run_main_with_argv(
-            ["beetroot", "apply", "alpha"], monkeypatch
-        )
+        code, err = _run_main_with_argv(["beetroot", "apply", "alpha"], monkeypatch)
         assert code == 0
         assert "error:" not in err
 
@@ -125,9 +116,7 @@ class TestBootstrapErrorSurfacing:
             raise builder.BootstrapError("simulated bootstrap failure")
 
         monkeypatch.setattr(builder, "build_image", _boom)
-        code, err = _run_main_with_argv(
-            ["beetroot", "build", "minimal"], monkeypatch
-        )
+        code, err = _run_main_with_argv(["beetroot", "build", "minimal"], monkeypatch)
         assert code == 1
         assert "error:" in err
         assert "simulated bootstrap failure" in err
@@ -155,9 +144,7 @@ class TestHostileConfigSurfacing:
         # dir vanishing from the wheel) making every case below a no-op.
         assert _CORPUS_FILES, f"no corpus files under {_CORPUS_DIR}"
 
-    @pytest.mark.parametrize(
-        "corpus_file", _CORPUS_FILES, ids=[p.stem for p in _CORPUS_FILES]
-    )
+    @pytest.mark.parametrize("corpus_file", _CORPUS_FILES, ids=[p.stem for p in _CORPUS_FILES])
     def test_register_hostile_yaml_is_friendly(
         self,
         corpus_file: Path,
@@ -186,11 +173,9 @@ class TestHostileConfigSurfacing:
         # ``pydantic.ValidationError`` tracebacked; ``cli.main`` now nets it.
         CliRunner().invoke(cli.app, ["create", "alpha"])
         (cli_root / "alpha" / "beetroot.yaml").write_text(
-            'api_version: 7\nresources:\n  cpus: "lots"\n'
+            'api_version: 8\nresources:\n  cpus: "lots"\n'
         )
-        code, err = _run_main_with_argv(
-            ["beetroot", "status", "alpha"], monkeypatch
-        )
+        code, err = _run_main_with_argv(["beetroot", "status", "alpha"], monkeypatch)
         assert code == 1
         assert err.startswith("error:")
         assert "Traceback" not in err
@@ -210,9 +195,7 @@ class TestRegistryErrorSurfacing:
             raise registry.RegistryError("simulated registry inconsistency")
 
         monkeypatch.setattr(cli, "app", _boom)
-        code, err = _run_main_with_argv(
-            ["beetroot", "ls"], monkeypatch
-        )
+        code, err = _run_main_with_argv(["beetroot", "ls"], monkeypatch)
         assert code == 1
         assert "error:" in err
         assert "simulated registry inconsistency" in err

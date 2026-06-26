@@ -12,11 +12,12 @@ appears in ``render_env``'s output for a representative
 ``InstanceConfig``. The build-only ``BEETROOT_BUILD_CONTEXT`` token
 is allowlisted because it's set by ``builder.py``, not ``render_env``.
 """
+
 from __future__ import annotations
 
 import re
 
-from beetroot import config, paths, ports
+from beetroot import config, paths
 
 # ``BEETROOT_BUILD_CONTEXT`` is consumed by ``builder.py`` via the
 # DefaultRunner env arg; the compose template references it via the
@@ -37,18 +38,13 @@ def _template_vars() -> set[str]:
 def _rendered_env_keys() -> set[str]:
     cfg = config.InstanceConfig(
         resources=config.Resources(
-            mem_reservation="2g", memswap_limit="4g",
+            mem_reservation="2g",
+            memswap_limit="4g",
         ),
         frida=config.Frida(version="16.4.10"),
     )
-    rendered = config.render_env(
-        "alpha", cfg, ports.resolve_ports(0, cfg.ports)
-    )
-    return {
-        line.partition("=")[0].strip()
-        for line in rendered.splitlines()
-        if "=" in line
-    }
+    rendered = config.render_env("alpha", cfg)
+    return {line.partition("=")[0].strip() for line in rendered.splitlines() if "=" in line}
 
 
 def test_every_template_var_has_a_render_env_line() -> None:
@@ -67,8 +63,7 @@ def test_render_env_emits_stealth_overrides() -> None:
     # if empty) so a future change to make them required by the
     # template doesn't break compose with a missing-var error.
     rendered = _rendered_env_keys()
-    for required in ("BEETROOT_MAGISK_DB", "BEETROOT_MODULES_DIR",
-                     "BEETROOT_FRIDA_BIN"):
+    for required in ("BEETROOT_MAGISK_DB", "BEETROOT_MODULES_DIR", "BEETROOT_FRIDA_BIN"):
         assert required in rendered, (
             f"render_env() does not emit {required}; bundled compose "
             f"template references it via ${{{required}:-}}."

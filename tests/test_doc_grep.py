@@ -4,6 +4,7 @@ This test file complements the live-code tests by asserting that obsolete
 spellings never reappear in user-facing prose. CHANGELOG.md is allow-listed
 because it preserves history under previous theme blocks.
 """
+
 from __future__ import annotations
 
 import re
@@ -15,10 +16,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # past tense ("`--preset` is gone", "paths.repo_root() referenced in custom
 # tooling") — that's its job. Excluding it from the grep keeps the gate
 # strict for every other page.
-ALLOWLISTED_PATHS: frozenset[str] = frozenset({
-    "CHANGELOG.md",
-    "migration-v0.2-to-v0.3.md",
-})
+ALLOWLISTED_PATHS: frozenset[str] = frozenset(
+    {
+        "CHANGELOG.md",
+        "migration-v0.2-to-v0.3.md",
+    }
+)
 
 DOC_FILES: list[Path] = [
     *(REPO_ROOT / "docs").rglob("*.md"),
@@ -116,9 +119,7 @@ _INVENTED_DESTROY_FLAGS: tuple[str, ...] = (
 def test_migration_guide_does_not_invent_destroy_flags() -> None:
     guide = REPO_ROOT / "docs" / "guides" / "migration-v0.2-to-v0.3.md"
     text = guide.read_text()
-    failures = [
-        flag for flag in _INVENTED_DESTROY_FLAGS if flag in text
-    ]
+    failures = [flag for flag in _INVENTED_DESTROY_FLAGS if flag in text]
     assert not failures, (
         f"Migration guide cites flags that don't exist on `beetroot "
         f"destroy`: {failures}. The real cleanup verb for an orphan is "

@@ -15,6 +15,7 @@ would refuse or — worse — silently mis-parse.
 
 Hypothesis is derandomized so CI failures reproduce.
 """
+
 from __future__ import annotations
 
 import re
@@ -23,7 +24,7 @@ from typing import Literal
 import hypothesis.strategies as st
 from hypothesis import given, settings
 
-from beetroot import config, ports
+from beetroot import config
 
 _GappsLit = Literal["none", "minimal", "full"]
 _RenderingLit = Literal["gpu", "software", "auto"]
@@ -69,14 +70,13 @@ def instance_configs(draw: st.DrawFn) -> config.InstanceConfig:
     )
 
 
-@given(cfg=instance_configs(), index=st.integers(min_value=0, max_value=100))
+@given(cfg=instance_configs())
 @settings(deadline=None, derandomize=True, max_examples=200)
 def test_render_env_lines_are_shell_safe_key_value_pairs(
-    cfg: config.InstanceConfig, index: int,
+    cfg: config.InstanceConfig,
 ) -> None:
     """Every rendered .env line parses as a shell-safe KEY=VALUE pair."""
-    resolved = ports.resolve_ports(index, cfg.ports)
-    out = config.render_env("alpha", cfg, resolved)
+    out = config.render_env("alpha", cfg)
     # The trailing newline is intentional; split on "\n" and drop the
     # empty tail.
     raw_lines = out.splitlines()
@@ -91,24 +91,20 @@ def test_render_env_lines_are_shell_safe_key_value_pairs(
         # default-emit-empty line) but must still be free of
         # shell-injection chars.
         for bad in _INJECTION_CHARS:
-            assert bad not in value, (
-                f"shell-injection character {bad!r} in value of {line!r}"
-            )
+            assert bad not in value, f"shell-injection character {bad!r} in value of {line!r}"
 
 
 @given(cfg=instance_configs())
 @settings(deadline=None, derandomize=True, max_examples=50)
 def test_render_env_emits_required_keys(cfg: config.InstanceConfig) -> None:
     """The compose template's required substitutions are always present."""
-    resolved = ports.resolve_ports(0, cfg.ports)
-    out = config.render_env("alpha", cfg, resolved)
+    out = config.render_env("alpha", cfg)
     keys = {line.split("=", 1)[0] for line in out.splitlines() if "=" in line}
+    # Ports moved to compose.override.yaml in v8 (issue #108), so ADB_PORT /
+    # FRIDA_PORT are no longer emitted here.
     required = {
         "INSTANCE_NAME",
         "BASE_IMAGE",
-        "ADB_PORT",
-        "FRIDA_PORT",
-        "FRIDA_PORT_CONTROL",
         "MEM_LIMIT",
         "CPUS",
         "SHM_SIZE",

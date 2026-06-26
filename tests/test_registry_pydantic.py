@@ -7,6 +7,7 @@ tests pin the round-trip, the discriminator validation, and the
 adb-shaped second variant of the union — none of which existed before
 T1.
 """
+
 from __future__ import annotations
 
 import json
@@ -88,12 +89,8 @@ class TestRegistryFileRoundTrip:
         path = tmp_path / "instances.json"
         registry._write(path, original)
         rebuilt = registry._read(path)
-        assert isinstance(
-            rebuilt.instances["alpha"].backend, RedroidBackendConfig
-        )
-        assert isinstance(
-            rebuilt.instances["phone"].backend, AdbBackendConfig
-        )
+        assert isinstance(rebuilt.instances["alpha"].backend, RedroidBackendConfig)
+        assert isinstance(rebuilt.instances["phone"].backend, AdbBackendConfig)
 
     def test_empty_round_trip(self, tmp_path: Path) -> None:
         original = RegistryFile()
@@ -257,8 +254,8 @@ class TestAllResolvedPortsIncludesAdb:
         # B4 fix: adb-kind rows use stride-of-10 defaults (no yaml to
         # consult) and ARE included so a redroid instance can't silently
         # collide with an adopted device's Frida port.
-        assert registry.all_resolved_ports() == {
-            "phone": {"adb": 5555, "frida": 27042, "frida_control": 27043},
+        assert registry.all_resolved_host_ports() == {
+            "phone": {5555, 27042, 27043},
         }
 
 
@@ -272,9 +269,7 @@ def _write_mixed_registry(tmp_path: Path) -> Path:
     """
     redroid_root = tmp_path / "alpha"
     redroid_root.mkdir()
-    (redroid_root / "beetroot.yaml").write_text(
-        "api_version: 3\nandroid:\n  version: 14\n"
-    )
+    (redroid_root / "beetroot.yaml").write_text("api_version: 3\nandroid:\n  version: 14\n")
     path = paths.user_registry_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = RegistryFile(
@@ -298,9 +293,7 @@ def _write_mixed_registry(tmp_path: Path) -> Path:
 class TestAdbRowsSkippedByConsumers:
     """Every consumer that iterates the registry skips non-redroid rows."""
 
-    def test_snapshot_lookup_skips_adb(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_snapshot_lookup_skips_adb(self, isolated_registry: Path, tmp_path: Path) -> None:
         from beetroot import snapshot
 
         redroid_root = _write_mixed_registry(tmp_path)
@@ -314,9 +307,7 @@ class TestAdbRowsSkippedByConsumers:
         assert isinstance(meta.backend, RedroidBackendConfig)
         assert isinstance(backend, RedroidBackendConfig)
 
-    def test_manager_list_orphans_skips_adb(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_manager_list_orphans_skips_adb(self, isolated_registry: Path, tmp_path: Path) -> None:
         from beetroot import api
 
         # Set up a registry where the redroid row is valid (has YAML
@@ -326,18 +317,14 @@ class TestAdbRowsSkippedByConsumers:
         # the adb row is skipped from orphan-checking entirely.
         assert api.Manager.list_orphans() == []
 
-    def test_manager_list_skips_adb(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_manager_list_skips_adb(self, isolated_registry: Path, tmp_path: Path) -> None:
         from beetroot import api
 
         _write_mixed_registry(tmp_path)
         instances = api.Manager.list_instances()
         assert {i.name for i in instances} == {"alpha"}
 
-    def test_instance_from_path_skips_adb(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_instance_from_path_skips_adb(self, isolated_registry: Path, tmp_path: Path) -> None:
         from beetroot import api
 
         redroid_root = _write_mixed_registry(tmp_path)
@@ -348,9 +335,7 @@ class TestAdbRowsSkippedByConsumers:
         inst = api.Instance.from_path(redroid_root)
         assert inst.name == "alpha"
 
-    def test_instance_load_refuses_adb_kind(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_instance_load_refuses_adb_kind(self, isolated_registry: Path, tmp_path: Path) -> None:
         from beetroot import api
 
         _write_mixed_registry(tmp_path)
@@ -374,7 +359,8 @@ class TestAdbRowsSkippedByConsumers:
         dest.mkdir()
         (dest / "something").write_text("not empty")
         snapshot.restore(
-            archive, dest_name="restored", dest_path=dest, force=True,
+            archive,
+            dest_name="restored",
+            dest_path=dest,
+            force=True,
         )
-
-

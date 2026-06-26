@@ -6,6 +6,7 @@ directory is made; the device is managed outside Beetroot. These tests
 drive the full Typer entry point with a stubbed adb so the test is
 hermetic.
 """
+
 from __future__ import annotations
 
 import io
@@ -25,9 +26,7 @@ from beetroot.backends import adb as adb_backend
 runner = CliRunner()
 
 
-def _run_main_with_argv(
-    argv: list[str], monkeypatch: pytest.MonkeyPatch
-) -> tuple[int, str]:
+def _run_main_with_argv(argv: list[str], monkeypatch: pytest.MonkeyPatch) -> tuple[int, str]:
     """Drive cli.main() under a faked argv. Returns (exit_code, stderr)."""
     monkeypatch.setattr(sys, "argv", argv)
     buf = io.StringIO()
@@ -64,7 +63,8 @@ def stub_adb(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
 class TestAdoptVerb:
     def test_adopt_with_default_name(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         result = runner.invoke(cli.app, ["adopt", "emulator-5554"])
         assert result.exit_code == 0
@@ -76,10 +76,12 @@ class TestAdoptVerb:
         assert meta.backend.kind == "adb"
 
     def test_adopt_with_explicit_name(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         result = runner.invoke(
-            cli.app, ["adopt", "emulator-5554", "--name", "my-phone"],
+            cli.app,
+            ["adopt", "emulator-5554", "--name", "my-phone"],
         )
         assert result.exit_code == 0
         meta = registry.get("my-phone")
@@ -88,7 +90,8 @@ class TestAdoptVerb:
         assert meta.backend.serial == "emulator-5554"
 
     def test_adopt_with_network_serial_requires_explicit_name(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         # IPv4-shaped serials like ``192.168.1.10:5555`` contain dots,
         # which the [a-z0-9_-]+ grammar rejects. The CLI surfaces a
@@ -100,7 +103,8 @@ class TestAdoptVerb:
         assert "--name" in result.stderr
 
     def test_adopt_with_network_serial_and_explicit_name(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         result = runner.invoke(
             cli.app,
@@ -113,7 +117,8 @@ class TestAdoptVerb:
         assert meta.backend.serial == "192.168.1.10:5555"
 
     def test_adopt_collision_errors(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         runner.invoke(cli.app, ["adopt", "emulator-5554"])
         result = runner.invoke(cli.app, ["adopt", "emulator-5554"])
@@ -121,10 +126,12 @@ class TestAdoptVerb:
         assert "already registered" in result.stderr
 
     def test_adopt_invalid_explicit_name(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         result = runner.invoke(
-            cli.app, ["adopt", "emulator-5554", "--name", "Bad Name!"],
+            cli.app,
+            ["adopt", "emulator-5554", "--name", "Bad Name!"],
         )
         assert result.exit_code != 0
 
@@ -133,7 +140,8 @@ class TestAdoptedInstanceDispatch:
     """Verbs that go through ``Manager.resolve`` work for adb-kind rows."""
 
     def test_manager_resolve_returns_adb_device(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
         backend = api.Manager.resolve("phone")
@@ -151,7 +159,9 @@ class TestAdoptedInstanceDispatch:
         import shutil
 
         monkeypatch.setattr(
-            shutil, "which", lambda name: f"/usr/bin/{name}",
+            shutil,
+            "which",
+            lambda name: f"/usr/bin/{name}",
         )
         runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
         result = runner.invoke(cli.app, ["shell", "phone"])
@@ -186,7 +196,8 @@ class TestAdoptedInstanceDispatch:
     ) -> None:
         runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
         code, err = _run_main_with_argv(
-            ["beetroot", "up", "phone"], monkeypatch,
+            ["beetroot", "up", "phone"],
+            monkeypatch,
         )
         # ``up`` against an adb-backed instance → BackendCapabilityError
         # → exit 2 (distinct from "instance not found" → 1).
@@ -201,7 +212,8 @@ class TestAdoptedInstanceDispatch:
     ) -> None:
         runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
         code, err = _run_main_with_argv(
-            ["beetroot", "destroy", "phone", "-y"], monkeypatch,
+            ["beetroot", "destroy", "phone", "-y"],
+            monkeypatch,
         )
         assert code == 2
         assert "not supported" in err
@@ -214,7 +226,8 @@ class TestAdoptedInstanceDispatch:
     ) -> None:
         runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
         code, err = _run_main_with_argv(
-            ["beetroot", "snapshot", "phone"], monkeypatch,
+            ["beetroot", "snapshot", "phone"],
+            monkeypatch,
         )
         assert code == 2
         # #128: the generic "not supported by the adb backend" message is
@@ -239,8 +252,12 @@ class TestModuleVerbAdbDispatch:
         # The module verb should have invoked ``adb -s emulator-5554
         # push <zip> /sdcard/Download/ModX.zip`` exactly once.
         assert [
-            "adb", "-s", "emulator-5554", "push",
-            str(zip_path), "/sdcard/Download/ModX.zip",
+            "adb",
+            "-s",
+            "emulator-5554",
+            "push",
+            str(zip_path),
+            "/sdcard/Download/ModX.zip",
         ] in stub_adb
 
 
@@ -261,7 +278,9 @@ class TestModuleVerbThirdParty:
 
             @classmethod
             def from_meta(
-                cls, name: str, backend: registry.BackendConfig,
+                cls,
+                name: str,
+                backend: registry.BackendConfig,
             ) -> _NoModuleBackend:
                 del backend
                 return cls(name)
@@ -302,7 +321,9 @@ class TestModuleVerbThirdParty:
         # discriminated-union can't accept a foreign ``kind``.
         backend = _NoModuleBackend("fake-1")
         monkeypatch.setattr(
-            api.Manager, "resolve", lambda name: backend,
+            api.Manager,
+            "resolve",
+            lambda name: backend,
         )
         # ``_ensure_exists`` checks registry.get; stub it for the test.
         monkeypatch.setattr(
@@ -332,7 +353,8 @@ class TestAdoptVerify:
 
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         result = runner.invoke(
-            cli.app, ["adopt", "emulator-5554", "--name", "phone", "--verify"],
+            cli.app,
+            ["adopt", "emulator-5554", "--name", "phone", "--verify"],
         )
         assert result.exit_code == 0
         assert registry.get("phone") is not None
@@ -359,7 +381,8 @@ class TestAdoptVerify:
 
         monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _no_devices)
         result = runner.invoke(
-            cli.app, ["adopt", "ghost-9999", "--name", "phone", "--verify"],
+            cli.app,
+            ["adopt", "ghost-9999", "--name", "phone", "--verify"],
         )
         assert result.exit_code != 0
         assert "not listed" in result.stderr or "device" in result.stderr
@@ -374,7 +397,8 @@ class TestAdoptVerify:
 
         monkeypatch.setattr(shutil, "which", lambda name: None)
         result = runner.invoke(
-            cli.app, ["adopt", "emulator-5554", "--name", "phone", "--verify"],
+            cli.app,
+            ["adopt", "emulator-5554", "--name", "phone", "--verify"],
         )
         assert result.exit_code != 0
         assert "adb not found" in result.stderr
@@ -385,7 +409,8 @@ class TestForgetVerb:
     """Tests for the ``beetroot forget`` verb."""
 
     def test_forget_removes_registry_row_for_adb_instance(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
         assert registry.get("phone") is not None
@@ -395,7 +420,8 @@ class TestForgetVerb:
         assert "forgot phone" in result.stdout
 
     def test_forget_removes_registry_row_for_redroid_instance(
-        self, cli_root: Path,
+        self,
+        cli_root: Path,
     ) -> None:
         result = runner.invoke(cli.app, ["create", "alpha"])
         assert result.exit_code == 0
@@ -407,7 +433,8 @@ class TestForgetVerb:
         assert instance_dir.exists()
 
     def test_forget_frees_port_index(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
         meta_before = registry.get("phone")
@@ -417,7 +444,8 @@ class TestForgetVerb:
         assert idx not in registry.used_indices()
 
     def test_forget_does_not_delete_host_dir(
-        self, cli_root: Path,
+        self,
+        cli_root: Path,
     ) -> None:
         runner.invoke(cli.app, ["create", "beta"])
         host_dir = cli_root / "beta"
@@ -426,7 +454,8 @@ class TestForgetVerb:
         assert host_dir.exists()
 
     def test_forget_errors_when_instance_not_found(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         result = runner.invoke(cli.app, ["forget", "nonexistent"])
         assert result.exit_code != 0

@@ -21,6 +21,7 @@ Covers the surfaces that were added or changed in this branch:
 * Corrupted / missing-key registry JSON rows are skipped silently
 * Duplicate legacy-hint suppression
 """
+
 from __future__ import annotations
 
 import json
@@ -328,9 +329,7 @@ class TestRegistryJsonEdgeCases:
         result = registry._read(path)
         assert "bad" not in result.instances
 
-    def test_corrupt_meta_row_is_skipped(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_corrupt_meta_row_is_skipped(self, isolated_registry: Path, tmp_path: Path) -> None:
         path = tmp_path / "reg.json"
         raw = {
             "version": registry.SCHEMA_VERSION,
@@ -393,9 +392,7 @@ class TestRegistryJsonEdgeCases:
 
 
 class TestManagerAll:
-    def test_all_returns_all_resolvable(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_all_returns_all_resolvable(self, isolated_registry: Path, tmp_path: Path) -> None:
         root = tmp_path / "alpha"
         root.mkdir()
         (root / "beetroot.yaml").write_text("api_version: 3\nandroid:\n  version: 14\n")
@@ -403,9 +400,7 @@ class TestManagerAll:
         result = api.Manager.all()
         assert any(b.name == "alpha" for b in result)
 
-    def test_all_skips_unresolvable(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_all_skips_unresolvable(self, isolated_registry: Path, tmp_path: Path) -> None:
         # An UnresolvedBackendConfig row that has no registered class must
         # be silently skipped by Manager.all.
         path = paths.user_registry_file()
@@ -479,9 +474,7 @@ class TestResetForTesting:
 
 
 class TestEntryPointCollision:
-    def test_different_class_same_kind_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_different_class_same_kind_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         class _AltBackend:
             @classmethod
             def from_meta(cls, name: str, backend_config: BackendConfigBase) -> _AltBackend:
@@ -495,11 +488,11 @@ class TestEntryPointCollision:
             fake_ep.load.return_value = _AltBackend
             monkeypatch.setattr(backends, "_ENTRY_POINTS_LOADED", False)
             monkeypatch.setattr(
-                backends, "entry_points", lambda group: [fake_ep],
+                backends,
+                "entry_points",
+                lambda group: [fake_ep],
             )
-            with pytest.raises(
-                backends.BackendRegistrationError, match="ep-collision-kind"
-            ):
+            with pytest.raises(backends.BackendRegistrationError, match="ep-collision-kind"):
                 backends._load_entry_point_backends()
         finally:
             backends._BACKEND_REGISTRY.pop("ep-collision-kind", None)
@@ -511,18 +504,15 @@ class TestEntryPointCollision:
 
 
 class TestInstanceInstallFridaNone:
-    def test_install_frida_none_raises_when_no_frida_block(
-        self, cli_root: Path
-    ) -> None:
+    def test_install_frida_none_raises_when_no_frida_block(self, cli_root: Path) -> None:
         inst = api.Instance.create("alpha")
         with pytest.raises(ValueError, match="no frida"):
             inst.install_frida(None)
 
-    def test_install_frida_none_uses_configured_version(
-        self, cli_root: Path
-    ) -> None:
+    def test_install_frida_none_uses_configured_version(self, cli_root: Path) -> None:
         # When version=None but cfg.frida IS set, use the pinned version.
         from beetroot.config import Frida, InstanceConfig
+
         cfg = InstanceConfig(frida=Frida(version="16.4.10"))
         inst = api.Instance.create("alpha", cfg=cfg)
         # The frida_download.stage_for_instance call is stubbed out
@@ -572,9 +562,7 @@ class TestCliMainCatchesInstanceNotFound:
 
 
 class TestUpVerbNonInstanceBackend:
-    def test_up_non_instance_backend_echoes_name(
-        self, isolated_registry: Path
-    ) -> None:
+    def test_up_non_instance_backend_echoes_name(self, isolated_registry: Path) -> None:
         # Synthesise a third-party Lifecycle backend.  When ``up`` is
         # called it must echo the plain "[beetroot] <name> up" line
         # (no ADB/Frida ports — those belong to Instance only).
@@ -584,7 +572,9 @@ class TestUpVerbNonInstanceBackend:
 
             @classmethod
             def from_meta(
-                cls, name: str, backend_config: BackendConfigBase,
+                cls,
+                name: str,
+                backend_config: BackendConfigBase,
             ) -> _LifecycleBackend:
                 del backend_config
                 return cls(name)
@@ -636,11 +626,13 @@ class TestUpVerbNonInstanceBackend:
                 del yes
 
         registry.add_allocating(
-            "fake-1", backend=AdbBackendConfig(serial="fake-serial"),
+            "fake-1",
+            backend=AdbBackendConfig(serial="fake-serial"),
         )
 
         with patch.object(
-            api.Manager, "resolve",
+            api.Manager,
+            "resolve",
             return_value=_LifecycleBackend("fake-1"),
         ):
             result = runner.invoke(cli.app, ["up", "fake-1"])
@@ -654,9 +646,7 @@ class TestUpVerbNonInstanceBackend:
 
 
 class TestDestroyOrphanBranches:
-    def test_non_redroid_orphan_raises_backend_capability_error(
-        self, cli_root: Path
-    ) -> None:
+    def test_non_redroid_orphan_raises_backend_capability_error(self, cli_root: Path) -> None:
         # An adb-kind row that Manager.resolve can't build (the yaml-path
         # check fails for it too if we break resolution) triggers the
         # non-redroid orphan branch — which raises BackendCapabilityError.
@@ -665,7 +655,8 @@ class TestDestroyOrphanBranches:
         registry.add_allocating("phone", backend=AdbBackendConfig(serial="x"))
 
         with patch.object(
-            api.Manager, "resolve",
+            api.Manager,
+            "resolve",
             side_effect=api.InstanceNotFoundError("phone orphan"),
         ):
             result = runner.invoke(cli.app, ["destroy", "phone", "-y"])
@@ -675,12 +666,11 @@ class TestDestroyOrphanBranches:
         assert isinstance(result.exception, api.BackendCapabilityError)
         assert "destroy" in str(result.exception)
 
-    def test_orphan_prompt_no_aborts_with_exit_zero(
-        self, cli_root: Path
-    ) -> None:
+    def test_orphan_prompt_no_aborts_with_exit_zero(self, cli_root: Path) -> None:
         # A redroid orphan (yaml gone) that the user declines to destroy.
         api.Instance.create("alpha")
         import shutil as _shutil
+
         _shutil.rmtree(registry.instance_path("alpha"))
 
         result = runner.invoke(cli.app, ["destroy", "alpha"], input="n\n")
@@ -688,21 +678,18 @@ class TestDestroyOrphanBranches:
         assert "aborted" in result.output
         assert registry.get("alpha") is not None  # not cleaned up
 
-    def test_orphan_prompt_yes_proceeds_to_cleanup(
-        self, cli_root: Path
-    ) -> None:
+    def test_orphan_prompt_yes_proceeds_to_cleanup(self, cli_root: Path) -> None:
         # Redroid orphan (yaml gone), user types "y" at the prompt → cleanup runs.
         api.Instance.create("alpha")
         import shutil as _shutil
+
         _shutil.rmtree(registry.instance_path("alpha"))
 
         result = runner.invoke(cli.app, ["destroy", "alpha"], input="y\n")
         assert result.exit_code == 0, result.stderr
         assert registry.get("alpha") is None
 
-    def test_orphan_with_existing_dir_runs_compose_and_rmtree(
-        self, cli_root: Path
-    ) -> None:
+    def test_orphan_with_existing_dir_runs_compose_and_rmtree(self, cli_root: Path) -> None:
         # A redroid orphan whose DIRECTORY still exists (only the yaml is
         # gone, not the whole dir). The orphan-path must still try
         # compose.down and rmtree the directory.
@@ -712,11 +699,10 @@ class TestDestroyOrphanBranches:
         (root / "beetroot.yaml").unlink()
 
         from beetroot import compose as _compose
+
         down_calls: list[tuple[str, Path]] = []
 
-        def _fake_down(
-            name: str, path: Path, *, volumes: bool = False
-        ) -> None:
+        def _fake_down(name: str, path: Path, *, volumes: bool = False) -> None:
             down_calls.append((name, path))
 
         with patch.object(_compose, "down", side_effect=_fake_down):
@@ -726,9 +712,7 @@ class TestDestroyOrphanBranches:
         assert registry.get("alpha") is None
         assert not root.exists()
 
-    def test_orphan_compose_error_continues_cleanup(
-        self, cli_root: Path
-    ) -> None:
+    def test_orphan_compose_error_continues_cleanup(self, cli_root: Path) -> None:
         # Redroid orphan with existing directory: compose.down raises
         # ComposeError. Cleanup (rmtree + registry.remove) must still run
         # and exit 0 with a "continuing" advisory.

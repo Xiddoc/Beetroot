@@ -11,14 +11,19 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Final, Literal, Self, override
+from typing import TYPE_CHECKING, Final, Literal, Self, override
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import console
 
-SUPPORTED_API_VERSION: Final = 7
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from . import ports as ports_mod
+
+SUPPORTED_API_VERSION: Final = 8
 
 # Additive auto-bump: old YAMLs that hard-pinned one of these versions are
 # silently upgraded to SUPPORTED_API_VERSION on load with a one-line stderr
@@ -27,6 +32,17 @@ SUPPORTED_API_VERSION: Final = 7
 # fires instead. Persistence happens organically on the next ``beetroot apply``
 # (which calls :func:`write_yaml`).
 #
+# next (api_version 7 → 8): generalised ``ports`` from a fixed mapping of three
+#   well-known host overrides (``ports: {adb, frida, frida_control}``) into a
+#   **list** of named guest→host mappings (``ports: [{service, guest, host}]``)
+#   supporting arbitrary services and explicit guest ports (issue #108). The
+#   default seeds the three well-known services (adb 5555, frida 27042,
+#   frida_control 27043, all host=None → stride-allocated). An old mapping-form
+#   ``ports`` is translated losslessly into the seeded list with the well-known
+#   host overrides applied (one-line note, then auto-bumps); a mapping carrying
+#   any key that is NOT adb/frida/frida_control raises a migration error naming
+#   the new list shape. A YAML pinning api_version 7 with a list-form (or absent)
+#   ``ports`` auto-bumps silently.
 # next (api_version 6 → 7): split ``android.gapps`` into an intent vocabulary
 #   (none/minimal/full) plus an optional ``android.gapps_vendor`` escape hatch
 #   (litegapps/opengapps/mindthegapps). ``gapps: none`` and ``gapps: full`` keep
@@ -43,7 +59,7 @@ SUPPORTED_API_VERSION: Final = 7
 #   regex validator (strictly additive).
 # v0.3 → v0.4 (api_version 1 → 2): added opt-in frida block (strictly
 #   additive; old YAMLs without a frida block default to frida=None).
-_AUTO_BUMPABLE_API_VERSIONS: Final = frozenset({1, 2, 3, 4, 5, 6})
+_AUTO_BUMPABLE_API_VERSIONS: Final = frozenset({1, 2, 3, 4, 5, 6, 7})
 
 # Non-additive versions that require an explicit migration rather than a
 # silent auto-bump. If a YAML pins one of these and a migration path exists,
@@ -584,40 +600,73 @@ def vm_redroid_image(version: int) -> str:
     return f"redroid/redroid:{version}.0.0-latest"
 
 
-class Ports(BaseModel):
-    """
-    Optional per-instance port overrides.
+# The three services Beetroot has always known about and stride-allocates by
+# name. ``well_known`` (in ports.py) and the back-compat mapping translation
+# below both key off this set; the values are the guest ports the redroid
+# container exposes (ADB 5555, Frida data 27042, Frida control 27043).
+WELL_KNOWN_SERVICES: Final[dict[str, int]] = {
+    "adb": 5555,
+    "frida": 27042,
+    "frida_control": 27043,
+}
 
-    Fields are independently optional — set only the ones you want to pin;
-    the rest fall back to the stride-of-10 allocator on the instance's
-    index.
+
+def _default_port_mappings() -> list[PortMapping]:
+    """
+    Seed the three well-known services as auto-allocated mappings.
+
+    Each seeded entry pins the well-known guest port and leaves ``host``
+    unset so the stride-of-10 allocator assigns it from the instance index.
+    """
+    return [
+        PortMapping(service=service, guest=guest) for service, guest in WELL_KNOWN_SERVICES.items()
+    ]
+
+
+class PortMapping(BaseModel):
+    """
+    A single guest→host port mapping for an instance.
+
+    Generalises the pre-v8 fixed ``ports: {adb, frida, frida_control}``
+    block (issue #108) into an arbitrary, named guest→host mapping. The
+    three well-known services (``adb`` / ``frida`` / ``frida_control``) are
+    seeded by default and stride-allocated on the instance index when
+    ``host`` is left unset; any other entry whose ``host`` is unset is
+    auto-allocated from a dedicated extra-pool band (see
+    :func:`beetroot.ports.resolve_ports`).
 
     Attributes:
-        adb: Host port for ADB. Stride default: ``5555 + index*10``.
-        frida: Host port for Frida data. Stride default: ``27042 + index*10``.
-        frida_control: Host port for Frida control (RPC/command channel,
-            one above the data port). Stride default: ``27043 + index*10``.
+        service: Optional label. ``adb`` / ``frida`` / ``frida_control``
+            are the well-known names the stride allocator and the
+            ``adb_address`` / ``frida_address`` accessors key off; any other
+            string is a free-form label for an arbitrary mapping. ``None``
+            is allowed for an unlabelled arbitrary mapping.
+        guest: The container-side (guest) port this mapping exposes
+            (1..65535). Required.
+        host: The host-side port. ``None`` (the default) auto-allocates —
+            a stride base for a well-known service, an extra-pool slot
+            otherwise. An explicit value pins the host port (1..65535).
     """
 
-    adb: int | None = None
-    frida: int | None = None
-    frida_control: int | None = None
+    service: str | None = None
+    guest: int
+    host: int | None = None
 
-    @field_validator("adb", "frida", "frida_control")
+    @field_validator("guest")
     @classmethod
-    def _check_port_range(cls, v: int | None) -> int | None:
+    def _check_guest_range(cls, v: int) -> int:
+        if not (_MIN_PORT <= v <= _MAX_PORT):
+            raise ValueError(f"ports guest {v} out of range (must be {_MIN_PORT}..{_MAX_PORT})")
+        return v
+
+    @field_validator("host")
+    @classmethod
+    def _check_host_range(cls, v: int | None) -> int | None:
         if v is None:
             return v
         if not (_MIN_PORT <= v <= _MAX_PORT):
-            raise ValueError(f"port {v} out of range (must be {_MIN_PORT}..{_MAX_PORT})")
+            raise ValueError(f"ports host {v} out of range (must be {_MIN_PORT}..{_MAX_PORT})")
         return v
-
-    @model_validator(mode="after")
-    def _check_distinct(self) -> Self:
-        values = [v for v in (self.adb, self.frida, self.frida_control) if v is not None]
-        if len(values) != len(set(values)):
-            raise ValueError("ports.adb / ports.frida / ports.frida_control must be distinct")
-        return self
 
 
 _MIN_SMP: Final = 1
@@ -733,8 +782,13 @@ class InstanceConfig(BaseModel):
             frida entirely. Declare an explicit ``frida:`` block to opt in.
         modules: Magisk modules to flash at boot.
         magisk: Magisk denylist / root-hiding settings.
-        ports: Optional per-instance port overrides. Absent fields fall
-            back to the stride-of-10 allocator on the instance's index.
+        ports: List of guest→host :class:`PortMapping` entries. Defaults to
+            the three well-known services (``adb`` / ``frida`` /
+            ``frida_control``) with auto-allocated host ports. Entries whose
+            ``host`` is unset fall back to the stride-of-10 allocator (for a
+            well-known service) or a dedicated extra-pool band (for an
+            arbitrary service) on the instance's index. The old mapping form
+            (``ports: {adb: ...}``) is migrated to this list on load.
         binder: How redroid obtains the kernel ``binder`` driver it needs
             to boot. ``"auto"`` (default) uses the host kernel's binder
             and *warns* (without aborting) when the host can't provide it
@@ -766,7 +820,7 @@ class InstanceConfig(BaseModel):
     frida: Frida | None = None
     modules: list[Module] = Field(default_factory=list)
     magisk: Magisk = Field(default_factory=Magisk)
-    ports: Ports = Field(default_factory=Ports)
+    ports: list[PortMapping] = Field(default_factory=_default_port_mappings)
     binder: Literal["auto", "host", "vm"] = "auto"
     vm: Vm = Field(default_factory=Vm)
 
@@ -781,6 +835,81 @@ class InstanceConfig(BaseModel):
                 "See CHANGELOG.md for the migration."
             )
         return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_ports_mapping(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        raw_ports = data.get("ports")
+        if not isinstance(raw_ports, dict):
+            # Already a list (new form), absent, or some other shape pydantic
+            # will reject downstream — nothing to migrate.
+            return data
+        # An empty *mapping* means "use defaults": drop the key entirely so the
+        # ``_default_port_mappings`` default_factory seeds the three well-known
+        # services. (A NEW-form explicit ``ports: []`` is a deliberate "forward
+        # nothing" and is left untouched above — it never reaches this branch.)
+        if not raw_ports:
+            return {k: v for k, v in data.items() if k != "ports"}
+        unknown = sorted(k for k in raw_ports if k not in WELL_KNOWN_SERVICES)
+        if unknown:
+            raise ValueError(
+                f"ports mapping carries non-well-known key(s) {unknown} that the "
+                f"pre-v{SUPPORTED_API_VERSION} dict form could never express. The "
+                f"ports schema is now a list of {{service, guest, host}} mappings "
+                f"(api_version {SUPPORTED_API_VERSION}, issue #108) — e.g.\n"
+                "  ports:\n"
+                "    - {service: adb, guest: 5555, host: 9000}\n"
+                "    - {guest: 8080, host: 9090}\n"
+                "Rewrite the block as a list and set "
+                f"api_version: {SUPPORTED_API_VERSION}. See CHANGELOG.md."
+            )
+        # Translate the well-known host overrides into the seeded list form.
+        migrated = [
+            {"service": service, "guest": guest, "host": raw_ports.get(service)}
+            for service, guest in WELL_KNOWN_SERVICES.items()
+        ]
+        console.note(
+            "migrated legacy ports mapping to the api_version "
+            f"{SUPPORTED_API_VERSION} list form; run 'beetroot apply' to rewrite "
+            "the YAML."
+        )
+        return {**data, "ports": migrated}
+
+    @model_validator(mode="after")
+    def _check_ports_distinct(self) -> Self:
+        services = [m.service for m in self.ports if m.service is not None]
+        if len(services) != len(set(services)):
+            dupes = sorted({s for s in services if services.count(s) > 1})
+            raise ValueError(f"ports has duplicate service name(s): {dupes}")
+        guests = [m.guest for m in self.ports]
+        if len(guests) != len(set(guests)):
+            dupes_g = sorted({g for g in guests if guests.count(g) > 1})
+            raise ValueError(f"ports has duplicate guest port(s): {dupes_g}")
+        hosts = [m.host for m in self.ports if m.host is not None]
+        if len(hosts) != len(set(hosts)):
+            dupes_h = sorted({h for h in hosts if hosts.count(h) > 1})
+            raise ValueError(f"ports has duplicate explicit host port(s): {dupes_h}")
+        return self
+
+    @model_validator(mode="after")
+    def _check_required_addressing_services(self) -> Self:
+        services = {m.service for m in self.ports if m.service is not None}
+        if "adb" not in services:
+            raise ValueError(
+                "ports must include a mapping with service: adb — every backend "
+                "derives its adb_address (and the doctor adb.connect row) from it. "
+                "Add `- {service: adb, guest: 5555}` (host optional) to the ports list."
+            )
+        if self.frida is not None and "frida" not in services:
+            raise ValueError(
+                "ports must include a mapping with service: frida when a frida: "
+                "block is configured — frida_address is derived from it. Add "
+                "`- {service: frida, guest: 27042}` (host optional), or drop the "
+                "frida: block."
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_api_version(self) -> Self:
@@ -815,6 +944,13 @@ def load_yaml(path: Path) -> InstanceConfig:
     ``android.gapps`` raises a clear, actionable error naming the renamed field
     rather than silently mis-parsing.
 
+    **Lossless migration (silent / note):** the old mapping-form ``ports``
+    (``ports: {adb: 9000}``) was generalised to a list of ``{service, guest,
+    host}`` mappings in api_version 8 (issue #108). A well-known mapping is
+    translated into the seeded list with the host overrides applied (a
+    one-line note) and the version auto-bumps; a mapping with a non-well-known
+    key raises a migration error naming the new list shape.
+
     Args:
         path: Absolute path to the YAML file.
 
@@ -843,6 +979,14 @@ def load_yaml(path: Path) -> InstanceConfig:
             or (
                 isinstance(raw.get("android"), dict)
                 and raw["android"].get("gapps") in _LEGACY_GAPPS_VENDOR_VALUES
+            )
+            # A populated old-form ports mapping carrying a non-well-known key
+            # triggers the migration error in ``_migrate_legacy_ports_mapping``;
+            # printing "auto-upgraded, run apply" before that error is
+            # contradictory, so suppress the note here (mirrors gpu_mode/gapps).
+            or (
+                isinstance(raw.get("ports"), dict)
+                and any(k not in WELL_KNOWN_SERVICES for k in raw["ports"])
             )
         )
         if not renamed_key_present:
@@ -896,20 +1040,21 @@ _STEALTH_PATH_ENV_KEYS: Final = {
 def render_env(
     name: str,
     cfg: InstanceConfig,
-    ports: dict[str, int],
     stealth_paths: dict[str, str] | None = None,
 ) -> str:
     """
     Render the .env file that compose reads via --env-file.
 
     Every ``${VAR}`` substitution in ``compose.yaml`` must have a
-    corresponding line here.
+    corresponding line here. Ports are intentionally NOT emitted here:
+    since v8 the port list is variable-length (issue #108) and a flat
+    ``.env`` can't expand into multiple compose YAML list items, so ports
+    live in the per-instance ``compose.override.yaml`` rendered by
+    :func:`render_compose_ports_override` instead.
 
     Args:
         name: Instance name used as the compose project name.
         cfg: The instance configuration.
-        ports: Resolved port mapping produced by ``ports.resolve_ports``.
-            Must contain keys ``adb``, ``frida``, and ``frida_control``.
         stealth_paths: Optional per-instance override blob (T4) carrying
             the ``magisk_db`` / ``modules_dir`` / ``frida_bin`` keys.
             Each key present here overrides the corresponding
@@ -931,9 +1076,6 @@ def render_env(
     lines = [
         f"INSTANCE_NAME={name}",
         f"BASE_IMAGE={base_image_tag(cfg.android)}",
-        f"ADB_PORT={ports['adb']}",
-        f"FRIDA_PORT={ports['frida']}",
-        f"FRIDA_PORT_CONTROL={ports['frida_control']}",
         f"MEM_LIMIT={cfg.resources.mem}",
         f"CPUS={cfg.resources.cpus}",
         f"SHM_SIZE={cfg.resources.shared_mem}",
@@ -960,4 +1102,38 @@ def render_env(
         lines.append(f"MEM_RESERVATION={cfg.resources.mem_reservation}")
     if cfg.resources.memswap_limit is not None:
         lines.append(f"MEMSWAP_LIMIT={cfg.resources.memswap_limit}")
+    return "\n".join(lines) + "\n"
+
+
+# The compose service name the bundled template defines (and the override
+# file must target). Kept here as the single source of truth for the
+# override renderer.
+_COMPOSE_SERVICE_NAME: Final = "phone"
+
+
+def render_compose_ports_override(resolved: Sequence[ports_mod.ResolvedPort]) -> str:
+    """
+    Render the per-instance ``compose.override.yaml`` carrying the port list.
+
+    A flat ``.env`` can't expand into a variable-length compose ``ports:``
+    list, so since v8 (issue #108) the resolved host→guest mappings are
+    written to a per-instance override file that the CLI layers on top of
+    the bundled template with a second ``-f``. The output targets the
+    bundled template's ``phone`` service and is deterministic (entries in
+    the resolved order) so re-staging an unchanged config produces an
+    identical file.
+
+    Args:
+        resolved: The resolved port list produced by
+            :func:`beetroot.ports.resolve_ports`.
+
+    Returns:
+        The YAML override document as a newline-terminated string.
+    """
+    lines = [
+        "services:",
+        f"  {_COMPOSE_SERVICE_NAME}:",
+        "    ports:",
+    ]
+    lines.extend(f'      - "{rp.host}:{rp.guest}"' for rp in resolved)
     return "\n".join(lines) + "\n"

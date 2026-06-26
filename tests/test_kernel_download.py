@@ -64,7 +64,9 @@ def test_fetch_prebuilt_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     out = tmp_path / "nested" / "bzImage"
-    result = kernel_download.fetch_prebuilt(version="6.12.9", fingerprint="abc123def456", out_path=out)
+    result = kernel_download.fetch_prebuilt(
+        version="6.12.9", fingerprint="abc123def456", out_path=out
+    )
     assert result == out
     assert out.read_bytes() == payload
 

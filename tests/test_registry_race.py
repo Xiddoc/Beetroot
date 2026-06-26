@@ -22,6 +22,7 @@ We use ``multiprocessing`` (not threads) because ``fcntl.flock`` is
 per-fd-table; threads in the same process share the fd-table and
 trivially serialize.
 """
+
 from __future__ import annotations
 
 import multiprocessing as mp
@@ -46,7 +47,9 @@ def _spawn_worker(
         from beetroot import frida_download
 
         def _fake_download(
-            version: str, *, expected_sha256: str | None = None,
+            version: str,
+            *,
+            expected_sha256: str | None = None,
         ) -> Path:
             out = frida_download.cached_binary(version)
             out.parent.mkdir(parents=True, exist_ok=True)
@@ -74,19 +77,14 @@ def test_parallel_create_allocates_distinct_indices(
     # macOS defaults to "spawn"; we don't run CI on macOS for this test.
     ctx = mp.get_context("fork")
     names = [f"phone-{i}" for i in range(5)]
-    args = [
-        (str(xdg_config), str(xdg_cache), str(workspace), name)
-        for name in names
-    ]
+    args = [(str(xdg_config), str(xdg_cache), str(workspace), name) for name in names]
     with ctx.Pool(processes=5) as pool:
         results = pool.starmap(_spawn_worker, args)
 
     failures = [(n, tb) for n, _, tb in results if tb is not None]
     assert not failures, f"workers raised:\n{failures}"
     indices = [idx for _, idx, _ in results]
-    assert len(set(indices)) == len(indices), (
-        f"parallel create co-allocated indices: {results}"
-    )
+    assert len(set(indices)) == len(indices), f"parallel create co-allocated indices: {results}"
     # And the registry, viewed from the test process's XDG dirs,
     # reflects every successful create.
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config))
@@ -109,9 +107,7 @@ def test_add_allocating_is_atomic_with_lowest_free_index(
     assert {alloc1, alloc2, alloc3} == {0, 1, 2}
 
 
-def test_add_allocating_reuses_freed_slot(
-    isolated_registry: Path, tmp_path: Path
-) -> None:
+def test_add_allocating_reuses_freed_slot(isolated_registry: Path, tmp_path: Path) -> None:
     # Same lowest-free-index semantic as Instance.create: a removed
     # name's slot is reused by the next allocation.
     registry.add_allocating("alpha", tmp_path / "alpha")
@@ -121,9 +117,7 @@ def test_add_allocating_reuses_freed_slot(
     assert next_alloc == 0
 
 
-def test_add_allocating_refuses_duplicate(
-    isolated_registry: Path, tmp_path: Path
-) -> None:
+def test_add_allocating_refuses_duplicate(isolated_registry: Path, tmp_path: Path) -> None:
     registry.add_allocating("alpha", tmp_path / "alpha")
     with pytest.raises(ValueError, match="already in registry"):
         registry.add_allocating("alpha", tmp_path / "alpha-2")
@@ -150,7 +144,7 @@ def test_write_cleans_up_orphan_tmp_on_failure(
     instances = registry.list_instances()
     assert "alpha" in instances
     # No leftover *.tmp file alongside it.
-    reg_dir = (tmp_path / "config" / "beetroot")
+    reg_dir = tmp_path / "config" / "beetroot"
     if reg_dir.is_dir():
         tmps = list(reg_dir.glob("*.tmp"))
         assert tmps == [], f"orphan tmp files left behind: {tmps}"

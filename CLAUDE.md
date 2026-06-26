@@ -35,7 +35,7 @@ The build output goes to `site/` (gitignored). The GitHub Actions workflow at `.
 
 ## Architecture
 
-**One bundled compose template, many projects.** Every instance shares the same compose template (shipped inside the wheel at `src/beetroot/templates/compose.yaml`). The CLI invokes compose with `-p <instance-name>` (separate Docker project per instance), `-f <bundled-template>`, `--project-directory <instance-dir>` (so the template's relative bind-mounts resolve correctly), and `--env-file <instance-dir>/.env` (per-instance ports, resources, display knobs). Project-per-instance gives true isolation — `docker compose -p alpha down` doesn't touch `bravo`.
+**One bundled compose template, many projects.** Every instance shares the same compose template (shipped inside the wheel at `src/beetroot/templates/compose.yaml`). The CLI invokes compose with `-p <instance-name>` (separate Docker project per instance), `-f <bundled-template>`, a second `-f <instance-dir>/compose.override.yaml` (the per-instance, variable-length `ports:` overlay rendered on `apply` — layered only when present, so `down`/`ps`/`logs` still work before the first `apply` has staged it), `--project-directory <instance-dir>` (so the template's relative bind-mounts resolve correctly), and `--env-file <instance-dir>/.env` (per-instance resources and display knobs). The published ports live in the override, not the `.env`: since v8 (issue #108) the port list is variable-length and a flat `.env` can't expand into a YAML list. Project-per-instance gives true isolation — `docker compose -p alpha down` doesn't touch `bravo`.
 
 **Single-stage Dockerfile** (`docker/Dockerfile`). Only the `docker/*.sh` helpers (`entrypoint.sh`, `magisk-path.sh`, `magisk-config.sh`, `magisk-env.sh`, `flash-modules.sh`, `activate-zygisk.sh`, `launch-frida.sh`) and `stealth.rc` are `COPY`'d into the redroid base — there is nothing else baked in. SQL queries against the Magisk DB use `magisk --sqlite` (Magisk ships with its own sqlite, so we don't need to ship a separate Bionic-built static binary). Frida is **not** in the image — it's bind-mounted per-instance (see below) so each phone can pin its own Frida version without rebuilding.
 
@@ -45,7 +45,8 @@ The build output goes to `site/` (gitignored). The GitHub Actions workflow at `.
 
 **Per-instance state lives in the instance directory itself** (any path on disk that contains a `beetroot.yaml`):
 - `beetroot.yaml` — the source of truth for this instance (display, resources, Frida version, modules, denylist). Commit it if you want a reproducible config.
-- `.env` — generated from `beetroot.yaml`; consumed by compose. Re-rendered on `beetroot apply`.
+- `.env` — generated from `beetroot.yaml`; consumed by compose (resources, display knobs — **not** ports). Re-rendered on `beetroot apply`.
+- `compose.override.yaml` — generated from `beetroot.yaml`; carries the variable-length, per-instance `ports:` overlay (issue #108) that a flat `.env` can't express. Layered on with a second `-f` only when present, and re-rendered on `beetroot apply` (and self-healed on `beetroot up` if missing).
 - `data/` — **redroid backend only:** bind-mounted to `/data` inside the container; persists across restarts. Under `binder: vm` the guest's `/data` lives inside the guest rootfs (`/var/lib/redroid-data`, override with `BEETROOT_GUEST_DATA_DIR`), so this host-side `data/` dir is vestigial and not the live Android `/data`. This is why `beetroot snapshot`/`restore` are redroid-only — they pack/unpack `data/`, which holds nothing for a vm (or adb) instance (see issue #128).
 - `modules/` — bind-mounted read-only to `/flash_dir`. The CLI mirrors `beetroot.yaml`'s `modules:` list into here on `apply`.
 - `frida-server` — bind-mounted to `/data/local/tmp/frida-server`. Downloaded by the CLI from `github.com/frida/frida/releases` and decompressed on the host.
@@ -93,4 +94,4 @@ src/beetroot/
 
 ## What stays gitignored
 
-Instance directories live anywhere on disk and are gitignored at the user's discretion. Within any instance dir: `data/`, `modules/`, `frida-server`, `.env` should be gitignored. `beetroot.yaml` is **not** ignored — it's a config the researcher may want to commit. The cross-instance registry (`~/.config/beetroot/instances.json`) is per-host and never tracked.
+Instance directories live anywhere on disk and are gitignored at the user's discretion. Within any instance dir: `data/`, `modules/`, `frida-server`, `.env`, `compose.override.yaml` should be gitignored. `beetroot.yaml` is **not** ignored — it's a config the researcher may want to commit. The cross-instance registry (`~/.config/beetroot/instances.json`) is per-host and never tracked.
