@@ -59,9 +59,7 @@ class TestCreateLifecycle:
 
     def test_create_rejects_lifecycle_with_explicit_cfg(self, cli_root: Path) -> None:
         with pytest.raises(ValueError, match="lifecycle only with the default config"):
-            api.Instance.create(
-                "alpha", cfg=config.InstanceConfig(), lifecycle="ephemeral"
-            )
+            api.Instance.create("alpha", cfg=config.InstanceConfig(), lifecycle="ephemeral")
 
     def test_cli_create_lifecycle_writes_key(self, cli_root: Path) -> None:
         result = runner.invoke(cli.app, ["create", "alpha", "--lifecycle", "ephemeral"])
@@ -115,9 +113,7 @@ class TestSnapshotManifestLifecycle:
     def test_manifest_defaults_durable(self) -> None:
         # A manifest from an archive predating the field (no lifecycle key)
         # restores as durable.
-        m = snapshot.Manifest(
-            name="x", source_index=0, created_at="t", beetroot_version="0"
-        )
+        m = snapshot.Manifest(name="x", source_index=0, created_at="t", beetroot_version="0")
         assert m.lifecycle == "durable"
 
     def test_read_lifecycle_reads_value(self, cli_root: Path) -> None:

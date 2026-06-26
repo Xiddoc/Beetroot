@@ -5,6 +5,7 @@ so the suite is hermetic — no real ``adb`` is ever invoked. The capture
 fixture stores the call argv lists so per-test assertions can verify
 the exact ``adb -s <serial> ...`` shape that AdbDevice constructs.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -76,9 +77,7 @@ class TestProperties:
         assert isinstance(_make_device(), api.DeviceBackend)
 
 
-def _stub_adb_devices(
-    monkeypatch: pytest.MonkeyPatch, stdout: str, returncode: int = 0
-) -> None:
+def _stub_adb_devices(monkeypatch: pytest.MonkeyPatch, stdout: str, returncode: int = 0) -> None:
     """Stub adb_backend.subprocess.run to a single fake response."""
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
 
@@ -104,38 +103,29 @@ class TestIsAvailable:
     ) -> None:
         _stub_adb_devices(
             monkeypatch,
-            "List of devices attached\n"
-            "emulator-5554\tdevice\n"
-            "emulator-5556\toffline\n",
+            "List of devices attached\nemulator-5554\tdevice\nemulator-5556\toffline\n",
         )
         assert _make_device(serial="emulator-5554").is_available is True
 
-    def test_returns_false_when_serial_offline(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_false_when_serial_offline(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_adb_devices(
             monkeypatch,
             "List of devices attached\nemulator-5554\toffline\n",
         )
         assert _make_device(serial="emulator-5554").is_available is False
 
-    def test_returns_false_when_serial_missing(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_false_when_serial_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_adb_devices(
-            monkeypatch, "List of devices attached\n",
+            monkeypatch,
+            "List of devices attached\n",
         )
         assert _make_device(serial="ghost-9999").is_available is False
 
-    def test_returns_false_when_adb_fails(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_false_when_adb_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _stub_adb_devices(monkeypatch, "", returncode=1)
         assert _make_device().is_available is False
 
-    def test_returns_false_when_adb_not_on_path(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_returns_false_when_adb_not_on_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # With no adb binary on PATH, is_available must report the device
         # as unavailable (so status/ls render a clean row) rather than
         # letting subprocess.run raise FileNotFoundError.
@@ -162,35 +152,53 @@ class TestInstallFrida:
         fake_cached = tmp_path / "frida-server-16.4.10"
         fake_cached.write_bytes(b"fake-binary")
         monkeypatch.setattr(
-            frida_download, "download", lambda version: fake_cached,
+            frida_download,
+            "download",
+            lambda version: fake_cached,
         )
         # Stub shutil.which so install_frida's PATH guard sees adb present
         # (the CI runner has no real adb binary), letting the stubbed
         # subprocess.run drive the full install sequence.
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-        _make_device(serial="emulator-5554", host_port=27052).install_frida(
-            "16.4.10"
-        )
+        _make_device(serial="emulator-5554", host_port=27052).install_frida("16.4.10")
         assert len(captured_adb) == 4
         # 1. push
         assert captured_adb[0] == [
-            "adb", "-s", "emulator-5554", "push",
-            str(fake_cached), "/data/local/tmp/frida-server",
+            "adb",
+            "-s",
+            "emulator-5554",
+            "push",
+            str(fake_cached),
+            "/data/local/tmp/frida-server",
         ]
         # 2. chmod
         assert captured_adb[1] == [
-            "adb", "-s", "emulator-5554", "shell",
-            "chmod", "755", "/data/local/tmp/frida-server",
+            "adb",
+            "-s",
+            "emulator-5554",
+            "shell",
+            "chmod",
+            "755",
+            "/data/local/tmp/frida-server",
         ]
         # 3. launch via su
         assert captured_adb[2] == [
-            "adb", "-s", "emulator-5554", "shell",
-            "su", "-c", "/data/local/tmp/frida-server &",
+            "adb",
+            "-s",
+            "emulator-5554",
+            "shell",
+            "su",
+            "-c",
+            "/data/local/tmp/frida-server &",
         ]
         # 4. adb forward (host_port → device 27042)
         assert captured_adb[3] == [
-            "adb", "-s", "emulator-5554",
-            "forward", "tcp:27052", "tcp:27042",
+            "adb",
+            "-s",
+            "emulator-5554",
+            "forward",
+            "tcp:27052",
+            "tcp:27042",
         ]
 
     def test_raises_when_adb_not_on_path(
@@ -201,7 +209,9 @@ class TestInstallFrida:
         fake_cached = tmp_path / "frida-server-16.4.10"
         fake_cached.write_bytes(b"fake-binary")
         monkeypatch.setattr(
-            frida_download, "download", lambda version: fake_cached,
+            frida_download,
+            "download",
+            lambda version: fake_cached,
         )
         monkeypatch.setattr(shutil, "which", lambda name: None)
         with pytest.raises(api.AdbNotInstalledError, match="adb not found on PATH"):
@@ -215,7 +225,9 @@ class TestInstallFrida:
         fake_cached = tmp_path / "frida-server-16.4.10"
         fake_cached.write_bytes(b"fake-binary")
         monkeypatch.setattr(
-            frida_download, "download", lambda version: fake_cached,
+            frida_download,
+            "download",
+            lambda version: fake_cached,
         )
 
         def _fake_run(
@@ -250,9 +262,7 @@ class TestShell:
         assert rc == 0
         assert captured_adb == [["adb", "-s", "emulator-5554", "shell"]]
 
-    def test_raises_when_adb_not_on_path(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_raises_when_adb_not_on_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(shutil, "which", lambda name: None)
         with pytest.raises(api.AdbNotInstalledError):
             _make_device().shell()
@@ -267,13 +277,9 @@ class TestFridaCli:
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         rc = _make_device(host_port=27052).frida_cli(["-n", "com.example.app"])
         assert rc == 0
-        assert captured_adb == [
-            ["frida", "-H", "localhost:27052", "-n", "com.example.app"]
-        ]
+        assert captured_adb == [["frida", "-H", "localhost:27052", "-n", "com.example.app"]]
 
-    def test_raises_when_frida_not_on_path(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_raises_when_frida_not_on_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(shutil, "which", lambda name: None)
         with pytest.raises(api.FridaNotInstalledError):
             _make_device().frida_cli([])
@@ -292,7 +298,10 @@ class TestAddModule:
         # adb push <local> /sdcard/Download/<basename>
         assert captured_adb == [
             [
-                "adb", "-s", "emulator-5554", "push",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "push",
                 str(zip_path),
                 "/sdcard/Download/MyModule.zip",
             ],
@@ -362,23 +371,34 @@ class TestAutoInstallModules:
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         zip_path = tmp_path / "MyModule.zip"
         zip_path.write_bytes(b"PK\x03\x04fake")
-        results = _make_device(serial="emulator-5554").auto_install_modules(
-            [str(zip_path)]
-        )
+        results = _make_device(serial="emulator-5554").auto_install_modules([str(zip_path)])
         assert captured_adb == [
             *preflight_argv,
             [
-                "adb", "-s", "emulator-5554", "push",
-                str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "push",
+                str(zip_path),
+                "/data/local/tmp/beetroot-module-0.zip",
             ],
             [
-                "adb", "-s", "emulator-5554", "shell",
-                "su", "-c",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "su",
+                "-c",
                 "'magisk --install-module /data/local/tmp/beetroot-module-0.zip'",
             ],
             [
-                "adb", "-s", "emulator-5554", "shell",
-                "su", "-c", "'rm -f /data/local/tmp/beetroot-module-0.zip'",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "su",
+                "-c",
+                "'rm -f /data/local/tmp/beetroot-module-0.zip'",
             ],
         ]
         assert len(results) == 1
@@ -388,8 +408,7 @@ class TestAutoInstallModules:
         # The ok-row detail must show the command as actually executed
         # (outer-quoted), not a prettified unquoted variant.
         assert results[0].detail == (
-            "installed via `su -c "
-            "'magisk --install-module /data/local/tmp/beetroot-module-0.zip'`"
+            "installed via `su -c 'magisk --install-module /data/local/tmp/beetroot-module-0.zip'`"
         )
 
     def test_remote_path_with_spaces_is_shell_quoted(
@@ -412,17 +431,30 @@ class TestAutoInstallModules:
         assert captured_adb == [
             *preflight_argv,
             [
-                "adb", "-s", "emulator-5554", "push",
-                str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "push",
+                str(zip_path),
+                "/data/local/tmp/beetroot-module-0.zip",
             ],
             [
-                "adb", "-s", "emulator-5554", "shell",
-                "su", "-c",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "su",
+                "-c",
                 "'magisk --install-module /data/local/tmp/beetroot-module-0.zip'",
             ],
             [
-                "adb", "-s", "emulator-5554", "shell",
-                "su", "-c", "'rm -f /data/local/tmp/beetroot-module-0.zip'",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "su",
+                "-c",
+                "'rm -f /data/local/tmp/beetroot-module-0.zip'",
             ],
         ]
 
@@ -452,17 +484,30 @@ class TestAutoInstallModules:
         assert captured_adb == [
             *preflight_argv,
             [
-                "adb", "-s", "emulator-5554", "push",
-                str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "push",
+                str(zip_path),
+                "/data/local/tmp/beetroot-module-0.zip",
             ],
             [
-                "adb", "-s", "emulator-5554", "shell",
-                "su", "-c",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "su",
+                "-c",
                 "'magisk --install-module /data/local/tmp/beetroot-module-0.zip'",
             ],
             [
-                "adb", "-s", "emulator-5554", "shell",
-                "su", "-c", "'rm -f /data/local/tmp/beetroot-module-0.zip'",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "su",
+                "-c",
+                "'rm -f /data/local/tmp/beetroot-module-0.zip'",
             ],
         ]
         assert "$(boom)" not in remote
@@ -486,9 +531,7 @@ class TestAutoInstallModules:
         zip_path = tmp_path / "Pinned.zip"
         zip_path.write_bytes(payload)
         sha = hashlib.sha256(payload).hexdigest()
-        results = _make_device().auto_install_modules(
-            [str(zip_path)], sha256s=[sha]
-        )
+        results = _make_device().auto_install_modules([str(zip_path)], sha256s=[sha])
         assert results[0].ok is True
         assert len(captured_adb) == len(preflight_argv) + 3
 
@@ -502,9 +545,7 @@ class TestAutoInstallModules:
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         zip_path = tmp_path / "Tampered.zip"
         zip_path.write_bytes(b"PK\x03\x04fake")
-        results = _make_device().auto_install_modules(
-            [str(zip_path)], sha256s=["0" * 64]
-        )
+        results = _make_device().auto_install_modules([str(zip_path)], sha256s=["0" * 64])
         # The pre-flight probes ran, but nothing was pushed.
         assert captured_adb == preflight_argv
         assert results[0].ok is False
@@ -527,18 +568,13 @@ class TestAutoInstallModules:
         good = tmp_path / "Good.zip"
         good.write_bytes(b"PK\x03\x04good")
         captured = stub_run_failures(
-            lambda cmd: (
-                "magisk --install-module" in cmd[-1]
-                and "beetroot-module-0.zip" in cmd[-1]
-            ),
+            lambda cmd: "magisk --install-module" in cmd[-1] and "beetroot-module-0.zip" in cmd[-1],
             stderr="! Unable to install",
         )
         results = _make_device().auto_install_modules([str(bad), str(good)])
         assert [r.ok for r in results] == [False, True]
         assert "Unable to install" in results[0].detail
-        assert "'rm -f /data/local/tmp/beetroot-module-0.zip'" in [
-            cmd[-1] for cmd in captured
-        ]
+        assert "'rm -f /data/local/tmp/beetroot-module-0.zip'" in [cmd[-1] for cmd in captured]
         assert "'magisk --install-module /data/local/tmp/beetroot-module-1.zip'" in [
             cmd[-1] for cmd in captured
         ]
@@ -573,22 +609,39 @@ class TestAutoInstallModules:
         assert captured == [
             *preflight_argv,
             [
-                "adb", "-s", "emulator-5554", "push",
-                str(bad), "/data/local/tmp/beetroot-module-0.zip",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "push",
+                str(bad),
+                "/data/local/tmp/beetroot-module-0.zip",
             ],
             ["adb", "devices"],
             [
-                "adb", "-s", "emulator-5554", "push",
-                str(good), "/data/local/tmp/beetroot-module-1.zip",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "push",
+                str(good),
+                "/data/local/tmp/beetroot-module-1.zip",
             ],
             [
-                "adb", "-s", "emulator-5554", "shell",
-                "su", "-c",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "su",
+                "-c",
                 "'magisk --install-module /data/local/tmp/beetroot-module-1.zip'",
             ],
             [
-                "adb", "-s", "emulator-5554", "shell",
-                "su", "-c", "'rm -f /data/local/tmp/beetroot-module-1.zip'",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "su",
+                "-c",
+                "'rm -f /data/local/tmp/beetroot-module-1.zip'",
             ],
         ]
 
@@ -647,10 +700,16 @@ class TestAutoInstallModules:
                 stderr = "rm: read-only"
             else:
                 return subprocess.CompletedProcess(
-                    args=cmd, returncode=0, stdout="", stderr="",
+                    args=cmd,
+                    returncode=0,
+                    stdout="",
+                    stderr="",
                 )
             return subprocess.CompletedProcess(
-                args=cmd, returncode=1, stdout="", stderr=stderr,
+                args=cmd,
+                returncode=1,
+                stdout="",
+                stderr=stderr,
             )
 
         monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
@@ -667,9 +726,7 @@ class TestAutoInstallModules:
         tmp_path: Path,
     ) -> None:
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-        results = _make_device().auto_install_modules(
-            [str(tmp_path / "missing.zip")]
-        )
+        results = _make_device().auto_install_modules([str(tmp_path / "missing.zip")])
         # The pre-flight probes ran, but nothing was pushed — and the
         # host-side ValueError never triggers an `adb devices` re-probe.
         assert captured_adb == preflight_argv
@@ -690,9 +747,7 @@ class TestAutoInstallModules:
         zip_path = tmp_path / "M.zip"
         zip_path.write_bytes(b"PK\x03\x04fake")
         with pytest.raises(ValueError, match="one digest per source"):
-            _make_device().auto_install_modules(
-                [str(zip_path)], sha256s=["0" * 64, "1" * 64]
-            )
+            _make_device().auto_install_modules([str(zip_path)], sha256s=["0" * 64, "1" * 64])
 
     def test_results_preserve_request_order(
         self,
@@ -873,9 +928,7 @@ class TestAutoInstallPreflight:
             api.DevicePreflightError,
             match=r"is offline or not connected .* \(1 remaining module skipped\)",
         ) as exc_info:
-            _make_device().auto_install_modules(
-                [str(first), str(second), str(third)]
-            )
+            _make_device().auto_install_modules([str(first), str(second), str(third)])
         assert [(r.source, r.ok) for r in exc_info.value.results] == [
             (str(first), True),
         ]
@@ -883,8 +936,12 @@ class TestAutoInstallPreflight:
         # last two adb calls — the third module is never pushed.
         assert captured[-2:] == [
             [
-                "adb", "-s", "emulator-5554", "push",
-                str(second), "/data/local/tmp/beetroot-module-1.zip",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "push",
+                str(second),
+                "/data/local/tmp/beetroot-module-1.zip",
             ],
             ["adb", "devices"],
         ]
@@ -960,10 +1017,7 @@ class TestAutoInstallConnectivityReprobe:
         good = tmp_path / "Good.zip"
         good.write_bytes(b"PK\x03\x04good")
         captured = stub_run_failures(
-            lambda cmd: (
-                "magisk --install-module" in cmd[-1]
-                and "beetroot-module-0.zip" in cmd[-1]
-            ),
+            lambda cmd: "magisk --install-module" in cmd[-1] and "beetroot-module-0.zip" in cmd[-1],
             stderr="adb: device offline (spoofed by the module)",
         )
         results = _make_device().auto_install_modules([str(bad), str(good)])
@@ -1003,7 +1057,8 @@ class TestCapabilityGating:
 
 class TestFromMeta:
     def test_constructs_from_registry_meta(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         del isolated_registry
         cfg = registry.AdbBackendConfig(serial="emulator-5554")
@@ -1015,7 +1070,8 @@ class TestFromMeta:
         assert dev.frida_address == "localhost:27042"
 
     def test_rejects_wrong_config_kind(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         del isolated_registry
         wrong = registry.RedroidBackendConfig(absolute_path="/tmp/x")
@@ -1023,7 +1079,8 @@ class TestFromMeta:
             adb_backend.AdbDevice.from_meta("phone", wrong)
 
     def test_raises_when_name_not_in_registry(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         del isolated_registry
         cfg = registry.AdbBackendConfig(serial="emulator-5554")
@@ -1031,15 +1088,18 @@ class TestFromMeta:
             adb_backend.AdbDevice.from_meta("phone", cfg)
 
     def test_host_port_derived_from_allocated_index(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         del isolated_registry
         # First-allocated → index 0 → frida 27042; second → 27052.
         registry.add_allocating(
-            "first", backend=registry.AdbBackendConfig(serial="s1"),
+            "first",
+            backend=registry.AdbBackendConfig(serial="s1"),
         )
         registry.add_allocating(
-            "second", backend=registry.AdbBackendConfig(serial="s2"),
+            "second",
+            backend=registry.AdbBackendConfig(serial="s2"),
         )
         second_cfg = registry.AdbBackendConfig(serial="s2")
         dev = adb_backend.AdbDevice.from_meta("second", second_cfg)
@@ -1050,7 +1110,8 @@ class TestHealth:
     """T7's :meth:`AdbDevice.health` wire-up follow-up."""
 
     def test_health_returns_check_result_dict(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # AdbDevice.health() delegates to api.adb_device_health which
         # shells out via subprocess.run; stub shutil.which so all the
@@ -1060,10 +1121,14 @@ class TestHealth:
         # the suite hermetic — no real network connection.
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr(
-            socket, "create_connection", lambda *a, **k: contextlib.nullcontext(),
+            socket,
+            "create_connection",
+            lambda *a, **k: contextlib.nullcontext(),
         )
 
-        def _ok(cmd: list[str], *args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def _ok(
+            cmd: list[str], *args: object, **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
             del args, kwargs
             stdout = ""
             cmd_str = " ".join(str(x) for x in cmd)
@@ -1085,7 +1150,8 @@ class TestHealth:
             assert isinstance(r, api.CheckResult)
 
     def test_health_method_delegates_to_free_function(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # The method body MUST call the free function so the two stay
         # byte-identical — otherwise the back-compat shim drifts.
@@ -1101,5 +1167,3 @@ class TestHealth:
         out = dev.health()
         assert out is sentinel
         assert calls == [dev]
-
-

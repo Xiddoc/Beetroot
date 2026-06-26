@@ -50,9 +50,13 @@ _ARCHIVE_SUFFIX = ".tar.zst"
 # basename-based readers. The lock file is a per-host artefact;
 # carrying it through a snapshot would also export a now-broken
 # kernel flock state to a different host.
+# compose.override.yaml is regenerated from beetroot.yaml on the next apply,
+# like .env (issue #108) — exclude it so a restored archive re-derives it.
+_COMPOSE_OVERRIDE_FILENAME = "compose.override.yaml"
 _EXCLUDED_TOP_LEVEL = frozenset(
     {
         ".env",
+        _COMPOSE_OVERRIDE_FILENAME,
         MANIFEST_FILENAME,
         INSTANCE_LOCK_FILENAME,
     }
@@ -439,14 +443,14 @@ def _check_restored_port_collision(dest_name: str, index: int, target: Path) -> 
     """
     cfg = config.load_yaml(paths.instance_yaml(target))
     new_ports = ports.resolve_ports(index, cfg.ports)
-    others = {n: p for n, p in registry.all_resolved_ports().items() if n != dest_name}
+    others = {n: p for n, p in registry.all_resolved_host_ports().items() if n != dest_name}
     collision = registry.find_port_collision(new_ports, others)
     if collision is None:
         return
     port, other_name, kind = collision
     raise SnapshotError(
         f"port {port} ({kind}) collides with instance {other_name!r}; "
-        "edit the restored beetroot.yaml's ports: block before retrying"
+        "edit the restored beetroot.yaml's ports: list before retrying"
     )
 
 

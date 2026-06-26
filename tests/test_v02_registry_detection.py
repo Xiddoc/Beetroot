@@ -6,6 +6,7 @@ user who keeps the v0.2 file under version control or in a different
 repo. The contract is to surface the situation **once per process**
 on stderr and let the user pick the migration path.
 """
+
 from __future__ import annotations
 
 import json
@@ -117,26 +118,20 @@ def test_no_hint_when_current_registry_is_populated(
     assert "v0.2 registry" not in buf.getvalue()
 
 
-def test_no_hint_for_non_v02_shape(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_no_hint_for_non_v02_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     cwd = tmp_path / "old-repo"
     cwd.mkdir()
     # A v0.3-shaped file at $PWD is NOT a v0.2 registry (no hint).
-    (cwd / "instances.json").write_text(
-        json.dumps({"version": 2, "instances": {}})
-    )
+    (cwd / "instances.json").write_text(json.dumps({"version": 2, "instances": {}}))
     monkeypatch.chdir(cwd)
     result = CliRunner().invoke(cli.app, ["ls"])
     assert result.exit_code == 0
     assert "v0.2 registry" not in result.stderr
 
 
-def test_no_hint_for_garbage_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_no_hint_for_garbage_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     cwd = tmp_path / "old-repo"
@@ -149,9 +144,7 @@ def test_no_hint_for_garbage_file(
     assert "v0.2 registry" not in result.stderr
 
 
-def test_no_hint_for_list_shape(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_no_hint_for_list_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     cwd = tmp_path / "old-repo"
@@ -165,7 +158,8 @@ def test_no_hint_for_list_shape(
 
 
 def test_hint_fires_once_per_process(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Multiple registry reads should produce only one warning line.
@@ -183,14 +177,10 @@ def test_hint_fires_once_per_process(
     registry._read(xdg_path)
 
     err = capsys.readouterr().err
-    assert err.count("v0.2 registry") == 1, (
-        f"hint fired more than once; full stderr:\n{err}"
-    )
+    assert err.count("v0.2 registry") == 1, f"hint fired more than once; full stderr:\n{err}"
 
 
-def test_hint_skipped_when_file_unreadable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_hint_skipped_when_file_unreadable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # If reading the cwd file raises (e.g. permissions), the hint
     # must not blow up the caller — the try/except in
     # _check_v02_registry_at_cwd swallows the OSError.

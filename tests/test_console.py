@@ -4,6 +4,7 @@ Every public branch of console.py must be exercised here: styled helpers,
 table rendering, progress advance, TTY vs. non-TTY degradation, and the
 set_consoles / accessor helpers.
 """
+
 from __future__ import annotations
 
 import io

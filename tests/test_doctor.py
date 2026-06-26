@@ -1,4 +1,5 @@
 """Tests for the ``beetroot doctor <name>`` verb + ``Instance.health()``."""
+
 from __future__ import annotations
 
 import subprocess
@@ -22,7 +23,9 @@ _ZYGISK_OFF: Final = "value=0\n"
 _DENYLIST_GMS_ENROLLED: Final = "package_name=com.google.android.gms\n"
 
 
-def _proc(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
+def _proc(
+    returncode: int = 0, stdout: str = "", stderr: str = ""
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
@@ -67,7 +70,11 @@ class TestDoctorRedroid:
 
         def _proc_side(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
             cmd = args[0] if args else []
-            if isinstance(cmd, list) and "magisk" in cmd and "settings" in " ".join(str(x) for x in cmd):
+            if (
+                isinstance(cmd, list)
+                and "magisk" in cmd
+                and "settings" in " ".join(str(x) for x in cmd)
+            ):
                 return _proc(stdout=_ZYGISK_OFF)
             return _healthy_subprocess(*args, **kwargs)
 
@@ -139,9 +146,7 @@ class TestDoctorRedroid:
         root = registry.instance_path("alpha")
         yaml_path = root / "beetroot.yaml"
         yaml_path.write_text(
-            "api_version: 3\n"
-            "android:\n  version: 14\n"
-            "frida:\n  version: 16.4.10\n",
+            "api_version: 3\nandroid:\n  version: 14\nfrida:\n  version: 16.4.10\n",
         )
         # The frida probe now connects directly via socket — mock it to
         # succeed so the handshake reports a live listener.
@@ -254,4 +259,3 @@ class TestInstanceHealthAPI:
         cr = api.CheckResult(status="pass")
         with pytest.raises(pydantic.ValidationError):
             cr.status = "fail"  # type: ignore[misc]  # asserting frozen behaviour
-

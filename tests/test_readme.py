@@ -1,4 +1,5 @@
 """Tests guarding README.md against drift from the actual CLI verb set."""
+
 from __future__ import annotations
 
 import re
@@ -31,8 +32,7 @@ def test_ghost_verbs_are_not_registered() -> None:
     registered = _registered_verbs()
     for verb in GHOST_VERBS:
         assert verb not in registered, (
-            f"Ghost verb {verb!r} is now actually registered — "
-            "update GHOST_VERBS in this test."
+            f"Ghost verb {verb!r} is now actually registered — update GHOST_VERBS in this test."
         )
 
 
@@ -40,9 +40,7 @@ def test_readme_does_not_advertise_ghost_verbs() -> None:
     text = README.read_text()
     tokens = set(re.findall(r"[A-Za-z]+", text.lower()))
     for verb in GHOST_VERBS:
-        assert verb not in tokens, (
-            f"README mentions ghost verb {verb!r}; remove it or rephrase."
-        )
+        assert verb not in tokens, f"README mentions ghost verb {verb!r}; remove it or rephrase."
 
 
 def test_readme_backticked_verbs_are_registered() -> None:

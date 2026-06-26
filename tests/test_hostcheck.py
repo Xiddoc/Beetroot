@@ -4,6 +4,7 @@ The whole module opts out of the autouse ``_assume_binder_ready`` stub
 (see ``conftest.py``) so these tests exercise the *real* probe logic
 rather than the pinned-``ready`` test default.
 """
+
 from __future__ import annotations
 
 import gzip
@@ -32,7 +33,9 @@ class TestClassify:
     @pytest.mark.parametrize("kconfig", ["y", "m"])
     def test_module_available_but_unloaded_is_loadable(self, kconfig: str) -> None:
         status = hostcheck._classify(
-            dev_present=False, binderfs=False, kconfig=kconfig,  # type: ignore[arg-type]
+            dev_present=False,
+            binderfs=False,
+            kconfig=kconfig,  # type: ignore[arg-type]
         )
         assert status.state == "loadable"
         assert status.available is False

@@ -18,6 +18,7 @@ Cases pinned (per the T4 spec):
 6. ``registry.set_stealth_paths`` raises ``RegistryError`` for unknown
    names and for adb-backed rows — the slot is redroid-only.
 """
+
 from __future__ import annotations
 
 import json
@@ -25,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from beetroot import config, ports, registry, snapshot
+from beetroot import config, registry, snapshot
 
 _MIN_YAML = "api_version: 3\nandroid:\n  version: 14\n"
 _SAMPLE_LAYOUT = {
@@ -106,7 +107,9 @@ class TestRestoreReplaysIntoRegistry:
         registry.remove("alpha")
 
         snapshot.restore(
-            archive, dest_name="beta", dest_path=tmp_path / "beta",
+            archive,
+            dest_name="beta",
+            dest_path=tmp_path / "beta",
         )
 
         beta = registry.get("beta")
@@ -126,7 +129,9 @@ class TestRestoreReplaysIntoRegistry:
         registry.remove("alpha")
 
         snapshot.restore(
-            archive, dest_name="beta", dest_path=tmp_path / "beta",
+            archive,
+            dest_name="beta",
+            dest_path=tmp_path / "beta",
         )
 
         beta = registry.get("beta")
@@ -158,7 +163,9 @@ class TestForwardCompatEmptyManifest:
         # so an empty stealth_paths slot must still render the
         # modules_update default.
         snapshot.restore(
-            archive, dest_name="beta", dest_path=tmp_path / "beta",
+            archive,
+            dest_name="beta",
+            dest_path=tmp_path / "beta",
         )
 
         env = (tmp_path / "beta" / ".env").read_text()
@@ -182,19 +189,15 @@ class TestForwardCompatEmptyManifest:
         registry.remove("alpha")
 
         snapshot.restore(
-            archive, dest_name="beta", dest_path=tmp_path / "beta",
+            archive,
+            dest_name="beta",
+            dest_path=tmp_path / "beta",
         )
 
         env = (tmp_path / "beta" / ".env").read_text()
-        assert (
-            f"BEETROOT_FRIDA_BIN={_SAMPLE_LAYOUT['frida_bin']}" in env
-        )
-        assert (
-            f"BEETROOT_MODULES_DIR={_SAMPLE_LAYOUT['modules_dir']}" in env
-        )
-        assert (
-            f"BEETROOT_MAGISK_DB={_SAMPLE_LAYOUT['magisk_db']}" in env
-        )
+        assert f"BEETROOT_FRIDA_BIN={_SAMPLE_LAYOUT['frida_bin']}" in env
+        assert f"BEETROOT_MODULES_DIR={_SAMPLE_LAYOUT['modules_dir']}" in env
+        assert f"BEETROOT_MAGISK_DB={_SAMPLE_LAYOUT['magisk_db']}" in env
 
 
 # --------------------------------------------------------------------- #
@@ -205,9 +208,7 @@ class TestForwardCompatEmptyManifest:
 def _env_dict(text: str) -> dict[str, str]:
     """Parse ``KEY=VALUE`` lines from a rendered .env blob."""
     return {
-        line.partition("=")[0]: line.partition("=")[2]
-        for line in text.splitlines()
-        if "=" in line
+        line.partition("=")[0]: line.partition("=")[2] for line in text.splitlines() if "=" in line
     }
 
 
@@ -215,7 +216,8 @@ class TestRenderEnvOverrides:
     def test_no_stealth_paths_emits_v04_defaults(self) -> None:
         cfg = config.InstanceConfig()
         rendered = config.render_env(
-            "alpha", cfg, ports.resolve_ports(0, cfg.ports),
+            "alpha",
+            cfg,
         )
         env = _env_dict(rendered)
         assert env["BEETROOT_MAGISK_DB"] == "/data/adb/magisk.db"
@@ -225,7 +227,8 @@ class TestRenderEnvOverrides:
     def test_empty_dict_treated_as_no_stealth_paths(self) -> None:
         cfg = config.InstanceConfig()
         rendered = config.render_env(
-            "alpha", cfg, ports.resolve_ports(0, cfg.ports),
+            "alpha",
+            cfg,
             stealth_paths={},
         )
         env = _env_dict(rendered)
@@ -237,7 +240,8 @@ class TestRenderEnvOverrides:
         # their defaults.
         cfg = config.InstanceConfig()
         rendered = config.render_env(
-            "alpha", cfg, ports.resolve_ports(0, cfg.ports),
+            "alpha",
+            cfg,
             stealth_paths={"modules_dir": "/custom"},
         )
         env = _env_dict(rendered)
@@ -249,7 +253,8 @@ class TestRenderEnvOverrides:
     def test_all_three_overrides(self) -> None:
         cfg = config.InstanceConfig()
         rendered = config.render_env(
-            "alpha", cfg, ports.resolve_ports(0, cfg.ports),
+            "alpha",
+            cfg,
             stealth_paths=_SAMPLE_LAYOUT,
         )
         env = _env_dict(rendered)
@@ -264,7 +269,8 @@ class TestRenderEnvOverrides:
         # absent recognised keys still fall through to defaults.
         cfg = config.InstanceConfig()
         rendered = config.render_env(
-            "alpha", cfg, ports.resolve_ports(0, cfg.ports),
+            "alpha",
+            cfg,
             stealth_paths={"stealth_module_id": "x7q4z"},
         )
         env = _env_dict(rendered)
@@ -278,7 +284,8 @@ class TestRenderEnvOverrides:
         # The test pins this for the .env-parsed-by-compose contract.
         cfg = config.InstanceConfig()
         rendered = config.render_env(
-            "alpha", cfg, ports.resolve_ports(0, cfg.ports),
+            "alpha",
+            cfg,
             stealth_paths=_SAMPLE_LAYOUT,
         )
         for line in rendered.splitlines():
@@ -296,29 +303,29 @@ class TestSetStealthPathsErrors:
         with pytest.raises(registry.RegistryError, match="unknown instance"):
             registry.set_stealth_paths("ghost", {"frida_bin": "/x"})
 
-    def test_adb_backend_rejected(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_adb_backend_rejected(self, isolated_registry: Path, tmp_path: Path) -> None:
         # Hand-write an adb-shaped row and confirm set_stealth_paths
         # refuses — the slot lives on RedroidBackendConfig only.
         path = isolated_registry / "config" / "beetroot" / "instances.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({
-            "version": 3,
-            "instances": {
-                "phone": {
-                    "backend": {"kind": "adb", "serial": "emulator-5554"},
-                    "index": 0,
-                    "created_at": "2026-05-19T00:00:00+00:00",
-                },
-            },
-        }))
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 3,
+                    "instances": {
+                        "phone": {
+                            "backend": {"kind": "adb", "serial": "emulator-5554"},
+                            "index": 0,
+                            "created_at": "2026-05-19T00:00:00+00:00",
+                        },
+                    },
+                }
+            )
+        )
         with pytest.raises(registry.RegistryError, match="redroid-only"):
             registry.set_stealth_paths("phone", {"frida_bin": "/x"})
 
-    def test_set_then_get_round_trip(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_set_then_get_round_trip(self, isolated_registry: Path, tmp_path: Path) -> None:
         src = _make_instance(tmp_path / "alpha")
         registry.add_allocating("alpha", src)
         registry.set_stealth_paths("alpha", _SAMPLE_LAYOUT)
@@ -340,6 +347,4 @@ class TestSetStealthPathsErrors:
         meta = registry.get("alpha")
         assert meta is not None
         assert isinstance(meta.backend, registry.RedroidBackendConfig)
-        assert meta.backend.stealth_paths["frida_bin"] == (
-            _SAMPLE_LAYOUT["frida_bin"]
-        )
+        assert meta.backend.stealth_paths["frida_bin"] == (_SAMPLE_LAYOUT["frida_bin"])

@@ -4,6 +4,7 @@ A future verb add/rename should land in the same PR as its `## <verb>`
 heading in `docs/reference/cli.md` — these tests fail in both directions
 to catch one-sided drift.
 """
+
 from __future__ import annotations
 
 import re
@@ -44,15 +45,11 @@ def test_every_registered_verb_has_a_doc_heading() -> None:
     registered = _registered_verbs()
     documented = _documented_verbs()
     missing = sorted(registered - documented)
-    assert not missing, (
-        f"Registered verbs without a `## <verb>` section in {CLI_REF}: {missing}"
-    )
+    assert not missing, f"Registered verbs without a `## <verb>` section in {CLI_REF}: {missing}"
 
 
 def test_every_documented_verb_is_registered() -> None:
     registered = _registered_verbs()
     documented = _documented_verbs()
     stale = sorted(documented - registered)
-    assert not stale, (
-        f"`## <verb>` sections in {CLI_REF} without a registered command: {stale}"
-    )
+    assert not stale, f"`## <verb>` sections in {CLI_REF} without a registered command: {stale}"

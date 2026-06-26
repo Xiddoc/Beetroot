@@ -16,6 +16,7 @@ lock for ~0.5s and races a destroy against it; we then assert
 destroy blocks until snapshot completes, the archive is intact, and
 the directory ends up gone.
 """
+
 from __future__ import annotations
 
 import threading
@@ -28,7 +29,8 @@ from beetroot import api, registry, snapshot
 
 
 def test_destroy_blocks_until_snapshot_completes(
-    cli_root: Path, monkeypatch: pytest.MonkeyPatch,
+    cli_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     inst = api.Instance.create("alpha")
     src = inst.root
@@ -60,6 +62,7 @@ def test_destroy_blocks_until_snapshot_completes(
         destroy_result["started_at"] = time.monotonic()
         # Patch ``compose.down`` so we don't try to talk to docker.
         from beetroot import compose
+
         with pytest.MonkeyPatch.context() as m:
             m.setattr(compose, "down", lambda *a, **kw: None)
             inst.destroy(yes=True)
@@ -95,7 +98,8 @@ def test_destroy_blocks_until_snapshot_completes(
 
 
 def test_two_snapshots_can_run_in_parallel(
-    cli_root: Path, monkeypatch: pytest.MonkeyPatch,
+    cli_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # T2 Agent 2 B-12: parallel snapshots both take LOCK_SH so they
     # don't block each other. The contract matters because a

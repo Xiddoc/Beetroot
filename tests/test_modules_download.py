@@ -1,4 +1,5 @@
 """Tests for modules_download.py — stage Magisk module zips per instance."""
+
 from __future__ import annotations
 
 import hashlib
@@ -48,9 +49,7 @@ def instance_root(isolated_registry: Path, tmp_path: Path) -> Path:
 
 class TestStageForInstanceUrlModule:
     def test_happy_path_url_module(self, instance_root: Path) -> None:
-        cfg = InstanceConfig(
-            modules=[Module(url="https://example.com/magisk-mod.zip")]
-        )
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/magisk-mod.zip")])
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
             staged = modules_download.stage_for_instance(instance_root, cfg)
         assert len(staged) == 1
@@ -58,27 +57,21 @@ class TestStageForInstanceUrlModule:
         assert staged[0].read_bytes() == FAKE_ZIP_CONTENT
 
     def test_staged_file_lands_in_instance_modules(self, instance_root: Path) -> None:
-        cfg = InstanceConfig(
-            modules=[Module(url="https://example.com/magisk-mod.zip")]
-        )
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/magisk-mod.zip")])
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
             staged = modules_download.stage_for_instance(instance_root, cfg)
         assert staged[0].parent == paths.instance_modules(instance_root)
 
     def test_url_module_with_correct_sha256(self, instance_root: Path) -> None:
         sha = _sha256(FAKE_ZIP_CONTENT)
-        cfg = InstanceConfig(
-            modules=[Module(url="https://example.com/mod.zip", sha256=sha)]
-        )
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip", sha256=sha)])
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
             staged = modules_download.stage_for_instance(instance_root, cfg)
         assert len(staged) == 1
         assert staged[0].exists()
 
     def test_sha256_mismatch_raises_value_error(self, instance_root: Path) -> None:
-        cfg = InstanceConfig(
-            modules=[Module(url="https://example.com/mod.zip", sha256="deadbeef")]
-        )
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip", sha256="deadbeef")])
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
             with pytest.raises(ValueError, match="sha256 mismatch"):
                 modules_download.stage_for_instance(instance_root, cfg)
@@ -86,9 +79,7 @@ class TestStageForInstanceUrlModule:
     def test_sha256_mismatch_error_contains_both_hashes(self, instance_root: Path) -> None:
         expected = "deadbeef"
         actual = _sha256(FAKE_ZIP_CONTENT)
-        cfg = InstanceConfig(
-            modules=[Module(url="https://example.com/mod.zip", sha256=expected)]
-        )
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip", sha256=expected)])
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
             with pytest.raises(ValueError, match="sha256 mismatch") as exc_info:
                 modules_download.stage_for_instance(instance_root, cfg)
@@ -99,9 +90,7 @@ class TestStageForInstanceUrlModule:
 
 class TestUrlModuleCache:
     def test_second_call_reuses_cached_zip(self, instance_root: Path) -> None:
-        cfg = InstanceConfig(
-            modules=[Module(url="https://example.com/magisk-mod.zip")]
-        )
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/magisk-mod.zip")])
         with patch("urllib.request.urlopen", return_value=_make_url_resp()) as mock_open:
             modules_download.stage_for_instance(instance_root, cfg)
             modules_download.stage_for_instance(instance_root, cfg)
@@ -117,18 +106,14 @@ class TestUrlModuleCache:
         expected = modules_download._cache_path_for_url(url)
         assert expected.exists()
 
-    def test_same_basename_different_domains_do_not_collide(
-        self, instance_root: Path
-    ) -> None:
+    def test_same_basename_different_domains_do_not_collide(self, instance_root: Path) -> None:
         # Two URLs with the same basename but different domains must produce
         # different cache paths so they never overwrite each other.
         url_a = "https://example.com/mod.zip"
         url_b = "https://other.org/mod.zip"
         cache_a = modules_download._cache_path_for_url(url_a)
         cache_b = modules_download._cache_path_for_url(url_b)
-        assert cache_a != cache_b, (
-            "same-basename different-domain URLs must not share a cache path"
-        )
+        assert cache_a != cache_b, "same-basename different-domain URLs must not share a cache path"
 
     def test_sha256_mismatch_deletes_cached_file(self, instance_root: Path) -> None:
         # A sha256 mismatch on a URL module must delete the bad cached artifact
@@ -188,9 +173,7 @@ class TestFetchUrlErrors:
 
 
 class TestStageForInstancePathModule:
-    def test_absolute_path_module_copies_file(
-        self, instance_root: Path, tmp_path: Path
-    ) -> None:
+    def test_absolute_path_module_copies_file(self, instance_root: Path, tmp_path: Path) -> None:
         src = tmp_path / "external" / "local-mod.zip"
         src.parent.mkdir()
         src.write_bytes(FAKE_ZIP_CONTENT)
@@ -199,9 +182,7 @@ class TestStageForInstancePathModule:
         assert len(staged) == 1
         assert staged[0].read_bytes() == FAKE_ZIP_CONTENT
 
-    def test_relative_path_resolves_against_instance_root(
-        self, instance_root: Path
-    ) -> None:
+    def test_relative_path_resolves_against_instance_root(self, instance_root: Path) -> None:
         # A relative ``path:`` entry must resolve to <instance_root>/<path>.
         local = instance_root / "local-mod.zip"
         local.write_bytes(FAKE_ZIP_CONTENT)
@@ -256,9 +237,7 @@ class TestEmptyModuleList:
 class TestModuleDownloadProgress:
     """Progress bar behaviour during module zip downloads."""
 
-    def test_content_length_header_produces_determinate_bar(
-        self, instance_root: Path
-    ) -> None:
+    def test_content_length_header_produces_determinate_bar(self, instance_root: Path) -> None:
         # When the response includes Content-Length the progress bar receives a
         # non-None total so percentage + ETA columns are shown.
         captured_totals: list[float | None] = []
@@ -281,9 +260,7 @@ class TestModuleDownloadProgress:
         assert len(captured_totals) == 1
         assert captured_totals[0] == float(len(FAKE_ZIP_CONTENT))
 
-    def test_missing_content_length_produces_indeterminate_bar(
-        self, instance_root: Path
-    ) -> None:
+    def test_missing_content_length_produces_indeterminate_bar(self, instance_root: Path) -> None:
         # When Content-Length is absent the progress bar total must be None so
         # an indeterminate / pulse bar is rendered instead of a broken 0%.
         captured_totals: list[float | None] = []

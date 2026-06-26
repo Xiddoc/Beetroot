@@ -1,4 +1,5 @@
 """Tests for config.py — schema validation, YAML round-trip, env rendering."""
+
 from __future__ import annotations
 
 import shutil
@@ -19,32 +20,34 @@ from beetroot.config import (
     InstanceConfig,
     Magisk,
     Module,
-    Ports,
+    PortMapping,
     Resources,
     base_image_tag,
     is_pinned_frida_version,
     load_yaml,
+    render_compose_ports_override,
     render_env,
     resolve_gapps_vendor,
     resolve_rendering,
     vm_redroid_image,
     write_yaml,
 )
+from beetroot.ports import EXTRA_POOL_BASE, resolve_ports
 
 
 class TestApiVersion:
     def test_default_api_version_is_supported(self) -> None:
         cfg = InstanceConfig()
         assert cfg.api_version == SUPPORTED_API_VERSION
-        assert cfg.api_version == 7
+        assert cfg.api_version == 8
 
     def test_explicit_supported_version_succeeds(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": 7})
-        assert cfg.api_version == 7
+        cfg = InstanceConfig.model_validate({"api_version": 8})
+        assert cfg.api_version == 8
 
     def test_string_api_version_is_coerced(self) -> None:
-        cfg = InstanceConfig.model_validate({"api_version": "7"})
-        assert cfg.api_version == 7
+        cfg = InstanceConfig.model_validate({"api_version": "8"})
+        assert cfg.api_version == 8
 
     def test_zero_api_version_raises(self) -> None:
         with pytest.raises(ValidationError) as exc_info:
@@ -162,21 +165,17 @@ class TestFridaOptional:
 
     def test_render_env_omits_frida_specific_keys(self) -> None:
         # Behavior test: a user-supplied empty YAML flows through load_yaml
-        # → render_env without producing any FRIDA-specific knob beyond the
-        # unconditional bind-mount ports (FRIDA_PORT / FRIDA_PORT_CONTROL remain so
-        # compose's `${FRIDA_PORT}` substitution still works).
+        # → render_env without producing any FRIDA-specific knob. Since v8
+        # (issue #108) ports live in the compose override, not .env, so no
+        # FRIDA_PORT lines appear here at all.
         cfg = InstanceConfig()
-        rendered_ports = {"adb": 5555, "frida": 27042, "frida_control": 27043}
-        result = render_env("alpha", cfg, rendered_ports)
+        result = render_env("alpha", cfg)
         # FRIDA_VERSION never appears — the version is consumed by frida_download,
         # not rendered into .env.
         assert "FRIDA_VERSION" not in result
-        # The bind-mount port substitutions DO remain — disabled-frida
-        # instances still need a non-empty value for compose to resolve
-        # the port mapping line even though the binary is the zero-byte
-        # placeholder.
-        assert "FRIDA_PORT=" in result
-        assert "FRIDA_PORT_CONTROL=" in result
+        # Ports moved to compose.override.yaml in v8; .env no longer carries them.
+        assert "FRIDA_PORT" not in result
+        assert "ADB_PORT" not in result
 
 
 class TestFridaVersionRegex:
@@ -190,13 +189,13 @@ class TestFridaVersionRegex:
     @pytest.mark.parametrize(
         "bad",
         [
-            "16.4",           # missing patch
-            "16.4.10-rc1",    # pre-release suffix
-            "16.4.10.dev",    # extra component
-            "v16.4.10",       # leading v
-            "16.4.10 ",       # trailing whitespace
-            "",               # empty
-            "abc",            # non-numeric
+            "16.4",  # missing patch
+            "16.4.10-rc1",  # pre-release suffix
+            "16.4.10.dev",  # extra component
+            "v16.4.10",  # leading v
+            "16.4.10 ",  # trailing whitespace
+            "",  # empty
+            "abc",  # non-numeric
         ],
     )
     def test_invalid_version_rejected(self, bad: str) -> None:
@@ -241,9 +240,7 @@ class TestFridaSha256:
     def test_yaml_roundtrip_with_sha256(self, tmp_path: Path) -> None:
         p = tmp_path / "cfg.yaml"
         digest = "b" * 64
-        p.write_text(
-            yaml.safe_dump({"frida": {"version": "16.4.10", "sha256": digest}})
-        )
+        p.write_text(yaml.safe_dump({"frida": {"version": "16.4.10", "sha256": digest}}))
         cfg = load_yaml(p)
         assert cfg.frida is not None
         assert cfg.frida.sha256 == digest
@@ -323,13 +320,20 @@ class TestBaseImageTag:
         assert base_image_tag(Android(gapps="none")) == "redroid/redroid:14.0.0_houdini_magisk"
 
     def test_full_gapps(self) -> None:
-        assert base_image_tag(Android(gapps="full")) == "redroid/redroid:14.0.0_gapps_houdini_magisk"
+        assert (
+            base_image_tag(Android(gapps="full")) == "redroid/redroid:14.0.0_gapps_houdini_magisk"
+        )
 
     def test_mindthegapps_via_vendor(self) -> None:
-        assert base_image_tag(Android(gapps="full", gapps_vendor="mindthegapps")) == "redroid/redroid:14.0.0_mindthegapps_houdini_magisk"
+        assert (
+            base_image_tag(Android(gapps="full", gapps_vendor="mindthegapps"))
+            == "redroid/redroid:14.0.0_mindthegapps_houdini_magisk"
+        )
 
     def test_version_reflected_in_tag(self) -> None:
-        assert base_image_tag(Android(version=13)) == "redroid/redroid:13.0.0_litegapps_houdini_magisk"
+        assert (
+            base_image_tag(Android(version=13)) == "redroid/redroid:13.0.0_litegapps_houdini_magisk"
+        )
 
 
 class TestDefaultAndroidVersion:
@@ -498,9 +502,7 @@ class TestRendering:
         ("rendering", "expected"),
         [("gpu", "host"), ("software", "guest")],
     )
-    def test_resolve_rendering_maps_to_redroid_vocab(
-        self, rendering: str, expected: str
-    ) -> None:
+    def test_resolve_rendering_maps_to_redroid_vocab(self, rendering: str, expected: str) -> None:
         assert resolve_rendering(rendering) == expected
 
     def test_resolve_auto_uses_gpu_when_render_node_present(
@@ -515,13 +517,11 @@ class TestRendering:
         monkeypatch.setattr("beetroot.config._host_has_render_node", lambda: False)
         assert resolve_rendering("auto") == "guest"
 
-    def test_render_env_emits_resolved_gpu_mode(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_render_env_emits_resolved_gpu_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # auto + no render node → software → redroid "guest"
         monkeypatch.setattr("beetroot.config._host_has_render_node", lambda: False)
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, {"adb": 5555, "frida": 27042, "frida_control": 27043})
+        result = render_env("alpha", cfg)
         assert "DISPLAY_GPU=guest" in result
 
     def test_host_has_render_node_reflects_dir(
@@ -567,9 +567,7 @@ class TestMagiskDenylist:
     """
 
     def test_valid_packages_accepted(self) -> None:
-        cfg = Magisk(
-            denylist=["com.google.android.gms", "com.app_id", "com.x.y.z123"]
-        )
+        cfg = Magisk(denylist=["com.google.android.gms", "com.app_id", "com.x.y.z123"])
         assert cfg.denylist[0] == "com.google.android.gms"
 
     def test_gms_denylist_default(self) -> None:
@@ -604,12 +602,7 @@ class TestMagiskDenylist:
         # D1/D3: an old YAML using ``stealth:`` must fail with a clear,
         # actionable migration error — not silently drop the denylist.
         p = tmp_path / "old.yaml"
-        p.write_text(
-            "api_version: 4\n"
-            "stealth:\n"
-            "  denylist:\n"
-            "    - com.google.android.gms\n"
-        )
+        p.write_text("api_version: 4\nstealth:\n  denylist:\n    - com.google.android.gms\n")
         with pytest.raises(ValidationError) as exc_info:
             load_yaml(p)
         msg = str(exc_info.value)
@@ -618,97 +611,236 @@ class TestMagiskDenylist:
         assert "api_version" in msg
 
 
-class TestPorts:
-    def test_defaults_are_none(self) -> None:
-        p = Ports()
-        assert p.adb is None
-        assert p.frida is None
-        assert p.frida_control is None
+def _services(cfg: InstanceConfig) -> dict[str, int | None]:
+    """Map service name → host for a config's well-known seeded mappings."""
+    return {m.service: m.host for m in cfg.ports if m.service is not None}
 
-    def test_instance_config_default_ports_is_empty(self) -> None:
+
+class TestPortMapping:
+    def test_default_seeds_three_well_known_services(self) -> None:
         cfg = InstanceConfig()
-        assert cfg.ports == Ports()
+        assert [m.service for m in cfg.ports] == ["adb", "frida", "frida_control"]
+        assert all(m.host is None for m in cfg.ports)
+        assert [m.guest for m in cfg.ports] == [5555, 27042, 27043]
 
-    def test_yaml_roundtrip_with_adb_override(self, tmp_path: Path) -> None:
-        raw = {"ports": {"adb": 9000}}
+    def test_guest_required(self) -> None:
+        with pytest.raises(ValidationError):
+            PortMapping(service="adb")  # type: ignore[call-arg]
+
+    def test_guest_zero_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="out of range"):
+            PortMapping(guest=0)
+
+    def test_guest_above_max_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="out of range"):
+            PortMapping(guest=70000)
+
+    def test_host_negative_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="out of range"):
+            PortMapping(guest=8080, host=-1)
+
+    def test_host_above_max_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="out of range"):
+            PortMapping(guest=8080, host=65536)
+
+    def test_host_boundaries_valid(self) -> None:
+        assert PortMapping(guest=1, host=1).host == 1
+        assert PortMapping(guest=2, host=65535).host == 65535
+
+    def test_arbitrary_unlabelled_mapping_valid(self) -> None:
+        m = PortMapping(guest=8080, host=9000)
+        assert m.service is None
+        assert (m.guest, m.host) == (8080, 9000)
+
+
+class TestPortsListValidation:
+    def test_arbitrary_entries_appended(self) -> None:
+        cfg = InstanceConfig(
+            ports=[
+                *InstanceConfig().ports,
+                PortMapping(guest=8080, host=9000),
+                PortMapping(guest=8081),
+            ]
+        )
+        assert len(cfg.ports) == 5
+
+    def test_duplicate_service_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="duplicate service"):
+            InstanceConfig(
+                ports=[
+                    PortMapping(service="adb", guest=5555),
+                    PortMapping(service="adb", guest=5556),
+                ]
+            )
+
+    def test_duplicate_guest_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="duplicate guest"):
+            InstanceConfig(
+                ports=[
+                    PortMapping(service="adb", guest=5555),
+                    PortMapping(guest=5555, host=9000),
+                ]
+            )
+
+    def test_duplicate_explicit_host_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="duplicate explicit host"):
+            InstanceConfig(
+                ports=[
+                    PortMapping(guest=8080, host=9000),
+                    PortMapping(guest=8081, host=9000),
+                ]
+            )
+
+    def test_unset_hosts_not_treated_as_duplicates(self) -> None:
+        # Two host=None entries are fine — they auto-allocate distinctly.
+        InstanceConfig(
+            ports=[
+                PortMapping(service="adb", guest=5555),
+                PortMapping(guest=8081),
+                PortMapping(guest=8082),
+            ]
+        )
+
+    def test_ports_omitting_adb_rejected(self) -> None:
+        # adb_address (and the doctor adb.connect row) is derived from the
+        # service: adb mapping; a list without it would KeyError downstream, so
+        # it is rejected at load time with a clear message.
+        with pytest.raises(ValidationError, match="service: adb"):
+            InstanceConfig(ports=[PortMapping(service="frida", guest=27042)])
+
+    def test_frida_block_without_frida_service_rejected(self) -> None:
+        # A frida: block needs a service: frida mapping to derive frida_address.
+        with pytest.raises(ValidationError, match="service: frida"):
+            InstanceConfig(
+                frida=Frida(version="16.4.10"),
+                ports=[PortMapping(service="adb", guest=5555)],
+            )
+
+    def test_frida_service_not_required_without_frida_block(self) -> None:
+        # No frida: block → no service: frida required.
+        InstanceConfig(ports=[PortMapping(service="adb", guest=5555)])
+
+    def test_explicit_empty_list_rejected_missing_adb(self, tmp_path: Path) -> None:
+        # An explicit empty list is the NEW-form "forward nothing" — distinct
+        # from an absent key (which seeds defaults via the default_factory). But
+        # every backend derives its adb_address from a service: adb mapping, so
+        # an empty list (no adb) is rejected by the required-addressing-services
+        # validator rather than silently producing an unaddressable instance.
         p = tmp_path / "cfg.yaml"
-        p.write_text(yaml.safe_dump(raw))
-        cfg = load_yaml(p)
-        assert cfg.ports.adb == 9000
-        assert cfg.ports.frida is None
-        assert cfg.ports.frida_control is None
+        p.write_text(yaml.safe_dump({"api_version": SUPPORTED_API_VERSION, "ports": []}))
+        with pytest.raises(ValidationError, match="service: adb"):
+            load_yaml(p)
 
-    def test_yaml_roundtrip_all_overrides(self, tmp_path: Path) -> None:
-        raw = {"ports": {"adb": 1, "frida": 2, "frida_control": 3}}
-        p = tmp_path / "cfg.yaml"
-        p.write_text(yaml.safe_dump(raw))
-        cfg = load_yaml(p)
-        assert cfg.ports.adb == 1
-        assert cfg.ports.frida == 2
-        assert cfg.ports.frida_control == 3
 
-    def test_write_then_load_preserves_override(self, tmp_path: Path) -> None:
-        cfg = InstanceConfig(ports=Ports(adb=9000))
+class TestPortsListYamlRoundtrip:
+    def test_list_form_roundtrips(self, tmp_path: Path) -> None:
+        cfg = InstanceConfig(
+            ports=[
+                PortMapping(service="adb", guest=5555, host=9000),
+                PortMapping(guest=8080),
+            ]
+        )
         p = tmp_path / "cfg.yaml"
         write_yaml(p, cfg)
         loaded = load_yaml(p)
-        assert loaded.ports.adb == 9000
-        assert loaded.ports.frida is None
+        assert _services(loaded)["adb"] == 9000
+        assert any(m.service is None and m.guest == 8080 for m in loaded.ports)
 
-    def test_missing_block_yields_empty_ports(self, tmp_path: Path) -> None:
+    def test_default_config_roundtrips_as_list(self, tmp_path: Path) -> None:
+        cfg = InstanceConfig()
         p = tmp_path / "cfg.yaml"
-        p.write_text(yaml.safe_dump({"display": {"width": 1080}}))
+        write_yaml(p, cfg)
+        loaded = load_yaml(p)
+        assert [m.service for m in loaded.ports] == ["adb", "frida", "frida_control"]
+
+
+class TestLegacyPortsMappingMigration:
+    def test_adb_host_override_translated(self, tmp_path: Path) -> None:
+        p = tmp_path / "cfg.yaml"
+        p.write_text(yaml.safe_dump({"api_version": 7, "ports": {"adb": 9000}}))
         cfg = load_yaml(p)
-        assert cfg.ports == Ports()
+        assert _services(cfg) == {"adb": 9000, "frida": None, "frida_control": None}
+        assert cfg.api_version == SUPPORTED_API_VERSION
 
-    def test_port_zero_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="out of range"):
-            Ports(adb=0)
+    def test_all_well_known_overrides_translated(self, tmp_path: Path) -> None:
+        p = tmp_path / "cfg.yaml"
+        p.write_text(
+            yaml.safe_dump({"api_version": 7, "ports": {"adb": 1, "frida": 2, "frida_control": 3}})
+        )
+        cfg = load_yaml(p)
+        assert _services(cfg) == {"adb": 1, "frida": 2, "frida_control": 3}
 
-    def test_port_negative_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="out of range"):
-            Ports(frida=-1)
+    def test_empty_mapping_seeds_defaults(self, tmp_path: Path) -> None:
+        p = tmp_path / "cfg.yaml"
+        p.write_text(yaml.safe_dump({"api_version": 7, "ports": {}}))
+        cfg = load_yaml(p)
+        # An empty OLD-form mapping means "use defaults": the key is dropped so
+        # the default_factory seeds the three well-known services (NOT an empty
+        # list — that would drop adb/frida and KeyError the address accessors).
+        assert [m.service for m in cfg.ports] == ["adb", "frida", "frida_control"]
+        assert _services(cfg) == {"adb": None, "frida": None, "frida_control": None}
 
-    def test_port_above_max_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="out of range"):
-            Ports(frida_control=65536)
+    def test_unknown_key_raises_migration_error(self) -> None:
+        with pytest.raises(ValidationError, match="non-well-known"):
+            InstanceConfig.model_validate({"ports": {"telemetry": 9000}})
 
-    def test_port_far_above_max_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="out of range"):
-            Ports(adb=70000)
+    def test_old_form_unknown_key_raises_and_suppresses_autobump_note(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A populated old-form ports dict carrying a non-well-known key triggers
+        # the migration error; the "auto-upgraded" note must be suppressed
+        # (printing it before the contradicting error is wrong), mirroring the
+        # gpu_mode / gapps precedent.
+        p = tmp_path / "cfg.yaml"
+        p.write_text(yaml.safe_dump({"api_version": 7, "ports": {"telemetry": 9000}}))
+        with pytest.raises(ValidationError, match="non-well-known"):
+            load_yaml(p)
+        assert "auto-upgraded" not in capsys.readouterr().err
 
-    def test_port_lower_boundary_valid(self) -> None:
-        assert Ports(adb=1).adb == 1
+    def test_migrated_override_reflected_in_resolve(self, tmp_path: Path) -> None:
+        # Behavior test on the final resolved artifact for the legacy form.
+        p = tmp_path / "cfg.yaml"
+        p.write_text(yaml.safe_dump({"api_version": 7, "ports": {"adb": 9000}}))
+        cfg = load_yaml(p)
+        resolved = resolve_ports(0, cfg.ports)
+        hosts = {rp.service: rp.host for rp in resolved}
+        assert hosts == {"adb": 9000, "frida": 27042, "frida_control": 27043}
 
-    def test_port_upper_boundary_valid(self) -> None:
-        assert Ports(frida=65535).frida == 65535
 
-    def test_port_none_still_valid(self) -> None:
-        p = Ports(adb=None, frida=None, frida_control=None)
-        assert p.adb is None
-        assert p.frida is None
-        assert p.frida_control is None
+class TestRenderComposePortsOverride:
+    def test_default_override_yaml(self) -> None:
+        cfg = InstanceConfig()
+        resolved = resolve_ports(0, cfg.ports)
+        doc = yaml.safe_load(render_compose_ports_override(resolved))
+        assert doc["services"]["phone"]["ports"] == [
+            "5555:5555",
+            "27042:27042",
+            "27043:27043",
+        ]
 
-    def test_adb_frida_collision_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="must be distinct"):
-            Ports(adb=9000, frida=9000)
+    def test_override_yaml_with_arbitrary_and_explicit(self) -> None:
+        # The crux artifact test: explicit host wins, arbitrary auto-allocates.
+        cfg = InstanceConfig(
+            ports=[
+                *InstanceConfig().ports,
+                PortMapping(guest=8080, host=9000),
+                PortMapping(guest=8081),
+            ]
+        )
+        resolved = resolve_ports(0, cfg.ports)
+        doc = yaml.safe_load(render_compose_ports_override(resolved))
+        entries = set(doc["services"]["phone"]["ports"])
+        assert entries == {
+            "5555:5555",
+            "27042:27042",
+            "27043:27043",
+            "9000:8080",
+            f"{EXTRA_POOL_BASE}:8081",
+        }
 
-    def test_adb_frida_control_collision_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="must be distinct"):
-            Ports(adb=9000, frida_control=9000)
-
-    def test_frida_frida_control_collision_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="must be distinct"):
-            Ports(frida=9000, frida_control=9000)
-
-    def test_three_distinct_ports_valid(self) -> None:
-        p = Ports(adb=9000, frida=9001, frida_control=9002)
-        assert p.adb == 9000
-        assert p.frida == 9001
-        assert p.frida_control == 9002
-
-    def test_none_pair_skipped_in_distinct_check(self) -> None:
-        Ports(adb=9000, frida=None, frida_control=None)
+    def test_override_ends_with_newline(self) -> None:
+        resolved = resolve_ports(0, InstanceConfig().ports)
+        assert render_compose_ports_override(resolved).endswith("\n")
 
 
 class TestPermissiveDefaults:
@@ -744,137 +876,121 @@ class TestPermissiveDefaults:
 
 
 class TestRenderEnv:
-    def _ports(self) -> dict[str, int]:
-        return {"adb": 5555, "frida": 27042, "frida_control": 27043}
-
     def test_contains_base_image(self) -> None:
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert "BASE_IMAGE=redroid/redroid:14.0.0_litegapps_houdini_magisk" in result
 
     def test_base_image_reflects_gapps_none(self) -> None:
         cfg = InstanceConfig(android=Android(gapps="none"))
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert "BASE_IMAGE=redroid/redroid:14.0.0_houdini_magisk" in result
 
     def test_contains_instance_name(self) -> None:
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert "INSTANCE_NAME=alpha" in result
 
-    def test_contains_adb_port(self) -> None:
+    def test_omits_port_lines(self) -> None:
+        # Since v8 (issue #108) ports live in compose.override.yaml, not .env.
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
-        assert "ADB_PORT=5555" in result
-
-    def test_contains_frida_port(self) -> None:
-        cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
-        assert "FRIDA_PORT=27042" in result
-
-    def test_contains_frida_port2(self) -> None:
-        cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
-        assert "FRIDA_PORT_CONTROL=27043" in result
+        result = render_env("alpha", cfg)
+        assert "ADB_PORT" not in result
+        assert "FRIDA_PORT" not in result
+        assert "FRIDA_PORT_CONTROL" not in result
 
     def test_contains_mem_limit(self) -> None:
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert f"MEM_LIMIT={cfg.resources.mem}" in result
 
     def test_contains_cpus(self) -> None:
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert f"CPUS={cfg.resources.cpus}" in result
 
     def test_contains_shm_size(self) -> None:
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert f"SHM_SIZE={cfg.resources.shared_mem}" in result
 
     def test_contains_display_width(self) -> None:
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert f"DISPLAY_WIDTH={cfg.display.width}" in result
 
     def test_contains_display_height(self) -> None:
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert f"DISPLAY_HEIGHT={cfg.display.height}" in result
 
     def test_contains_display_fps(self) -> None:
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert f"DISPLAY_FPS={cfg.display.fps}" in result
 
     def test_contains_display_gpu(self) -> None:
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert f"DISPLAY_GPU={resolve_rendering(cfg.display.rendering)}" in result
 
     def test_ends_with_newline(self) -> None:
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert result.endswith("\n")
 
     def test_all_lines_are_key_value(self) -> None:
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         for line in result.strip().splitlines():
             assert "=" in line, f"line not KEY=VALUE: {line!r}"
 
     def test_contains_pids_limit_default(self) -> None:
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert "PIDS_LIMIT=4096" in result
 
     def test_pids_limit_custom(self) -> None:
         cfg = InstanceConfig(resources=Resources(pids_limit=1500))
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert "PIDS_LIMIT=1500" in result
 
     def test_mem_reservation_omitted_when_unset(self) -> None:
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert "MEM_RESERVATION" not in result
 
     def test_memswap_limit_omitted_when_unset(self) -> None:
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert "MEMSWAP_LIMIT" not in result
 
     def test_mem_reservation_emitted_when_set(self) -> None:
         cfg = InstanceConfig(resources=Resources(mem_reservation="2g"))
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert "MEM_RESERVATION=2g" in result
 
     def test_memswap_limit_emitted_when_set(self) -> None:
         cfg = InstanceConfig(resources=Resources(memswap_limit="4g"))
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert "MEMSWAP_LIMIT=4g" in result
 
     def test_emits_default_denylist_packages(self) -> None:
         # D1: the default Magisk model carries the GMS pair so a bare
         # ``beetroot create`` keeps the historical behaviour intact.
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert (
-            "BEETROOT_DENYLIST_PACKAGES=com.google.android.gms,"
-            "com.google.android.gms.unstable"
+            "BEETROOT_DENYLIST_PACKAGES=com.google.android.gms,com.google.android.gms.unstable"
         ) in result
 
     def test_emits_custom_denylist_packages_as_csv(self) -> None:
         # The env var the bundled compose template consumes must be a
         # comma-separated list; toybox sh has no array support, so the
         # helper iterates via ``IFS=,``.
-        cfg = InstanceConfig(magisk=Magisk(
-            denylist=["com.app.one", "com.app.two", "com.x.y.z123"]
-        ))
-        result = render_env("alpha", cfg, self._ports())
-        assert (
-            "BEETROOT_DENYLIST_PACKAGES=com.app.one,com.app.two,com.x.y.z123"
-            in result
-        )
+        cfg = InstanceConfig(magisk=Magisk(denylist=["com.app.one", "com.app.two", "com.x.y.z123"]))
+        result = render_env("alpha", cfg)
+        assert "BEETROOT_DENYLIST_PACKAGES=com.app.one,com.app.two,com.x.y.z123" in result
 
     def test_emits_empty_denylist_packages_when_explicitly_disabled(self) -> None:
         # An explicit empty list (``magisk.denylist: []``) must surface
@@ -882,7 +998,7 @@ class TestRenderEnv:
         # ``if [ -n "$DENYLIST_PACKAGES" ]`` guard short-circuits and no
         # rows are SQL'd.
         cfg = InstanceConfig(magisk=Magisk(denylist=[]))
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert "BEETROOT_DENYLIST_PACKAGES=\n" in result
 
     def test_emits_known_safe_container_paths(self) -> None:
@@ -893,7 +1009,7 @@ class TestRenderEnv:
         # always sets them to known-safe values. v0.5's PR1 will
         # randomise these once stealth research validates a path.
         cfg = InstanceConfig()
-        result = render_env("alpha", cfg, self._ports())
+        result = render_env("alpha", cfg)
         assert "BEETROOT_MAGISK_DB=/data/adb/magisk.db" in result
         assert "BEETROOT_MODULES_DIR=/data/adb/modules_update" in result
         assert "BEETROOT_FRIDA_BIN=/data/local/tmp/frida-server" in result
@@ -962,6 +1078,8 @@ class TestDockerComposeConfig:
                 "test-beetroot-ci",
                 "-f",
                 str(paths.bundled_compose_file()),
+                "-f",
+                str(paths.instance_compose_override(instance_root)),
                 "--project-directory",
                 str(instance_root),
                 "--env-file",
@@ -973,15 +1091,15 @@ class TestDockerComposeConfig:
             check=False,
         )
 
-    def _populate(
-        self, instance_root: Path, extra: dict[str, str] | None = None
-    ) -> None:
+    def _populate(self, instance_root: Path, extra: dict[str, str] | None = None) -> None:
         cfg = InstanceConfig()
-        ports = {"adb": 5555, "frida": 27042, "frida_control": 27043}
-        env_text = render_env("ci-test", cfg, ports)
+        env_text = render_env("ci-test", cfg)
         if extra:
             env_text += "".join(f"{k}={v}\n" for k, v in extra.items())
         (instance_root / ".env").write_text(env_text)
+        (instance_root / "compose.override.yaml").write_text(
+            render_compose_ports_override(resolve_ports(0, cfg.ports))
+        )
         # Compose checks the bind-mount source paths exist when resolving
         # config — create placeholders so the YAML validates.
         (instance_root / "data").mkdir()
@@ -1103,5 +1221,5 @@ class TestVmConfig:
 
     def test_empty_yaml_vm_block_uses_defaults(self) -> None:
         # binder: vm with no vm: section is valid (env defaults apply at runtime).
-        cfg = InstanceConfig.model_validate({"api_version": 7, "binder": "vm"})
+        cfg = InstanceConfig.model_validate({"api_version": 8, "binder": "vm"})
         assert cfg.vm.accel == "auto"

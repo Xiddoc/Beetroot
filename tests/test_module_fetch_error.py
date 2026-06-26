@@ -15,6 +15,7 @@ The two behaviors pinned here:
 2. ``beetroot apply alpha`` against a YAML that lists an unreachable
    module URL exits 1 with ``error:`` on stderr — no traceback.
 """
+
 from __future__ import annotations
 
 import urllib.error
@@ -30,12 +31,14 @@ runner = CliRunner()
 
 
 class TestWrapperConvertsHttpError:
-    def test_http_error_becomes_module_fetch_error(
-        self, isolated_registry: Path
-    ) -> None:
+    def test_http_error_becomes_module_fetch_error(self, isolated_registry: Path) -> None:
         def _raise(url: str, **kwargs: object) -> MagicMock:
             raise urllib.error.HTTPError(
-                url, 404, "Not Found", {}, None,  # type: ignore[arg-type]
+                url,
+                404,
+                "Not Found",
+                {},  # type: ignore[arg-type]
+                None,
             )
 
         with patch("urllib.request.urlopen", side_effect=_raise):
@@ -67,7 +70,11 @@ class TestCliSurfacesAsErrorLine:
 
         def _raise(url: str, **kwargs: object) -> MagicMock:
             raise urllib.error.HTTPError(
-                url, 404, "Not Found", {}, None,  # type: ignore[arg-type]
+                url,
+                404,
+                "Not Found",
+                {},  # type: ignore[arg-type]
+                None,
             )
 
         monkeypatch.setattr("urllib.request.urlopen", _raise)
@@ -81,7 +88,9 @@ class TestCliSurfacesAsErrorLine:
         assert exc.value.code == 1
 
     def test_cli_main_catches_module_fetch_error_directly(
-        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        cli_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         def _raise() -> None:

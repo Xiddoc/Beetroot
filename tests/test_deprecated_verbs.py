@@ -8,6 +8,7 @@ reading CHANGELOG gets a bare Typer ``Error: No such command``
 These tests pin the friendly migration hint: exit 1 + an `error:`
 line with explicit migration instructions in stderr.
 """
+
 from __future__ import annotations
 
 from typer.testing import CliRunner
@@ -46,9 +47,7 @@ class TestSetupVerb:
 
 class TestPresetOption:
     def test_create_preset_prints_migration_hint(self, cli_root: object) -> None:
-        result = runner.invoke(
-            cli.app, ["create", "alpha", "--preset", "with-frida"]
-        )
+        result = runner.invoke(cli.app, ["create", "alpha", "--preset", "with-frida"])
         assert result.exit_code == 1
         assert "error:" in result.stderr
         # The hint must mention the examples/ directory + apply verb.

@@ -330,9 +330,15 @@ class TestCmdRegister:
         # index, so the next register would collide on it.
         target_a = cli_root / "alpha"
         target_a.mkdir()
+        pinned = [
+            config.PortMapping(
+                service=m.service, guest=m.guest, host=5565 if m.service == "adb" else None
+            )
+            for m in config._default_port_mappings()
+        ]
         config.write_yaml(
             target_a / "beetroot.yaml",
-            config.InstanceConfig(ports=config.Ports(adb=5565)),
+            config.InstanceConfig(ports=pinned),
         )
         result = runner.invoke(cli.app, ["register", str(target_a)])
         assert result.exit_code == 0, result.stderr

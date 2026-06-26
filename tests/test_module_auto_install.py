@@ -6,6 +6,7 @@ asserting on the recorded adb argv sequence, the per-module ok/failed
 report lines, and the process exit code. All subprocess calls are
 stubbed — no real adb is ever invoked.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -68,24 +69,35 @@ class TestAutoInstallHappyPath:
         # artifact (adb argv sequence + report lines + exit code).
         _adopt_phone()
         zip_path = _write_zip(tmp_path, "MyModule.zip")
-        result = runner.invoke(
-            cli.app, ["module", "phone", str(zip_path), "--auto-install"]
-        )
+        result = runner.invoke(cli.app, ["module", "phone", str(zip_path), "--auto-install"])
         assert result.exit_code == 0, result.stderr
         assert stub_adb == [
             *preflight_argv,
             [
-                "adb", "-s", "emulator-5554", "push",
-                str(zip_path), "/data/local/tmp/beetroot-module-0.zip",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "push",
+                str(zip_path),
+                "/data/local/tmp/beetroot-module-0.zip",
             ],
             [
-                "adb", "-s", "emulator-5554", "shell",
-                "su", "-c",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "su",
+                "-c",
                 "'magisk --install-module /data/local/tmp/beetroot-module-0.zip'",
             ],
             [
-                "adb", "-s", "emulator-5554", "shell",
-                "su", "-c", "'rm -f /data/local/tmp/beetroot-module-0.zip'",
+                "adb",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "su",
+                "-c",
+                "'rm -f /data/local/tmp/beetroot-module-0.zip'",
             ],
         ]
         assert f"[beetroot] ok: {zip_path}" in result.output
@@ -137,18 +149,13 @@ class TestAutoInstallFailureReporting:
         # `adb devices`, so the re-probe keeps the batch going — Good.zip
         # must still be installed and reported ok, and the verb exits 1.
         captured = stub_run_failures(
-            lambda cmd: (
-                "magisk --install-module" in cmd[-1]
-                and "beetroot-module-0.zip" in cmd[-1]
-            ),
+            lambda cmd: "magisk --install-module" in cmd[-1] and "beetroot-module-0.zip" in cmd[-1],
             stderr="! Unable to install",
         )
         _adopt_phone()
         bad = _write_zip(tmp_path, "Bad.zip")
         good = _write_zip(tmp_path, "Good.zip")
-        result = runner.invoke(
-            cli.app, ["module", "phone", str(bad), str(good), "--auto-install"]
-        )
+        result = runner.invoke(cli.app, ["module", "phone", str(bad), str(good), "--auto-install"])
         assert result.exit_code == 1
         assert f"[beetroot] failed: {bad}" in result.stderr
         assert "Unable to install" in result.stderr
@@ -169,8 +176,12 @@ class TestAutoInstallFailureReporting:
         result = runner.invoke(
             cli.app,
             [
-                "module", "phone", str(zip_path),
-                "--auto-install", "--sha256", "0" * 64,
+                "module",
+                "phone",
+                str(zip_path),
+                "--auto-install",
+                "--sha256",
+                "0" * 64,
             ],
         )
         assert result.exit_code == 1
@@ -194,9 +205,7 @@ class TestAutoInstallFailureReporting:
         _adopt_phone()
         zip_path = _write_zip(tmp_path, "M.zip")
         monkeypatch.setattr(shutil, "which", lambda name: None)
-        result = runner.invoke(
-            cli.app, ["module", "phone", str(zip_path), "--auto-install"]
-        )
+        result = runner.invoke(cli.app, ["module", "phone", str(zip_path), "--auto-install"])
         assert result.exit_code == 1
         assert "error: adb not found on PATH" in result.stderr
         assert stub_adb == []
@@ -212,8 +221,13 @@ class TestArgumentValidation:
         result = runner.invoke(
             cli.app,
             [
-                "module", "phone", str(first), str(second),
-                "--auto-install", "--sha256", "0" * 64,
+                "module",
+                "phone",
+                str(first),
+                str(second),
+                "--auto-install",
+                "--sha256",
+                "0" * 64,
             ],
         )
         assert result.exit_code == 1
@@ -226,9 +240,7 @@ class TestArgumentValidation:
         _adopt_phone()
         first = _write_zip(tmp_path, "First.zip")
         second = _write_zip(tmp_path, "Second.zip")
-        result = runner.invoke(
-            cli.app, ["module", "phone", str(first), str(second)]
-        )
+        result = runner.invoke(cli.app, ["module", "phone", str(first), str(second)])
         assert result.exit_code == 1
         assert "exactly one source" in result.stderr
         assert stub_adb == []
@@ -241,8 +253,13 @@ class TestArgumentValidation:
         result = runner.invoke(
             cli.app,
             [
-                "module", "phone", str(zip_path),
-                "--sha256", "0" * 64, "--sha256", "1" * 64,
+                "module",
+                "phone",
+                str(zip_path),
+                "--sha256",
+                "0" * 64,
+                "--sha256",
+                "1" * 64,
             ],
         )
         assert result.exit_code == 1
@@ -290,9 +307,7 @@ class TestPreflightTaxonomy:
         _adopt_phone()
         zip_path = _write_zip(tmp_path, "M.zip")
         captured = stub_run_failures(lambda cmd: cmd[-1] == "'command -v magisk'")
-        result = runner.invoke(
-            cli.app, ["module", "phone", str(zip_path), "--auto-install"]
-        )
+        result = runner.invoke(cli.app, ["module", "phone", str(zip_path), "--auto-install"])
         assert result.exit_code == 1
         assert (
             "error: device 'emulator-5554' has root but no usable magisk binary "
@@ -316,9 +331,7 @@ class TestPreflightTaxonomy:
             stderr="adb: device offline\n",
             devices_stdout="List of devices attached\n",
         )
-        result = runner.invoke(
-            cli.app, ["module", "phone", str(zip_path), "--auto-install"]
-        )
+        result = runner.invoke(cli.app, ["module", "phone", str(zip_path), "--auto-install"])
         assert result.exit_code == 1
         assert (
             "error: device 'emulator-5554' is offline or not connected "
@@ -340,9 +353,7 @@ class TestPreflightTaxonomy:
         _adopt_phone()
         hostile = tmp_path / "device offline.zip"  # never created
         captured = stub_run_failures(lambda cmd: False)
-        result = runner.invoke(
-            cli.app, ["module", "phone", str(hostile), "--auto-install"]
-        )
+        result = runner.invoke(cli.app, ["module", "phone", str(hostile), "--auto-install"])
         assert result.exit_code == 1
         assert f"[beetroot] failed: {hostile}" in result.stderr
         assert "does not exist" in result.stderr
@@ -396,7 +407,8 @@ class TestCapabilityGating:
         assert result.exit_code == 0, result.stderr
         zip_path = _write_zip(tmp_path, "M.zip")
         monkeypatch.setattr(
-            sys, "argv",
+            sys,
+            "argv",
             ["beetroot", "module", "alpha", str(zip_path), "--auto-install"],
         )
         with pytest.raises(SystemExit) as exc_info:
@@ -413,7 +425,11 @@ class TestCapabilityGating:
         result = runner.invoke(cli.app, ["module", "phone", str(zip_path)])
         assert result.exit_code == 0, result.stderr
         assert [
-            "adb", "-s", "emulator-5554", "push",
-            str(zip_path), "/sdcard/Download/MyModule.zip",
+            "adb",
+            "-s",
+            "emulator-5554",
+            "push",
+            str(zip_path),
+            "/sdcard/Download/MyModule.zip",
         ] in stub_adb
         assert "[beetroot] module pushed to phone" in result.output

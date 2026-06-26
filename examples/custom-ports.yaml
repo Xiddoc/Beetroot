@@ -1,0 +1,38 @@
+# Documentation only — not loaded by the CLI. Copy this over your fresh beetroot.yaml if you want this configuration.
+# Generalized named port mappings (issue #108). Since api_version 8 the
+# `ports:` block is a LIST of guest→host mappings, not the old fixed
+# {adb, frida, frida_control} dict. This lets you pin/forward arbitrary
+# services and guest ports, not just the three well-known ones.
+#
+# Resolution rules:
+#   * an explicit `host:` always wins;
+#   * a well-known service (adb / frida / frida_control) with no `host:`
+#     takes its stride-of-10 default for the instance index;
+#   * any other entry with no `host:` auto-allocates from a dedicated
+#     extra-pool band (host = 40000 + index*10 + slot).
+#
+# Note: under `binder: vm` only adb is forwarded to the guest; arbitrary
+# mappings beyond the well-known services are ignored (beetroot up warns).
+
+api_version: 8
+
+android:
+  version: 14
+
+ports:
+  # Pin ADB to a stable, memorable host port; keep frida on the stride.
+  - service: adb
+    guest: 5555
+    host: 9000
+  - service: frida
+    guest: 27042
+  - service: frida_control
+    guest: 27043
+  # An arbitrary in-guest service (e.g. an app's debug HTTP server on 8080)
+  # pinned to a fixed host port.
+  - guest: 8080
+    host: 9090
+  # Another arbitrary service auto-allocated from the extra pool (host
+  # becomes 40000 + index*10 + slot — e.g. 40000 at index 0).
+  - service: metrics
+    guest: 9100

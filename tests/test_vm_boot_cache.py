@@ -277,7 +277,9 @@ class TestSaveSnapshot:
 
 
 class TestOverlayIdentity:
-    def _files(self, tmp_path: Path, *, k: bytes = b"KERNEL", r: bytes = b"ROOTFS") -> tuple[Path, Path]:
+    def _files(
+        self, tmp_path: Path, *, k: bytes = b"KERNEL", r: bytes = b"ROOTFS"
+    ) -> tuple[Path, Path]:
         kernel = tmp_path / "bzImage"
         kernel.write_bytes(k)
         rootfs = tmp_path / "rootdisk.img"

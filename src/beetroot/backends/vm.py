@@ -116,7 +116,7 @@ def _resolve_artifact(configured: str | None, env_default: str, label: str) -> P
     return path
 
 
-def _check_port_collisions(name: str, new_ports: dict[str, int]) -> None:
+def _check_port_collisions(name: str, new_ports: list[ports.ResolvedPort]) -> None:
     """
     Raise ``ValueError`` if ``new_ports`` collide with any other instance.
 
@@ -127,12 +127,12 @@ def _check_port_collisions(name: str, new_ports: dict[str, int]) -> None:
 
     Args:
         name: This instance's registry name (excluded from the comparison).
-        new_ports: The resolved port dict to validate.
+        new_ports: The resolved port list to validate.
 
     Raises:
         ValueError: On the first colliding port.
     """
-    others = {n: p for n, p in registry.all_resolved_ports().items() if n != name}
+    others = {n: p for n, p in registry.all_resolved_host_ports().items() if n != name}
     collision = registry.find_port_collision(new_ports, others)
     if collision is None:
         return
@@ -249,9 +249,12 @@ class VmDeviceBackend:
         return self._cfg
 
     @property
-    def ports(self) -> dict[str, int]:
+    def ports(self) -> list[ports.ResolvedPort]:
         """
-        Resolved host ports for this instance (``adb`` / ``frida`` / ``frida_control``).
+        Resolved guest→host port mappings for this instance (full list).
+
+        Use :func:`beetroot.ports.well_known` to project to the
+        ``{service: host}`` dict the address accessors key off.
         """
         return ports.resolve_ports(self._index, self._cfg.ports)
 
@@ -260,7 +263,7 @@ class VmDeviceBackend:
         """
         ``localhost:<adb_port>`` — the QEMU-forwarded guest adbd port.
         """
-        return f"localhost:{self.ports['adb']}"
+        return f"localhost:{ports.well_known(self.ports)['adb']}"
 
     @property
     def frida_address(self) -> str:
@@ -415,7 +418,7 @@ class VmDeviceBackend:
             rootfs=rootfs,
             smp=qemu.resolve_smp(self._cfg.vm.smp),
             memory_mib=self._cfg.vm.memory_mib,
-            host_adb_port=self.ports["adb"],
+            host_adb_port=ports.well_known(self.ports)["adb"],
         )
 
     def up(self) -> None:
@@ -516,7 +519,7 @@ class VmDeviceBackend:
             rootfs=overlay,
             smp=qemu.resolve_smp(self._cfg.vm.smp),
             memory_mib=self._cfg.vm.memory_mib,
-            host_adb_port=self.ports["adb"],
+            host_adb_port=ports.well_known(self.ports)["adb"],
             disk_format="qcow2",
             monitor_socket=monitor,
             loadvm=boot_cache.SNAPSHOT_TAG if warm else None,
@@ -665,6 +668,15 @@ class VmDeviceBackend:
             inert.append(
                 "magisk.denylist (the guest runs plain redroid with no Magisk, "
                 "so the denylist is never applied)"
+            )
+        # The vm backend forwards only adb to qemu (issue #44); arbitrary
+        # guest→host ``ports:`` entries beyond the well-known services are a
+        # redroid/compose-backend feature and are silently dropped here.
+        arbitrary = [m for m in self._cfg.ports if m.service not in config.WELL_KNOWN_SERVICES]
+        if arbitrary:
+            inert.append(
+                "arbitrary ports: entries (only adb is forwarded under binder: vm; "
+                "extra guest→host mappings are ignored)"
             )
         if not inert:
             return
@@ -817,8 +829,14 @@ class VmDeviceBackend:
 
         paths.instance_data(self._root).mkdir(parents=True, exist_ok=True)
         paths.instance_modules(self._root).mkdir(parents=True, exist_ok=True)
-        paths.instance_env(self._root).write_text(
-            config.render_env(self._name, self._cfg, self.ports)
+        paths.instance_env(self._root).write_text(config.render_env(self._name, self._cfg))
+        # The variable-length ports list lives in a per-instance compose
+        # override (issue #108). The vm backend only forwards adb to qemu (the
+        # override is consumed by the redroid compose path, not qemu), but it is
+        # still staged for parity so a config flipped back to binder: host/auto
+        # boots with the right ports without an extra apply.
+        paths.instance_compose_override(self._root).write_text(
+            config.render_compose_ports_override(self.ports)
         )
         modules_download.stage_for_instance(self._root, self._cfg)
 

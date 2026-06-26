@@ -880,9 +880,13 @@ class Instance:
         return self._meta().index
 
     @property
-    def ports(self) -> dict[str, int]:
+    def ports(self) -> list[ports.ResolvedPort]:
         """
-        Resolved host ports for this instance (``adb`` / ``frida`` / ``frida2``).
+        Resolved guest→host port mappings for this instance (full list).
+
+        Includes the well-known services AND any arbitrary mappings. Use
+        :func:`beetroot.ports.well_known` to project to the
+        ``{service: host}`` dict the address accessors key off.
         """
         return ports.resolve_ports(self.index, self._cfg.ports)
 
@@ -891,14 +895,14 @@ class Instance:
         """
         ``localhost:<adb_port>`` — what ``adb connect`` should target.
         """
-        return f"localhost:{self.ports['adb']}"
+        return f"localhost:{ports.well_known(self.ports)['adb']}"
 
     @property
     def frida_address(self) -> str:
         """
         ``localhost:<frida_port>`` — what ``frida -H`` should target.
         """
-        return f"localhost:{self.ports['frida']}"
+        return f"localhost:{ports.well_known(self.ports)['frida']}"
 
     @property
     def status(self) -> compose.ComposeStatus:
@@ -919,7 +923,17 @@ class Instance:
     def up(self) -> None:
         """
         Start the instance with ``docker compose up -d``.
+
+        Self-heals a missing ``compose.override.yaml`` first: an instance
+        created before v8 (or one whose override was deleted by hand) carries
+        no ports overlay, and the bundled template publishes none of its own —
+        so it would boot with ZERO published ports (a silent adb + frida
+        outage). When the override is absent, re-run the network-free,
+        rollback-safe local stage (re-renders ``.env`` + the override) before
+        starting.
         """
+        if not paths.instance_compose_override(self._root).is_file():
+            self._stage_local()
         compose.up(self._name, self._root)
 
     def down(self) -> None:
@@ -1281,9 +1295,13 @@ class Instance:
             config.render_env(
                 self._name,
                 self._cfg,
-                new_ports,
                 stealth_paths=stealth_paths,
             )
+        )
+        # The variable-length ports list lives in a per-instance compose
+        # override (issue #108) — a flat .env can't expand into a YAML list.
+        paths.instance_compose_override(self._root).write_text(
+            config.render_compose_ports_override(new_ports)
         )
         # Always place the placeholder, even when frida is configured.
         # ``_stage_network`` overwrites it with the real binary on
@@ -1336,8 +1354,9 @@ class Instance:
             order matches the doctor verb's intended output order
             (compose first, then connectivity, then Magisk).
         """
-        adb_port = self.ports["adb"]
-        frida_port = self.ports["frida"]
+        wk = ports.well_known(self.ports)
+        adb_port = wk["adb"]
+        frida_port = wk["frida"]
         checks: dict[str, CheckResult] = {}
         # compose.status: pass iff the container is running. The compose
         # Literal vocabulary is closed (see compose.ComposeStatus); any
@@ -1461,7 +1480,7 @@ def _rollback_partial_create(name: str, target_root: Path, *, created_dir: bool)
         shutil.rmtree(target_root)
 
 
-def _check_port_collisions(name: str, new_ports: dict[str, int]) -> None:
+def _check_port_collisions(name: str, new_ports: list[ports.ResolvedPort]) -> None:
     """
     Raise ``ValueError`` if ``new_ports`` collide with any other instance.
 
@@ -1469,7 +1488,7 @@ def _check_port_collisions(name: str, new_ports: dict[str, int]) -> None:
     surface raises a plain ``ValueError`` so programmatic callers can
     catch a stdlib exception.
     """
-    others = {n: p for n, p in registry.all_resolved_ports().items() if n != name}
+    others = {n: p for n, p in registry.all_resolved_host_ports().items() if n != name}
     collision = registry.find_port_collision(new_ports, others)
     if collision is None:
         return

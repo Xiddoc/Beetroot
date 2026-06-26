@@ -1,4 +1,5 @@
 """Tests for the ``beetroot status <name>`` verb."""
+
 from __future__ import annotations
 
 import json
@@ -26,8 +27,15 @@ class TestStatusRedroid:
         assert result.exit_code == 0, result.stderr
         row = json.loads(result.stdout)
         for required_field in (
-            "name", "kind", "index", "created_at", "ports",
-            "status", "adb_address", "frida_address", "stealth_paths",
+            "name",
+            "kind",
+            "index",
+            "created_at",
+            "ports",
+            "status",
+            "adb_address",
+            "frida_address",
+            "stealth_paths",
         ):
             assert required_field in row, f"missing {required_field!r}"
         assert row["name"] == "alpha"
@@ -35,11 +43,16 @@ class TestStatusRedroid:
         assert row["adb_address"] == "localhost:5555"
         assert row["frida_address"] == "localhost:27042"
         assert row["stealth_paths"] == {}
-        assert row["ports"]["adb"] == 5555
-        assert row["ports"]["frida"] == 27042
+        # Since v8 (issue #108) ``ports`` is a list of {service, guest, host}.
+        ports_by_service = {p["service"]: p for p in row["ports"]}
+        assert ports_by_service["adb"]["host"] == 5555
+        assert ports_by_service["frida"]["host"] == 27042
+        assert ports_by_service["adb"]["guest"] == 5555
         # v0.3 back-compat keys live alongside the v0.4 fields so
         # existing scripts piping through jq keep working.
         assert row["path"] == str(registry.instance_path("alpha"))
+        assert row["adb"] == "localhost:5555"
+        assert row["frida"] == "localhost:27042"
 
     def test_unknown_name_exits_1(self, cli_root: Path) -> None:
         result = runner.invoke(cli.app, ["status", "nonexistent"])
@@ -49,7 +62,10 @@ class TestStatusRedroid:
 
 class TestStatusAdb:
     def _seed_adb_instance(
-        self, cli_root: Path, name: str = "phone", index: int = 0,
+        self,
+        cli_root: Path,
+        name: str = "phone",
+        index: int = 0,
         serial: str = "emulator-5554",
     ) -> None:
         del cli_root  # fixture present only for XDG isolation

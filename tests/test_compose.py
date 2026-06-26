@@ -1,4 +1,5 @@
 """Tests for compose.py — docker compose subprocess wrappers."""
+
 from __future__ import annotations
 
 import subprocess
@@ -23,6 +24,7 @@ def _fail_result(returncode: int = 1) -> subprocess.CompletedProcess[str]:
 def _mock_docker_which(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make shutil.which('docker') return a truthy path so _ensure_docker passes."""
     import shutil
+
     monkeypatch.setattr(
         shutil,
         "which",
@@ -191,9 +193,7 @@ class TestPsStatus:
         with patch("subprocess.run", return_value=_ok_result(stdout)):
             assert compose.ps_status("alpha", tmp_path) == "exited"
 
-    def test_unknown_state_falls_through_to_unknown(
-        self, tmp_path: Path
-    ) -> None:
+    def test_unknown_state_falls_through_to_unknown(self, tmp_path: Path) -> None:
         # Future Docker releases may invent new state strings. The
         # closed-enum maps them to ``"unknown"`` rather than crashing
         # or silently passing them through as ``"running"``.
@@ -201,9 +201,7 @@ class TestPsStatus:
         with patch("subprocess.run", return_value=_ok_result(stdout)):
             assert compose.ps_status("alpha", tmp_path) == "unknown"
 
-    def test_daemon_unreachable_distinguished_from_not_created(
-        self, tmp_path: Path
-    ) -> None:
+    def test_daemon_unreachable_distinguished_from_not_created(self, tmp_path: Path) -> None:
         # Agent 2 B-7: surface a precise error when the daemon itself
         # is unreachable, vs. the project simply not existing yet.
         stderr = (
@@ -211,13 +209,13 @@ class TestPsStatus:
             "unix:///var/run/docker.sock. Is the docker daemon running?"
         )
         res = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr=stderr,
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr=stderr,
         )
         with patch("subprocess.run", return_value=res):
-            assert (
-                compose.ps_status("alpha", tmp_path)
-                == "docker-unreachable"
-            )
+            assert compose.ps_status("alpha", tmp_path) == "docker-unreachable"
 
     def test_docker_binary_missing_returns_docker_unreachable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -225,10 +223,9 @@ class TestPsStatus:
         # If ``docker`` isn't on PATH, ``_ensure_docker`` raises and
         # we catch + surface that as ``docker-unreachable``.
         import shutil
+
         monkeypatch.setattr(shutil, "which", lambda name: None)
-        assert (
-            compose.ps_status("alpha", tmp_path) == "docker-unreachable"
-        )
+        assert compose.ps_status("alpha", tmp_path) == "docker-unreachable"
 
 
 class TestComposeError:
@@ -245,6 +242,7 @@ class TestDockerNotFound:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import shutil
+
         monkeypatch.setattr(shutil, "which", lambda name: None)
         with pytest.raises(ComposeError, match="docker not found"):
             compose.up("alpha", tmp_path)

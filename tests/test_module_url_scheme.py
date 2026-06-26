@@ -10,6 +10,7 @@ into the module cache. The fix is twofold:
 2. ``_fetch_url`` re-checks the prefix at the call site as
    belt-and-suspenders for third-party scripts that hand-build a URL.
 """
+
 from __future__ import annotations
 
 import pytest

@@ -1,4 +1,5 @@
 """Tests for registry.py — instances.json CRUD with flock."""
+
 from __future__ import annotations
 
 import json
@@ -7,31 +8,42 @@ from pathlib import Path
 import pytest
 
 from beetroot import paths, registry
-from beetroot.config import InstanceConfig, Ports, write_yaml
+from beetroot.config import InstanceConfig, PortMapping, _default_port_mappings, write_yaml
+from beetroot.ports import ResolvedPort
 from beetroot.registry import RedroidBackendConfig
 
 
-def _make_instance(
-    base: Path, name: str, ports: Ports | None = None
-) -> Path:
+def _pinned(**hosts: int) -> list[PortMapping]:
+    """Return the seeded well-known mappings with explicit host overrides applied."""
+    return [
+        PortMapping(service=m.service, guest=m.guest, host=hosts.get(m.service or ""))
+        for m in _default_port_mappings()
+    ]
+
+
+def _make_instance(base: Path, name: str, ports: list[PortMapping] | None = None) -> Path:
     """Create an instance dir at ``base/name`` with a minimal beetroot.yaml."""
     root = base / name
     root.mkdir(parents=True)
-    write_yaml(root / "beetroot.yaml", InstanceConfig(ports=ports or Ports()))
+    cfg = InstanceConfig() if ports is None else InstanceConfig(ports=ports)
+    write_yaml(root / "beetroot.yaml", cfg)
     return root
 
 
-def _seed(base: Path, name: str, ports: Ports | None = None) -> Path:
+def _seed(base: Path, name: str, ports: list[PortMapping] | None = None) -> Path:
     """Create an instance dir and register it (auto-allocating index). Returns the path."""
     root = _make_instance(base, name, ports)
     registry.add_allocating(name, root)
     return root
 
 
+def _resolved(*ports: ResolvedPort) -> list[ResolvedPort]:
+    """Build a resolved-port list for the find_port_collision tests."""
+    return list(ports)
+
+
 class TestRegistryAdd:
-    def test_add_creates_registry(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_add_creates_registry(self, isolated_registry: Path, tmp_path: Path) -> None:
         _seed(tmp_path, "alpha")
         assert paths.user_registry_file().exists()
 
@@ -43,24 +55,18 @@ class TestRegistryAdd:
         assert isinstance(entry.backend, RedroidBackendConfig)
         assert entry.backend.absolute_path == str(root)
 
-    def test_add_stores_created_at(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_add_stores_created_at(self, isolated_registry: Path, tmp_path: Path) -> None:
         _seed(tmp_path, "alpha")
         entry = registry.get("alpha")
         assert entry is not None
         assert entry.created_at is not None
 
-    def test_add_duplicate_raises(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_add_duplicate_raises(self, isolated_registry: Path, tmp_path: Path) -> None:
         _seed(tmp_path, "alpha")
         with pytest.raises(ValueError, match="already in registry"):
             registry.add_allocating("alpha", tmp_path / "alpha")
 
-    def test_add_multiple_instances(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_add_multiple_instances(self, isolated_registry: Path, tmp_path: Path) -> None:
         _seed(tmp_path, "alpha")
         _seed(tmp_path, "bravo")
         alpha = registry.get("alpha")
@@ -75,17 +81,13 @@ class TestRegistryGet:
     def test_get_missing_returns_none(self, isolated_registry: Path) -> None:
         assert registry.get("ghost") is None
 
-    def test_get_missing_with_no_registry_returns_none(
-        self, isolated_registry: Path
-    ) -> None:
+    def test_get_missing_with_no_registry_returns_none(self, isolated_registry: Path) -> None:
         assert not paths.user_registry_file().exists()
         assert registry.get("ghost") is None
 
 
 class TestInstancePath:
-    def test_lookup_returns_path(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_lookup_returns_path(self, isolated_registry: Path, tmp_path: Path) -> None:
         root = _seed(tmp_path, "alpha")
         assert registry.instance_path("alpha") == root
 
@@ -95,23 +97,17 @@ class TestInstancePath:
 
 
 class TestRegistryRemove:
-    def test_remove_deletes_entry(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_remove_deletes_entry(self, isolated_registry: Path, tmp_path: Path) -> None:
         _seed(tmp_path, "alpha")
         registry.remove("alpha")
         assert registry.get("alpha") is None
 
-    def test_remove_nonexistent_is_noop(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_remove_nonexistent_is_noop(self, isolated_registry: Path, tmp_path: Path) -> None:
         _seed(tmp_path, "alpha")
         registry.remove("ghost")
         assert registry.get("alpha") is not None
 
-    def test_remove_without_registry_is_noop(
-        self, isolated_registry: Path
-    ) -> None:
+    def test_remove_without_registry_is_noop(self, isolated_registry: Path) -> None:
         registry.remove("ghost")
 
 
@@ -119,17 +115,13 @@ class TestListInstances:
     def test_empty_when_no_registry(self, isolated_registry: Path) -> None:
         assert registry.list_instances() == {}
 
-    def test_returns_all_added(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_returns_all_added(self, isolated_registry: Path, tmp_path: Path) -> None:
         _seed(tmp_path, "alpha")
         _seed(tmp_path, "bravo")
         instances = registry.list_instances()
         assert set(instances.keys()) == {"alpha", "bravo"}
 
-    def test_empty_after_remove_all(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_empty_after_remove_all(self, isolated_registry: Path, tmp_path: Path) -> None:
         _seed(tmp_path, "alpha")
         registry.remove("alpha")
         assert registry.list_instances() == {}
@@ -139,34 +131,28 @@ class TestUsedIndices:
     def test_empty_when_no_registry(self, isolated_registry: Path) -> None:
         assert registry.used_indices() == set()
 
-    def test_returns_all_indices(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_returns_all_indices(self, isolated_registry: Path, tmp_path: Path) -> None:
         _seed(tmp_path, "alpha")
         _seed(tmp_path, "bravo")
         assert registry.used_indices() == {0, 1}
 
-    def test_freed_index_is_removed(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_freed_index_is_removed(self, isolated_registry: Path, tmp_path: Path) -> None:
         _seed(tmp_path, "alpha")
         _seed(tmp_path, "bravo")
         registry.remove("alpha")
         assert registry.used_indices() == {1}
 
 
-class TestAllResolvedPorts:
-    def test_empty_registry_returns_empty(
-        self, isolated_registry: Path
-    ) -> None:
-        assert registry.all_resolved_ports() == {}
+class TestAllResolvedHostPorts:
+    def test_empty_registry_returns_empty(self, isolated_registry: Path) -> None:
+        assert registry.all_resolved_host_ports() == {}
 
     def test_single_instance_uses_stride_defaults(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         _seed(tmp_path, "alpha")
-        assert registry.all_resolved_ports() == {
-            "alpha": {"adb": 5555, "frida": 27042, "frida_control": 27043},
+        assert registry.all_resolved_host_ports() == {
+            "alpha": {5555, 27042, 27043},
         }
 
     def test_multiple_instances_each_their_own_ports(
@@ -175,76 +161,68 @@ class TestAllResolvedPorts:
         _seed(tmp_path, "alpha")
         _seed(tmp_path, "bravo")
         _seed(tmp_path, "charlie")
-        assert registry.all_resolved_ports() == {
-            "alpha": {"adb": 5555, "frida": 27042, "frida_control": 27043},
-            "bravo": {"adb": 5565, "frida": 27052, "frida_control": 27053},
-            "charlie": {"adb": 5575, "frida": 27062, "frida_control": 27063},
+        assert registry.all_resolved_host_ports() == {
+            "alpha": {5555, 27042, 27043},
+            "bravo": {5565, 27052, 27053},
+            "charlie": {5575, 27062, 27063},
         }
 
-    def test_override_wins_over_stride(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
-        _seed(tmp_path, "alpha", Ports(adb=9000))
-        result = registry.all_resolved_ports()
-        assert result["alpha"]["adb"] == 9000
-        assert result["alpha"]["frida"] == 27042
-        assert result["alpha"]["frida_control"] == 27043
+    def test_override_wins_over_stride(self, isolated_registry: Path, tmp_path: Path) -> None:
+        _seed(tmp_path, "alpha", _pinned(adb=9000))
+        result = registry.all_resolved_host_ports()
+        assert result["alpha"] == {9000, 27042, 27043}
 
-    def test_partial_override_only_replaces_named_field(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
-        # Fill indices 0 and 1 first so "alpha" gets index 2 from the
-        # lowest-free allocator; index 2 maps to adb=5575, frida=27062.
-        _seed(tmp_path, "dummy0")
-        _seed(tmp_path, "dummy1")
-        _seed(tmp_path, "alpha", Ports(frida_control=12345))
-        result = registry.all_resolved_ports()
-        assert result["alpha"] == {"adb": 5575, "frida": 27062, "frida_control": 12345}
+    def test_includes_arbitrary_mappings(self, isolated_registry: Path, tmp_path: Path) -> None:
+        # Arbitrary host ports must be enumerated too, so a cross-instance
+        # clash over an arbitrary port is caught (issue #108).
+        ports = [*_default_port_mappings(), PortMapping(guest=8080, host=9090)]
+        _seed(tmp_path, "alpha", ports)
+        result = registry.all_resolved_host_ports()
+        assert 9090 in result["alpha"]
 
 
 class TestFindPortCollision:
     def test_empty_others_returns_none(self) -> None:
-        new_ports = {"adb": 5555, "frida": 27042, "frida_control": 27043}
+        new_ports = _resolved(ResolvedPort("adb", 5555, 5555))
         assert registry.find_port_collision(new_ports, {}) is None
 
     def test_no_collision_returns_none(self) -> None:
-        new_ports = {"adb": 5555, "frida": 27042, "frida_control": 27043}
-        others = {"bravo": {"adb": 5565, "frida": 27052, "frida_control": 27053}}
+        new_ports = _resolved(ResolvedPort("adb", 5555, 5555))
+        others = {"bravo": {5565, 27052, 27053}}
         assert registry.find_port_collision(new_ports, others) is None
 
     def test_adb_collision_returns_tuple(self) -> None:
-        new_ports = {"adb": 5555, "frida": 9000, "frida_control": 9001}
-        others = {"bravo": {"adb": 5555, "frida": 27052, "frida_control": 27053}}
+        new_ports = _resolved(
+            ResolvedPort("adb", 5555, 5555),
+            ResolvedPort("frida", 27042, 9000),
+        )
+        others = {"bravo": {5555, 27052, 27053}}
         result = registry.find_port_collision(new_ports, others)
         assert result == (5555, "bravo", "adb")
 
     def test_frida_collision_returns_tuple(self) -> None:
-        new_ports = {"adb": 8000, "frida": 27042, "frida_control": 8001}
-        others = {"bravo": {"adb": 5565, "frida": 27042, "frida_control": 27053}}
+        new_ports = _resolved(
+            ResolvedPort("adb", 5555, 8000),
+            ResolvedPort("frida", 27042, 27042),
+        )
+        others = {"bravo": {5565, 27042, 27053}}
         result = registry.find_port_collision(new_ports, others)
         assert result == (27042, "bravo", "frida")
 
-    def test_frida2_collision_returns_tuple(self) -> None:
-        new_ports = {"adb": 8000, "frida": 9000, "frida_control": 27043}
-        others = {"bravo": {"adb": 5565, "frida": 27052, "frida_control": 27043}}
+    def test_arbitrary_unlabelled_collision_reports_none_service(self) -> None:
+        new_ports = _resolved(ResolvedPort(None, 8080, 9090))
+        others = {"bravo": {9090}}
         result = registry.find_port_collision(new_ports, others)
-        assert result == (27043, "bravo", "frida_control")
-
-    def test_cross_kind_collision_detected(self) -> None:
-        new_ports = {"adb": 27042, "frida": 9000, "frida_control": 9001}
-        others = {"bravo": {"adb": 5565, "frida": 27042, "frida_control": 27053}}
-        result = registry.find_port_collision(new_ports, others)
-        assert result is not None
-        port, name, kind = result
-        assert port == 27042
-        assert name == "bravo"
-        assert kind == "adb"
+        assert result == (9090, "bravo", "None")
 
     def test_first_collision_among_many_is_returned(self) -> None:
-        new_ports = {"adb": 5555, "frida": 27042, "frida_control": 27043}
+        new_ports = _resolved(
+            ResolvedPort("adb", 5555, 5555),
+            ResolvedPort("frida", 27042, 27042),
+        )
         others = {
-            "bravo": {"adb": 5555, "frida": 27052, "frida_control": 27053},
-            "charlie": {"adb": 5575, "frida": 27042, "frida_control": 27063},
+            "bravo": {5555, 27052, 27053},
+            "charlie": {5575, 27042, 27063},
         }
         result = registry.find_port_collision(new_ports, others)
         assert result is not None
@@ -253,9 +231,7 @@ class TestFindPortCollision:
 
 
 class TestRoundtrip:
-    def test_add_remove_readd_same_index(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_add_remove_readd_same_index(self, isolated_registry: Path, tmp_path: Path) -> None:
         root = _make_instance(tmp_path, "alpha")
         # First allocation picks index 0 (lowest free).
         registry.add_allocating("alpha", root)
@@ -266,9 +242,7 @@ class TestRoundtrip:
         assert entry is not None
         assert entry.index == 0
 
-    def test_sequential_add_remove_add(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_sequential_add_remove_add(self, isolated_registry: Path, tmp_path: Path) -> None:
         # alpha→0, bravo→1; remove alpha frees 0; charlie picks 0 (lowest free).
         _seed(tmp_path, "alpha")
         _seed(tmp_path, "bravo")
@@ -375,16 +349,12 @@ class TestSchemaMigration:
         err = capsys.readouterr().err
         assert err.count("renamed to") == 1
 
-    def test_v3_registry_loads_directly(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_v3_registry_loads_directly(self, isolated_registry: Path, tmp_path: Path) -> None:
         _seed(tmp_path, "alpha")
         # Subsequent reads must succeed without "migrating".
         assert "alpha" in registry.list_instances()
 
-    def test_unparseable_registry_falls_through_to_empty(
-        self, isolated_registry: Path
-    ) -> None:
+    def test_unparseable_registry_falls_through_to_empty(self, isolated_registry: Path) -> None:
         # A corrupt / non-JSON registry file fails strict validation
         # AND fails the version-extraction probe; both branches should
         # produce a backup + empty registry rather than crashing.
@@ -403,7 +373,8 @@ class TestAddAllocatingBackendForms:
     """``add_allocating`` accepts a ``backend=<BackendConfig>`` keyword arg."""
 
     def test_add_allocating_with_adb_backend_kwarg(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         cfg = registry.AdbBackendConfig(serial="emulator-5554")
         idx = registry.add_allocating("phone", backend=cfg)
@@ -414,13 +385,15 @@ class TestAddAllocatingBackendForms:
         assert meta.backend.serial == "emulator-5554"
 
     def test_add_allocating_without_any_args_raises(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         with pytest.raises(ValueError, match="absolute_path"):
             registry.add_allocating("orphan")
 
     def test_adb_entry_round_trips_through_json(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         # Discriminated-union persistence — write an adb row, re-read,
         # confirm the union picks the right arm.
@@ -433,7 +406,8 @@ class TestAddAllocatingBackendForms:
         assert meta.backend.serial == "emulator-5554"
 
     def test_instance_path_rejects_adb_backend(
-        self, isolated_registry: Path,
+        self,
+        isolated_registry: Path,
     ) -> None:
         cfg = registry.AdbBackendConfig(serial="emulator-5554")
         registry.add_allocating("phone", backend=cfg)
@@ -496,12 +470,12 @@ class TestVmBackendDirectoryBacked:
         )
         assert registry.instance_path("alpha") == isolated_registry / "alpha"
 
-    def test_all_resolved_ports_includes_vm(self, isolated_registry: Path) -> None:
+    def test_all_resolved_host_ports_includes_vm(self, isolated_registry: Path) -> None:
         _make_instance(isolated_registry, "alpha")
         registry.add_allocating(
             "alpha",
             backend=registry.VmBackendConfig(absolute_path=str(isolated_registry / "alpha")),
         )
-        all_ports = registry.all_resolved_ports()
+        all_ports = registry.all_resolved_host_ports()
         assert "alpha" in all_ports
-        assert all_ports["alpha"]["adb"] == 5555
+        assert 5555 in all_ports["alpha"]

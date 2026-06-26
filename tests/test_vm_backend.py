@@ -794,9 +794,7 @@ class TestInertVmConfigWarning:
         assert "android.gapps: full" in err
         assert "no effect under binder: vm" in err
 
-    def test_warns_on_frida_block(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_warns_on_frida_block(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         cfg = config.InstanceConfig(
             binder="vm",
             android={"gapps": "none"},  # type: ignore[arg-type]
@@ -817,6 +815,20 @@ class TestInertVmConfigWarning:
         backend = _make_backend(tmp_path, cfg=cfg)
         backend._warn_on_inert_vm_config()
         assert "magisk.denylist" in capsys.readouterr().err
+
+    def test_warns_on_arbitrary_ports(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # issue #108: only adb is forwarded under binder: vm, so arbitrary
+        # guest→host mappings beyond the well-known services are inert.
+        cfg = config.InstanceConfig(
+            binder="vm",
+            android={"gapps": "none"},  # type: ignore[arg-type]
+            ports=[*config._default_port_mappings(), config.PortMapping(guest=8080, host=9090)],
+        )
+        backend = _make_backend(tmp_path, cfg=cfg)
+        backend._warn_on_inert_vm_config()
+        assert "arbitrary ports" in capsys.readouterr().err
 
     def test_silent_when_nothing_inert(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -879,9 +891,7 @@ class TestInertVmConfigWarning:
         backend = _make_backend(tmp_path, cfg=cfg)
         monkeypatch.setattr(qemu, "detect_accel", lambda _req: "tcg")
         monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 1)
-        monkeypatch.setattr(
-            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None
-        )
+        monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None)
         backend.up()
         err = capsys.readouterr().err
         assert "android.gapps: full" in err

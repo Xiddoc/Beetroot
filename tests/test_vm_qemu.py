@@ -334,6 +334,7 @@ class TestQemuProcessStart:
     ) -> None:
         class _FakePopen:
             pid = 9
+
             def __init__(self, argv: list[str], **kwargs: object) -> None: ...
 
         monkeypatch.setattr("beetroot.vm.qemu.subprocess.Popen", _FakePopen)

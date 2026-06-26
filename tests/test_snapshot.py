@@ -1,4 +1,5 @@
 """Tests for snapshot.py — round-trip, manifest, registry interaction."""
+
 from __future__ import annotations
 
 import importlib.metadata
@@ -78,9 +79,7 @@ def _repack_with_custom_manifest(
 
 
 class TestSnapshotRoundTrip:
-    def test_round_trip_preserves_data_bytes(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_round_trip_preserves_data_bytes(self, isolated_registry: Path, tmp_path: Path) -> None:
         src = _make_instance(tmp_path / "foo" / "alpha", data_bytes=b"\x00\xffmarker\x42")
         registry.add_allocating("alpha", src)
 
@@ -102,18 +101,14 @@ class TestSnapshotRoundTrip:
         assert Path(beta.backend.absolute_path) == target.resolve()
         assert beta.index == 0
 
-    def test_round_trip_runs_quickly(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_round_trip_runs_quickly(self, isolated_registry: Path, tmp_path: Path) -> None:
         payload = b"X" * 100_000
         src = _make_instance(tmp_path / "alpha", data_bytes=payload)
         registry.add_allocating("alpha", src)
 
         start = time.perf_counter()
         archive = snapshot.snapshot(src, tmp_path / "out")
-        restored = snapshot.restore(
-            archive, dest_name="beta", dest_path=tmp_path / "beta"
-        )
+        restored = snapshot.restore(archive, dest_name="beta", dest_path=tmp_path / "beta")
         elapsed = time.perf_counter() - start
 
         assert elapsed < 2.0, f"round-trip too slow: {elapsed:.3f}s"
@@ -121,9 +116,7 @@ class TestSnapshotRoundTrip:
 
 
 class TestSnapshotManifest:
-    def test_manifest_has_all_required_keys(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_manifest_has_all_required_keys(self, isolated_registry: Path, tmp_path: Path) -> None:
         src = _make_instance(tmp_path / "alpha")
         # Pre-fill indices 0, 1, 2 so "alpha" gets index 3.
         for i in range(3):
@@ -159,9 +152,7 @@ class TestSnapshotManifest:
 
 
 class TestSnapshotArchiveLayout:
-    def test_env_is_excluded(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_env_is_excluded(self, isolated_registry: Path, tmp_path: Path) -> None:
         src = _make_instance(tmp_path / "alpha")
         (src / ".env").write_text("SECRET=1")
         registry.add_allocating("alpha", src)
@@ -206,9 +197,7 @@ class TestRestorePortAllocation:
 
 
 class TestRestoreForce:
-    def test_refuses_existing_non_empty_dir(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_refuses_existing_non_empty_dir(self, isolated_registry: Path, tmp_path: Path) -> None:
         src = _make_instance(tmp_path / "alpha")
         registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
@@ -222,9 +211,7 @@ class TestRestoreForce:
             snapshot.restore(archive, dest_name="beta", dest_path=target)
         assert (target / "existing.txt").exists()
 
-    def test_force_overwrites(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_force_overwrites(self, isolated_registry: Path, tmp_path: Path) -> None:
         src = _make_instance(tmp_path / "alpha", data_bytes=b"new")
         registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
@@ -234,9 +221,7 @@ class TestRestoreForce:
         target.mkdir()
         (target / "stale.txt").write_bytes(b"to be wiped")
 
-        snapshot.restore(
-            archive, dest_name="beta", dest_path=target, force=True
-        )
+        snapshot.restore(archive, dest_name="beta", dest_path=target, force=True)
         assert not (target / "stale.txt").exists()
         assert (target / "data" / "marker.txt").read_bytes() == b"new"
 
@@ -261,13 +246,13 @@ class TestRestoreForce:
 
         with pytest.raises(snapshot.SnapshotError, match="peer"):
             snapshot.restore(
-                archive, dest_name="beta",
-                dest_path=peer_dir, force=True,
+                archive,
+                dest_name="beta",
+                dest_path=peer_dir,
+                force=True,
             )
         # Peer's data is intact.
-        assert (peer_dir / "data" / "marker.txt").read_bytes() == (
-            b"peer's precious data"
-        )
+        assert (peer_dir / "data" / "marker.txt").read_bytes() == (b"peer's precious data")
         # Beta did not get registered.
         assert registry.get("beta") is None
 
@@ -282,9 +267,7 @@ class TestRestoreForce:
         target = tmp_path / "beta"
         target.mkdir()
 
-        restored = snapshot.restore(
-            archive, dest_name="beta", dest_path=target
-        )
+        restored = snapshot.restore(archive, dest_name="beta", dest_path=target)
         assert restored == target.resolve()
 
     def test_force_corrupted_archive_does_not_destroy_target(
@@ -309,7 +292,10 @@ class TestRestoreForce:
 
         with pytest.raises(snapshot.SnapshotError):
             snapshot.restore(
-                bad, dest_name="beta", dest_path=target, force=True,
+                bad,
+                dest_name="beta",
+                dest_path=target,
+                force=True,
             )
 
         # The target directory and ALL its contents survived.
@@ -321,9 +307,7 @@ class TestRestoreForce:
 
 
 class TestRestoreErrors:
-    def test_dest_name_already_registered(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_dest_name_already_registered(self, isolated_registry: Path, tmp_path: Path) -> None:
         src = _make_instance(tmp_path / "alpha")
         registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
@@ -332,9 +316,7 @@ class TestRestoreErrors:
         registry.add_allocating("beta", other)
 
         with pytest.raises(snapshot.SnapshotError, match="already registered") as excinfo:
-            snapshot.restore(
-                archive, dest_name="beta", dest_path=tmp_path / "new-beta"
-            )
+            snapshot.restore(archive, dest_name="beta", dest_path=tmp_path / "new-beta")
         message = str(excinfo.value)
         assert "--name" in message
         assert "--as" not in message
@@ -350,9 +332,7 @@ class TestRestoreErrors:
         # resolved port 5565 collides with the peer's resolved 5565.
         src = _make_instance(tmp_path / "alpha")
         (src / "beetroot.yaml").write_text(
-            "api_version: 3\n"
-            "android:\n  version: 14\n"
-            "ports:\n  adb: 5565\n"
+            "api_version: 3\nandroid:\n  version: 14\nports:\n  adb: 5565\n"
         )
         registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
@@ -368,9 +348,7 @@ class TestRestoreErrors:
         registry.add_allocating("peer", peer)
 
         with pytest.raises(snapshot.SnapshotError, match="5565"):
-            snapshot.restore(
-                archive, dest_name="beta", dest_path=tmp_path / "beta"
-            )
+            snapshot.restore(archive, dest_name="beta", dest_path=tmp_path / "beta")
         # On collision, no registry mutation occurs.
         assert registry.get("beta") is None
 
@@ -383,9 +361,7 @@ class TestSnapshotErrors:
         with pytest.raises(snapshot.SnapshotError, match="not registered"):
             snapshot.snapshot(src, tmp_path / "out")
 
-    def test_snapshot_missing_yaml_raises(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_snapshot_missing_yaml_raises(self, isolated_registry: Path, tmp_path: Path) -> None:
         bogus = tmp_path / "bogus"
         bogus.mkdir()
         with pytest.raises(snapshot.SnapshotError, match="not a Beetroot instance"):
@@ -505,31 +481,23 @@ class TestPathLayoutForwardCompat:
         raw = json.loads(_read_manifest_bytes(original))
         raw["path_layout"] = custom_layout
         new_archive = tmp_path / "out-stealth.tar.zst"
-        _repack_with_custom_manifest(
-            original, new_archive, json.dumps(raw).encode("utf-8")
-        )
+        _repack_with_custom_manifest(original, new_archive, json.dumps(raw).encode("utf-8"))
 
         manifest = snapshot.read_manifest(new_archive)
         assert manifest.path_layout == custom_layout
 
         registry.remove("alpha")
-        restored = snapshot.restore(
-            new_archive, dest_name="beta", dest_path=tmp_path / "beta"
-        )
+        restored = snapshot.restore(new_archive, dest_name="beta", dest_path=tmp_path / "beta")
         # Restored manifest on disk preserves the layout for v0.4 apply.
         assert (restored / snapshot.MANIFEST_FILENAME).is_file()
-        on_disk = json.loads(
-            (restored / snapshot.MANIFEST_FILENAME).read_text()
-        )
+        on_disk = json.loads((restored / snapshot.MANIFEST_FILENAME).read_text())
         assert on_disk["path_layout"] == custom_layout
         # And read_manifest on the archive itself still returns the same.
         assert snapshot.read_manifest(new_archive).path_layout == custom_layout
 
 
 class TestReadManifestErrors:
-    def test_archive_with_no_manifest_raises(
-        self, tmp_path: Path
-    ) -> None:
+    def test_archive_with_no_manifest_raises(self, tmp_path: Path) -> None:
         archive = tmp_path / "bad.tar.zst"
         cctx = zstandard.ZstdCompressor()
         with archive.open("wb") as raw, cctx.stream_writer(raw) as zst:
@@ -542,9 +510,7 @@ class TestReadManifestErrors:
         with pytest.raises(snapshot.SnapshotError, match="missing"):
             snapshot.read_manifest(archive)
 
-    def test_manifest_not_json_raises(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_manifest_not_json_raises(self, isolated_registry: Path, tmp_path: Path) -> None:
         src = _make_instance(tmp_path / "alpha")
         registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
@@ -566,9 +532,7 @@ class TestReadManifestErrors:
         with pytest.raises(snapshot.SnapshotError, match="validation failed"):
             snapshot.read_manifest(broken)
 
-    def test_manifest_missing_keys_raises(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_manifest_missing_keys_raises(self, isolated_registry: Path, tmp_path: Path) -> None:
         src = _make_instance(tmp_path / "alpha")
         registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
@@ -577,9 +541,7 @@ class TestReadManifestErrors:
             archive, broken, json.dumps({"schema_version": 1}).encode("utf-8")
         )
 
-        with pytest.raises(
-            snapshot.SnapshotError, match="validation failed"
-        ):
+        with pytest.raises(snapshot.SnapshotError, match="validation failed"):
             snapshot.read_manifest(broken)
 
     def test_manifest_wrong_schema_version_raises(
@@ -597,9 +559,7 @@ class TestReadManifestErrors:
             "beetroot_version": "0.1.0",
             "path_layout": {},
         }
-        _repack_with_custom_manifest(
-            archive, broken, json.dumps(bogus).encode("utf-8")
-        )
+        _repack_with_custom_manifest(archive, broken, json.dumps(bogus).encode("utf-8"))
 
         with pytest.raises(snapshot.SnapshotError, match="schema_version"):
             snapshot.read_manifest(broken)
@@ -619,9 +579,7 @@ class TestReadManifestErrors:
             "beetroot_version": "0.1.0",
             "path_layout": ["not", "a", "dict"],
         }
-        _repack_with_custom_manifest(
-            archive, broken, json.dumps(bogus).encode("utf-8")
-        )
+        _repack_with_custom_manifest(archive, broken, json.dumps(bogus).encode("utf-8"))
 
         with pytest.raises(snapshot.SnapshotError, match="path_layout"):
             snapshot.read_manifest(broken)
@@ -649,9 +607,7 @@ class TestManifestShadowRegression:
         snapshot.restore(first, dest_name="beta", dest_path=target)
         # The on-disk manifest left over from extraction says "alpha"
         # — this is the stale copy that used to shadow the fresh one.
-        on_disk = json.loads(
-            (target / snapshot.MANIFEST_FILENAME).read_text()
-        )
+        on_disk = json.loads((target / snapshot.MANIFEST_FILENAME).read_text())
         assert on_disk["name"] == "alpha"
 
         # Now re-snapshot the restored instance and read back its
@@ -679,10 +635,7 @@ class TestManifestShadowRegression:
         # Re-snapshot.
         second = snapshot.snapshot(target, tmp_path / "second")
         members = _list_archive_members(second)
-        manifest_entries = [
-            m for m in members
-            if Path(m).name == snapshot.MANIFEST_FILENAME
-        ]
+        manifest_entries = [m for m in members if Path(m).name == snapshot.MANIFEST_FILENAME]
         assert len(manifest_entries) == 1, (
             f"expected exactly one manifest entry, got: {manifest_entries}"
         )
@@ -711,13 +664,9 @@ class TestRestoreInvalidArchive:
                 tar.addfile(info, io.BytesIO(manifest_bytes))
 
         with pytest.raises(snapshot.SnapshotError, match=r"beetroot\.yaml"):
-            snapshot.restore(
-                archive, dest_name="beta", dest_path=tmp_path / "beta"
-            )
+            snapshot.restore(archive, dest_name="beta", dest_path=tmp_path / "beta")
 
-    def test_corrupt_manifest_member_is_not_regular_file(
-        self, tmp_path: Path
-    ) -> None:
+    def test_corrupt_manifest_member_is_not_regular_file(self, tmp_path: Path) -> None:
         archive = tmp_path / "bad.tar.zst"
         cctx = zstandard.ZstdCompressor()
         with archive.open("wb") as raw, cctx.stream_writer(raw) as zst:
@@ -823,8 +772,7 @@ class TestB7aExtractionRollback:
 
         # B7a fix: the partial directory must NOT survive.
         assert not target.exists(), (
-            "B7a regression: partial extracted directory left behind after "
-            "mid-extraction failure"
+            "B7a regression: partial extracted directory left behind after mid-extraction failure"
         )
         assert registry.get("beta") is None
 
@@ -850,9 +798,7 @@ class TestB7aExtractionRollback:
 class TestB7bDestIsFile:
     """B7b: _prepare_destination raises SnapshotError when target is a file."""
 
-    def test_restore_to_file_path_raises(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_restore_to_file_path_raises(self, isolated_registry: Path, tmp_path: Path) -> None:
         src = _make_instance(tmp_path / "alpha")
         registry.add_allocating("alpha", src)
         archive = snapshot.snapshot(src, tmp_path / "out")
@@ -882,9 +828,7 @@ class TestB7bDestIsFile:
         file_dest.write_bytes(b"still a file")
 
         with pytest.raises(snapshot.SnapshotError, match="is a file"):
-            snapshot.restore(
-                archive, dest_name="beta", dest_path=file_dest, force=True
-            )
+            snapshot.restore(archive, dest_name="beta", dest_path=file_dest, force=True)
         assert file_dest.is_file()
 
 
@@ -926,9 +870,7 @@ class TestB7cManifestSortedKeys:
         keys = list(parsed.keys())
         assert keys == sorted(keys), f"keys not sorted: {keys}"
 
-    def test_round_trip_after_sort_keys(
-        self, isolated_registry: Path, tmp_path: Path
-    ) -> None:
+    def test_round_trip_after_sort_keys(self, isolated_registry: Path, tmp_path: Path) -> None:
         # The byte-stable manifest must still be parseable by read_manifest.
         src = _make_instance(tmp_path / "alpha")
         registry.add_allocating("alpha", src)
@@ -947,6 +889,7 @@ class TestAdbBackendBranchCoverage:
         # instance.  _find_registry_entry must skip the ADB entry and
         # return the redroid entry.
         from beetroot import registry as reg
+
         # Register an ADB entry first (auto-allocates index 0), then
         # the redroid target (auto-allocates index 1).  The specific
         # indices don't matter — we're only verifying that
@@ -968,6 +911,7 @@ class TestAdbBackendBranchCoverage:
         # checking for cross-instance collisions.  Register an ADB
         # instance then try to restore a snapshot into an occupied dir.
         from beetroot import registry as reg
+
         src = _make_instance(tmp_path / "alpha")
         reg.add_allocating("alpha", backend=reg.RedroidBackendConfig(absolute_path=str(src)))
         archive = snapshot.snapshot(src, tmp_path / "out")

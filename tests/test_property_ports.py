@@ -18,19 +18,23 @@ is a silent port collision and the user sees it only at
 Hypothesis is pinned to derandomized settings so CI reproduces
 exactly.
 """
+
 from __future__ import annotations
 
 import hypothesis.strategies as st
 from hypothesis import given, settings
 
+from beetroot.config import PortMapping, _default_port_mappings
 from beetroot.ports import (
     _MAX_PORT_INDEX,
     ADB_BASE,
+    EXTRA_POOL_BASE,
     FRIDA_BASE,
     FRIDA_CONTROL_BASE,
     STRIDE,
     lowest_free_index,
     ports_for_index,
+    resolve_ports,
 )
 
 
@@ -40,7 +44,8 @@ from beetroot.ports import (
 )
 @settings(deadline=None, derandomize=True, max_examples=200)
 def test_successive_allocations_never_collide(
-    used: set[int], allocation_count: int,
+    used: set[int],
+    allocation_count: int,
 ) -> None:
     """Each successive `lowest_free_index` call returns a previously-unused index."""
     working = set(used)
@@ -76,3 +81,32 @@ def test_ports_for_index_is_stride_aligned(index: int) -> None:
     assert len({p["adb"], p["frida"], p["frida_control"]}) == 3
     # D5: no port exceeds 65535 within the valid index range.
     assert p["adb"] <= 65535
+
+
+@given(
+    index=st.integers(min_value=0, max_value=_MAX_PORT_INDEX),
+    n_arbitrary=st.integers(min_value=0, max_value=STRIDE - 1),
+)
+@settings(deadline=None, derandomize=True, max_examples=200)
+def test_resolve_ports_arbitrary_auto_alloc_never_self_collides(
+    index: int,
+    n_arbitrary: int,
+) -> None:
+    """The seeded well-known mappings plus up to STRIDE-1 auto arbitrary entries resolve distinctly."""
+    mappings = [
+        *_default_port_mappings(),
+        # Use guest ports clear of the well-known guests to satisfy the
+        # distinct-guest schema invariant the resolver assumes upstream.
+        *(PortMapping(guest=10000 + i) for i in range(n_arbitrary)),
+    ]
+    resolved = resolve_ports(index, mappings)
+    hosts = [rp.host for rp in resolved]
+    # No self-collision: every resolved host port is distinct.
+    assert len(hosts) == len(set(hosts))
+    # Each auto-allocated arbitrary entry lands in the extra-pool band for
+    # this index, at a slot offset.
+    extra_hosts = [
+        rp.host for rp in resolved if rp.service not in {"adb", "frida", "frida_control"}
+    ]
+    for slot, host in enumerate(extra_hosts):
+        assert host == EXTRA_POOL_BASE + index * STRIDE + slot

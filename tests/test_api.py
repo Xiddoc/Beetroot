@@ -1,4 +1,5 @@
 """Tests for the OOP api.py — Instance, Manager, DeviceBackend."""
+
 from __future__ import annotations
 
 import shutil
@@ -10,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from beetroot import api, compose, config, paths, registry, snapshot
+from beetroot import api, compose, config, paths, ports, registry, snapshot
 
 
 def _ok_proc() -> subprocess.CompletedProcess[str]:
@@ -40,9 +41,7 @@ class TestDeviceBackend:
         assert isinstance(inst.frida_address, str)
         assert isinstance(inst.is_available, bool)
 
-    def test_instance_does_not_implement_auto_module_installer(
-        self, cli_root: Path
-    ) -> None:
+    def test_instance_does_not_implement_auto_module_installer(self, cli_root: Path) -> None:
         # Redroid instances flash staged modules at boot; `module
         # --auto-install` must capability-gate to exit 2 for them.
         inst = api.Instance.create("alpha")
@@ -87,10 +86,10 @@ class TestInstanceCreate:
         # This is the byte-pinned guarantee from T3 that the CLI test
         # already verifies; the OOP path must match.
         inst = api.Instance.create("alpha")
-        assert paths.instance_yaml(inst.root).read_bytes() == (
-            f"api_version: {config.SUPPORTED_API_VERSION}\n"
-            "android:\n  version: 14\n"
-        ).encode()
+        assert (
+            paths.instance_yaml(inst.root).read_bytes()
+            == (f"api_version: {config.SUPPORTED_API_VERSION}\nandroid:\n  version: 14\n").encode()
+        )
 
     def test_create_yaml_loads_without_auto_bump(
         self, cli_root: Path, capsys: pytest.CaptureFixture[str]
@@ -106,9 +105,7 @@ class TestInstanceCreate:
         config.load_yaml(yaml_path)
         assert "auto-upgraded" not in capsys.readouterr().err
 
-    def test_create_with_explicit_cfg_serialises_full_model(
-        self, cli_root: Path
-    ) -> None:
+    def test_create_with_explicit_cfg_serialises_full_model(self, cli_root: Path) -> None:
         cfg = config.InstanceConfig(frida=config.Frida(version="16.4.10"))
         inst = api.Instance.create("alpha", cfg=cfg)
         text = paths.instance_yaml(inst.root).read_text()
@@ -138,9 +135,7 @@ class TestInstanceCreate:
         assert staged.exists()
         assert staged.stat().st_size == 0
 
-    def test_create_stages_executable_frida_when_pinned(
-        self, cli_root: Path
-    ) -> None:
+    def test_create_stages_executable_frida_when_pinned(self, cli_root: Path) -> None:
         cfg = config.InstanceConfig(frida=config.Frida(version="16.4.10"))
         inst = api.Instance.create("alpha", cfg=cfg)
         staged = paths.instance_frida(inst.root)
@@ -163,7 +158,13 @@ class TestInstanceCreate:
         api.Instance.create("alpha")
         # Pre-pin alpha's beetroot.yaml so bravo's stride-default ADB (5565)
         # collides with alpha's pinned ADB.
-        cfg = config.InstanceConfig(ports=config.Ports(adb=5565))
+        pinned = [
+            config.PortMapping(
+                service=m.service, guest=m.guest, host=5565 if m.service == "adb" else None
+            )
+            for m in config._default_port_mappings()
+        ]
+        cfg = config.InstanceConfig(ports=pinned)
         config.write_yaml(paths.instance_yaml(registry.instance_path("alpha")), cfg)
         with pytest.raises(ValueError, match="5565"):
             api.Instance.create("bravo")
@@ -171,17 +172,19 @@ class TestInstanceCreate:
     @pytest.mark.parametrize(
         "bad",
         [
-            "Alpha",              # uppercase
-            "alpha bravo",        # space
-            "alpha.bravo",        # dot
-            "alpha/bravo",        # slash
-            "alpha:bravo",        # colon
-            "",                   # empty
-            "alpha!",             # punctuation
+            "Alpha",  # uppercase
+            "alpha bravo",  # space
+            "alpha.bravo",  # dot
+            "alpha/bravo",  # slash
+            "alpha:bravo",  # colon
+            "",  # empty
+            "alpha!",  # punctuation
         ],
     )
     def test_create_invalid_name_raises_before_side_effects(
-        self, bad: str, cli_root: Path,
+        self,
+        bad: str,
+        cli_root: Path,
     ) -> None:
         # T2 (v0.3.1 deferred): instance names must match the Docker
         # compose project-name grammar (``[a-z0-9_-]+``). A bad name
@@ -231,7 +234,8 @@ class TestInstanceRegister:
             api.Instance.register(target)
 
     def test_register_invalid_explicit_name_raises(
-        self, cli_root: Path,
+        self,
+        cli_root: Path,
     ) -> None:
         # T2 (v0.3.1 deferred): explicit ``name`` to register must
         # match the same grammar create checks.
@@ -243,7 +247,8 @@ class TestInstanceRegister:
         assert registry.get("Bad Name") is None
 
     def test_register_invalid_basename_default_raises(
-        self, cli_root: Path,
+        self,
+        cli_root: Path,
     ) -> None:
         # When ``name=`` is omitted, ``register`` falls back to the
         # directory's basename. If that basename violates the
@@ -261,9 +266,7 @@ class TestInstanceRegister:
 
 
 class TestInstanceLoad:
-    def test_load_returns_equivalent_object_after_create(
-        self, cli_root: Path
-    ) -> None:
+    def test_load_returns_equivalent_object_after_create(self, cli_root: Path) -> None:
         # Behavior: Instance.create("alpha", path=<tmp>) → Instance.load("alpha")
         # returns an equivalent object (same name, root, config).
         target = cli_root / "alpha-here"
@@ -310,17 +313,13 @@ class TestInstanceFromPath:
         with pytest.raises(api.InstanceNotFoundError, match="not registered"):
             api.Instance.from_path(target)
 
-    def test_from_path_unregistered_raises_with_other_entries(
-        self, cli_root: Path
-    ) -> None:
+    def test_from_path_unregistered_raises_with_other_entries(self, cli_root: Path) -> None:
         # Registry has entries (so the loop iterates), but none match the
         # path being looked up — exercises the loop-without-match branch.
         api.Instance.create("alpha", path=cli_root / "alpha")
         orphan = cli_root / "orphan"
         orphan.mkdir()
-        (orphan / "beetroot.yaml").write_text(
-            "api_version: 3\nandroid:\n  version: 14\n"
-        )
+        (orphan / "beetroot.yaml").write_text("api_version: 3\nandroid:\n  version: 14\n")
         with pytest.raises(api.InstanceNotFoundError, match="not registered"):
             api.Instance.from_path(orphan)
 
@@ -368,9 +367,7 @@ class TestInstanceLifecycle:
         assert inst.config.frida is None
         # Externally edit the yaml — apply re-reads it.
         paths.instance_yaml(inst.root).write_text(
-            "api_version: 3\n"
-            "android:\n  version: 14\n"
-            'frida:\n  version: "16.4.10"\n'
+            'api_version: 3\nandroid:\n  version: 14\nfrida:\n  version: "16.4.10"\n'
         )
         inst.apply()
         # Re-read the on-disk config (the apply() refresh re-binds inst.config
@@ -385,8 +382,7 @@ class TestInstanceLifecycle:
         bravo = api.Instance.create("bravo")
         # Externally rewrite bravo to collide with alpha's ADB.
         paths.instance_yaml(bravo.root).write_text(
-            "api_version: 3\nandroid:\n  version: 14\n"
-            "ports:\n  adb: 5555\n"
+            "api_version: 3\nandroid:\n  version: 14\nports:\n  adb: 5555\n"
         )
         with pytest.raises(ValueError, match="5555"):
             bravo.apply()
@@ -436,9 +432,7 @@ class TestInstanceDestroy:
             inst.destroy(yes=True)
         assert registry.get("alpha") is None
 
-    def test_destroy_propagates_compose_error_after_cleanup(
-        self, cli_root: Path
-    ) -> None:
+    def test_destroy_propagates_compose_error_after_cleanup(self, cli_root: Path) -> None:
         inst = api.Instance.create("alpha")
         root = inst.root
 
@@ -473,6 +467,7 @@ class TestInstanceDestroy:
         # module that ``import shutil``s sees the same module object,
         # so monkeypatching ``shutil.rmtree`` propagates to api.
         import shutil as _shutil
+
         monkeypatch.setattr(_shutil, "rmtree", _ctrl_c)
         with _patched_subprocess():
             with pytest.raises(KeyboardInterrupt):
@@ -562,9 +557,7 @@ class TestInstanceShell:
         assert cmds[1][0] == "adb"
         assert "shell" in cmds[1]
 
-    def test_shell_no_adb_raises(
-        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_shell_no_adb_raises(self, cli_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         inst = api.Instance.create("alpha")
         import shutil as _shutil
 
@@ -676,9 +669,7 @@ class TestInstanceAddModule:
         cfg = config.load_yaml(paths.instance_yaml(inst.root))
         assert cfg.modules[0].sha256 == sha
 
-    def test_add_module_url_failure_leaves_yaml_unchanged(
-        self, cli_root: Path
-    ) -> None:
+    def test_add_module_url_failure_leaves_yaml_unchanged(self, cli_root: Path) -> None:
         # T2 Agent 2 B-6 / Agent 3 1.6: a failed stage MUST NOT leave
         # the YAML mutated. Pre-T2, ``add_module`` appended the model +
         # wrote YAML THEN tried to stage — a 404 left the user's
@@ -691,8 +682,11 @@ class TestInstanceAddModule:
 
         def _boom(url: str, **kwargs: object) -> object:
             raise urllib.error.HTTPError(
-                url=url, code=404, msg="Not Found",
-                hdrs=None, fp=None,  # type: ignore[arg-type]
+                url=url,
+                code=404,
+                msg="Not Found",
+                hdrs=None,  # type: ignore[arg-type]
+                fp=None,
             )
 
         with patch("urllib.request.urlopen", side_effect=_boom):
@@ -713,9 +707,7 @@ class TestInstanceSnapshot:
         out = inst.snapshot(cli_root / "alpha")
         # Behavior assertion on observable side-effect: archive exists at
         # the expected path with .tar.zst appended.
-        assert out == (cli_root / "alpha.tar.zst").resolve() or out == (
-            cli_root / "alpha.tar.zst"
-        )
+        assert out == (cli_root / "alpha.tar.zst").resolve() or out == (cli_root / "alpha.tar.zst")
         assert out.is_file()
         # The archive should have a manifest readable by the snapshot module.
         manifest = snapshot.read_manifest(out)
@@ -731,14 +723,21 @@ class TestInstanceProperties:
     def test_properties_match_resolved_ports(self, cli_root: Path) -> None:
         inst = api.Instance.create("alpha")
         assert inst.index == 0
-        assert inst.ports == {"adb": 5555, "frida": 27042, "frida_control": 27043}
+        # ``ports`` is now the resolved list (issue #108); project to the
+        # well-known mapping for the comparison.
+        assert ports.well_known(inst.ports) == {
+            "adb": 5555,
+            "frida": 27042,
+            "frida_control": 27043,
+        }
         assert inst.adb_address == "localhost:5555"
         assert inst.frida_address == "localhost:27042"
 
     def test_status_queries_compose(self, cli_root: Path) -> None:
         inst = api.Instance.create("alpha")
         fake = subprocess.CompletedProcess(
-            args=[], returncode=0,
+            args=[],
+            returncode=0,
             stdout='{"State": "running"}\n',
             stderr="",
         )
@@ -749,7 +748,10 @@ class TestInstanceProperties:
     def test_status_not_created(self, cli_root: Path) -> None:
         inst = api.Instance.create("alpha")
         fake = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr="",
+            args=[],
+            returncode=0,
+            stdout="",
+            stderr="",
         )
         with patch("subprocess.run", return_value=fake):
             assert inst.status == "not-created"

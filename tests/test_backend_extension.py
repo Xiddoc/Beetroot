@@ -18,6 +18,7 @@ contract: registry round-trip, ``Manager.resolve``, shell dispatch
 through the Protocol surface, and :class:`BackendCapabilityError` on
 verbs the backend doesn't support.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -58,8 +59,7 @@ class FakeBackend:
         # defence-in-depth guard, not the primary gate.
         if not isinstance(backend, FakeBackendConfig):
             raise TypeError(
-                f"FakeBackend expected FakeBackendConfig, got "
-                f"{type(backend).__name__}",
+                f"FakeBackend expected FakeBackendConfig, got {type(backend).__name__}",
             )
         return cls(name, backend)
 
@@ -180,7 +180,8 @@ class TestExtensionEndToEnd:
 
     @pytest.mark.usefixtures("_fake_registered")
     def test_manager_resolve_returns_fake_backend(
-        self, _fake_registry_row: str,  # noqa: PT019
+        self,
+        _fake_registry_row: str,  # noqa: PT019
     ) -> None:
         del _fake_registry_row
         cls = backends.get_backend("fake")
@@ -188,7 +189,8 @@ class TestExtensionEndToEnd:
 
     @pytest.mark.usefixtures("_fake_registered")
     def test_shell_dispatches_via_protocol(
-        self, monkeypatch: pytest.MonkeyPatch,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Construct a FakeBackend directly and assert shell() runs the
         # SSH command we expect. The whole point of the Protocol
@@ -197,17 +199,23 @@ class TestExtensionEndToEnd:
         captured: list[list[str]] = []
 
         def _fake_run(
-            cmd: list[str], *args: object, **kwargs: object,
+            cmd: list[str],
+            *args: object,
+            **kwargs: object,
         ) -> subprocess.CompletedProcess[str]:
             del args, kwargs
             captured.append(list(cmd))
             return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout="", stderr="",
+                args=cmd,
+                returncode=0,
+                stdout="",
+                stderr="",
             )
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
         backend: api.DeviceBackend = FakeBackend(
-            "fake-1", FakeBackendConfig(host="remote.example"),
+            "fake-1",
+            FakeBackendConfig(host="remote.example"),
         )
         rc = backend.shell()
         assert rc == 0

@@ -343,7 +343,7 @@ def create(
         )
     except ValueError as e:
         raise _error(str(e)) from e
-    p = inst.ports
+    p = ports.well_known(inst.ports)
     console.status(
         f"created {inst.name} at {inst.root} "
         f"(index {inst.index}, ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"
@@ -375,7 +375,7 @@ def register(
         raise _error(str(e)) from e
     except ValueError as e:
         raise _error(str(e)) from e
-    p = inst.ports
+    p = ports.well_known(inst.ports)
     console.status(
         f"registered {inst.name} at {inst.root} "
         f"(index {inst.index}, ADB localhost:{p['adb']}, "
@@ -639,7 +639,7 @@ def up(
         except vm_qemu.QemuLaunchError as e:
             raise _error(str(e)) from e
         if isinstance(backend, api.Instance | vm_backend.VmDeviceBackend):
-            p = backend.ports
+            p = ports.well_known(backend.ports)
             console.status(
                 f"{backend.name} up — ADB localhost:{p['adb']}, Frida localhost:{p['frida']}"
             )
@@ -975,11 +975,15 @@ def _instance_json_row(inst: api.Instance) -> dict[str, object]:
     Keeps the v0.3 ``path`` / ``adb`` / ``frida`` keys for back-compat
     (existing scripts pipe ``ls --json`` through jq with those keys);
     layers on the v0.4 spec fields (``kind``, ``adb_address``,
-    ``frida_address``, ``stealth_paths``, full ``ports`` dict) so
+    ``frida_address``, ``stealth_paths``, full ``ports`` list) so
     ``beetroot status`` is a one-stop machine-parseable snapshot of
-    everything the registry + live state knows about the instance.
+    everything the registry + live state knows about the instance. Since
+    v8 (issue #108) ``ports`` is a list of ``{service, guest, host}`` rows
+    mirroring the resolved mapping list; the back-compat ``adb`` / ``frida``
+    keys still surface the well-known host addresses.
     """
-    p = inst.ports
+    resolved = inst.ports
+    wk = ports.well_known(resolved)
     meta = registry.get(inst.name)
     # Manager.list already filtered orphans; this branch is a defensive
     # net against a registry race and isn't covered.
@@ -1000,7 +1004,7 @@ def _instance_json_row(inst: api.Instance) -> dict[str, object]:
         "kind": inst.kind,
         "index": inst.index,
         "created_at": meta.created_at.isoformat(),
-        "ports": p,
+        "ports": [{"service": rp.service, "guest": rp.guest, "host": rp.host} for rp in resolved],
         "status": inst.status,
         "adb_address": inst.adb_address,
         "frida_address": inst.frida_address,
@@ -1009,8 +1013,8 @@ def _instance_json_row(inst: api.Instance) -> dict[str, object]:
         # jq depend on these. Kept alongside the v0.4 richer fields so
         # the row is a strict superset of the v0.3 shape.
         "path": str(inst.root),
-        "adb": f"localhost:{p['adb']}",
-        "frida": f"localhost:{p['frida']}",
+        "adb": f"localhost:{wk['adb']}",
+        "frida": f"localhost:{wk['frida']}",
     }
 
 
@@ -1575,7 +1579,7 @@ def restore(
     except snapshot_mod.SnapshotError as e:
         raise _error(str(e)) from e
     inst = _load(dest_name)
-    p = inst.ports
+    p = ports.well_known(inst.ports)
     console.status(
         f"restored {dest_name} at {restored} "
         f"(index {inst.index}, ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"

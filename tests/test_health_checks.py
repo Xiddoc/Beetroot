@@ -3,6 +3,7 @@
 These cover the skip / error / value=0 / unknown-output branches that
 the higher-level doctor-verb tests don't easily reach.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -15,7 +16,9 @@ import pytest
 from beetroot import api, hostcheck
 
 
-def _proc(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
+def _proc(
+    returncode: int = 0, stdout: str = "", stderr: str = ""
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
@@ -41,9 +44,7 @@ class TestCheckHostBinder:
     def test_unsupported_is_fail_with_remedy(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._pin(
             monkeypatch,
-            hostcheck.BinderStatus(
-                state="unsupported", reason="compiled out", remedy="use adb"
-            ),
+            hostcheck.BinderStatus(state="unsupported", reason="compiled out", remedy="use adb"),
         )
         result = api._check_host_binder()
         assert result.status == "fail"
@@ -173,7 +174,9 @@ class TestCheckMagiskZygisk:
 class TestCheckMagiskDenylist:
     def test_skip_when_not_enrolled(self) -> None:
         result = api._check_magisk_denylist_over_adb(
-            "localhost:5555", "com.example", enrolled=False,
+            "localhost:5555",
+            "com.example",
+            enrolled=False,
         )
         assert result.status == "skip"
         assert "not in magisk.denylist" in (result.reason or "")
@@ -181,7 +184,9 @@ class TestCheckMagiskDenylist:
     def test_skip_when_adb_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(shutil, "which", lambda _: None)
         result = api._check_magisk_denylist_over_adb(
-            "localhost:5555", "com.example", enrolled=True,
+            "localhost:5555",
+            "com.example",
+            enrolled=True,
         )
         assert result.status == "skip"
 
@@ -193,7 +198,9 @@ class TestCheckMagiskDenylist:
 
         with patch("subprocess.run", side_effect=_raise):
             result = api._check_magisk_denylist_over_adb(
-                "localhost:5555", "com.example", enrolled=True,
+                "localhost:5555",
+                "com.example",
+                enrolled=True,
             )
         assert result.status == "fail"
 
@@ -201,7 +208,9 @@ class TestCheckMagiskDenylist:
         monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/adb")
         with patch("subprocess.run", return_value=_proc(1, "", "error")):
             result = api._check_magisk_denylist_over_adb(
-                "localhost:5555", "com.example", enrolled=True,
+                "localhost:5555",
+                "com.example",
+                enrolled=True,
             )
         assert result.status == "fail"
 
@@ -209,7 +218,9 @@ class TestCheckMagiskDenylist:
         monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/adb")
         with patch("subprocess.run", return_value=_proc(0, "", "")):
             result = api._check_magisk_denylist_over_adb(
-                "localhost:5555", "com.example", enrolled=True,
+                "localhost:5555",
+                "com.example",
+                enrolled=True,
             )
         assert result.status == "fail"
         assert "com.example not enrolled" in (result.reason or "")
@@ -292,7 +303,9 @@ class TestAdbDeviceHealth:
         monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/adb")
         with patch(
             "subprocess.run",
-            return_value=_proc(0, "emulator-5554\tdevice\nvalue=1\npackage_name=com.google.android.gms\n"),
+            return_value=_proc(
+                0, "emulator-5554\tdevice\nvalue=1\npackage_name=com.google.android.gms\n"
+            ),
         ):
             results = api.adb_device_health(device)
         assert "compose.status" not in results
@@ -301,7 +314,9 @@ class TestAdbDeviceHealth:
 
 class TestInstanceHealthExitCodeCap:
     def test_doctor_exit_code_capped_at_255(
-        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        cli_root: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         del cli_root  # fixture present for XDG isolation only
         # Synthesize an Instance.health() that returns 300 fails to

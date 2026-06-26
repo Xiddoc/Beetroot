@@ -736,27 +736,25 @@ def instance_path(name: str) -> Path:
     return Path(backend.absolute_path)
 
 
-def all_resolved_ports() -> dict[str, dict[str, int]]:
+def all_resolved_host_ports() -> dict[str, set[int]]:
     """
-    Return resolved ports for every registered instance.
+    Return the set of allocated host ports for every registered instance.
 
-    For redroid-kind instances, loads their ``beetroot.yaml`` to pick up
-    any ``ports:`` override block. For adb-kind (and other) instances,
-    uses the stride-of-10 defaults derived from the registered index
-    (they have no ``beetroot.yaml`` to consult).  Orphan redroid entries
-    (registered names whose ``beetroot.yaml`` is gone) are silently
-    skipped.
-
-    This now includes **all** registered instances (not just redroid),
-    fixing bug B4: a redroid instance can no longer collide with an
-    adopted device's Frida port.
+    For redroid / vm instances, loads their ``beetroot.yaml`` to resolve the
+    full ``ports:`` list — including **arbitrary** (non-well-known) mappings,
+    not just the three well-known services — so a cross-instance collision
+    over any host port is caught (issue #108). For adb-kind (and other)
+    instances, uses the stride-of-10 well-known defaults derived from the
+    registered index (they have no ``beetroot.yaml`` to consult). Orphan
+    directory-backed entries (registered names whose ``beetroot.yaml`` is
+    gone) are silently skipped.
 
     Returns:
-        A mapping ``instance_name → {"adb", "frida", "frida_control"}``
-        covering every registered instance. Empty dict if the registry is
-        empty or every redroid entry is an orphan.
+        A mapping ``instance_name → {host_port, ...}`` covering every
+        registered instance. Empty dict if the registry is empty or every
+        directory-backed entry is an orphan.
     """
-    out: dict[str, dict[str, int]] = {}
+    out: dict[str, set[int]] = {}
     for name, meta in list_instances().items():
         backend = meta.backend
         if isinstance(backend, RedroidBackendConfig | VmBackendConfig):
@@ -764,34 +762,34 @@ def all_resolved_ports() -> dict[str, dict[str, int]]:
                 cfg = load_yaml(paths.instance_yaml(Path(backend.absolute_path)))
             except FileNotFoundError:
                 continue
-            out[name] = ports.resolve_ports(meta.index, cfg.ports)
+            out[name] = {rp.host for rp in ports.resolve_ports(meta.index, cfg.ports)}
         else:
             # adb-kind and other backends: use stride defaults (no yaml).
-            out[name] = ports.ports_for_index(meta.index)
+            out[name] = set(ports.ports_for_index(meta.index).values())
     return out
 
 
 def find_port_collision(
-    new_ports: dict[str, int],
-    others: dict[str, dict[str, int]],
+    new_ports: list[ports.ResolvedPort],
+    others: dict[str, set[int]],
 ) -> tuple[int, str, str] | None:
     """
-    Search ``others`` for any port that collides with ``new_ports``.
+    Search ``others`` for any host port that collides with ``new_ports``.
 
     Args:
-        new_ports: Resolved port dict for the instance being staged
-            (keys: ``adb``, ``frida``, ``frida_control``).
-        others: Mapping of other-instance-name → resolved port dict.
-            The caller is responsible for excluding the staging instance
-            itself from this mapping.
+        new_ports: Resolved port list for the instance being staged.
+        others: Mapping of other-instance-name → set of allocated host
+            ports. The caller is responsible for excluding the staging
+            instance itself from this mapping.
 
     Returns:
-        ``(port, conflicting_instance, port_kind)`` on the first collision
-        found — ``port_kind`` is the *new* instance's key (``adb`` /
-        ``frida`` / ``frida_control``). Returns ``None`` if no collision exists.
+        ``(host_port, conflicting_instance, service)`` on the first collision
+        found — ``service`` is the *new* instance's service label for the
+        colliding entry (``str(service)`` so an unlabelled arbitrary mapping
+        renders as ``"None"``). Returns ``None`` if no collision exists.
     """
-    for kind, port in new_ports.items():
+    for rp in new_ports:
         for other_name, other_ports in others.items():
-            if port in other_ports.values():
-                return port, other_name, kind
+            if rp.host in other_ports:
+                return rp.host, other_name, str(rp.service)
     return None
