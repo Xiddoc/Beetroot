@@ -370,7 +370,9 @@ class TestPreflightTaxonomy:
         # First module installs and keeps its ok row; the device drops
         # before the second's push (the push fails AND `adb devices` no
         # longer lists the serial), which aborts the batch with the
-        # friendly offline error — the second module gets NO row.
+        # friendly offline error. The second module — the one whose
+        # install raised because the device went offline — now gets a
+        # `failed:` row so it isn't silently lost from the report.
         _adopt_phone()
         first = _write_zip(tmp_path, "First.zip")
         second = _write_zip(tmp_path, "Second.zip")
@@ -389,8 +391,7 @@ class TestPreflightTaxonomy:
             "(reconnect it, accept its USB-debugging authorization prompt "
             "if one is shown, and check `adb devices`)" in result.stderr
         )
-        assert str(second) not in result.output
-        assert "[beetroot] failed:" not in result.stderr
+        assert f"[beetroot] failed: {second} — device went offline mid-install" in result.stderr
 
 
 class TestCapabilityGating:
