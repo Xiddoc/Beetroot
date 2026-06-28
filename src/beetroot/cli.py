@@ -1327,7 +1327,16 @@ def module(
     if len(sources) != 1 or len(digests) > 1:
         raise _error("without --auto-install, pass exactly one source (and at most one --sha256).")
     installer = cast(api.ModuleInstaller, _require(backend, api.ModuleInstaller, "module"))
-    installer.add_module(sources[0], sha256=digests[0] if digests else None)
+    try:
+        installer.add_module(sources[0], sha256=digests[0] if digests else None)
+    except ValueError as e:
+        # ``add_module`` stages the zip before touching ``beetroot.yaml``,
+        # and a sha256 mismatch surfaces from ``modules_download.verify_sha256``
+        # as a *bare* ``ValueError`` (not a ``pydantic.ValidationError``).
+        # ``cli.main``'s except chain catches ``ValidationError`` but not a
+        # plain ``ValueError``, so without this net the verb dumps a raw
+        # traceback instead of the uniform ``error: ...`` + exit 1 contract.
+        raise _error(str(e)) from e
     if isinstance(backend, api.Instance):
         console.status(f"added module → {paths.instance_yaml(backend.root)}")
         console.hint(f"restart to flash: beetroot down {name} && beetroot up {name}")
