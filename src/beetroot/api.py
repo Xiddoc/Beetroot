@@ -657,9 +657,14 @@ class Instance:
             else registry.RedroidBackendConfig(absolute_path=str(target_root))
         )
         index = registry.add_allocating(name, backend=backend_cfg)
-        new_ports = ports.resolve_ports(index, effective_cfg.ports)
         inst = cls(name=name, root=target_root, cfg=effective_cfg)
         try:
+            # Resolve INSIDE the rollback try: a config can pass pydantic
+            # validation yet still raise PortCollisionError here (e.g. a
+            # sibling's stride default pinned as an explicit host), and that
+            # must roll the just-committed registry row back rather than
+            # orphan it.
+            new_ports = ports.resolve_ports(index, effective_cfg.ports)
             _check_port_collisions(name, new_ports)
             inst._stage_local()
         except BaseException:
@@ -707,9 +712,14 @@ class Instance:
             else registry.RedroidBackendConfig(absolute_path=str(target_root))
         )
         index = registry.add_allocating(resolved_name, backend=backend_cfg)
-        new_ports = ports.resolve_ports(index, cfg.ports)
         inst = cls(name=resolved_name, root=target_root, cfg=cfg)
         try:
+            # Resolve INSIDE the rollback try: a config can pass pydantic
+            # validation yet still raise PortCollisionError here (e.g. a
+            # sibling's stride default pinned as an explicit host), and that
+            # must roll the just-committed registry row back rather than
+            # orphan it.
+            new_ports = ports.resolve_ports(index, cfg.ports)
             _check_port_collisions(resolved_name, new_ports)
             # Stage .env + dirs + frida placeholder so a follow-up
             # `beetroot up <name>` works without an intermediate

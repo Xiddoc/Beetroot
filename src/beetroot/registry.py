@@ -762,7 +762,19 @@ def all_resolved_host_ports() -> dict[str, set[int]]:
                 cfg = load_yaml(paths.instance_yaml(Path(backend.absolute_path)))
             except FileNotFoundError:
                 continue
-            out[name] = {rp.host for rp in ports.resolve_ports(meta.index, cfg.ports)}
+            # A config can pass pydantic validation yet still fail port
+            # resolution: ``config._check_ports_distinct`` only checks
+            # distinctness among *explicit* host ports — it has no knowledge of
+            # the instance index, so an entry pinned to a sibling's stride
+            # default self-collides only once resolved. Don't let one poisoned
+            # row crash the whole cross-instance scan: fall back to this
+            # instance's well-known stride defaults (the same fallback used for
+            # adb-kind rows below), so its protected ports still count even
+            # when its arbitrary/override resolution is broken.
+            try:
+                out[name] = {rp.host for rp in ports.resolve_ports(meta.index, cfg.ports)}
+            except (ports.PortCollisionError, ValueError):
+                out[name] = set(ports.ports_for_index(meta.index).values())
         else:
             # adb-kind and other backends: use stride defaults (no yaml).
             out[name] = set(ports.ports_for_index(meta.index).values())
