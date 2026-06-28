@@ -1063,6 +1063,34 @@ CI pipeline itself.
   build is the long pole (the savevm boot-cache, #49, is the planned
   lever to skip it on repeat runs).
 
+### Bug fixes
+
+- **`beetroot restore` no longer trusts an archive's `manifest.name` as a
+  destination (path-traversal hardening).** When run without `--name`/`--path`,
+  the CLI derives both the registry name and the on-disk destination from the
+  archive's `manifest.name` — attacker-controlled data with no validator. A
+  hostile `manifest.name` like `../../../tmp/evil` (or an absolute path) drove
+  `mkdir` + extraction into an attacker-chosen directory and registered an
+  invalid name. `snapshot.restore` now validates the destination name against
+  the instance-name grammar (`[a-z0-9_-]+`) at the API boundary — before any
+  filesystem mutation or registry write — so both the CLI default and
+  programmatic callers reject path separators, `..`, and absolute paths.
+
+- **`beetroot restore --force` no longer wipes a registered `binder: vm`
+  instance, nor a registered instance nested below the target.** The
+  cross-instance overwrite guard inspected only `RedroidBackendConfig` rows and
+  fired only on exact path equality, so (a) a `--force` restore aimed at a
+  registered vm instance's directory wiped it, and (b) a `--force` restore into
+  an *ancestor* of any registered instance dir `rmtree`'d the nested instance.
+  The guard now covers both directory-backed backends (redroid + vm) and refuses
+  when the target equals **or is an ancestor of** a registered instance dir.
+
+- **`read_manifest` wraps a non-UTF-8 manifest in `SnapshotError`.** A manifest
+  member whose bytes were not valid UTF-8 raised `UnicodeDecodeError` on decode
+  before validation, escaping the documented `SnapshotError` contract and
+  surfacing as a raw traceback through `restore` / the CLI. It is now caught and
+  re-raised as `SnapshotError`.
+
 
 ## v0.6.0 — 2026-05-20
 
