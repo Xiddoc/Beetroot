@@ -592,6 +592,17 @@
   uniform `error: ...` + exit 1 contract. The verb now wraps `add_module` in a
   `try`/`except ValueError` that routes through `_error`, scoped to the verb so
   `main`'s global chain stays narrow.
+- **Two parallel readers hitting a legacy/corrupt registry no longer crash the
+  losing one.** `registry._read` backs up a non-JSON or wrong-version
+  registry with `path.rename(<file>.bak)`, but `list_instances` / `get` reach it
+  holding only a *shared* flock, which permits concurrent readers. When two
+  reader processes (e.g. two parallel `beetroot ls` / `status` / `doctor`) both
+  opened the same legacy/corrupt registry, both failed validation and both
+  attempted the rename; the first won and removed the source, the second raised
+  an unhandled `FileNotFoundError` on the now-missing path. Both rename sites now
+  tolerate that race — a `FileNotFoundError` means another reader already
+  migrated the file, so the loser returns the same empty registry the winner does
+  instead of crashing an innocuous read command.
 - **A validation-passing-but-index-colliding `ports:` config no longer orphans
   or poisons instances.** A `ports:` list can pass pydantic validation
   (`config._check_ports_distinct` only checks distinctness among the *explicit*

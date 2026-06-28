@@ -374,7 +374,15 @@ def _read(path: Path) -> RegistryFile:
         raw = json.loads(raw_text)
     except (json.JSONDecodeError, ValueError):
         backup = path.with_suffix(path.suffix + ".bak")
-        path.rename(backup)
+        try:
+            path.rename(backup)
+        except FileNotFoundError:
+            # We hold only a shared lock, so a concurrent reader can have
+            # already backed the file up and removed the source out from
+            # under us. Treat that as "already migrated" and return the
+            # same empty registry the winning reader does, rather than
+            # crashing an innocuous read command.
+            return RegistryFile()
         if not _LEGACY_HINT_PRINTED:
             console.note(
                 f"registry at {path} could not be parsed as JSON; "
@@ -389,7 +397,14 @@ def _read(path: Path) -> RegistryFile:
     version = raw.get("version") if isinstance(raw, dict) else None
     if version != SCHEMA_VERSION:
         backup = path.with_suffix(path.suffix + ".bak")
-        path.rename(backup)
+        try:
+            path.rename(backup)
+        except FileNotFoundError:
+            # Same shared-lock race as the unparseable-JSON branch above:
+            # a concurrent reader already backed up and removed the file.
+            # It is already migrated, so return the winning reader's empty
+            # registry instead of raising FileNotFoundError.
+            return RegistryFile()
         if not _LEGACY_HINT_PRINTED:
             console.note(
                 f"registry at {path} was schema "
