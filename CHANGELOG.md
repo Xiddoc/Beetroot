@@ -635,6 +635,17 @@
   falls back to the `8192` default, and a present-but-non-positive-integer value
   raises a `BootstrapError` naming the bad value, so the CLI prints the usual
   `error: ...` line and exits 1.
+- **`AdbDevice.auto_install_modules` no longer drops the module that fails when
+  the device goes offline mid-batch.** On a mid-batch device drop, the install
+  loop appends a per-module row *after* a successful install, so the module
+  whose install raised — the one that triggered the offline re-probe — never got
+  a row, and `skipped = len(sources) - index - 1` only counts the strictly-later,
+  un-attempted modules. The failing module therefore vanished from the report
+  entirely: the user was told "N remaining modules skipped" while N+1 modules
+  actually never installed. The offline-abort path now appends a failed
+  (`ok=False`) row for the current module before raising
+  `DevicePreflightError`, so `results` covers positions `0..index` and `skipped`
+  covers `index+1..len-1` — every source is accounted for exactly once.
 - **`beetroot build --vm-kernel`'s source-compile fallback is now self-contained
   (#74).** When the prebuilt-kernel fetch misses (config edited, version bumped,
   release unpublished, or network blocked) the build falls back to compiling the

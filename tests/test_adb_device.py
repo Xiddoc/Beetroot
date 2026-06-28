@@ -910,8 +910,10 @@ class TestAutoInstallPreflight:
         # First module installs; the device drops before the second's
         # push. The second push fails (RuntimeError) and `adb devices` no
         # longer lists the serial → the batch aborts with the friendly
-        # offline error carrying the first module's ok row. The third is
-        # never pushed.
+        # offline error carrying the first module's ok row AND the second
+        # module's failed row (it failed *because* the device went
+        # offline mid-install, so it must be accounted for). The third is
+        # never pushed and is reflected only in the skipped count.
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         first = tmp_path / "First.zip"
         first.write_bytes(b"PK\x03\x04a")
@@ -931,6 +933,7 @@ class TestAutoInstallPreflight:
             _make_device().auto_install_modules([str(first), str(second), str(third)])
         assert [(r.source, r.ok) for r in exc_info.value.results] == [
             (str(first), True),
+            (str(second), False),
         ]
         # The failed second push, then the connectivity re-probe, are the
         # last two adb calls — the third module is never pushed.
