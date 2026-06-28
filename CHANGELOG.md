@@ -899,6 +899,23 @@
       applet symlink (`sh`, `mount`, …) at build time.
   Together these unblock the `binder: vm` e2e tier (#48), which runs this
   script.
+- **A sha256 mismatch no longer deletes a user's own module source file.**
+  `modules_download._resolve` unlinked the verified file unconditionally on a
+  `sha256` mismatch. For a URL module that file is a regenerable cache entry
+  (eviction is intentional — it forces a re-download), but for a host-`path:`
+  module it is the user's *original* file on disk, with no way to re-fetch it,
+  so the eviction was irreversible data loss. The unlink is now guarded on
+  `module.url`: only the regenerable URL cache is evicted; a path module's
+  source file is left untouched and the `ValueError` is re-raised as before.
+- **Two modules sharing a basename are now staged distinctly instead of
+  silently overwriting.** `stage_for_instance` keyed the staging destination on
+  `src.name` alone, so two distinct modules whose URL/path ended in the same
+  filename (e.g. `a/mod.zip` and `b/mod.zip`) collapsed to one destination —
+  the second `copyfile` overwrote the first and only one module was ever
+  flashed. The common unique-basename case is unchanged (the staged file keeps
+  its original name); on collision the second module gets a short index prefix
+  so both are staged and flashed. Magisk module identity comes from inside the
+  zip (`module.prop`), so renaming the staged file is safe.
 
 ### Known limitations
 
