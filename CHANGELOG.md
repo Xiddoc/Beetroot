@@ -612,6 +612,20 @@
   path matches the destination archive, so a destination inside the instance dir
   is excluded while one elsewhere (or a same-named file in a subtree) is
   unaffected.
+- **`beetroot build --vm-kernel` now falls back to a local build when the
+  prebuilt checksum sidecar is empty or non-UTF-8, instead of crashing with a
+  raw traceback (#79).** Both `kernel_download.fetch_prebuilt` and
+  `rootfs_download.fetch_prebuilt` parsed the `.sha256` sidecar with
+  `.decode().split()[0]`. A 200-OK but **empty** body made `.split()` return
+  `[]` (so `[0]` raised `IndexError`), and a **non-UTF-8** body made `.decode()`
+  raise `UnicodeDecodeError` — neither of which subclasses the module's
+  `KernelFetchError` / `RootfsFetchError`, the only exceptions
+  `builder.build_vm_kernel` catches to fall back to a source compile / local
+  bake. A malformed sidecar therefore aborted the whole build with a traceback
+  instead of degrading to the local build the prebuilt-with-local-fallback
+  design promises. The sidecar decode/split is now wrapped and re-raised as the
+  module's own `*FetchError` (naming the offending `<url>.sha256`), so a
+  malformed sidecar degrades exactly like a network failure.
 - **`beetroot build --vm-kernel`'s source-compile fallback is now self-contained
   (#74).** When the prebuilt-kernel fetch misses (config edited, version bumped,
   release unpublished, or network blocked) the build falls back to compiling the

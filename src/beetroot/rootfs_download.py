@@ -307,9 +307,14 @@ def fetch_prebuilt(
         actual = _download_to_file(
             url, f"Fetching prebuilt guest rootfs (Android {version})", compressed
         )
-        expected = (
-            _fetch_bytes(f"{url}.sha256", "Fetching rootfs checksum").decode().split()[0].strip()
-        )
+        sidecar = _fetch_bytes(f"{url}.sha256", "Fetching rootfs checksum")
+        try:
+            expected = sidecar.decode().split()[0].strip()
+        except (UnicodeDecodeError, IndexError) as e:
+            # A 200-OK but empty (``.split()`` → ``[]``) or non-UTF-8 sidecar must
+            # fall back to a local bake like any other fetch failure, not crash
+            # ``build_vm_kernel`` (which only catches ``RootfsFetchError``).
+            raise RootfsFetchError(f"malformed/empty checksum sidecar {url}.sha256: {e}") from e
         if actual.lower() != expected.lower():
             raise RootfsFetchError(
                 f"sha256 mismatch for {url}: expected {expected.lower()}, got {actual.lower()}"
