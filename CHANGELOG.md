@@ -581,6 +581,17 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **`beetroot module` now reports a sha256 mismatch as a friendly `error: ...`
+  line instead of a raw traceback.** The `module` verb staged the zip
+  (redroid backend: append to `beetroot.yaml` + re-stage) without a verb-scoped
+  `try`/`except`, relying on `cli.main`'s global handler chain. But a digest
+  mismatch surfaces from `modules_download.verify_sha256` as a *bare*
+  `ValueError` — not a `pydantic.ValidationError` (which `main` catches as a
+  `ValueError` subclass) — so `beetroot module <name> <source> --sha256
+  <wrong-digest>` escaped as a Rich-rendered Python traceback, breaking the
+  uniform `error: ...` + exit 1 contract. The verb now wraps `add_module` in a
+  `try`/`except ValueError` that routes through `_error`, scoped to the verb so
+  `main`'s global chain stays narrow.
 - **A validation-passing-but-index-colliding `ports:` config no longer orphans
   or poisons instances.** A `ports:` list can pass pydantic validation
   (`config._check_ports_distinct` only checks distinctness among the *explicit*
