@@ -916,6 +916,19 @@
   its original name); on collision the second module gets a short index prefix
   so both are staged and flashed. Magisk module identity comes from inside the
   zip (`module.prop`), so renaming the staged file is safe.
+- **`binder: vm` now resolves `vm.kernel`/`vm.rootfs` to an absolute path, so a
+  relative artifact path no longer produces a broken qcow2 boot-cache overlay.**
+  `_resolve_artifact` validated the configured path's existence against the
+  process cwd but returned the (possibly relative) `Path` unchanged. With
+  `vm.boot_cache` on, that same path was handed to `qemu-img create -b` as the
+  overlay's backing file — and qemu records the backing reference *relative to
+  the overlay's directory* (the instance dir, not the cwd). So when the CLI ran
+  from a directory other than the instance dir with a relative `vm.rootfs`, the
+  existence check could pass while the stored backing reference pointed
+  elsewhere, leaving the overlay unopenable on the next `up`. The resolver now
+  returns `path.resolve()` after the existence check, making the artifact (and
+  hence the qcow2 backing reference) cwd-independent. Error messages still quote
+  the original configured value.
 
 ### Known limitations
 

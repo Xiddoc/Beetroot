@@ -113,7 +113,13 @@ def _resolve_artifact(configured: str | None, env_default: str, label: str) -> P
             f"VM {label} {raw!r} does not exist on the host filesystem. "
             f"Build it with `beetroot build --vm-kernel`."
         )
-    return path
+    # Resolve to an absolute path so the artifact is cwd-independent. A relative
+    # ``vm.rootfs`` is later handed to ``qemu-img create -b`` as the qcow2
+    # overlay's backing file, and qemu records that reference *relative to the
+    # overlay's directory* (the instance dir, not the process cwd). Without
+    # resolving, the existence check (run against cwd) could pass while the
+    # stored backing reference points elsewhere, leaving the overlay unopenable.
+    return path.resolve()
 
 
 def _check_port_collisions(name: str, new_ports: list[ports.ResolvedPort]) -> None:
