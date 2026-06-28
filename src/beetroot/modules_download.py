@@ -147,9 +147,13 @@ def _resolve(module: Module, instance_root: Path) -> Path:
         try:
             verify_sha256(local, module.sha256)
         except ValueError:
-            # Delete the bad cached file before raising so the next call
-            # re-downloads rather than re-failing forever on a poisoned entry.
-            local.unlink(missing_ok=True)
+            # On mismatch, only the regenerable URL cache is evicted so the
+            # next call re-downloads rather than re-failing forever on a
+            # poisoned entry. A path module's ``local`` is the user's own
+            # source file on disk with no way to re-fetch it, so deleting it
+            # would be irreversible data loss — leave it untouched and re-raise.
+            if module.url:
+                local.unlink(missing_ok=True)
             raise
     return local
 
@@ -175,9 +179,38 @@ def stage_for_instance(instance_root: Path, cfg: InstanceConfig) -> list[Path]:
     for stale in target.glob("*.zip"):
         stale.unlink()
     staged: list[Path] = []
-    for module in cfg.modules:
+    used_names: set[str] = set()
+    for index, module in enumerate(cfg.modules):
         src = _resolve(module, instance_root)
-        dst = target / src.name
+        dst = target / _unique_dest_name(src.name, used_names, index)
+        used_names.add(dst.name)
         shutil.copyfile(src, dst)
         staged.append(dst)
     return staged
+
+
+def _unique_dest_name(name: str, used: set[str], index: int) -> str:
+    """
+    Return ``name`` unchanged, or an index-prefixed variant if it collides.
+
+    The common case — every module having a distinct basename — keeps the
+    original filename so existing behaviour (and tests asserting on it) are
+    preserved. Two modules whose URL/path end in the same filename would
+    otherwise stage to the same destination and silently overwrite one
+    another; on collision the second gets a short ``<index>_`` prefix so
+    both are staged and flashed. Magisk module identity comes from inside
+    the zip (``module.prop``), so renaming the staged file is safe.
+
+    Args:
+        name: The source basename to stage under.
+        used: Destination basenames already claimed in this staging pass.
+        index: The module's position in the list, used to derive a stable
+            distinct name on collision.
+
+    Returns:
+        ``name`` if unused, else ``f"{index}_{name}"`` (recursing if that
+        too collides).
+    """
+    if name not in used:
+        return name
+    return _unique_dest_name(f"{index}_{name}", used, index)
