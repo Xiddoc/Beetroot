@@ -632,6 +632,39 @@ class DefaultRootfsRunner:
         return _PopenProcess(proc, log_handle)
 
 
+_DEFAULT_IMAGE_SIZE_MB: Final[int] = 8192
+
+
+def _parse_image_size_mb(raw: str | None) -> int:
+    """
+    Parse the ``IMAGE_SIZE_MB`` env knob into a positive integer.
+
+    An absent **or set-but-empty** value (the common ``export IMAGE_SIZE_MB=``
+    case) falls back to :data:`_DEFAULT_IMAGE_SIZE_MB`. A present, non-empty
+    value that is not a positive integer raises :class:`BootstrapError` so the
+    ``beetroot build --vm-kernel`` handler turns it into a friendly ``error:``
+    line instead of a raw ``ValueError`` traceback.
+
+    Args:
+        raw: The raw env value (``None`` when unset).
+
+    Returns:
+        The resolved positive megabyte count.
+
+    Raises:
+        BootstrapError: If ``raw`` is non-empty but not a positive integer.
+    """
+    if raw is None or raw == "":
+        return _DEFAULT_IMAGE_SIZE_MB
+    try:
+        value = int(raw)
+    except ValueError:
+        raise BootstrapError(f"IMAGE_SIZE_MB must be a positive integer, got {raw!r}") from None
+    if value <= 0:
+        raise BootstrapError(f"IMAGE_SIZE_MB must be a positive integer, got {raw!r}")
+    return value
+
+
 class _RootfsConfig(BaseModel):
     """Resolved knobs for one rootfs build (host source paths + guest tunables)."""
 
@@ -694,7 +727,7 @@ class _RootfsConfig(BaseModel):
             out_image=out_image,
             vm_dir=vm_dir,
             android_version=android_version,
-            image_size_mb=int(os.environ.get("IMAGE_SIZE_MB", "8192")),
+            image_size_mb=_parse_image_size_mb(os.environ.get("IMAGE_SIZE_MB")),
             docker_version=version,
             docker_url=url,
             redroid_image=os.environ.get("REDROID_IMAGE", config.vm_redroid_image(android_version)),

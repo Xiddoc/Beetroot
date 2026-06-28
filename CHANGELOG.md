@@ -626,6 +626,15 @@
   design promises. The sidecar decode/split is now wrapped and re-raised as the
   module's own `*FetchError` (naming the offending `<url>.sha256`), so a
   malformed sidecar degrades exactly like a network failure.
+- **`beetroot build --vm-kernel` no longer traces back on a malformed
+  `IMAGE_SIZE_MB`.** `_RootfsConfig.from_env` parsed `IMAGE_SIZE_MB` with a bare
+  `int(...)`. A set-but-empty value (the common `export IMAGE_SIZE_MB=` case)
+  reached `int("")` — the `"8192"` default never applied — and crashed with a raw
+  `ValueError` that escaped the build handler (which only catches `BootstrapError`)
+  as an un-friendly traceback. The knob is now parsed defensively: absent or empty
+  falls back to the `8192` default, and a present-but-non-positive-integer value
+  raises a `BootstrapError` naming the bad value, so the CLI prints the usual
+  `error: ...` line and exits 1.
 - **`beetroot build --vm-kernel`'s source-compile fallback is now self-contained
   (#74).** When the prebuilt-kernel fetch misses (config edited, version bumped,
   release unpublished, or network blocked) the build falls back to compiling the
