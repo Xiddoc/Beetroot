@@ -242,7 +242,7 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
         cctx.stream_writer(raw_out) as zst,
         tarfile.open(fileobj=zst, mode="w|") as tar,
     ):
-        _add_instance_tree(tar, instance_root)
+        _add_instance_tree(tar, instance_root, final_dest)
         _add_manifest(tar, manifest)
     return final_dest
 
@@ -310,12 +310,30 @@ def _find_registry_entry(
     )
 
 
-def _add_instance_tree(tar: tarfile.TarFile, instance_root: Path) -> None:
+def _add_instance_tree(tar: tarfile.TarFile, instance_root: Path, final_dest: Path) -> None:
     """
-    Recursively add every file under ``instance_root`` except excluded names.
+    Recursively add every file under ``instance_root`` except excluded entries.
+
+    Skips both the name-based ``_EXCLUDED_TOP_LEVEL`` set and the
+    destination archive itself: the CLI default writes ``<name>.tar.zst``
+    into the cwd, which is normally the instance dir, so the just-created
+    (still-open, partially-flushed) archive would otherwise be packed into
+    itself as a phantom ``./<name>.tar.zst`` member and re-extracted on
+    restore. The match is by resolved absolute path, so a destination
+    outside ``instance_root`` is unaffected and a same-named file elsewhere
+    in the tree is not wrongly excluded.
+
+    Args:
+        tar: The open tar stream to append members to.
+        instance_root: The instance directory whose contents are packed.
+        final_dest: The resolved destination archive path to skip if it
+            falls inside ``instance_root``.
     """
+    dest_resolved = final_dest.resolve()
     for entry in sorted(instance_root.iterdir()):
         if entry.name in _EXCLUDED_TOP_LEVEL:
+            continue
+        if entry.resolve() == dest_resolved:
             continue
         tar.add(entry, arcname=f"./{entry.name}", recursive=True)
 

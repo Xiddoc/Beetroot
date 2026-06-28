@@ -603,6 +603,15 @@
     orphaned row the user assumed had failed. The resolve now runs inside the
     rollback `try`, so a raise cleans up the row (and, for `create`, the
     freshly-made directory).
+- **`beetroot snapshot` no longer packs the output archive into itself as a
+  phantom member.** The CLI default writes `<name>.tar.zst` into the cwd, which
+  is normally the instance directory itself, so `snapshot._add_instance_tree`
+  would `tar.add()` the just-created (still-open, partially-flushed) archive as a
+  spurious `./<name>.tar.zst` member that `restore` then extracted back into the
+  restored instance dir. The packer now skips any entry whose resolved absolute
+  path matches the destination archive, so a destination inside the instance dir
+  is excluded while one elsewhere (or a same-named file in a subtree) is
+  unaffected.
 - **`beetroot build --vm-kernel`'s source-compile fallback is now self-contained
   (#74).** When the prebuilt-kernel fetch misses (config edited, version bumped,
   release unpublished, or network blocked) the build falls back to compiling the
