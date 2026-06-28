@@ -367,8 +367,12 @@ def read_manifest(archive: Path) -> Manifest:
     """
     raw = _extract_manifest_bytes(archive)
     try:
+        # ``decode`` raises UnicodeDecodeError on non-UTF-8 manifest bytes
+        # BEFORE validation — catch it alongside ValidationError so a
+        # corrupt manifest surfaces as the documented SnapshotError rather
+        # than a raw traceback through restore() / the CLI.
         return Manifest.model_validate_json(raw.decode("utf-8"))
-    except ValidationError as e:
+    except (ValidationError, UnicodeDecodeError) as e:
         raise SnapshotError(f"manifest validation failed: {e}") from e
 
 
@@ -434,13 +438,22 @@ def _prepare_destination(target: Path, *, force: bool) -> None:
     if not occupied:
         return
     for other_name, meta in registry.list_instances().items():
-        if not isinstance(meta.backend, registry.RedroidBackendConfig):
+        # Both redroid and vm backends are directory-backed and carry an
+        # ``absolute_path``; an adb row carries a serial, not a path, so
+        # it can never collide here. Guarding only the redroid type let a
+        # ``--force`` restore wipe a registered ``binder: vm`` instance.
+        if not isinstance(meta.backend, (registry.RedroidBackendConfig, registry.VmBackendConfig)):
             continue
-        if Path(meta.backend.absolute_path).resolve() == target:
+        reg_dir = Path(meta.backend.absolute_path).resolve()
+        # Refuse when ``target`` IS the registered dir or an ANCESTOR of
+        # it: ``rmtree(target)`` on a parent destroys the nested instance
+        # just as surely as rmtree-ing the dir itself. Exact-equality-only
+        # let a ``--force`` restore into a parent directory wipe it.
+        if reg_dir == target or target in reg_dir.parents:
             raise SnapshotError(
-                f"{target} is the registered directory of instance "
-                f"{other_name!r}; refusing to overwrite (even with "
-                f"--force). 'beetroot destroy {other_name}' first, "
+                f"{target} is (or contains) the registered directory of "
+                f"instance {other_name!r}; refusing to overwrite (even "
+                f"with --force). 'beetroot destroy {other_name}' first, "
                 "or pick a different --path."
             )
     if not force:
@@ -509,7 +522,22 @@ def restore(
             redroid-specific message when the existing row is non-redroid,
             #128), if ``dest_path`` exists and is non-empty without
             ``force``, or if the archive is invalid.
+        ValueError: If ``dest_name`` does not match the instance-name
+            grammar. The CLI default derives ``dest_name`` from the
+            attacker-controlled ``manifest.name``; validating here — the
+            API boundary, so both the CLI default and programmatic callers
+            are covered — rejects path separators, ``..``, and absolute
+            paths before any filesystem mutation or registry write, so a
+            malicious archive cannot escape into an attacker-chosen
+            directory.
     """
+    # Local import — api imports snapshot at module load, so a top-level
+    # ``from .api import _validate_instance_name`` would loop. Validate
+    # BEFORE any filesystem mutation or registry write so an attacker
+    # cannot drive ``mkdir`` / extraction into a traversed path.
+    from .api import _validate_instance_name  # noqa: PLC0415
+
+    _validate_instance_name(dest_name)
     existing = registry.get(dest_name)
     if existing is not None:
         if not isinstance(existing.backend, registry.RedroidBackendConfig):

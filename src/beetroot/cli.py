@@ -1585,7 +1585,11 @@ def restore(
             dest_path=dest_path,
             force=force,
         )
-    except snapshot_mod.SnapshotError as e:
+    except (snapshot_mod.SnapshotError, ValueError) as e:
+        # ``restore`` raises ValueError when ``dest_name`` (derived from
+        # the attacker-controlled ``manifest.name`` when no --name is
+        # given) fails the instance-name grammar; map it to the same
+        # friendly ``error: ...`` line as a SnapshotError.
         raise _error(str(e)) from e
     inst = _load(dest_name)
     p = ports.well_known(inst.ports)
