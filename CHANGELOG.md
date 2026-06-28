@@ -581,6 +581,28 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **A validation-passing-but-index-colliding `ports:` config no longer orphans
+  or poisons instances.** A `ports:` list can pass pydantic validation
+  (`config._check_ports_distinct` only checks distinctness among the *explicit*
+  host ports — it has no knowledge of the instance index) yet still raise
+  `PortCollisionError` at resolution time, because an entry pinned to a sibling's
+  stride default only collides once that stride port is computed for the
+  instance's index (e.g. `ports: [{service: adb, guest: 5555}, {service: x,
+  guest: 8080, host: 5555}]` resolves adb→5555 and x→5555 at index 0). Two bugs
+  shared this root cause:
+  - **Registry poisoning:** `registry.all_resolved_host_ports` resolved every
+    registered instance's ports *outside* the `FileNotFoundError` guard, so one
+    such poisoned row crashed every *other* instance's cross-instance scan
+    (`create` / `register` / `apply` / `restore`), aborting the unrelated
+    operation with a misattributed error. The scan now falls back to the poisoned
+    instance's well-known stride defaults instead of crashing — its protected
+    ports still count cross-instance.
+  - **Orphaned registry row:** `Instance.create` / `Instance.register` resolved
+    the ports *after* committing the registry row but *before* the rollback
+    `try`/`except`, so a resolution raise escaped before rollback ran, leaving an
+    orphaned row the user assumed had failed. The resolve now runs inside the
+    rollback `try`, so a raise cleans up the row (and, for `create`, the
+    freshly-made directory).
 - **`beetroot build --vm-kernel`'s source-compile fallback is now self-contained
   (#74).** When the prebuilt-kernel fetch misses (config edited, version bumped,
   release unpublished, or network blocked) the build falls back to compiling the
@@ -945,6 +967,7 @@ CI pipeline itself.
   runs under TCG — a slow (~100 s+) but real boot; the kernel + rootfs
   build is the long pole (the savevm boot-cache, #49, is the planned
   lever to skip it on repeat runs).
+
 
 ## v0.6.0 — 2026-05-20
 
