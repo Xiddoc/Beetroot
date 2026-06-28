@@ -175,7 +175,14 @@ def fetch_prebuilt(*, version: str, fingerprint: str, out_path: Path) -> Path:
     """
     url = release_url(version, fingerprint)
     payload = _fetch_bytes(url, f"Fetching prebuilt guest kernel {version}")
-    expected = _fetch_bytes(f"{url}.sha256", "Fetching kernel checksum").decode().split()[0].strip()
+    sidecar = _fetch_bytes(f"{url}.sha256", "Fetching kernel checksum")
+    try:
+        expected = sidecar.decode().split()[0].strip()
+    except (UnicodeDecodeError, IndexError) as e:
+        # A 200-OK but empty (``.split()`` → ``[]``) or non-UTF-8 sidecar must
+        # fall back to a source compile like any other fetch failure, not crash
+        # ``build_vm_kernel`` (which only catches ``KernelFetchError``).
+        raise KernelFetchError(f"malformed/empty checksum sidecar {url}.sha256: {e}") from e
     actual = hashlib.sha256(payload).hexdigest()
     if actual.lower() != expected.lower():
         raise KernelFetchError(
