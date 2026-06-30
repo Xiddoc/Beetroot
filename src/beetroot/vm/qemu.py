@@ -327,15 +327,25 @@ class QemuProcess:
         _instance_dir: The instance directory the pidfile lives in.
     """
 
-    def __init__(self, instance_dir: Path) -> None:
+    def __init__(self, instance_dir: Path, host_adb_port: int | None = None) -> None:
         """
-        Bind the manager to an instance directory.
+        Bind the manager to an instance directory and (optionally) its ADB port.
 
         Args:
             instance_dir: The instance directory (the pidfile is written
                 under it).
+            host_adb_port: The instance's host-loopback ADB-forward port, used
+                as the per-instance identity token to confirm a recorded PID is
+                really *this* instance's QEMU (every launch — plain and
+                boot_cache — carries it in the ``hostfwd`` argv element, unlike
+                the instance dir, which only the boot_cache argv references via
+                its overlay/monitor paths). See :meth:`_pid_is_qemu` (#162).
+                ``None`` is the config-gone orphan-teardown case (the
+                ``beetroot.yaml`` was deleted, so the port can't be resolved):
+                identity then falls back to a best-effort ``qemu-system`` check.
         """
         self._instance_dir = instance_dir
+        self._host_adb_port = host_adb_port
 
     @property
     def pidfile(self) -> Path:
@@ -395,17 +405,27 @@ class QemuProcess:
         PID that is merely *live* is not enough — a stale entry can name an
         unrelated process that reused the number. We require
         ``/proc/<pid>/cmdline`` to both look like a ``qemu-system`` invocation
-        and reference this instance's directory (which every path in the argv
-        built by :func:`build_qemu_argv` lives under), so a reused PID
-        belonging to anything else reports False and is never signalled
-        (issue #162). A missing ``/proc`` entry (the process is gone) is also
-        False.
+        and carry this instance's host-ADB ``hostfwd`` port, which the
+        stride allocator makes unique per instance and which **every** launch
+        path embeds in its argv (``-netdev user,…,hostfwd=tcp:127.0.0.1:<port>-:…``).
+        Matching the instance *directory* instead would false-negative on the
+        default plain ``up`` path, whose kernel/rootfs live in a shared
+        artifacts cache outside the instance dir (only the boot_cache argv
+        references the instance dir, via its overlay/monitor paths) — that
+        gap is exactly what made a healthy plain-path QEMU report not-running
+        (#162). A reused PID belonging to anything else, or to another
+        instance's QEMU (different port), reports False and is never
+        signalled. A missing ``/proc`` entry (the process is gone) is False.
         """
         cmdline = self._read_proc_cmdline(pid)
         if cmdline is None:
             return False
         names_qemu = "qemu-system" in cmdline
-        names_instance = str(self._instance_dir) in cmdline
+        if self._host_adb_port is None:
+            # Orphan teardown: the config (hence the port) is gone, so we can't
+            # pin the identity to this instance — best-effort 'is it QEMU?'.
+            return names_qemu
+        names_instance = f"hostfwd=tcp:127.0.0.1:{self._host_adb_port}-" in cmdline
         return names_qemu and names_instance
 
     def is_running(self) -> bool:

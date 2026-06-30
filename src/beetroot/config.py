@@ -155,7 +155,11 @@ def _check_sha256_shape(field_name: str, v: str | None) -> str | None:
         ValueError: If ``v`` is a non-``None`` value that doesn't match the
             64-character hex grammar.
     """
-    if v is None or _SHA256_RE.match(v):
+    # ``fullmatch`` (not ``match``): ``$`` also matches just before a trailing
+    # newline, so ``match`` would accept a 64-hex digest pasted with a trailing
+    # ``\n`` (e.g. straight from ``sha256sum`` output) and then fail the
+    # exact-string compare at download time with a misleading message (#194).
+    if v is None or _SHA256_RE.fullmatch(v):
         return v
     raise ValueError(
         f"{field_name} {v!r} must be a 64-character hex SHA-256 digest "
@@ -201,6 +205,12 @@ _API_VERSION_BUMP_WARNED: set[Path] = set()
 # per instance prints the note once per path instead of on every load. Cleared
 # alongside ``_API_VERSION_BUMP_WARNED`` in the conftest autouse fixture.
 _PORTS_MIGRATION_WARNED: set[Path] = set()
+
+# Companion dedup set for the gapps_vendor-overrides-intent note. Like the two
+# above it is emitted from ``load_yaml`` (path known) rather than an Android
+# model_validator that re-fires on every construction, so a fleet scan that
+# loads N pinned-vendor instances notes once per path, not N times (issue #220).
+_GAPPS_VENDOR_OVERRIDE_WARNED: set[Path] = set()
 
 
 # Where DRM render nodes live; their presence means the host has a GPU the
@@ -425,6 +435,14 @@ class Module(BaseModel):
     path: str | None = None
     sha256: str | None = None
 
+    @field_validator("sha256")
+    @classmethod
+    def _check_sha256_shape(cls, v: str | None) -> str | None:
+        # Reject a fat-fingered digest at load time (mirrors frida.sha256), so
+        # a bad pin fails fast instead of late with a misleading hostile-mirror
+        # message after a full download + extract (#194).
+        return _check_sha256_shape("module.sha256", v)
+
     @override
     def model_post_init(self, _ctx: object) -> None:
         """
@@ -588,21 +606,6 @@ class Android(BaseModel):
                 f"android.gapps_vendor: {self.gapps_vendor!r} names a GApps "
                 "distribution, but android.gapps: none asks for no GApps at all. "
                 "Drop gapps_vendor, or set gapps to minimal/full."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _note_vendor_overrides_intent(self) -> Self:
-        # A pinned vendor wins outright in resolve_gapps_vendor, so the
-        # minimal/full intent's own default-vendor pick is silently discarded
-        # and gapps: minimal vs gapps: full collapse to the same base image.
-        # Warn so the override isn't a surprise (the gapps: none case is the
-        # contradiction handled by _reject_vendor_with_none above, not here).
-        if self.gapps_vendor is not None and self.gapps != "none":
-            console.note(
-                f"android.gapps_vendor: {self.gapps_vendor} is pinned, so it "
-                f"overrides the android.gapps: {self.gapps} intent — the base "
-                "image is selected by the vendor, not the intent."
             )
         return self
 
@@ -1203,7 +1206,24 @@ def load_yaml(path: Path) -> InstanceConfig:
                 "rewrite the YAML."
             )
             _PORTS_MIGRATION_WARNED.add(resolved_ports_path)
-    return InstanceConfig.model_validate(raw)
+    cfg = InstanceConfig.model_validate(raw)
+    # Emit the gapps_vendor-overrides-intent advisory here (path known, deduped
+    # per resolved path) rather than from an Android model_validator that
+    # re-fires on every construction across a fleet scan (issue #220, mirroring
+    # the #202 ports-migration note above). A pinned vendor wins outright in
+    # resolve_gapps_vendor, so a minimal/full intent silently collapses to the
+    # vendor's image — worth one note. The gapps: none + vendor contradiction is
+    # rejected outright by Android._reject_vendor_with_none, never reaching here.
+    if cfg.android.gapps_vendor is not None and cfg.android.gapps != "none":
+        resolved_vendor_path = path.resolve()
+        if resolved_vendor_path not in _GAPPS_VENDOR_OVERRIDE_WARNED:
+            console.note(
+                f"android.gapps_vendor: {cfg.android.gapps_vendor} is pinned, so it "
+                f"overrides the android.gapps: {cfg.android.gapps} intent — the base "
+                "image is selected by the vendor, not the intent."
+            )
+            _GAPPS_VENDOR_OVERRIDE_WARNED.add(resolved_vendor_path)
+    return cfg
 
 
 def write_yaml(path: Path, cfg: InstanceConfig) -> None:

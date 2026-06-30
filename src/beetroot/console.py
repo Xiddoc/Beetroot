@@ -283,7 +283,16 @@ def table(columns: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
         default=0,
     )
     width = max(max_cell * len(columns) + len(columns), 80)
-    _stdout_console.print(t, width=width, crop=False)
+    # A ``print(width=…)`` request is clamped to the Console's own width (80 on
+    # a non-TTY), which folds a wide load-bearing cell across lines instead of
+    # honouring the requested width. Set the width on the console for the render
+    # (restored after) so every cell stays on one line, lossless (#204).
+    saved_width = _stdout_console.width
+    try:
+        _stdout_console.width = width
+        _stdout_console.print(t, crop=False)
+    finally:
+        _stdout_console.width = saved_width
 
 
 # ---------------------------------------------------------------------------

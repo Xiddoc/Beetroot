@@ -27,7 +27,6 @@ from pydantic import ValidationError
 
 from beetroot import config
 from beetroot.config import (
-    Android,
     Frida,
     InstanceConfig,
     Module,
@@ -48,8 +47,10 @@ def _reset_ports_migration_dedup() -> Iterator[None]:
     populated path between tests (issue #202).
     """
     config._PORTS_MIGRATION_WARNED.clear()
+    config._GAPPS_VENDOR_OVERRIDE_WARNED.clear()
     yield
     config._PORTS_MIGRATION_WARNED.clear()
+    config._GAPPS_VENDOR_OVERRIDE_WARNED.clear()
 
 
 class TestFridaSha256HexValidation:
@@ -98,24 +99,46 @@ class TestMemswapLimitUnlimited:
 
 
 class TestGappsVendorOverrideNote:
-    """#220: a pinned vendor overriding the intent emits a note."""
+    """#220: a pinned vendor overriding the intent notes once per path."""
+
+    def _write(self, tmp_path: Path, android: dict[str, object]) -> Path:
+        p = tmp_path / "beetroot.yaml"
+        p.write_text(yaml.safe_dump({"api_version": 8, "android": android}))
+        return p
 
     @pytest.mark.parametrize("intent", ["minimal", "full"])
     def test_note_fires_when_vendor_overrides_intent(
-        self, intent: str, capsys: pytest.CaptureFixture[str]
+        self, intent: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        Android(gapps=intent, gapps_vendor="opengapps")  # type: ignore[arg-type]
-        err = capsys.readouterr().err
-        assert "overrides the android.gapps" in err
+        p = self._write(tmp_path, {"version": 14, "gapps": intent, "gapps_vendor": "opengapps"})
+        load_yaml(p)
+        assert "overrides the android.gapps" in capsys.readouterr().err
 
-    def test_no_note_when_vendor_unset(self, capsys: pytest.CaptureFixture[str]) -> None:
-        Android(gapps="minimal")
+    def test_note_deduped_per_path(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A fleet scan re-loads each YAML; the note must fire once per path,
+        # not on every load (the #202 pattern, generalised — #220).
+        p = self._write(tmp_path, {"version": 14, "gapps": "minimal", "gapps_vendor": "opengapps"})
+        load_yaml(p)
+        load_yaml(p)
+        notes = [
+            ln for ln in capsys.readouterr().err.splitlines() if "overrides the android.gapps" in ln
+        ]
+        assert len(notes) == 1, notes
+
+    def test_no_note_when_vendor_unset(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        load_yaml(self._write(tmp_path, {"version": 14, "gapps": "minimal"}))
         assert "overrides the android.gapps" not in capsys.readouterr().err
 
-    def test_no_note_for_gapps_none(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_no_note_for_gapps_none(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         # gapps: none + a vendor is the contradiction rejected outright, so it
         # never reaches the override note; gapps: none with no vendor is clean.
-        Android(gapps="none")
+        load_yaml(self._write(tmp_path, {"version": 14, "gapps": "none"}))
         assert "overrides the android.gapps" not in capsys.readouterr().err
 
 
