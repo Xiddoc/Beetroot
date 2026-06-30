@@ -37,6 +37,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -1822,16 +1823,46 @@ def _check_frida_socket(host: str, port: int, *, enabled: bool) -> CheckResult:
     return CheckResult(status="pass")
 
 
-def _magisk_sqlite_value_over_adb(adb_target: str, sql: str) -> tuple[int, str, str]:
+def _magisk_sqlite_value_over_adb(
+    adb_target: str,
+    sql: str,
+    *,
+    use_su: bool = False,
+) -> tuple[int, str, str]:
     """
     Run ``adb -s <target> shell magisk --sqlite "<sql>"`` and return the result.
+
+    ``magisk --sqlite`` reads the root-only DB at ``/data/adb/magisk.db``.
+    On the redroid container the adbd daemon runs as uid 0, so the bare
+    invocation succeeds; on a genuine adopted phone adbd is the
+    unprivileged ``shell`` user (uid 2000) and the read is
+    permission-denied, so the adb backend must hop through ``su -c``
+    (issue #159). ``use_su`` is opt-in precisely so the redroid path
+    keeps emitting the bare argv it has always emitted.
+
+    Args:
+        adb_target: The ``adb -s <target>`` serial/endpoint.
+        sql: The SQL statement to hand to ``magisk --sqlite``.
+        use_su: When ``True``, wrap the on-device command in MagiskSU's
+            ``su -c`` so the root-only DB read works on an unprivileged
+            (uid-2000) adbd. The command is shell-parsed twice on-device
+            (the device shell flattens argv, then MagiskSU re-joins its
+            post-``-c`` args into a second ``sh -c``), so we quote the
+            ``magisk --sqlite <sql>`` payload for the inner parse and then
+            quote the whole thing again for the outer parse — the same
+            dual-parse quoting :meth:`AdbDevice._auto_install_one` uses.
 
     Returns:
         A ``(returncode, stdout, stderr)`` tuple from the subprocess.
         Stub-mockable via ``subprocess.run`` patching in tests.
     """
+    if use_su:
+        on_device = f"magisk --sqlite {shlex.quote(sql)}"
+        shell_argv = ["su", "-c", shlex.quote(on_device)]
+    else:
+        shell_argv = ["magisk", "--sqlite", sql]
     res = subprocess.run(  # noqa: S603  # adb is a host CLI resolved via PATH; sql is composed from constants + validated package names
-        ["adb", "-s", adb_target, "shell", "magisk", "--sqlite", sql],  # noqa: S607
+        ["adb", "-s", adb_target, "shell", *shell_argv],  # noqa: S607
         check=False,
         capture_output=True,
         text=True,
@@ -1840,7 +1871,7 @@ def _magisk_sqlite_value_over_adb(adb_target: str, sql: str) -> tuple[int, str, 
     return res.returncode, res.stdout, res.stderr
 
 
-def _check_magisk_zygisk_over_adb(adb_target: str) -> CheckResult:
+def _check_magisk_zygisk_over_adb(adb_target: str, *, use_su: bool = False) -> CheckResult:
     """
     Confirm Magisk's ``zygisk`` setting is 1 via the adb-mediated SQL channel.
 
@@ -1848,6 +1879,13 @@ def _check_magisk_zygisk_over_adb(adb_target: str) -> CheckResult:
     look for that literal substring rather than parse the full output,
     because the output shape includes a trailing newline + a possible
     empty row when the key is missing entirely.
+
+    Args:
+        adb_target: The ``adb -s <target>`` serial/endpoint.
+        use_su: Forwarded to :func:`_magisk_sqlite_value_over_adb` —
+            ``True`` on the adb backend (unprivileged uid-2000 adbd, so
+            the root-only DB read must hop through ``su -c``), ``False``
+            on the redroid container (uid-0 adbd). See issue #159.
     """
     if shutil.which("adb") is None:
         return CheckResult(status="skip", reason="adb not on PATH")
@@ -1855,6 +1893,7 @@ def _check_magisk_zygisk_over_adb(adb_target: str) -> CheckResult:
         rc, stdout, stderr = _magisk_sqlite_value_over_adb(
             adb_target,
             "SELECT value FROM settings WHERE key='zygisk'",
+            use_su=use_su,
         )
     except (OSError, subprocess.SubprocessError) as e:
         return CheckResult(status="fail", reason=str(e))
@@ -1878,6 +1917,7 @@ def _check_magisk_denylist_over_adb(
     pkg: str,
     *,
     enrolled: bool,
+    use_su: bool = False,
 ) -> CheckResult:
     """
     Confirm ``pkg`` is enrolled in Magisk's denylist via the adb SQL channel.
@@ -1889,6 +1929,10 @@ def _check_magisk_denylist_over_adb(
         enrolled: ``False`` if the package isn't in ``cfg.magisk.denylist``.
             When ``False`` the check returns ``skip`` (the user
             explicitly chose not to hide root from this package).
+        use_su: Forwarded to :func:`_magisk_sqlite_value_over_adb` —
+            ``True`` on the adb backend (unprivileged uid-2000 adbd, so
+            the root-only DB read must hop through ``su -c``), ``False``
+            on the redroid container (uid-0 adbd). See issue #159.
 
     Returns:
         ``pass`` if the package appears in the ``denylist`` table,
@@ -1905,6 +1949,7 @@ def _check_magisk_denylist_over_adb(
             # (only [a-zA-Z0-9._]) so it can't break the SQL quote. The
             # bandit warning is a false positive on that grammar.
             f"SELECT package_name FROM denylist WHERE package_name='{pkg}'",  # noqa: S608
+            use_su=use_su,
         )
     except (OSError, subprocess.SubprocessError) as e:
         return CheckResult(status="fail", reason=str(e))
@@ -2002,12 +2047,16 @@ def adb_device_health(device: DeviceBackend) -> dict[str, CheckResult]:
         frida_port,
         enabled=frida_port > 0,
     )
-    checks["magisk.zygisk"] = _check_magisk_zygisk_over_adb(serial)
+    # The adb backend targets a genuine adopted phone whose adbd is the
+    # unprivileged ``shell`` user (uid 2000), so the root-only
+    # ``magisk --sqlite`` DB read must hop through ``su -c`` (issue #159).
+    checks["magisk.zygisk"] = _check_magisk_zygisk_over_adb(serial, use_su=True)
     gms_pkg = "com.google.android.gms"
     checks[f"magisk.denylist.{gms_pkg}"] = _check_magisk_denylist_over_adb(
         serial,
         gms_pkg,
         enrolled=True,
+        use_su=True,
     )
     return checks
 
