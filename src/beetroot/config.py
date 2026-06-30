@@ -279,11 +279,11 @@ class Resources(BaseModel):
     """
 
     mem: str = "3g"
-    cpus: float = 2.0
+    cpus: float = Field(default=2.0, gt=0)
     shared_mem: str = "256m"
     mem_reservation: str | None = None
     memswap_limit: str | None = None
-    pids_limit: int = 4096
+    pids_limit: int = Field(default=4096, ge=1)
 
     @field_validator("mem", "shared_mem")
     @classmethod

@@ -442,6 +442,33 @@ class TestResources:
         r = Resources(memswap_limit=None)
         assert r.memswap_limit is None
 
+    # cpus / pids_limit bounds — Docker treats 0 as *unlimited* (the opposite
+    # of a cap) and a negative cpus aborts container start with a cgroup error
+    # detached from the offending YAML line, so both must fail at load time
+    # like every sibling numeric knob (Display.width/height/fps, Vm.*).
+    def test_valid_cpus_accepted(self) -> None:
+        assert Resources(cpus=0.5).cpus == 0.5
+        assert Resources(cpus=8).cpus == 8
+
+    def test_zero_cpus_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="greater than 0"):
+            Resources(cpus=0)
+
+    def test_negative_cpus_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="greater than 0"):
+            Resources(cpus=-1)
+
+    def test_valid_pids_limit_accepted(self) -> None:
+        assert Resources(pids_limit=1).pids_limit == 1
+
+    def test_zero_pids_limit_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="greater than or equal to 1"):
+            Resources(pids_limit=0)
+
+    def test_negative_pids_limit_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="greater than or equal to 1"):
+            Resources(pids_limit=-5)
+
 
 class TestDisplayBounds:
     """D4 — Display fields must be > 0."""
