@@ -366,8 +366,12 @@ class Module(BaseModel):
 
     Attributes:
         url: HTTPS URL to download the module zip from.
-        path: Path to a local zip file, resolved relative to the instance
-            directory (the directory containing this beetroot.yaml).
+        path: Path to a local zip file. A **relative** path is resolved
+            relative to the instance directory (the directory containing this
+            beetroot.yaml) and must stay inside it — a relative path that
+            escapes the instance dir is rejected at staging time (the
+            path-traversal analogue of the file:// URL block). An **absolute**
+            path is permitted and read as-is.
         sha256: Expected hex digest for integrity verification.
     """
 

@@ -3,7 +3,12 @@ Stage Magisk module zips into an instance's ``modules/`` directory.
 
 Each module entry in ``beetroot.yaml`` is either a URL (downloaded and
 cached) or a host path. Relative ``path:`` entries are resolved relative
-to the instance directory itself (the one containing ``beetroot.yaml``).
+to the instance directory itself (the one containing ``beetroot.yaml``)
+and are **contained** to it — a relative path that escapes the instance
+dir (e.g. ``../../etc/shadow``) is rejected, mirroring the ``file://``
+URL block. An **absolute** ``path:`` the user types explicitly is
+permitted (it bypasses the instance dir by design) and remains a
+supported feature.
 An optional ``sha256`` field is verified when present to guard against
 corruption or supply-chain substitution.
 """
@@ -33,6 +38,27 @@ class ModuleFetchError(RuntimeError):
     """
     Raised when a module zip cannot be downloaded from its URL.
     """
+
+
+class ModuleResolveError(ValueError):
+    """
+    Raised when a local ``path:`` module entry cannot be resolved safely.
+
+    Currently fires when a RELATIVE ``path:`` escapes the instance
+    directory (the path-traversal analogue of the file:// URL block).
+    """
+
+
+def _is_within(path: Path, base: Path) -> bool:
+    """
+    Return True if ``path`` is ``base`` itself or a descendant of it.
+
+    Both are assumed already ``.resolve()``-d by the caller. Uses
+    ``Path.is_relative_to`` (3.9+) so a sibling like ``/inst_evil`` next to
+    ``/inst`` is correctly rejected (a prefix-string comparison would not).
+    ``is_relative_to`` already returns True when ``path == base``.
+    """
+    return path.is_relative_to(base)
 
 
 def _module_cache_dir() -> Path:
@@ -141,6 +167,19 @@ def _resolve(module: Module, instance_root: Path) -> Path:
         if module.path is None:  # pragma: no cover
             raise ValueError("module entry has neither url nor path set")
         local = (instance_root / module.path).resolve()
+        # Contain RELATIVE path: entries to the instance dir. A relative
+        # entry that resolves outside instance_root (``path: ../../etc/shadow``)
+        # is the path-traversal analogue of the file:// URL exfiltration we
+        # block on the url axis — reject it. An ABSOLUTE path the user typed
+        # explicitly (``path: /tmp/mod.zip``) bypasses instance_root by
+        # pathlib's ``/`` semantics and stays a supported feature.
+        if not Path(module.path).is_absolute() and not _is_within(local, instance_root.resolve()):
+            raise ModuleResolveError(
+                f"module path {module.path!r} escapes the instance directory "
+                f"(resolved to {local}). A relative path: entry must stay inside "
+                f"the instance dir; use an explicit absolute path if you really "
+                f"mean a file outside it."
+            )
         if not local.exists():
             raise FileNotFoundError(f"module path not found: {local}")
     if module.sha256:

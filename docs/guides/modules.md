@@ -22,7 +22,7 @@ modules:
 ```
 
 - Use `url` for modules hosted remotely (GitHub releases, etc.).
-- Use `path` for local zips. Relative paths are resolved against the instance directory itself.
+- Use `path` for local zips. **Relative** paths are resolved against the instance directory itself and must stay inside it — a relative path that escapes the instance dir (e.g. `../../secret.zip`) is rejected. An **absolute** path is read as-is.
 - `sha256` is optional but strongly recommended for URL modules: if the remote file changes (or the URL is hijacked), `beetroot apply` will refuse to stage a mismatched zip.
 
 !!! warning "URL or path, not both"
