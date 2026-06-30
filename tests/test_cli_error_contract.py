@@ -16,6 +16,7 @@ exception, then assert the CLI's user-visible contract:
 from __future__ import annotations
 
 import io
+import shutil
 import sys
 from pathlib import Path
 
@@ -104,6 +105,36 @@ class TestComposeErrorSurfacing:
         code, err = _run_main_with_argv(["beetroot", "apply", "alpha"], monkeypatch)
         assert code == 0
         assert "error:" not in err
+
+    def test_apply_surfaces_frida_fetch_error(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #167: apply routes _stage_network non-softly; a frida resolve /
+        # download failure raises FridaFetchError (a RuntimeError), which
+        # apply's inline ValueError catch misses. cli.main() must map it to
+        # the friendly error: ... + exit 1 contract, never a raw traceback.
+        from beetroot import config, frida_download, registry
+
+        CliRunner().invoke(cli.app, ["create", "alpha"])
+        # A frida block makes apply route through frida_download.stage_for_instance
+        # (the default no-frida config stages an empty placeholder and never
+        # touches the network).
+        yaml_path = registry.instance_path("alpha") / "beetroot.yaml"
+        yaml_path.write_text(
+            f"api_version: {config.SUPPORTED_API_VERSION}\n"
+            "android:\n  version: 14\nfrida:\n  version: 16.4.10\n",
+            encoding="utf-8",
+        )
+
+        def _boom(root: Path, version: str, *, expected_sha256: str | None = None) -> None:
+            raise frida_download.FridaFetchError("simulated frida download failure")
+
+        monkeypatch.setattr(frida_download, "stage_for_instance", _boom)
+        code, err = _run_main_with_argv(["beetroot", "apply", "alpha"], monkeypatch)
+        assert code == 1
+        assert "error:" in err
+        assert "simulated frida download failure" in err
+        assert "Traceback" not in err
 
 
 class TestBootstrapErrorSurfacing:
@@ -199,4 +230,59 @@ class TestRegistryErrorSurfacing:
         assert code == 1
         assert "error:" in err
         assert "simulated registry inconsistency" in err
+        assert "Traceback" not in err
+
+
+class TestFromDataCopyErrorSurfacing:
+    """#180: a non-FileNotFoundError OSError from the --from-data copy.
+
+    rmtree/copytree can raise PermissionError, shutil.Error, or
+    OSError(ENOSPC) — none of which is the FileNotFoundError cli.main()
+    catches. The create verb must wrap the copy and name the failure as a
+    friendly ``error: --from-data copy failed: ...`` line + exit 1.
+    """
+
+    def test_from_data_copytree_oserror_friendly(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        src = cli_root / "donor"
+        src.mkdir()
+        (src / "marker").write_text("x", encoding="utf-8")
+
+        def _boom(*args: object, **kwargs: object) -> None:
+            raise PermissionError("permission denied")
+
+        monkeypatch.setattr(shutil, "copytree", _boom)
+        code, err = _run_main_with_argv(
+            ["beetroot", "create", "alpha", "--from-data", str(src)],
+            monkeypatch,
+        )
+        assert code == 1
+        assert "error:" in err
+        assert "--from-data copy failed" in err
+        assert "Traceback" not in err
+
+    def test_from_data_rmtree_oserror_friendly(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from beetroot import paths
+
+        src = cli_root / "donor"
+        src.mkdir()
+        (src / "marker").write_text("x", encoding="utf-8")
+        # Pre-populate the target's data dir so the rmtree branch runs.
+        target_root = (cli_root / "alpha").resolve()
+        paths.instance_data(target_root).mkdir(parents=True)
+
+        def _boom(*args: object, **kwargs: object) -> None:
+            raise OSError("device busy")
+
+        monkeypatch.setattr(shutil, "rmtree", _boom)
+        code, err = _run_main_with_argv(
+            ["beetroot", "create", "alpha", "--from-data", str(src)],
+            monkeypatch,
+        )
+        assert code == 1
+        assert "error:" in err
+        assert "--from-data copy failed" in err
         assert "Traceback" not in err

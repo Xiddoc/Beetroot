@@ -35,7 +35,7 @@ on:
   schedule:
     - cron: "0 6 * * *"
   pull_request:
-    types: [labeled, synchronize, reopened]
+    types: [opened, labeled, synchronize, reopened]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -60,7 +60,9 @@ jobs:
       - uses: ./.github/actions/provide-binder
 
       - name: Install adb
-        run: sudo apt-get install -y android-tools-adb
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y android-tools-adb
 
       - name: Boot stock redroid (Android 14, headless, software GPU)
         run: |
@@ -135,7 +137,9 @@ jobs:
       - uses: ./.github/actions/provide-binder
 
       - name: Install adb
-        run: sudo apt-get install -y android-tools-adb
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y android-tools-adb
 
       - name: Build the Beetroot Magisk image (no gapps — lightest variant)
         run: uv run beetroot build none
@@ -240,7 +244,9 @@ jobs:
       - uses: ./.github/actions/provide-binder
 
       - name: Install adb
-        run: sudo apt-get install -y android-tools-adb
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y android-tools-adb
 
       - name: Build the Beetroot Magisk image (no gapps — lightest variant)
         run: uv run beetroot build none
@@ -353,6 +359,7 @@ jobs:
 
       - name: Install QEMU, adb, the kernel toolchain, ccache, and rootfs host deps
         run: |
+          sudo apt-get update || true
           sudo apt-get install -y --no-install-recommends \
             qemu-system-x86 android-tools-adb ccache \
             build-essential flex bison libelf-dev libssl-dev bc cpio \

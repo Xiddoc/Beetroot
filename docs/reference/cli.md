@@ -95,7 +95,7 @@ beetroot adopt <serial> [--name NAME] [--verify]
 | `--name` | string | Registry name. Defaults to `adb-<serial>` (lowercased, colons folded to hyphens, truncated to 24 chars). Required for IPv4-shaped serials (the default-name builder leaves dots in place and the registry-name grammar rejects them). |
 | `--verify`, `-V` | flag | Check that the serial is listed in `adb devices` as `device` before writing the registry row. If not found, exits 1 without registering. Default: off (allows registering a device before it connects). |
 
-Verbs that need an on-disk container (`up`, `down`, `restart`, `apply`, `destroy`, `snapshot`) raise `BackendCapabilityError` against an adopted device and exit with code 2 — distinct from the standard "instance not found" exit 1, so wrapping scripts can distinguish. Use `beetroot shell <name>` / `beetroot frida-addr <name>` / `beetroot module <name>` for the universal verbs.
+Verbs that need an on-disk container (`up`, `down`, `restart`, `apply`, `destroy`, `snapshot`) raise `BackendCapabilityError` against an adopted device and exit with code 2 — distinct from the standard "instance not found" exit 1, so wrapping scripts can distinguish. Use `beetroot shell <name>` / `beetroot install-frida <name>` / `beetroot frida-addr <name>` / `beetroot module <name>` for the universal verbs.
 
 Adopted devices show up in `beetroot ls` like any other instance — `KIND` is `adb`, the ADB column shows the serial, and PATH is `-` (no on-disk directory). See [`ls`](#ls).
 
@@ -470,6 +470,30 @@ frida -H "$(beetroot frida-addr alpha)" -ps    # list processes
 ```
 
 The same value is also the `frida_address` field of `beetroot status <name>` (JSON).
+
+---
+
+## `install-frida`
+
+Push and launch `frida-server` on an adb-adopted device. Downloads the requested frida release, `adb push`es the binary, launches it as root, and forwards the host Frida port so `frida -H "$(beetroot frida-addr <name>)"` reaches it. This is the CLI path the `adopt` hint advertises — it wraps the `AdbDevice.install_frida()` API.
+
+```
+beetroot install-frida <name> --version <tag>
+```
+
+| Argument / Flag | Type | Description |
+|----------------|------|-------------|
+| `name` | positional | Instance name |
+| `--version` | string, required | frida release tag to push and launch (e.g. `16.4.10`) |
+
+`--version` is required: an adb-adopted device has no `beetroot.yaml` to fall back to for a default, so omitting it exits with a friendly `error:` line. A missing `adb` on `PATH` likewise surfaces as `error:` + exit 1.
+
+Example:
+
+```bash
+beetroot install-frida phone --version 16.4.10
+frida -H "$(beetroot frida-addr phone)" -n com.target.app
+```
 
 ---
 

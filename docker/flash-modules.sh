@@ -21,18 +21,17 @@ set -eu # fail fast on undefined vars and unhandled errors (T3).
 MODULES_DIR="${BEETROOT_MODULES_DIR:-/data/adb/modules_update}"
 
 # This script is sourced by entrypoint.sh (`. /flash-modules.sh`), so
-# any `exit` here would terminate the parent shell and skip every
-# helper that runs after us (currently `launch-frida.sh`, plus the
-# trailing `wait` that keeps the container alive). Fall through with an
-# `if [ -d ]` guard instead.
+# any `exit` here would terminate the sourcing parent shell and skip
+# every helper that runs after us (currently `launch-frida.sh` and the
+# trailing `wait`). Fall through with an `if [ -d ]` guard instead.
 if [ -d "$MODULES_DIR" ]; then
     for zip in "$MODULES_DIR"/*.zip; do
         if [ -f "$zip" ]; then
             echo "[*] Flashing module: $zip"
             # `|| echo` keeps a bad module from aborting boot: this file
             # is sourced under the entrypoint's `set -e`, so a bare
-            # non-zero exit here would skip launch-frida.sh and the
-            # trailing `wait`, killing the container.
+            # non-zero exit here would terminate the sourcing parent shell
+            # and skip launch-frida.sh and the trailing `wait`.
             magisk --install-module "$zip" ||
                 echo "[!] Module $zip failed to install — continuing."
         fi

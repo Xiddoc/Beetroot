@@ -475,8 +475,24 @@ def _write(path: Path, data: RegistryFile) -> None:
     try:
         # Serialize: opaque rows must be re-emitted with their raw dict.
         payload = _registry_to_json(data)
-        tmp.write_text(payload)
+        # Crash-safe write: fsync the tmp file's data to disk *before* the
+        # rename, then fsync the parent directory *after* it. Without the
+        # pre-rename fsync, os.replace can publish a rename whose data blocks
+        # haven't hit disk, so a power loss racing the write surfaces a
+        # zero-length instances.json — which _read amplifies into a silent
+        # backup-and-return-empty, dropping every instance's port index +
+        # path mapping (#203). Without the parent-dir fsync, the rename's
+        # directory entry itself can be lost on crash.
+        with open(tmp, "w") as f:  # noqa: PTH123  # need the raw fd for os.fsync
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
         tmp.replace(path)
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     finally:
         # If the replace happened, this is a no-op (tmp no longer
         # exists); on a failure path, this cleans up the orphan.
@@ -794,6 +810,12 @@ def all_resolved_host_ports() -> dict[str, set[int]]:
     directory-backed entries (registered names whose ``beetroot.yaml`` is
     gone) are silently skipped.
 
+    This is a read-only scan, so it resolves each instance's ports with
+    ``quiet=True`` — the privileged-port advisory is suppressed here so it
+    isn't re-emitted on every cross-instance scan and misattributed to an
+    unrelated operation (#224); it still fires on the staging-instance
+    resolve in ``create`` / ``apply``.
+
     Returns:
         A mapping ``instance_name → {host_port, ...}`` covering every
         registered instance. Empty dict if the registry is empty or every
@@ -812,14 +834,20 @@ def all_resolved_host_ports() -> dict[str, set[int]]:
             # distinctness among *explicit* host ports — it has no knowledge of
             # the instance index, so an entry pinned to a sibling's stride
             # default self-collides only once resolved. Don't let one poisoned
-            # row crash the whole cross-instance scan: fall back to this
-            # instance's well-known stride defaults (the same fallback used for
-            # adb-kind rows below), so its protected ports still count even
-            # when its arbitrary/override resolution is broken.
+            # row crash the whole cross-instance scan: fall back to a
+            # conservative superset of this instance's protected ports — its
+            # explicitly-pinned host ports (statically knowable from the config,
+            # index-independent) unioned with its well-known stride defaults —
+            # so its real pins still count cross-instance even when resolution
+            # is broken (#216). Substituting only the stride defaults would both
+            # drop the real pins and falsely reserve defaults the instance
+            # doesn't use.
             try:
-                out[name] = {rp.host for rp in ports.resolve_ports(meta.index, cfg.ports)}
+                resolved = ports.resolve_ports(meta.index, cfg.ports, quiet=True)
+                out[name] = {rp.host for rp in resolved}
             except (ports.PortCollisionError, ValueError):
-                out[name] = set(ports.ports_for_index(meta.index).values())
+                explicit = {pm.host for pm in cfg.ports if pm.host is not None}
+                out[name] = explicit | set(ports.ports_for_index(meta.index).values())
         else:
             # adb-kind and other backends: use stride defaults (no yaml).
             out[name] = set(ports.ports_for_index(meta.index).values())

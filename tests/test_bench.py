@@ -72,14 +72,14 @@ def test_compute_ratios_skips_zero_host_baseline() -> None:
 
 
 def test_detect_regressions_flags_only_above_factor() -> None:
+    # Inputs are host-normalized ratio maps ({metric: {backend: ratio}}), #188.
     current = {
-        ("vm-tcg", "boot_seconds"): 250.0,  # 2.5x over baseline -> regression
-        ("host", "boot_seconds"): 11.0,  # 1.1x -> fine
+        "boot_seconds": {
+            "host": 1.0,  # host is 1.0 by construction -> never self-regresses
+            "vm-tcg": 25.0,  # ratio grew 2.5x over baseline -> regression
+        }
     }
-    baseline = {
-        ("vm-tcg", "boot_seconds"): 100.0,
-        ("host", "boot_seconds"): 10.0,
-    }
+    baseline = {"boot_seconds": {"host": 1.0, "vm-tcg": 10.0}}
     regs = bench.detect_regressions(current, baseline, factor=2.0)
     assert len(regs) == 1
     assert regs[0].backend == "vm-tcg"
@@ -87,15 +87,16 @@ def test_detect_regressions_flags_only_above_factor() -> None:
 
 
 def test_detect_regressions_sorted_by_factor_descending() -> None:
-    current = {("a", "m"): 30.0, ("b", "m"): 50.0}
-    baseline = {("a", "m"): 10.0, ("b", "m"): 10.0}
+    current = {"m": {"a": 30.0, "b": 50.0}}
+    baseline = {"m": {"a": 10.0, "b": 10.0}}
     regs = bench.detect_regressions(current, baseline, factor=2.0)
     assert [r.backend for r in regs] == ["b", "a"]
 
 
 def test_detect_regressions_ignores_missing_and_zero_baseline() -> None:
-    current = {("a", "m"): 100.0, ("b", "m"): 100.0}
-    baseline = {("b", "m"): 0.0}  # 'a' missing, 'b' zero -> both skipped
+    current = {"m": {"a": 100.0, "b": 100.0}, "gone": {"c": 100.0}}
+    # 'a' missing from baseline-of-metric, 'b' zero, whole metric 'gone' absent.
+    baseline = {"m": {"b": 0.0}}
     assert bench.detect_regressions(current, baseline) == []
 
 
@@ -110,21 +111,22 @@ def test_render_markdown_has_tables_and_all_clear() -> None:
 
 def test_render_markdown_lists_regressions() -> None:
     agg = {("host", "boot_seconds"): 10.0, ("vm-tcg", "boot_seconds"): 300.0}
+    # current/baseline are now host-normalized ratios (#188), rendered as Nx.
     regs = [
         bench.Regression(
             backend="vm-tcg",
             metric="boot_seconds",
-            current=300.0,
-            baseline=100.0,
+            current=30.0,
+            baseline=10.0,
             factor=3.0,
         )
     ]
     md = bench.render_markdown(agg, bench.compute_ratios(agg), regs)
     assert "1 regression(s)" in md
     assert "3.00x" in md
-    # baseline column precedes current column in the row.
+    # baseline ratio column precedes current ratio column in the row.
     row = next(line for line in md.splitlines() if line.startswith("| vm-tcg |"))
-    assert row.index("100.0s") < row.index("300.0s")
+    assert row.index("10.00x") < row.index("30.00x")
 
 
 def test_render_markdown_missing_backend_renders_dash() -> None:
@@ -264,8 +266,15 @@ def test_report_alerts_on_regression_but_exits_zero(
 ) -> None:
     samples_file = tmp_path / "s.json"
     baseline_file = tmp_path / "baseline.json"
-    bench.save_samples(samples_file, _samples(("vm-tcg", "boot_seconds", 300.0)))
-    bench.save_samples(baseline_file, _samples(("vm-tcg", "boot_seconds", 100.0)))
+    # vm-tcg's host-normalized ratio jumps 10x -> 30x (a real VM-only slowdown).
+    bench.save_samples(
+        samples_file,
+        _samples(("host", "boot_seconds", 10.0), ("vm-tcg", "boot_seconds", 300.0)),
+    )
+    bench.save_samples(
+        baseline_file,
+        _samples(("host", "boot_seconds", 10.0), ("vm-tcg", "boot_seconds", 100.0)),
+    )
     rc = bench.main(
         [
             "report",
@@ -279,6 +288,85 @@ def test_report_alerts_on_regression_but_exits_zero(
     )
     assert rc == 0  # track, don't gate
     assert "::warning title=Benchmark regression::" in capsys.readouterr().out
+
+
+def test_report_uniform_runner_slowdown_raises_no_regression(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Regression (#188): a runner uniformly 2x slower trips NOTHING.
+
+    The alert compares host-normalized ratios, not absolute wall-time, so a
+    runner where *every* backend is 2x the baseline runner's seconds leaves
+    every ratio unchanged — including the host-vs-host 1.0 reference, which an
+    absolute-seconds comparison would false-flag.
+    """
+    samples_file = tmp_path / "s.json"
+    baseline_file = tmp_path / "baseline.json"
+    # Baseline runner: host 10s, vm-tcg 100s (ratio 10x).
+    bench.save_samples(
+        baseline_file,
+        _samples(("host", "boot_seconds", 10.0), ("vm-tcg", "boot_seconds", 100.0)),
+    )
+    # This runner is uniformly 2x slower: host 20s, vm-tcg 200s (ratio still 10x).
+    bench.save_samples(
+        samples_file,
+        _samples(("host", "boot_seconds", 20.0), ("vm-tcg", "boot_seconds", 200.0)),
+    )
+    rc = bench.main(
+        [
+            "report",
+            "--samples-file",
+            str(samples_file),
+            "--baseline",
+            str(baseline_file),
+            "--summary",
+            str(tmp_path / "out.md"),
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "::warning title=Benchmark regression::" not in out
+
+
+def test_report_flags_only_the_vm_backend_not_host(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only the vm backend whose ratio climbs is flagged; host never self-flags.
+
+    Full report()-path composition: the vm-tcg ratio rises from 10x to 30x while
+    host's ratio stays 1.0 by construction. Exactly one warning fires, for
+    vm-tcg, never for host.
+    """
+    samples_file = tmp_path / "s.json"
+    baseline_file = tmp_path / "baseline.json"
+    bench.save_samples(
+        baseline_file,
+        _samples(("host", "boot_seconds", 10.0), ("vm-tcg", "boot_seconds", 100.0)),
+    )
+    bench.save_samples(
+        samples_file,
+        _samples(("host", "boot_seconds", 10.0), ("vm-tcg", "boot_seconds", 300.0)),
+    )
+    rc = bench.main(
+        [
+            "report",
+            "--samples-file",
+            str(samples_file),
+            "--baseline",
+            str(baseline_file),
+            "--summary",
+            str(tmp_path / "out.md"),
+        ]
+    )
+    assert rc == 0
+    warnings = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if "::warning title=Benchmark regression::" in line
+    ]
+    assert len(warnings) == 1
+    assert "vm-tcg/boot_seconds" in warnings[0]
+    assert "host/boot_seconds" not in warnings[0]
 
 
 def test_report_uses_github_step_summary_env(

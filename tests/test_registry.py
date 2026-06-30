@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+from unittest.mock import Mock, call
 
 import pytest
 
 from beetroot import paths, registry
+from beetroot import ports as ports_mod
 from beetroot.config import InstanceConfig, PortMapping, _default_port_mappings, write_yaml
 from beetroot.ports import ResolvedPort
 from beetroot.registry import RedroidBackendConfig
@@ -179,6 +182,28 @@ class TestAllResolvedHostPorts:
         _seed(tmp_path, "alpha", ports)
         result = registry.all_resolved_host_ports()
         assert 9090 in result["alpha"]
+
+    def test_poisoned_row_fallback_keeps_explicit_pins(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # A config that validates but fails port resolution must not have its
+        # real pinned host ports discarded by the fallback. Here ``x`` is
+        # pinned to 5555 — exactly adb's index-0 stride default — so resolution
+        # self-collides and raises; ``y`` is pinned to a distinct 6000.
+        poisoned = [
+            PortMapping(service="adb", guest=5555),
+            PortMapping(service="x", guest=8080, host=5555),
+            PortMapping(service="y", guest=9090, host=6000),
+        ]
+        _seed(tmp_path, "alpha", poisoned)
+
+        # The scan must not crash on the poisoned row (orphan-behavior preserved).
+        result = registry.all_resolved_host_ports()
+
+        # The real explicit pin survives the fallback (#216) ...
+        assert 6000 in result["alpha"]
+        # ... and so do the stride defaults the fallback conservatively unions in.
+        assert set(ports_mod.ports_for_index(0).values()) <= result["alpha"]
 
 
 class TestFindPortCollision:
@@ -479,3 +504,84 @@ class TestVmBackendDirectoryBacked:
         all_ports = registry.all_resolved_host_ports()
         assert "alpha" in all_ports
         assert 5555 in all_ports["alpha"]
+
+
+class TestWriteDurability:
+    """A crash racing a registry write must not reset instances.json (#203).
+
+    ``_write`` published the new payload with no fsync, so a power loss racing
+    the rename could surface a zero-length ``instances.json`` — which ``_read``
+    amplifies into a silent backup-and-return-empty, dropping every instance's
+    port index + path mapping. The fix fsyncs the temp file *before* the rename
+    and the parent directory *after* it.
+    """
+
+    def test_write_fsyncs_tmp_then_replaces_then_fsyncs_parent_dir(
+        self, isolated_registry: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Drive a real registry mutation and record the ordering of os.fsync
+        # and Path.replace. The temp-file fsync must precede the replace, and
+        # the parent-dir fsync must follow it.
+        recorder = Mock()
+
+        real_fsync = os.fsync
+        real_replace = Path.replace
+
+        def traced_fsync(fd: int) -> None:
+            recorder("fsync")
+            real_fsync(fd)
+
+        def traced_replace(self: Path, target: Path) -> Path:
+            recorder("replace")
+            return real_replace(self, target)
+
+        monkeypatch.setattr("beetroot.registry.os.fsync", traced_fsync)
+        monkeypatch.setattr(Path, "replace", traced_replace)
+
+        root = isolated_registry / "alpha"
+        root.mkdir()
+        registry.add_allocating("alpha", root)
+
+        names = [c.args[0] for c in recorder.call_args_list]
+        # Exactly two fsyncs per write: the temp file fd, then the parent dir.
+        assert names.count("fsync") == 2
+        assert names.count("replace") == 1
+        # tmp-file fsync BEFORE replace; parent-dir fsync AFTER replace.
+        assert names == ["fsync", "replace", "fsync"]
+        assert recorder.call_args_list[0] == call("fsync")
+
+    def test_write_round_trips_unchanged_through_durable_path(
+        self, isolated_registry: Path
+    ) -> None:
+        # Behavior is unchanged: what _write persists, _read reads back.
+        root = isolated_registry / "bravo"
+        root.mkdir()
+        registry.add_allocating("bravo", root)
+
+        meta = registry.get("bravo")
+        assert meta is not None
+        assert isinstance(meta.backend, RedroidBackendConfig)
+        assert Path(meta.backend.absolute_path) == root
+
+    def test_orphan_tmp_cleaned_up_when_replace_raises(
+        self, isolated_registry: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # If the atomic replace raises after the tmp file is written (and
+        # fsynced), the finally block must unlink the orphan tmp file so no
+        # debris is left — and the parent-dir fsync (post-replace) is skipped.
+        real_replace = Path.replace
+
+        def exploding_replace(self: Path, target: Path) -> Path:
+            if self.suffix == ".tmp":
+                raise RuntimeError("rename failed")
+            return real_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", exploding_replace)
+
+        root = isolated_registry / "charlie"
+        root.mkdir()
+        with pytest.raises(RuntimeError, match="rename failed"):
+            registry.add_allocating("charlie", root)
+
+        config_dir = paths.user_registry_file().parent
+        assert list(config_dir.glob("*.tmp")) == []

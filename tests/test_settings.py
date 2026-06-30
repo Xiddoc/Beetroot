@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pydantic
 import pytest
 
 from beetroot import settings
@@ -90,3 +91,26 @@ def test_settings_vm_overrides_from_env(monkeypatch: pytest.MonkeyPatch) -> None
     assert s.qemu_bin == "/opt/qemu"
     assert s.vm_kernel == "/img/bzImage"
     assert s.vm_rootfs == "/img/rootdisk.img"
+
+
+def test_timeout_defaults_are_positive() -> None:
+    s = settings.Settings()
+    assert s.http_timeout == 30
+    assert s.vm_adb_connect_timeout == 60
+
+
+@pytest.mark.parametrize("bad", [0, -5])
+def test_non_positive_http_timeout_rejected(bad: int) -> None:
+    # A zero/negative timeout flows into urllib.urlopen(timeout=...) and
+    # turns every download into an instant failure (#196); reject it at
+    # construction instead.
+    with pytest.raises(pydantic.ValidationError):
+        settings.Settings(http_timeout=bad)
+
+
+@pytest.mark.parametrize("bad", [0, -5])
+def test_non_positive_vm_adb_connect_timeout_rejected(bad: int) -> None:
+    # A zero/negative deadline disables every adb-connect retry in
+    # VmDeviceBackend.up() (#196); reject it at construction.
+    with pytest.raises(pydantic.ValidationError):
+        settings.Settings(vm_adb_connect_timeout=bad)

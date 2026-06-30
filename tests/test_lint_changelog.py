@@ -156,6 +156,99 @@ def test_python_import_skip_does_not_swallow_real_invocation_in_same_paragraph()
     assert "unknown beetroot verb 'doctor'" in errors[0]
 
 
+def test_check_invocations_flags_second_verb_after_semicolon() -> None:
+    """Regression (#212): every chained invocation is validated, not just the first.
+
+    ``[^\\n#`]+`` greedily spans the ``;`` to end-of-line, so the pre-fix
+    matcher saw one invocation per line and the bogus second verb sailed
+    through. Splitting on the separator first checks each segment.
+    """
+    sources = [(5, "beetroot create alpha; beetroot bogusverb")]
+    known = {"create", "up", "down"}
+    errors = lint_changelog._check_invocations(
+        sources,
+        known,
+        flag_cache={"create": {"--help"}},
+    )
+    assert len(errors) == 1
+    assert "unknown beetroot verb 'bogusverb'" in errors[0]
+
+
+def test_check_invocations_flags_second_verb_after_and() -> None:
+    sources = [(7, "beetroot down && beetroot upp")]
+    known = {"create", "up", "down"}
+    errors = lint_changelog._check_invocations(
+        sources,
+        known,
+        flag_cache={"down": {"--help"}},
+    )
+    assert len(errors) == 1
+    assert "unknown beetroot verb 'upp'" in errors[0]
+
+
+def test_check_invocations_flags_second_verb_after_pipe() -> None:
+    sources = [(9, "beetroot up alpha | beetroot nonsense")]
+    known = {"create", "up", "down"}
+    errors = lint_changelog._check_invocations(
+        sources,
+        known,
+        flag_cache={"up": {"--help"}},
+    )
+    assert len(errors) == 1
+    assert "unknown beetroot verb 'nonsense'" in errors[0]
+
+
+def test_check_invocations_does_not_leak_flag_across_separator() -> None:
+    """A flag after the separator is attributed to its own (unknown) verb.
+
+    Without the split, ``--bogus`` would be tokenised under ``create`` and
+    flagged as an unknown ``create`` flag; with the split the second segment's
+    unknown verb ``frobnicate`` is what's reported, and ``create`` (whose only
+    token is the valid positional ``alpha``) stays clean.
+    """
+    sources = [(11, "beetroot create alpha && beetroot frobnicate --bogus")]
+    known = {"create", "up", "down"}
+    errors = lint_changelog._check_invocations(
+        sources,
+        known,
+        flag_cache={"create": {"--help", "--path"}},
+    )
+    assert len(errors) == 1
+    assert "unknown beetroot verb 'frobnicate'" in errors[0]
+    # The error is about the second verb, NOT a ``--bogus`` flag mis-attributed
+    # to ``create``.
+    assert "unknown flag" not in errors[0]
+
+
+def test_check_invocations_chained_all_valid_passes() -> None:
+    """Regression guard: a valid chained line raises no errors."""
+    sources = [(13, "beetroot create alpha && beetroot up alpha")]
+    known = {"create", "up", "down"}
+    errors = lint_changelog._check_invocations(
+        sources,
+        known,
+        flag_cache={"create": {"--help"}, "up": {"--help"}},
+    )
+    assert errors == []
+
+
+def test_check_invocations_strips_per_segment_trailing_comment() -> None:
+    """Each segment's trailing ``#`` comment is still stripped after the split.
+
+    Splitting on separators first must not break the per-segment ``#``-comment
+    stripping ``BEETROOT_INVOCATION``'s ``[^\\n#`]+`` class provides: the
+    comment after the second verb is not parsed as flags/args.
+    """
+    sources = [(15, "beetroot create alpha # make it; beetroot up alpha # boot")]
+    known = {"create", "up", "down"}
+    errors = lint_changelog._check_invocations(
+        sources,
+        known,
+        flag_cache={"create": {"--help"}, "up": {"--help"}},
+    )
+    assert errors == []
+
+
 _PLAIN_HELP = """\
  Usage: beetroot [OPTIONS] COMMAND [ARGS]...
 

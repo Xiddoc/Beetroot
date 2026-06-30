@@ -34,6 +34,7 @@ from . import (
     compose,
     config,
     console,
+    frida_download,
     hostcheck,
     modules_download,
     paths,
@@ -253,6 +254,28 @@ def _destroy_prompt(name: str) -> str:
     return f"Destroy {name} and all its data? This cannot be undone."
 
 
+def _confirm_destroy(name: str, *, yes: bool) -> bool:
+    """
+    Return whether the ``destroy`` may proceed, prompting unless ``yes``.
+
+    Prints the ``aborted`` status and returns ``False`` when the user
+    declines, so callers can ``if not _confirm_destroy(...): return``.
+
+    Args:
+        name: The instance being destroyed.
+        yes: Skip the prompt (``-y/--yes``) and proceed unconditionally.
+
+    Returns:
+        ``True`` to proceed with the destructive cleanup, ``False`` to abort.
+    """
+    if yes:
+        return True
+    if typer.confirm(_destroy_prompt(name), default=False):
+        return True
+    console.status("aborted")
+    return False
+
+
 # ---- verbs -----------------------------------------------------------------
 
 
@@ -299,6 +322,14 @@ def create(
     Pass --lifecycle ephemeral|durable to record persistence intent in
     the committed YAML (default durable preserves today's behaviour).
     """
+    # Validate the instance-name grammar up front — before any --from-data
+    # copy — so an invalid name fails with zero I/O instead of orphaning a
+    # (possibly multi-GB) populated data/ tree (#199). Instance.create
+    # re-validates, but only after the copy has already run.
+    try:
+        api._validate_instance_name(name)  # noqa: SLF001  # reuse the api-layer grammar so the two stay in lock-step
+    except ValueError as e:
+        raise _error(str(e)) from e
     # Narrow the typer-supplied str to the Literal both type checkers accept
     # without a cast: mypy doesn't narrow `not in` membership (so a cast was
     # needed), but pyright then flags that cast as redundant. An explicit
@@ -329,10 +360,16 @@ def create(
             raise _error(f"--from-data path {src} is not a directory.")
         target_root.mkdir(parents=True, exist_ok=True)
         dst = paths.instance_data(target_root)
-        if dst.exists():
-            shutil.rmtree(dst)
-        console.step(f"copying {src} → {dst}")
-        shutil.copytree(src, dst)
+        # rmtree/copytree can raise any OSError (PermissionError, shutil.Error,
+        # ENOSPC) — not just FileNotFoundError, the only OSError main() catches.
+        # Map them to the friendly contract so the failing op is named (#180).
+        try:
+            if dst.exists():
+                shutil.rmtree(dst)
+            console.step(f"copying {src} → {dst}")
+            shutil.copytree(src, dst)
+        except OSError as e:
+            raise _error(f"--from-data copy failed: {e}") from e
 
     console.step(f"allocating a port index and staging files for {name}")
     try:
@@ -431,7 +468,7 @@ def adopt(
     Adopt a rooted Android device that's already reachable via adb.
 
     Allocates a Beetroot port index for the device (so a follow-up
-    beetroot install_frida <name> and beetroot frida-addr <name>
+    beetroot install-frida <name> and beetroot frida-addr <name>
     pick the same Frida port a redroid instance with the same index
     would have got), then writes an adb-kind row to the registry.
     Unlike beetroot create, no on-disk instance directory is made;
@@ -464,9 +501,9 @@ def adopt(
     index = registry.add_allocating(resolved_name, backend=backend_config)
     console.status(f"adopted {resolved_name} → adb serial {serial} (index {index})")
     console.hint(
-        f"next: beetroot shell {resolved_name} "
-        f'(attach Frida with `frida -H "$(beetroot frida-addr {resolved_name})"` '
-        "once frida-server is running)"
+        f"next: beetroot install-frida {resolved_name} --version <tag> "
+        f"to push and launch frida-server, then attach with "
+        f'`frida -H "$(beetroot frida-addr {resolved_name})"`'
     )
 
 
@@ -711,23 +748,20 @@ def destroy(
     Stop and permanently delete an instance including its data directory.
     """
     _ensure_exists(name)
-    # Prompt for confirmation here in the CLI, not in the library.
-    # Instance.destroy(yes=True) is always passed once the user has
-    # confirmed here — the library API must not prompt on stdin.
-    if not yes:
-        confirmed = typer.confirm(_destroy_prompt(name), default=False)
-        if not confirmed:
-            console.status("aborted")
-            return
-    # Try resolving the backend first so we can gate on the Lifecycle
-    # sub-protocol. If resolution fails with InstanceNotFoundError AND
-    # the registry row is redroid-kind (orphan: yaml gone), fall through
-    # to the registry-meta-based orphan cleanup. Non-redroid rows that
-    # lack the Lifecycle capability get a BackendCapabilityError (exit 2),
-    # pointing the user at `beetroot forget`.
+    # Resolve + gate on the Lifecycle sub-protocol BEFORE the destructive-wipe
+    # prompt so an adb backend (no Lifecycle) fails fast with exit 2 — never
+    # prompting the user to authorize a wipe it would refuse (#206). If
+    # resolution fails with InstanceNotFoundError AND the registry row is
+    # directory-backed (orphan: yaml gone), fall through to the
+    # registry-meta-based orphan cleanup below.
     try:
         backend = api.Manager.resolve(name)
         lc = cast(api.Lifecycle, _require(backend, api.Lifecycle, "destroy"))
+        # Prompt for confirmation here in the CLI, not in the library.
+        # Instance.destroy(yes=True) is always passed once the user has
+        # confirmed here — the library API must not prompt on stdin.
+        if not _confirm_destroy(name, yes=yes):
+            return
         console.step(f"tearing down {name} (stopping container, deleting data)")
         try:
             lc.destroy(yes=True)
@@ -761,6 +795,11 @@ def destroy(
             f"'destroy' is not supported by the {meta.backend.kind!r} backend "
             f"for instance {name!r}."
         )
+    # The orphan is a directory-backed row the resolver couldn't build — gating
+    # passed, so prompt before the destructive cleanup (mirrors the resolved
+    # path's confirm; #206 hoisted the gate above this prompt).
+    if not _confirm_destroy(name, yes=yes):
+        return
     is_vm_orphan = isinstance(meta.backend, registry.VmBackendConfig)
     root = registry.instance_path(name)
     if root.exists():
@@ -804,6 +843,11 @@ def reset(
     Drop an instance's /data (app state) while keeping the instance and tooling.
     """
     _ensure_exists(name)
+    # Gate on the backend capability BEFORE the destructive-wipe prompt so an
+    # unsupported backend (vm/adb don't implement Resettable) fails fast with
+    # exit 2 — never prompting the user to authorize a wipe it would refuse (#206).
+    backend = api.Manager.resolve(name)
+    resettable = cast(api.Resettable, _require(backend, api.Resettable, "reset"))
     # Prompt in the CLI, not the library — Instance.reset(yes=True) is only
     # called once the user has confirmed (the library never blocks on stdin).
     if not yes:
@@ -816,8 +860,6 @@ def reset(
         if not confirmed:
             console.status("aborted")
             return
-    backend = api.Manager.resolve(name)
-    resettable = cast(api.Resettable, _require(backend, api.Resettable, "reset"))
     console.step(f"resetting {name} (stopping container, wiping /data)")
     try:
         resettable.reset(yes=True)
@@ -1094,8 +1136,12 @@ def shell(
     if rc != 0:
         # Propagate the subprocess exit code so research scripts that
         # check $? after beetroot shell <name> -c '<cmd>' see the
-        # underlying adb shell status.
-        raise typer.Exit(code=rc)
+        # underlying adb shell status. A negative rc means signal death
+        # (subprocess returns -N); normalize to the POSIX 128+N convention
+        # (SIGINT -2 → 130, SIGTERM -15 → 143) so the OS exit-mask doesn't
+        # leak 254/241 (#217).
+        code = 128 - rc if rc < 0 else rc
+        raise typer.Exit(code=min(code, 255))
 
 
 @app.command()
@@ -1231,6 +1277,34 @@ def frida_addr(
             "https://github.com/Xiddoc/Beetroot/issues/44."
         )
     print(address)  # noqa: T201  # plain address on stdout for $(...) capture
+
+
+@app.command(name="install-frida")
+def install_frida(
+    name: Annotated[str, typer.Argument(help="Instance name.")],
+    version: Annotated[
+        str,
+        typer.Option(
+            "--version",
+            help="frida release tag to push and launch (e.g. 16.4.10).",
+        ),
+    ],
+) -> None:
+    """
+    Push and launch frida-server on an adb-adopted device.
+
+    Downloads the requested frida-server release, ``adb push``es it to the
+    device, launches it as root, and forwards the host Frida port so
+    ``frida -H "$(beetroot frida-addr <name>)"`` reaches it. This is the CLI
+    path the ``adopt`` hint advertises for adb-adopted devices (issue #205).
+    """
+    _ensure_exists(name)
+    backend = api.Manager.resolve(name)
+    try:
+        backend.install_frida(version)
+    except (ValueError, api.AdbNotInstalledError) as e:
+        raise _error(str(e)) from e
+    console.status(f"installed frida-server {version} on {name}")
 
 
 def _echo_module_rows(results: list[api.ModuleInstallResult]) -> None:
@@ -1448,6 +1522,13 @@ def build(  # noqa: PLR0913  # Typer verb: each parameter is a distinct user-fac
     """
     if check and not vm_kernel:
         raise _error("--check only applies to --vm-kernel.")
+    # --from-source / --android-version only thread into the --vm-kernel path;
+    # without it they silently no-op. Mirror the --check guard so they error
+    # instead (#198). android_version is compared against the non-sentinel
+    # default, so an explicit `--android-version 14` (== default) is not
+    # rejected — it's a no-op either way.
+    if (from_source or android_version != config.DEFAULT_ANDROID_VERSION) and not vm_kernel:
+        raise _error("--from-source / --android-version only apply to --vm-kernel.")
     if vm_kernel:
         try:
             config.validate_android_version(android_version)
@@ -1653,6 +1734,14 @@ def main() -> None:
         console.error(str(e))
         sys.exit(1)
     except modules_download.ModuleFetchError as e:
+        console.error(str(e))
+        sys.exit(1)
+    except frida_download.FridaFetchError as e:
+        # ``apply`` (and any other verb that reaches _stage_network
+        # non-softly) can fail resolving or downloading frida-server;
+        # FridaFetchError is a RuntimeError, so the apply verb's inline
+        # ValueError catch lets it slip past. Map it here for the same
+        # friendly ``error: ...`` + exit 1 contract (#167).
         console.error(str(e))
         sys.exit(1)
     except registry.RegistryError as e:

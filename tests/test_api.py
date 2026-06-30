@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from beetroot import api, compose, config, paths, ports, registry, snapshot
+from beetroot import api, compose, config, frida_download, paths, ports, registry, snapshot
 
 
 def _ok_proc() -> subprocess.CompletedProcess[str]:
@@ -386,6 +386,70 @@ class TestInstanceLifecycle:
         )
         with pytest.raises(ValueError, match="5555"):
             bravo.apply()
+
+    def test_apply_reconciles_vm_kind_before_network_fetch_failure(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # issue #182: apply() must flip the registry backend kind BEFORE the
+        # network stage. A redroid instance hand-edited to ``binder: vm`` with
+        # a frida block must end up registered as VmBackendConfig even when the
+        # Frida fetch raises — otherwise a transient 404 strands the config
+        # dispatching the stale redroid backend on the next resolve.
+        inst = api.Instance.create("alpha")
+        before = registry.get("alpha")
+        assert before is not None
+        assert isinstance(before.backend, registry.RedroidBackendConfig)
+        paths.instance_yaml(inst.root).write_text(
+            'api_version: 3\nandroid:\n  version: 14\nbinder: vm\nfrida:\n  version: "16.4.10"\n'
+        )
+
+        def _boom(*_a: object, **_k: object) -> None:
+            raise frida_download.FridaFetchError("transient 404")
+
+        monkeypatch.setattr(frida_download, "stage_for_instance", _boom)
+
+        with pytest.raises(frida_download.FridaFetchError, match="transient 404"):
+            api.Instance.load("alpha").apply()
+
+        # The kind flip survived the fetch failure.
+        after = registry.get("alpha")
+        assert after is not None
+        assert isinstance(after.backend, registry.VmBackendConfig)
+
+    def test_apply_network_success_still_reconciles_and_warns(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Companion to the failure path: when the network stage succeeds, the
+        # reconcile still happens and the inert-field advisory still fires —
+        # guarding against regressing the split ordering.
+        inst = api.Instance.create("alpha")
+        paths.instance_yaml(inst.root).write_text(
+            "api_version: 3\nandroid:\n  version: 14\nbinder: vm\n"
+        )
+        warned: list[str] = []
+        monkeypatch.setattr(config, "warn_inert_fields", lambda cfg, name: warned.append(name))
+
+        api.Instance.load("alpha").apply()
+
+        meta = registry.get("alpha")
+        assert meta is not None
+        assert isinstance(meta.backend, registry.VmBackendConfig)
+        assert warned == ["alpha"]
+
+    def test_stage_runs_local_then_network(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``_stage`` is the back-compat convenience wrapper (still the
+        # patch target of the collision-precheck contract test). apply()
+        # now calls the two halves directly so it can reconcile the
+        # registry kind between them (issue #182), but the wrapper must
+        # still run local-before-network for callers that use it.
+        inst = api.Instance.create("alpha")
+        order: list[str] = []
+        monkeypatch.setattr(inst, "_stage_local", lambda: order.append("local"))
+        monkeypatch.setattr(inst, "_stage_network", lambda: order.append("network"))
+        inst._stage()
+        assert order == ["local", "network"]
 
 
 # ---------------------------------------------------------------------------
