@@ -69,3 +69,28 @@ def test_failing_module_is_recorded_on_mid_batch_offline_abort(
     # skipped covers 2 → len(results) + skipped == len(sources).
     skipped = 1
     assert len(results) + skipped == len(sources)
+
+
+def test_offline_abort_detail_without_adb_error_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #223: when the underlying adb error text is empty, the offline-abort
+    # row's detail is the bare stage-neutral message with no "last adb error"
+    # suffix (covers the falsy-``adb_error`` branch).
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(adb_backend.AdbDevice, "_preflight_root_and_magisk", lambda self: None)
+
+    def _raise_empty(self: adb_backend.AdbDevice, source: str, sha256: object, index: int) -> str:
+        del self, source, sha256, index
+        raise RuntimeError("")
+
+    monkeypatch.setattr(adb_backend.AdbDevice, "_auto_install_one", _raise_empty)
+    monkeypatch.setattr(adb_backend, "serial_is_available", lambda serial: False)
+
+    with pytest.raises(api.DevicePreflightError) as exc_info:
+        _make_device().auto_install_modules(["a.zip"])
+
+    row = exc_info.value.results[0]
+    assert row.ok is False
+    assert row.detail == "device went offline during this module"
+    assert "last adb error" not in row.detail
