@@ -348,6 +348,26 @@ def _locked(path: Path, *, exclusive: bool = True) -> Iterator[Path]:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
+def _needs_legacy_migration(path: Path) -> bool:
+    """
+    Report whether ``path`` would trigger ``_read``'s destructive backup-rename.
+
+    Pure inspection — never renames or writes. True iff the file exists
+    and is either unparseable JSON or carries a non-``SCHEMA_VERSION``
+    ``version``. Mirrors the two fall-through predicates in :func:`_read`
+    so the shared-lock reader can detect-then-escalate before letting
+    ``_read`` perform the rename under an exclusive lock.
+    """
+    if not path.exists():
+        return False
+    try:
+        raw = json.loads(path.read_text())
+    except (json.JSONDecodeError, ValueError):
+        return True
+    version = raw.get("version") if isinstance(raw, dict) else None
+    return version != SCHEMA_VERSION
+
+
 def _read(path: Path) -> RegistryFile:
     """
     Read and parse the registry, auto-handling legacy-schema migrations.
@@ -535,6 +555,16 @@ def list_instances() -> dict[str, InstanceMeta]:
         _check_v02_registry_at_cwd(path)
         return {}
     with _locked(path, exclusive=False):
+        if not _needs_legacy_migration(path):
+            # Fast path: a valid v3 registry is read under the shared
+            # lock so parallel readers don't serialise.
+            return _read(path).instances
+    # A legacy/corrupt registry needs the destructive backup-rename.
+    # Drop the shared lock and re-enter exclusively so the migration —
+    # and any concurrent reader's migration — is serialised; re-check
+    # under the exclusive lock because a sibling may have migrated it
+    # in the window between the two locks.
+    with _locked(path):
         return _read(path).instances
 
 
