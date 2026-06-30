@@ -868,12 +868,14 @@ class TestInertVmConfigWarning:
         assert "frida" in err
         assert "magisk.denylist" in err
 
-    def test_up_emits_warning_end_to_end(
+    def test_up_does_not_emit_inert_warning(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
+        # issue #104: the inert-config advisory moved to apply-time, so `up`
+        # must be silent about set-but-inert fields even when gapps: full is set.
         from beetroot import builder
 
         kernel = tmp_path / "bzImage"
@@ -894,9 +896,8 @@ class TestInertVmConfigWarning:
         monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None)
         backend.up()
         err = capsys.readouterr().err
-        assert "android.gapps: full" in err
-        # version matches the marker, so the *only* advisory is the inert-config one.
-        assert "baked for Android" not in err
+        assert "android.gapps: full" not in err
+        assert "no effect under binder: vm" not in err
 
     def test_apply_emits_warning(
         self,
@@ -909,13 +910,88 @@ class TestInertVmConfigWarning:
         cfg = config.InstanceConfig(
             binder="vm",
             android={"version": 14, "gapps": "full"},  # type: ignore[arg-type]
+            frida=config.Frida(version="16.4.10"),
+            magisk=config.Magisk(denylist=["com.example.app"]),
         )
         _write_yaml(root, cfg)
         backend_cfg = registry.VmBackendConfig(absolute_path=str(root))
         registry.add_allocating("vmphone", backend=backend_cfg)
         backend = vm_backend.VmDeviceBackend.from_meta("vmphone", backend_cfg)
         backend.apply()
-        assert "android.gapps: full" in capsys.readouterr().err
+        # The full apply path emits a single note naming exactly the three
+        # set-but-inert fields (input → artifact, per AGENTS behaviour-tests).
+        err = capsys.readouterr().err
+        assert err.count("[beetroot]") == 1
+        assert "android.gapps: full" in err
+        assert "frida" in err
+        assert "magisk.denylist" in err
+
+    def test_apply_on_redroid_config_emits_no_inert_note(
+        self,
+        isolated_registry: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Contrast: a binder: auto (redroid) config honours gapps/frida/denylist,
+        # so apply() emits no inert advisory even with all three customised.
+        root = isolated_registry / "inst"
+        root.mkdir()
+        cfg = config.InstanceConfig(
+            binder="auto",
+            android={"version": 14, "gapps": "full"},  # type: ignore[arg-type]
+            frida=config.Frida(version="16.4.10"),
+            magisk=config.Magisk(denylist=["com.example.app"]),
+        )
+        _write_yaml(root, cfg)
+        backend_cfg = registry.VmBackendConfig(absolute_path=str(root))
+        registry.add_allocating("redroidphone", backend=backend_cfg)
+        backend = vm_backend.VmDeviceBackend.from_meta("redroidphone", backend_cfg)
+        backend._warn_on_inert_vm_config()
+        assert "no effect under binder: vm" not in capsys.readouterr().err
+
+
+class TestInertFields:
+    """issue #104: config.inert_fields expresses the field→backend matrix in code."""
+
+    def test_inert_fields_empty_for_redroid(self) -> None:
+        # Every layered-image knob is honoured on the host backend, so a redroid
+        # config reports nothing inert even with gapps/frida/denylist customised.
+        cfg = config.InstanceConfig(
+            binder="auto",
+            android={"gapps": "full"},  # type: ignore[arg-type]
+            frida=config.Frida(version="16.4.10"),
+            magisk=config.Magisk(denylist=["com.x"]),
+        )
+        assert config.inert_fields(cfg) == []
+
+    def test_inert_fields_names_exactly_set_inert_fields(self) -> None:
+        cfg = config.InstanceConfig(
+            binder="vm",
+            android={"gapps": "full"},  # type: ignore[arg-type]
+            frida=config.Frida(version="16.4.10"),
+            magisk=config.Magisk(denylist=["com.example.app"]),
+        )
+        inert = config.inert_fields(cfg)
+        assert len(inert) == 3
+        joined = " ".join(inert)
+        assert "android.gapps: full" in joined
+        assert "frida" in joined
+        assert "magisk.denylist" in joined
+        assert "arbitrary ports" not in joined
+
+    def test_inert_fields_default_denylist_not_flagged(self) -> None:
+        # gapps none, the inherited GMS denylist, no frida → nothing inert.
+        cfg = config.InstanceConfig(binder="vm", android={"gapps": "none"})  # type: ignore[arg-type]
+        assert cfg.magisk.denylist == config.Magisk().denylist
+        assert config.inert_fields(cfg) == []
+
+    def test_inert_fields_arbitrary_ports(self) -> None:
+        cfg = config.InstanceConfig(
+            binder="vm",
+            android={"gapps": "none"},  # type: ignore[arg-type]
+            ports=[*config._default_port_mappings(), config.PortMapping(guest=8080, host=9090)],
+        )
+        inert = config.inert_fields(cfg)
+        assert any("arbitrary ports" in entry for entry in inert)
 
 
 class TestWaitForAdbConnect:

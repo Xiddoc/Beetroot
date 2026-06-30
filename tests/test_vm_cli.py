@@ -220,6 +220,88 @@ class TestVmDispatch:
         assert meta is not None
         assert meta.backend.kind == "vm"
 
+    def test_apply_flip_to_vm_emits_inert_advisory_once(self, cli_root: Path) -> None:
+        # issue #104 regression: in the canonical create-redroid → edit-to-vm →
+        # apply flow the CLI apply verb dispatches on the *registry* kind, which
+        # is still "redroid" at apply time, so the VM backend's own advisory
+        # never runs. The redroid Instance.apply must surface the set-but-inert
+        # binder: vm fields ONCE, naming them, as it flips the kind to vm.
+        runner.invoke(cli.app, ["create", "alpha"])
+        config.write_yaml(
+            cli_root / "alpha" / "beetroot.yaml",
+            config.InstanceConfig(
+                binder="vm",
+                android={"gapps": "full"},  # type: ignore[arg-type]
+                frida=config.Frida(version="16.4.10"),
+                magisk=config.Magisk(denylist=["com.example.app"]),
+            ),
+        )
+        result = runner.invoke(cli.app, ["apply", "alpha"])
+        assert result.exit_code == 0, result.stderr
+        # The registry kind is still redroid at apply time, so this exercises the
+        # redroid Instance.apply path (not VmDeviceBackend.apply).
+        meta = registry.get("alpha")
+        assert meta is not None
+        assert meta.backend.kind == "vm"
+        # Exactly one advisory naming every set-but-inert field.
+        err = result.stderr
+        assert err.count("no effect under binder: vm") == 1
+        assert "android.gapps: full" in err
+        assert "frida" in err
+        assert "magisk.denylist" in err
+
+    def test_apply_flip_to_vm_with_no_inert_fields_is_silent(self, cli_root: Path) -> None:
+        # Contrast: flipping to binder: vm with nothing set-but-inert (gapps none,
+        # default denylist, no frida) emits no advisory — the early-return path.
+        runner.invoke(cli.app, ["create", "alpha"])
+        config.write_yaml(
+            cli_root / "alpha" / "beetroot.yaml",
+            config.InstanceConfig(binder="vm", android={"gapps": "none"}),  # type: ignore[arg-type]
+        )
+        result = runner.invoke(cli.app, ["apply", "alpha"])
+        assert result.exit_code == 0, result.stderr
+        assert "no effect under binder: vm" not in result.stderr
+
+    def test_register_vm_with_inert_fields_emits_advisory_once(self, cli_root: Path) -> None:
+        # issue #104 regression: a `register`-ed binder: vm dir is recorded as
+        # kind=vm directly and its success hint is `next: beetroot up` (no
+        # `apply` in between). Since `up` no longer warns per-boot, `register`
+        # itself must surface the set-but-inert fields ONCE, naming them —
+        # otherwise the register→up flow names them nowhere.
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(
+            root / "beetroot.yaml",
+            config.InstanceConfig(
+                binder="vm",
+                android={"gapps": "full"},  # type: ignore[arg-type]
+                frida=config.Frida(version="16.4.10"),
+                magisk=config.Magisk(denylist=["com.example.app"]),
+            ),
+        )
+        result = runner.invoke(cli.app, ["register", str(root)])
+        assert result.exit_code == 0, result.stderr
+        err = result.stderr
+        assert err.count("no effect under binder: vm") == 1
+        assert "android.gapps: full" in err
+        assert "frida" in err
+        assert "magisk.denylist" in err
+
+    def test_register_vm_with_no_inert_fields_is_silent(self, cli_root: Path) -> None:
+        # Contrast: registering a binder: vm dir with nothing set-but-inert
+        # (gapps none, default denylist, no frida) emits no advisory — the
+        # early-return path. Note a *default* vm config has gapps "minimal",
+        # which IS inert, so this must pin gapps none explicitly.
+        root = cli_root / "vm2"
+        root.mkdir()
+        config.write_yaml(
+            root / "beetroot.yaml",
+            config.InstanceConfig(binder="vm", android={"gapps": "none"}),  # type: ignore[arg-type]
+        )
+        result = runner.invoke(cli.app, ["register", str(root)])
+        assert result.exit_code == 0, result.stderr
+        assert "no effect under binder: vm" not in result.stderr
+
 
 @pytest.fixture
 def _stub_adb_connect_wait(monkeypatch: pytest.MonkeyPatch) -> None:
