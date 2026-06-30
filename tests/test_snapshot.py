@@ -256,6 +256,64 @@ class TestRestoreForce:
         # Beta did not get registered.
         assert registry.get("beta") is None
 
+    def test_force_refuses_ancestor_of_registered_redroid_instance_dir(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # #154: --force aimed at a PARENT of a registered instance dir
+        # would rmtree the parent and take the nested instance with it.
+        # The overlap guard refuses even though target != reg_dir.
+        src = _make_instance(tmp_path / "alpha")
+        registry.add_allocating("alpha", src)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+
+        parent = tmp_path / "parent"
+        _make_instance(parent / "phone", data_bytes=b"redroid precious data")
+        registry.add_allocating("phone", parent / "phone")
+
+        with pytest.raises(snapshot.SnapshotError, match="phone"):
+            snapshot.restore(archive, dest_name="beta", dest_path=parent, force=True)
+        assert (parent / "phone" / "data" / "marker.txt").read_bytes() == (b"redroid precious data")
+        assert registry.get("beta") is None
+
+    def test_force_refuses_descendant_of_registered_redroid_instance_dir(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # #154: --force aimed at a SUBDIR of a registered instance dir
+        # would rmtree that subtree, damaging the live instance. The
+        # overlap guard refuses (reg_dir is an ANCESTOR of target).
+        src = _make_instance(tmp_path / "alpha")
+        registry.add_allocating("alpha", src)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+
+        reg = _make_instance(tmp_path / "phone", data_bytes=b"redroid precious data")
+        registry.add_allocating("phone", reg)
+
+        with pytest.raises(snapshot.SnapshotError, match="phone"):
+            snapshot.restore(archive, dest_name="beta", dest_path=reg / "data", force=True)
+        assert (reg / "data" / "marker.txt").read_bytes() == (b"redroid precious data")
+        assert registry.get("beta") is None
+
+    def test_force_refuses_descendant_of_registered_vm_instance_dir(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # #154 for the vm backend: a VmBackendConfig instance is just as
+        # directory-backed as a redroid one, so the descendant-overlap
+        # guard must fire on the VmBackendConfig isinstance arm too.
+        src = _make_instance(tmp_path / "alpha")
+        registry.add_allocating("alpha", src)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+
+        vm_dir = _make_instance(tmp_path / "vmphone", data_bytes=b"vm nested data")
+        registry.add_allocating(
+            "vmphone",
+            backend=registry.VmBackendConfig(absolute_path=str(vm_dir)),
+        )
+
+        with pytest.raises(snapshot.SnapshotError, match="vmphone"):
+            snapshot.restore(archive, dest_name="beta", dest_path=vm_dir / "data", force=True)
+        assert (vm_dir / "data" / "marker.txt").read_bytes() == (b"vm nested data")
+        assert registry.get("beta") is None
+
     def test_empty_existing_dir_is_allowed_without_force(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
