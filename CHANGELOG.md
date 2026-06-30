@@ -581,6 +581,31 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **`beetroot restore --force` now refuses a destination *inside* a registered
+  instance, not just one that equals or contains it (#154).**
+  `snapshot._prepare_destination` guarded the equal and *ancestor* cases (the
+  destination being a registered instance dir or a parent of one — #150) but not
+  the *descendant* case: `beetroot restore --path <instance>/data --force` would
+  `shutil.rmtree` that subtree, damaging the live instance. The guard now refuses
+  on any path-prefix overlap in either direction (`reg_dir == target or target in
+  reg_dir.parents or reg_dir in target.parents`) and the message reads "overlaps
+  the registered directory". Both paths are `.resolve()`d and the comparison is
+  component-wise via `Path.parents`, so a string-prefix sibling (`/a/b` vs
+  `/a/bcd`) is correctly *not* flagged. Covers the redroid and `binder: vm`
+  backends.
+- **A legacy/corrupt registry is now migrated under an *exclusive* lock, removing
+  the destructive-write-under-a-shared-lock race itself (#153).** #151 made the
+  concurrent-reader rename race crash-*safe* (tolerating `FileNotFoundError`);
+  this removes the race. `list_instances` — the sole shared-lock reader, and the
+  path `get` / `used_indices` take — now detects a legacy/corrupt registry under
+  the shared flock via a new pure `_needs_legacy_migration` predicate (mirroring
+  `_read`'s two fall-through branches), then drops the shared lock and re-enters
+  under `LOCK_EX` before `_read` performs the backup-rename. A valid v3 registry
+  still reads under the shared lock (fast path preserved); the window between the
+  two locks is safe because `_locked(exclusive=True)` re-creates an empty v3 file
+  when a sibling already migrated it, so the loser re-reads a valid envelope and
+  never hits a bare rename. N parallel readers on a legacy registry now produce
+  exactly one `.bak`.
 - **`beetroot module` now reports a sha256 mismatch as a friendly `error: ...`
   line instead of a raw traceback.** The `module` verb staged the zip
   (redroid backend: append to `beetroot.yaml` + re-stage) without a verb-scoped
