@@ -169,7 +169,7 @@ Docker resource limits for the container.
 | `cpus` | float | `2.0` | CPU limit in fractional cores. |
 | `shared_mem` | string | `256m` | Shared memory size (`/dev/shm`, Docker `shm_size`). Docker size format. |
 | `mem_reservation` | string | none | Soft memory floor. Docker size format. Docker scheduler reserves this for the container but allows it to use more up to `mem`. |
-| `memswap_limit` | string | none | Combined memory + swap cap. Docker size format. Prevents swap storms if set equal to `mem`. |
+| `memswap_limit` | string | none | Combined memory + swap cap. Docker size format. Unset → Docker's normal swap allowance applies; set it equal to `mem` to disable swap entirely and prevent swap storms. |
 | `pids_limit` | int | `4096` | Maximum number of PIDs the container can spawn. |
 
 ```yaml

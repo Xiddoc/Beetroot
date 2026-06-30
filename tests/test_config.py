@@ -1151,6 +1151,30 @@ class TestDockerComposeConfig:
         assert result.returncode == 0
         assert "mem_reservation" in result.stdout
 
+    def test_default_config_does_not_disable_swap(self, tmp_path: Path) -> None:
+        # An all-defaults instance must NOT resolve memswap_limit == mem_limit
+        # (Docker reads that as "zero swap" — #169). The template defaults
+        # MEMSWAP_LIMIT to 0, which compose treats as unset and drops from the
+        # resolved config, so Docker applies its normal swap allowance.
+        instance = tmp_path / "alpha"
+        instance.mkdir()
+        self._populate(instance)
+        result = self._run_compose_config(instance)
+        assert result.returncode == 0
+        assert "memswap_limit" not in result.stdout
+
+    def test_explicit_memswap_limit_is_respected(self, tmp_path: Path) -> None:
+        instance = tmp_path / "alpha"
+        instance.mkdir()
+        self._populate(instance, {"MEMSWAP_LIMIT": "4g"})
+        result = self._run_compose_config(instance)
+        assert result.returncode == 0, (
+            f"docker compose config failed with explicit memswap_limit.\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        # 4g == 4294967296 bytes — compose normalises the size to bytes.
+        assert "4294967296" in result.stdout
+
     def test_explicit_mem_reservation_is_respected(self, tmp_path: Path) -> None:
         instance = tmp_path / "alpha"
         instance.mkdir()
