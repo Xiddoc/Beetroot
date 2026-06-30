@@ -65,8 +65,9 @@ def compute_cache_key(paths: list[Path], *, prefix: str = DEFAULT_PREFIX) -> str
     Compute a stable cache key over a set of input files.
 
     The key folds each file's *basename* and content hash into one digest,
-    sorted by basename so the result is independent of the order the paths are
-    passed. Including the basename means renaming an input (e.g. swapping which
+    sorted by ``(basename, content-hash)`` so the result is independent of the
+    order the paths are passed — even when two inputs share a basename (issue
+    #235). Including the basename means renaming an input (e.g. swapping which
     rootfs is staged) changes the key even if two files share content.
 
     Args:
@@ -83,11 +84,15 @@ def compute_cache_key(paths: list[Path], *, prefix: str = DEFAULT_PREFIX) -> str
     """
     if not paths:
         raise ValueError("compute_cache_key needs at least one input path")
+    # Hash each input exactly once (a rootfs is multi-GB; hashing it inside the
+    # sort key AND again in the fold would double its cost). Precompute the
+    # {path: digest} map, then sort + fold off it.
+    digests = {path: hash_file(path) for path in paths}
     combined = hashlib.sha256()
-    for path in sorted(paths, key=lambda p: p.name):
+    for path in sorted(digests, key=lambda p: (p.name, digests[p])):
         combined.update(path.name.encode())
         combined.update(b"\0")
-        combined.update(hash_file(path).encode())
+        combined.update(digests[path].encode())
         combined.update(b"\0")
     return f"{prefix}-{combined.hexdigest()[:_KEY_HEX_LEN]}"
 

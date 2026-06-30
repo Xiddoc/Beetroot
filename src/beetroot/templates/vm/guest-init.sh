@@ -24,7 +24,9 @@
 #     kernel lacks). See vm-rnd-log.md §B for the per-hop isolation evidence.
 #   * So ADB is bridged with socat OUTSIDE docker's port machinery: an outer
 #     socat in the guest MAIN netns listens on the QEMU user-net hostfwd target
-#     (guest :5555); each connection spawns an inner socat that nsenter's into
+#     (guest :5555 — a FIXED contract matching _GUEST_ADB_PORT in qemu.py, NOT
+#     overridable, see ADB_TCP_PORT below, issue #237); each connection spawns
+#     an inner socat that nsenter's into
 #     redroid's netns and connects to adbd. TWO things made this carry bytes:
 #     (a) the EXEC wrapper-script fix below (socat's EXEC: chokes on commas in
 #     an inline command), and (b) bringing up eth0 with the user-net address
@@ -51,7 +53,11 @@ _BAKED_IMAGE_FILE="/etc/beetroot/redroid-image"
 # is a build bug. resolve_redroid_image() logs a loud WARN naming it rather than
 # silently resurrecting the "boots Android 11" bug (#82/#97).
 _LEGACY_FALLBACK_IMAGE="redroid/redroid:11.0.0-latest"
-ADB_TCP_PORT="${ADB_TCP_PORT:-5555}"
+# Fixed, non-overridable: must equal _GUEST_ADB_PORT in qemu.py (5555). The
+# host-side QEMU hostfwd target is hardcoded to 5555, so an overridable port
+# here would silently break the relay (issue #237). The var is kept for
+# readability at the adbd-config and relay call sites below.
+ADB_TCP_PORT=5555
 CONTAINERD_SOCK="/run/containerd/containerd.sock"
 # TCG is slow: generous timeouts so a slow-but-progressing boot is not mistaken
 # for a hang. Override via env if needed.
@@ -137,6 +143,16 @@ bring_up_eth0() {
     ip link set "$_eth" up 2>/dev/null || true
     ip addr add 10.0.2.15/24 dev "$_eth" 2>/dev/null || true
     ip route add default via 10.0.2.2 dev "$_eth" 2>/dev/null || true
+    # Read the address back: the three commands above swallow errors (the addr
+    # may already be assigned from a prior boot, which is fine), but if NONE of
+    # them landed 10.0.2.15 the hostfwd target is unreachable and every host
+    # `adb connect` silently times out. Surface that as a WARN rather than a
+    # mute dead relay (issue #238).
+    if ! ip -o addr show dev "$_eth" 2>/dev/null | grep -q 10.0.2.15; then
+        log "WARN: $_eth has no 10.0.2.15 address after bring-up; the QEMU" \
+            "user-net hostfwd target is unreachable and host adb will time out" \
+            "(issue #238)"
+    fi
 }
 
 wait_for_socket() {
@@ -230,7 +246,15 @@ enable_adb_tcp() {
     # then restarting adbd makes it bind :::${ADB_TCP_PORT} (IPv6 wildcard, which
     # accepts IPv4 too once bindv6only=0).
     log "enabling adbd TCP on :${ADB_TCP_PORT} inside redroid"
-    docker exec redroid sysctl -w net.ipv6.bindv6only=0 >/dev/null 2>&1 || true
+    # The relay now targets the IPv6 loopback (TCP6:[::1]) so it no longer
+    # depends on bindv6only=0 to reach the v6-wildcard-bound adbd. We still flip
+    # the sysctl (cheap; lets a v4-only client work too) but log a distinguishable
+    # WARN instead of swallowing the result, so a kernel without the knob is
+    # visible in the boot log rather than silent (issue #238).
+    if ! docker exec redroid sysctl -w net.ipv6.bindv6only=0 >/dev/null 2>&1; then
+        log "WARN: could not set net.ipv6.bindv6only=0 in redroid; relay targets" \
+            "TCP6:[::1] so this is non-fatal (issue #238)"
+    fi
     docker exec redroid setprop service.adb.tcp.port "$ADB_TCP_PORT" 2>/dev/null || true
     docker exec redroid stop adbd 2>/dev/null || true
     sleep 1
@@ -268,14 +292,16 @@ start_adb_relay() {
     # Parameterless wrapper: one inner socat per connection, entering the
     # container netns and bridging stdio<->adbd. socat EXEC hands the accepted
     # socket to the child on fd 0/1, so STDIO there IS the host-side connection.
-    # Target IPv4 loopback (dual-stack adbd accepts it) to avoid v6-scope quirks.
+    # Target the IPv6 loopback ([::1]): adbd binds the v6 wildcard (:::5555) and
+    # answers there directly, so we drop the bindv6only=0 dependency the IPv4
+    # target needed (vm-rnd-log §C confirms TCP6:[::1] returns CNXN, issue #238).
     # Write to /run (a tmpfs we mount unconditionally) rather than assuming a
     # /usr/local/bin exists in the rootfs — and mkdir BEFORE the heredoc.
     _inner=/run/adb-relay-inner.sh
     mkdir -p /run
     cat >"$_inner" <<EOF
 #!/bin/sh
-exec nsenter -t ${_rpid} -n socat STDIO "TCP4:127.0.0.1:${ADB_TCP_PORT}"
+exec nsenter -t ${_rpid} -n socat STDIO "TCP6:[::1]:${ADB_TCP_PORT}"
 EOF
     chmod 0755 "$_inner"
 

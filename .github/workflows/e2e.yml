@@ -327,7 +327,9 @@ jobs:
     # (~5-20x slower; a ~100s+ boot is expected, not a hang — see
     # docs/design/vm-rnd-log.md). On a KVM-capable runner class accel: auto
     # would pick KVM for free. The kernel+rootfs build is the long pole; the
-    # savevm boot-cache (#49) is the planned lever to skip it on repeat runs.
+    # savevm boot-cache (#49, keyed by scripts/vm_cache_key.py) restores the
+    # booted overlay and resumes (-loadvm) to skip the cold TCG boot on repeat
+    # runs.
     if: >-
       github.event_name != 'pull_request' ||
       contains(github.event.pull_request.labels.*.name, 'e2e')
@@ -399,14 +401,43 @@ jobs:
           )
           PY
 
-      - name: "Create + boot a binder:vm instance under QEMU/TCG"
+      - name: "Create a binder:vm instance (boot_cache on)"
         run: |
           set -euxo pipefail
           uv run beetroot create vmphone
-          printf 'binder: vm\n' >> vmphone/beetroot.yaml
+          # boot_cache: true checkpoints the booted guest (savevm) into
+          # vm-overlay.qcow2 so a downstream job can restore it and resume
+          # (-loadvm, ~10s) instead of cold-booting under TCG (issue #49).
+          printf 'binder: vm\nvm:\n  boot_cache: true\n' >> vmphone/beetroot.yaml
           # `apply` switches the registered backend to the micro-VM engine;
           # `up` refuses a binder:vm instance still registered as redroid.
           uv run beetroot apply vmphone
+
+      # The cache key is the kernel+rootfs hash (scripts/vm_cache_key.py): a
+      # checkpoint booted against different artifacts must not be restored, so
+      # the key changes the instant either input changes (issue #49).
+      - name: Derive the savevm boot-cache key
+        id: vmkey
+        run: |
+          set -euo pipefail
+          key="$(uv run python scripts/vm_cache_key.py "$BEETROOT_VM_KERNEL" "$BEETROOT_VM_ROOTFS")"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      # Restore a previously checkpointed overlay (resume in seconds) or, on a
+      # miss, let the cold boot below checkpoint it for next time. The overlay
+      # carries the booted machine state (a few GiB) — actions/cache compresses
+      # it and evicts under the ~10GB budget per the issue caveat.
+      - name: Restore/persist the booted savevm overlay
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
+        with:
+          path: vmphone/vm-overlay.qcow2
+          key: ${{ runner.os }}-vm-savevm-${{ steps.vmkey.outputs.key }}
+
+      - name: "Boot the binder:vm instance under QEMU/TCG"
+        run: |
+          set -euxo pipefail
+          # Resumes from the restored overlay on a cache hit (~10s), else
+          # cold-boots and checkpoints for the next run.
           uv run beetroot up vmphone
 
       - name: "Wait for Android boot (TCG: slow, not hung)"

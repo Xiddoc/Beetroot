@@ -317,7 +317,9 @@ def _stub_adb_connect_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     success so these tests are deterministic and fast regardless of adb
     presence.
     """
-    monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self: None)
+    monkeypatch.setattr(
+        vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self, *_a: None
+    )
 
 
 @pytest.mark.usefixtures("_stub_adb_connect_wait")

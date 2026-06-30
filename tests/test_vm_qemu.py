@@ -250,6 +250,8 @@ class TestQemuProcessIsRunning:
     def test_live_pid_running(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         (tmp_path / "qemu.pid").write_text("99")
         monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda *_a: None)
+        # Live AND the /proc cmdline names this instance's QEMU.
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_is_qemu", lambda _self, _pid: True)
         assert qemu.QemuProcess(tmp_path).is_running() is True
 
     def test_stale_pid_esrch_not_running(
@@ -263,17 +265,115 @@ class TestQemuProcessIsRunning:
         monkeypatch.setattr("beetroot.vm.qemu.os.kill", _kill)
         assert qemu.QemuProcess(tmp_path).is_running() is False
 
-    def test_eperm_counts_as_running(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_eperm_alive_but_identity_confirmed_is_running(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         (tmp_path / "qemu.pid").write_text("99")
 
         def _kill(_pid: int, _sig: int) -> None:
             raise OSError(errno.EPERM, "operation not permitted")
 
         monkeypatch.setattr("beetroot.vm.qemu.os.kill", _kill)
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_is_qemu", lambda _self, _pid: True)
         assert qemu.QemuProcess(tmp_path).is_running() is True
+
+    def test_live_but_not_qemu_pid_not_running(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # PID reuse: the recorded PID is live (signal-0 succeeds) but /proc says
+        # it is NOT this instance's QEMU — is_running must report False so the
+        # already-running guard and the vm.process doctor row don't false-green
+        # (issue #162).
+        (tmp_path / "qemu.pid").write_text("99")
+        monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda *_a: None)
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_is_qemu", lambda _self, _pid: False)
+        assert qemu.QemuProcess(tmp_path).is_running() is False
+
+
+class TestQemuProcessPidIdentity:
+    """The PID-identity guard that stops a reused PID being signalled (#162)."""
+
+    def test_pid_is_qemu_matches_our_instance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc = qemu.QemuProcess(tmp_path)
+        # A real QEMU argv carries the instance dir (kernel/rootfs live under it)
+        # and the qemu-system binary — both must be present to match.
+        cmdline = f"qemu-system-x86_64\x00-kernel\x00{tmp_path}/bzImage\x00"
+        monkeypatch.setattr(qemu.QemuProcess, "_read_proc_cmdline", lambda _self, _pid: cmdline)
+        assert proc._pid_is_qemu(123) is True
+
+    def test_pid_is_qemu_rejects_non_qemu_process(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc = qemu.QemuProcess(tmp_path)
+        # A reused PID running something else, even if it somehow references the
+        # instance path, is not QEMU.
+        cmdline = f"/bin/sh\x00-c\x00ls {tmp_path}\x00"
+        monkeypatch.setattr(qemu.QemuProcess, "_read_proc_cmdline", lambda _self, _pid: cmdline)
+        assert proc._pid_is_qemu(123) is False
+
+    def test_pid_is_qemu_rejects_qemu_for_other_instance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc = qemu.QemuProcess(tmp_path / "alpha")
+        # A QEMU process, but for a DIFFERENT instance directory.
+        cmdline = f"qemu-system-x86_64\x00-kernel\x00{tmp_path}/bravo/bzImage\x00"
+        monkeypatch.setattr(qemu.QemuProcess, "_read_proc_cmdline", lambda _self, _pid: cmdline)
+        assert proc._pid_is_qemu(123) is False
+
+    def test_pid_is_qemu_false_when_proc_gone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc = qemu.QemuProcess(tmp_path)
+        monkeypatch.setattr(qemu.QemuProcess, "_read_proc_cmdline", lambda _self, _pid: None)
+        assert proc._pid_is_qemu(123) is False
+
+    def test_read_proc_cmdline_reads_proc(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc = qemu.QemuProcess(tmp_path)
+        monkeypatch.setattr(Path, "read_text", lambda _self: "qemu-system-x86_64\x00")
+        assert proc._read_proc_cmdline(123) == "qemu-system-x86_64\x00"
+
+    def test_read_proc_cmdline_none_on_oserror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        proc = qemu.QemuProcess(tmp_path)
+
+        def _boom(_self: Path) -> str:
+            raise OSError("no /proc")
+
+        monkeypatch.setattr(Path, "read_text", _boom)
+        assert proc._read_proc_cmdline(123) is None
 
 
 class TestQemuProcessStart:
+    def test_start_proceeds_when_pid_is_live_but_not_qemu(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # PID reuse: a stale pidfile names a live-but-unrelated PID. start() must
+        # NOT falsely abort with "already running" — is_running routes through
+        # the identity guard, sees the PID is not our QEMU, and the launch
+        # proceeds (issue #162).
+        inst = tmp_path / "inst"
+        inst.mkdir()
+        (inst / "qemu.pid").write_text("4242")
+        # Live signal-0 probe, but /proc says the PID is NOT our QEMU.
+        monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda *_a: None)
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_is_qemu", lambda _self, _pid: False)
+
+        class _FakePopen:
+            pid = 5151
+
+            def __init__(self, argv: list[str], **kwargs: object) -> None: ...
+
+        monkeypatch.setattr("beetroot.vm.qemu.subprocess.Popen", _FakePopen)
+        proc = qemu.QemuProcess(inst)
+        # No QemuLaunchError raised — the reused PID did not block the start.
+        assert proc.start(["qemu-system-x86_64"]) == 5151
+        assert proc.read_pid() == 5151
+
     def test_start_writes_pidfile_and_returns_pid(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -371,8 +471,10 @@ class TestQemuProcessTerminate:
         (tmp_path / "qemu.pid").write_text("321")
         sent: list[tuple[int, int]] = []
         monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda pid, sig: sent.append((pid, sig)))
-        # Process exits promptly after SIGTERM → no SIGKILL escalation.
-        monkeypatch.setattr(qemu.QemuProcess, "_pid_alive", lambda _self, _pid: False)
+        # PID still names this instance's QEMU on the pre-signal check, then the
+        # process exits promptly → no SIGKILL escalation.
+        identity = iter([True, False])
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_is_qemu", lambda _self, _pid: next(identity))
         assert qemu.QemuProcess(tmp_path).terminate() is True
         assert sent == [(321, signal.SIGTERM)]
         assert not (tmp_path / "qemu.pid").exists()
@@ -385,7 +487,7 @@ class TestQemuProcessTerminate:
         (tmp_path / "qemu.pid").write_text("321")
         sent: list[tuple[int, int]] = []
         monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda pid, sig: sent.append((pid, sig)))
-        monkeypatch.setattr(qemu.QemuProcess, "_pid_alive", lambda _self, _pid: True)
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_is_qemu", lambda _self, _pid: True)
         # Collapse the grace window so the test doesn't burn real seconds.
         monkeypatch.setattr("beetroot.vm.qemu._TERM_GRACE_SECONDS", 0.0)
         monkeypatch.setattr("beetroot.vm.qemu.time.sleep", lambda _s: None)
@@ -397,14 +499,14 @@ class TestQemuProcessTerminate:
     def test_terminate_polls_then_exits_before_sigkill(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Process is alive on the first poll but exits before the deadline:
-        # SIGTERM is sent, the poll loop sleeps once, then the process is
-        # gone → no SIGKILL.
+        # Identity holds on the pre-signal check and the first poll, then the
+        # process is gone: SIGTERM is sent, the poll loop sleeps once, then the
+        # PID no longer names our QEMU → no SIGKILL.
         (tmp_path / "qemu.pid").write_text("321")
         sent: list[tuple[int, int]] = []
         monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda pid, sig: sent.append((pid, sig)))
-        alive = iter([True, False])
-        monkeypatch.setattr(qemu.QemuProcess, "_pid_alive", lambda _self, _pid: next(alive))
+        identity = iter([True, True, False])
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_is_qemu", lambda _self, _pid: next(identity))
         slept: list[float] = []
 
         def _sleep(s: float) -> None:
@@ -419,33 +521,30 @@ class TestQemuProcessTerminate:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Grace window already elapsed (0s → loop body never runs), but the
-        # process has exited by the final liveness check → no SIGKILL.
+        # process has exited by the final identity check → no SIGKILL.
         (tmp_path / "qemu.pid").write_text("321")
         sent: list[tuple[int, int]] = []
         monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda pid, sig: sent.append((pid, sig)))
         monkeypatch.setattr("beetroot.vm.qemu._TERM_GRACE_SECONDS", 0.0)
-        monkeypatch.setattr(qemu.QemuProcess, "_pid_alive", lambda _self, _pid: False)
+        # True for the pre-signal gate, False at the deadline check.
+        identity = iter([True, False])
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_is_qemu", lambda _self, _pid: next(identity))
         assert qemu.QemuProcess(tmp_path).terminate() is True
         assert sent == [(321, signal.SIGTERM)]
 
-    def test_pid_alive_probes_signal_zero(
+    def test_terminate_refuses_live_but_not_qemu_pid(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        proc = qemu.QemuProcess(tmp_path)
-        monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda *_a: None)
-        assert proc._pid_alive(99) is True
-
-        def _esrch(_pid: int, _sig: int) -> None:
-            raise OSError(errno.ESRCH, "no such process")
-
-        monkeypatch.setattr("beetroot.vm.qemu.os.kill", _esrch)
-        assert proc._pid_alive(99) is False
-
-        def _eperm(_pid: int, _sig: int) -> None:
-            raise OSError(errno.EPERM, "operation not permitted")
-
-        monkeypatch.setattr("beetroot.vm.qemu.os.kill", _eperm)
-        assert proc._pid_alive(99) is True
+        # PID reuse: the recorded PID is live but belongs to an unrelated
+        # process. terminate() must NOT signal it (no SIGTERM, no SIGKILL),
+        # return False, and clear the stale pidfile (issue #162).
+        (tmp_path / "qemu.pid").write_text("321")
+        sent: list[tuple[int, int]] = []
+        monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda pid, sig: sent.append((pid, sig)))
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_is_qemu", lambda _self, _pid: False)
+        assert qemu.QemuProcess(tmp_path).terminate() is False
+        assert sent == []
+        assert not (tmp_path / "qemu.pid").exists()
 
     def test_terminate_no_pidfile_is_noop(self, tmp_path: Path) -> None:
         assert qemu.QemuProcess(tmp_path).terminate() is False
@@ -453,7 +552,20 @@ class TestQemuProcessTerminate:
     def test_terminate_dead_process_removes_pidfile(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # The recorded PID is gone (its /proc entry is absent), so _pid_is_qemu
+        # is False, os.kill is never reached, and the stale pidfile is cleared.
         (tmp_path / "qemu.pid").write_text("321")
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_is_qemu", lambda _self, _pid: False)
+        assert qemu.QemuProcess(tmp_path).terminate() is False
+        assert not (tmp_path / "qemu.pid").exists()
+
+    def test_terminate_sigterm_race_already_gone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Identity holds at the gate but the process dies before SIGTERM lands
+        # (ESRCH) → signalled flips back to False, no escalation, pidfile gone.
+        (tmp_path / "qemu.pid").write_text("321")
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_is_qemu", lambda _self, _pid: True)
 
         def _kill(_pid: int, _sig: int) -> None:
             raise OSError(errno.ESRCH, "no such process")
@@ -468,8 +580,9 @@ class TestQemuProcessTerminate:
         # An already-vanished pidfile (e.g. concurrent down) must not raise.
         (tmp_path / "qemu.pid").write_text("321")
         monkeypatch.setattr("beetroot.vm.qemu.os.kill", lambda *_a: None)
-        # Process exits promptly → skip the escalation poll loop.
-        monkeypatch.setattr(qemu.QemuProcess, "_pid_alive", lambda _self, _pid: False)
+        # True at the gate, then gone on the first escalation check → no SIGKILL.
+        identity = iter([True, False])
+        monkeypatch.setattr(qemu.QemuProcess, "_pid_is_qemu", lambda _self, _pid: next(identity))
 
         def _unlink(_self: Path, *_a: object, **_k: object) -> None:
             raise OSError("gone")

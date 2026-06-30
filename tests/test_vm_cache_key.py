@@ -47,6 +47,19 @@ def test_key_is_order_independent(tmp_path: Path) -> None:
     assert vm_cache_key.compute_cache_key([a, b]) == vm_cache_key.compute_cache_key([b, a])
 
 
+def test_key_order_independent_with_colliding_basenames(tmp_path: Path) -> None:
+    # #235: two inputs sharing a basename but with different content must hash
+    # to the same key regardless of argument order (the tie breaks on content
+    # hash, not on the input order the stable sort would otherwise preserve).
+    dir_a = tmp_path / "dirA"
+    dir_a.mkdir()
+    dir_b = tmp_path / "dirB"
+    dir_b.mkdir()
+    a = _write(dir_a / "kernel.config", b"X")
+    b = _write(dir_b / "kernel.config", b"Y")
+    assert vm_cache_key.compute_cache_key([a, b]) == vm_cache_key.compute_cache_key([b, a])
+
+
 def test_key_changes_when_content_changes(tmp_path: Path) -> None:
     a = _write(tmp_path / "bzImage", b"kernel")
     b = _write(tmp_path / "rootdisk.img", b"rootfs")

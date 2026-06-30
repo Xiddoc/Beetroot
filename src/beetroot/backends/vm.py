@@ -54,13 +54,24 @@ _ADB_CONNECT_POLL_SECONDS = 1.0
 _ADB_CONNECT_ATTEMPT_TIMEOUT = 5
 
 # The boot-cache path must checkpoint a *fully booted* guest, so it gates
-# ``savevm`` on a real ``getprop sys.boot_completed == 1`` poll rather than the
-# plain ``adb connect`` (which succeeds as soon as QEMU's user-net hostfwd binds
-# the host port — before the guest's adbd is reachable). The deadline matches
+# ``savevm`` on a real ``getprop sys.boot_completed == 1`` poll. That is a
+# strictly stronger guarantee than ``_wait_for_adb_connect``: the latter only
+# proves the in-guest relay accepts an adb attach, while this confirms Android
+# itself reached ``sys.boot_completed`` (guest-init.sh main() starts the relay
+# only *after* ``wait_for_boot``, so an accepted connect implies boot, but a
+# checkpoint wants the prop read to be certain). The deadline matches
 # guest-init.sh's own BOOT_TIMEOUT; a cold TCG boot is minutes.
 _BOOT_COMPLETED_TIMEOUT_SECONDS = 900
 _BOOT_COMPLETED_POLL_SECONDS = 3.0
 _BOOT_COMPLETED_ATTEMPT_TIMEOUT = 10
+
+# Floor for the accel-aware ADB-connect deadline under TCG. A cold TCG boot to
+# first host ADB is minutes (~222 s for Android 14, vm-rnd-log Stage E), so the
+# flat ``settings.vm_adb_connect_timeout`` KVM default (60 s) aborts ``up`` long
+# before the guest's relay binds. Under TCG the deadline is raised to a
+# boot-completed-scale floor so a slow first boot is waited out, not failed
+# (issue #160). KVM keeps the short, configurable default.
+_TCG_ADB_CONNECT_FLOOR_SECONDS = _BOOT_COMPLETED_TIMEOUT_SECONDS
 
 # Frida is not yet wired through the QEMU micro-VM (issue #44 scopes the
 # vm backend to ADB forwarding only): the guest runs redroid with
@@ -447,7 +458,10 @@ class VmDeviceBackend:
                 ``binder: vm`` (the row is out of sync — run ``apply``).
             qemu.QemuLaunchError: On a missing accelerator, missing
                 kernel/rootfs, a launch failure, or if the guest does not
-                expose ADB within ``settings.vm_adb_connect_timeout`` seconds.
+                expose ADB within the accel-aware deadline (long under TCG,
+                ``settings.vm_adb_connect_timeout`` under KVM). On timeout the
+                just-launched QEMU is terminated so the next ``up`` starts
+                clean (issue #174).
         """
         if self._cfg.binder != "vm":
             raise BackendCapabilityError(
@@ -462,8 +476,16 @@ class VmDeviceBackend:
             self._up_cached(accel)
             return
         argv = self.build_argv(accel)
-        qemu.QemuProcess(self._root).start(argv)
-        self._wait_for_adb_connect()
+        proc = qemu.QemuProcess(self._root)
+        proc.start(argv)
+        try:
+            self._wait_for_adb_connect(accel, proc)
+        except BaseException:
+            # A timed-out (or otherwise failed) wait must not orphan the QEMU we
+            # just launched — its live pidfile would trip start()'s
+            # already-running guard on the next `up` (issue #174).
+            self.down()
+            raise
 
     def _up_cached(self, accel: qemu.ResolvedAccel) -> None:
         """
@@ -480,35 +502,55 @@ class VmDeviceBackend:
         (the next ``up`` just cold-boots again), so a failed checkpoint is a
         warning, never a hard error.
 
+        A warm ``-loadvm`` resume that dies on an unrestorable snapshot is
+        re-checked for liveness during the ADB wait (issue #176): rather than
+        burn the full deadline with a misleading TCG-slowness error, the soured
+        overlay is discarded and the boot retried **exactly once** as a cold
+        boot.
+
         Args:
             accel: The resolved accelerator (from :meth:`resolved_accel`).
 
         Raises:
             qemu.QemuLaunchError: On a missing kernel/rootfs, a missing
                 ``qemu-img``, a launch failure, or if the guest does not expose
-                ADB within ``settings.vm_adb_connect_timeout`` seconds.
+                ADB within the accel-aware deadline.
         """
         kernel = _resolve_artifact(self._cfg.vm.kernel, settings.vm_kernel, "kernel")
         base_rootfs = _resolve_artifact(self._cfg.vm.rootfs, settings.vm_rootfs, "rootfs")
         overlay = boot_cache.overlay_path(self._root)
         monitor = boot_cache.monitor_path(self._root)
+        # Resolve the -smp/-m geometry once: it feeds the staleness fingerprint
+        # (#161 — a geometry edit must invalidate the checkpoint, since QEMU
+        # rejects a -loadvm into a mismatched geometry), the identity sidecar,
+        # and the launch argv, which must all agree.
+        resolved_smp = qemu.resolve_smp(self._cfg.vm.smp)
+        memory_mib = self._cfg.vm.memory_mib
         # A stale monitor socket from a prior `down` would block QEMU's bind.
         monitor.unlink(missing_ok=True)
-        # Auto-invalidate a checkpoint taken against a now-changed kernel/rootfs
-        # (#126): resuming a snapshot booted from stale artifacts is worse than
-        # one cold boot. An overlay with no recorded identity (pre-#126) also
-        # counts as stale, so it is re-keyed on the next boot.
-        if overlay.exists() and boot_cache.overlay_is_stale(self._root, kernel, base_rootfs):
+        # Auto-invalidate a checkpoint taken against now-changed kernel/rootfs or
+        # -smp/-m geometry (#126/#161): resuming a snapshot booted from stale
+        # artifacts is worse than one cold boot. An overlay with no recorded
+        # identity (pre-#126) also counts as stale, so it is re-keyed next boot.
+        if overlay.exists() and boot_cache.overlay_is_stale(
+            self._root, kernel, base_rootfs, resolved_smp, memory_mib
+        ):
             console.note(
                 f"{self._name!r} boot-cache overlay was built from a different "
-                "kernel/rootfs; discarding the stale checkpoint and cold-booting "
-                "once to re-cache."
+                "kernel/rootfs/geometry; discarding the stale checkpoint and "
+                "cold-booting once to re-cache."
             )
+            boot_cache.discard_overlay(self._root)
+        elif overlay.exists() and not boot_cache.snapshot_present(overlay):
+            # The overlay is identity-fresh but carries no snapshot: an aborted
+            # first cold boot left a dirty COW layer (partial guest writes, no
+            # checkpoint). Reusing it would cold-boot over soured state, so
+            # discard it and start the cold boot on a pristine overlay (#175).
             boot_cache.discard_overlay(self._root)
         if not overlay.exists():
             boot_cache.create_overlay(base_rootfs, overlay)
             # Record what this overlay was built from so a later rebuild invalidates it.
-            boot_cache.record_identity(self._root, kernel, base_rootfs)
+            boot_cache.record_identity(self._root, kernel, base_rootfs, resolved_smp, memory_mib)
         warm = boot_cache.snapshot_present(overlay)
         if warm:
             console.info(f"resuming cached boot snapshot for {self._name!r} (warm start)")
@@ -517,26 +559,59 @@ class VmDeviceBackend:
             console.info(
                 f"no boot snapshot yet for {self._name!r}; cold-booting once, then caching"
             )
-        argv = qemu.build_qemu_argv(
-            qemu_bin=settings.qemu_bin,
-            accel=accel,
-            kernel=kernel,
-            rootfs=overlay,
-            smp=qemu.resolve_smp(self._cfg.vm.smp),
-            memory_mib=self._cfg.vm.memory_mib,
-            host_adb_port=ports.well_known(self.ports)["adb"],
-            disk_format="qcow2",
-            monitor_socket=monitor,
-            loadvm=boot_cache.SNAPSHOT_TAG if warm else None,
-        )
-        qemu.QemuProcess(self._root).start(argv)
-        self._wait_for_adb_connect()
+
+        def _launch(*, loadvm: str | None) -> None:
+            argv = qemu.build_qemu_argv(
+                qemu_bin=settings.qemu_bin,
+                accel=accel,
+                kernel=kernel,
+                rootfs=overlay,
+                smp=resolved_smp,
+                memory_mib=memory_mib,
+                host_adb_port=ports.well_known(self.ports)["adb"],
+                disk_format="qcow2",
+                monitor_socket=monitor,
+                loadvm=loadvm,
+            )
+            proc = qemu.QemuProcess(self._root)
+            proc.start(argv)
+            try:
+                # Pass proc so a dead-on-arrival -loadvm resume is caught fast
+                # (issue #176) instead of burning the full deadline.
+                self._wait_for_adb_connect(accel, proc)
+            except BaseException:
+                # Don't orphan the QEMU we just launched (#174).
+                self.down()
+                raise
+
         if warm:
-            # Resume restores an already-booted guest; nothing to checkpoint.
-            return
+            try:
+                _launch(loadvm=boot_cache.SNAPSHOT_TAG)
+            except qemu.QemuLaunchError:
+                # The warm resume died on an unrestorable snapshot. Fall back to
+                # a single cold boot on a fresh overlay rather than failing the
+                # `up` outright (#176) — bounded to one retry, no recursion.
+                console.warn(
+                    f"warm resume for {self._name!r} failed; discarding the "
+                    "snapshot and cold-booting once. See `beetroot logs`."
+                )
+                boot_cache.discard_overlay(self._root)
+                boot_cache.create_overlay(base_rootfs, overlay)
+                boot_cache.record_identity(
+                    self._root, kernel, base_rootfs, resolved_smp, memory_mib
+                )
+                warm = False
+                _launch(loadvm=None)
+            else:
+                # Resume restores an already-booted guest; nothing to checkpoint.
+                return
+        else:
+            _launch(loadvm=None)
+
         # Cold boot: the checkpoint must capture a FULLY booted guest, so gate
-        # on a real boot_completed poll (plain adb connect succeeds the moment
-        # QEMU's hostfwd binds, long before the guest's adbd is reachable).
+        # on a real boot_completed poll — a strictly stronger guarantee than the
+        # adb-connect attach (the relay accepts a connect only once Android has
+        # booted, but the prop read makes the checkpoint precondition explicit).
         if not self._wait_for_boot_completed():
             console.warn(
                 f"guest {self._name!r} did not reach sys.boot_completed in "
@@ -556,9 +631,9 @@ class VmDeviceBackend:
         """
         Poll ``adb shell getprop sys.boot_completed`` until it reads ``1``.
 
-        Unlike :meth:`_wait_for_adb_connect` (which is satisfied by QEMU's
-        hostfwd port binding), this confirms the guest's Android has actually
-        finished booting and adbd is reachable through the relay — the
+        Stronger than :meth:`_wait_for_adb_connect` (which is satisfied by the
+        in-guest relay accepting an adb-connect attach): this confirms the
+        guest's Android actually read ``sys.boot_completed == 1`` — the
         precondition for a useful ``savevm`` checkpoint. Returns ``False`` on
         timeout so the caller can skip the checkpoint rather than snapshot a
         half-booted guest.
@@ -691,7 +766,31 @@ class VmDeviceBackend:
             "false in beetroot.yaml to keep /data across restarts."
         )
 
-    def _wait_for_adb_connect(self) -> None:
+    @staticmethod
+    def _adb_connect_deadline_seconds(accel: qemu.ResolvedAccel) -> int:
+        """
+        Resolve the ADB-connect deadline (seconds) for the resolved accelerator.
+
+        ``settings.vm_adb_connect_timeout`` is the KVM (near-native) budget. A
+        cold TCG boot to first host ADB is minutes (~222 s for Android 14), so
+        under TCG the deadline is raised to a boot-completed-scale floor
+        (:data:`_TCG_ADB_CONNECT_FLOOR_SECONDS`) — never *below* the configured
+        value, so bumping ``BEETROOT_VM_ADB_CONNECT_TIMEOUT`` still wins (issue
+        #160).
+
+        Args:
+            accel: The resolved accelerator QEMU launches with.
+
+        Returns:
+            The deadline in seconds.
+        """
+        if accel == "tcg":
+            return max(settings.vm_adb_connect_timeout, _TCG_ADB_CONNECT_FLOOR_SECONDS)
+        return settings.vm_adb_connect_timeout
+
+    def _wait_for_adb_connect(
+        self, accel: qemu.ResolvedAccel, proc: qemu.QemuProcess | None = None
+    ) -> None:
         """
         Poll ``adb connect`` against the guest until it accepts or times out.
 
@@ -699,26 +798,47 @@ class VmDeviceBackend:
         adbd to switch it into TCP mode a few seconds *after* boot completes,
         so the endpoint refuses connections briefly. Retry ``adb connect``
         every :data:`_ADB_CONNECT_POLL_SECONDS` until the host adb reports a
-        successful attach or ``settings.vm_adb_connect_timeout`` elapses. The
-        happy path (endpoint already up) succeeds on the first attempt and
-        never sleeps.
+        successful attach or the accel-aware deadline elapses (long under TCG,
+        short under KVM — see :meth:`_adb_connect_deadline_seconds`). The happy
+        path (endpoint already up) succeeds on the first attempt and never
+        sleeps.
+
+        When ``proc`` is supplied the loop also re-checks QEMU liveness each
+        round: a ``-loadvm`` that exits in ~1 s on an unrestorable snapshot is
+        otherwise indistinguishable from a slow boot and would burn the full
+        deadline. A dead-on-arrival QEMU raises a fast, ``beetroot logs``-pointing
+        error instead (issue #176).
+
+        Args:
+            accel: The resolved accelerator (selects the deadline).
+            proc: The just-launched QEMU handle whose liveness is polled. When
+                ``None`` the liveness re-check is skipped (cold-boot path).
 
         Raises:
             AdbNotInstalledError: If the ``adb`` binary is not on PATH.
-            qemu.QemuLaunchError: If no attempt succeeds within the deadline —
-                a friendly, actionable message (not a traceback).
+            qemu.QemuLaunchError: If QEMU exits before ADB attaches, or if no
+                attempt succeeds within the deadline — a friendly, actionable
+                message (not a traceback).
         """
         if shutil.which(_ADB) is None:
             raise AdbNotInstalledError("adb not found on PATH (install android-tools)")
         target = self.adb_address
-        deadline = time.monotonic() + settings.vm_adb_connect_timeout
+        budget = self._adb_connect_deadline_seconds(accel)
+        deadline = time.monotonic() + budget
         while True:
             if self._adb_connect_ok(target):
                 return
+            if proc is not None and not proc.is_running():
+                raise qemu.QemuLaunchError(
+                    f"the QEMU micro-VM for {self._name!r} exited before exposing ADB "
+                    f"at {target} (a -loadvm resume onto an unrestorable snapshot, or "
+                    f"a launch failure). Inspect the guest console with "
+                    f"`beetroot logs {self._name}` ({qemu.QemuProcess(self._root).console_log})."
+                )
             if time.monotonic() >= deadline:
                 raise qemu.QemuLaunchError(
                     f"the QEMU micro-VM for {self._name!r} did not expose ADB at "
-                    f"{target} within {settings.vm_adb_connect_timeout}s of launch. "
+                    f"{target} within {budget}s of launch. "
                     "Under TCG software emulation first boot is slow (minutes) — "
                     f"run `beetroot logs {self._name}` to watch the guest boot, give "
                     "it longer (raise BEETROOT_VM_ADB_CONNECT_TIMEOUT), or pin "
@@ -844,11 +964,13 @@ class VmDeviceBackend:
         Aggregate the VM-backed health checks for this instance.
 
         Includes a VM-specific ``vm.process`` row (is QEMU alive?) and a
-        ``vm.accel`` row (kvm vs the slow-tcg note), then the shared
-        adb/magisk rows so downstream tools grep uniformly across backend
-        kinds. The ``frida.handshake`` row is dropped: Frida is unsupported
-        on the network-isolated guest (issue #44), so the handshake could
-        never pass and a permanent ``fail`` row would be noise.
+        ``vm.accel`` row (kvm vs the slow-tcg note), then the shared adb rows so
+        downstream tools grep uniformly across backend kinds. Three shared rows
+        are dropped because they can never pass on the network-isolated, plain
+        upstream redroid guest: ``frida.handshake`` (Frida is unsupported —
+        issue #44) and the ``magisk.*`` rows (the ``binder: vm`` guest boots an
+        unmodified redroid image with no Magisk — issue #163), so a permanent
+        ``fail`` row would be noise.
 
         Returns:
             Ordered dict of check name → :class:`CheckResult`.
@@ -865,6 +987,11 @@ class VmDeviceBackend:
         checks["vm.accel"] = _accel_check(self._cfg.vm.accel)
         shared = adb_device_health(self)
         shared.pop("frida.handshake", None)
+        # The guest runs plain redroid (no Magisk), so the magisk rows would be a
+        # permanent fail — drop them rather than mislead (issue #163).
+        for name in list(shared):
+            if name.startswith("magisk."):
+                shared.pop(name)
         checks.update(shared)
         return checks
 
