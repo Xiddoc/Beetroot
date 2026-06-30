@@ -603,6 +603,19 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **The adb backend's `magisk.zygisk` / `magisk.denylist.<pkg>` doctor checks
+  now read the root-only Magisk DB through `su -c` (#159).** `magisk --sqlite`
+  reads `/data/adb/magisk.db`, which only root can open. The shared
+  `_magisk_sqlite_value_over_adb` helper emitted a bare `adb ... shell magisk
+  --sqlite <sql>`; that works on the redroid container (adbd is uid 0) but on a
+  genuine adopted phone adbd is the unprivileged `shell` user (uid 2000), so the
+  read was permission-denied and a healthy device false-failed `beetroot doctor`
+  (non-zero exit). The helper gained an opt-in `use_su` flag that wraps the
+  payload in MagiskSU's `su -c` using the same dual-parse `shlex.quote` quoting
+  as the module-install path (`AdbDevice._auto_install_one`); the adb backend
+  (`adb_device_health`) requests it while the redroid `Instance.health` path
+  keeps the bare invocation it has always emitted (uid-0 adbd), so the fix is
+  scoped to the backend that needs it and cannot regress redroid.
 - **`resources.cpus` and `resources.pids_limit` are now bound-checked at load
   time (#181).** Both fields previously had no constraint, so `cpus: 0`,
   `cpus: -1`, or `pids_limit: 0` validated cleanly and flowed verbatim into the

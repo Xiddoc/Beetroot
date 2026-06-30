@@ -1135,11 +1135,14 @@ class TestHealth:
             del args, kwargs
             stdout = ""
             cmd_str = " ".join(str(x) for x in cmd)
+            # The adb backend wraps the magisk reads in a single ``su -c``
+            # quoted element (issue #159), so match on ``cmd_str`` rather
+            # than ``"magisk" in cmd`` — ``magisk`` is no longer a token.
             if cmd[:1] == ["adb"] and "devices" in cmd:
                 stdout = "List of devices attached\nemulator-5554\tdevice\n"
-            elif "magisk" in cmd and "settings" in cmd_str:
+            elif "magisk --sqlite" in cmd_str and "settings" in cmd_str:
                 stdout = "value=1\n"
-            elif "magisk" in cmd and "denylist" in cmd_str:
+            elif "magisk --sqlite" in cmd_str and "denylist" in cmd_str:
                 stdout = "package_name=com.google.android.gms\n"
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=stdout, stderr="")
 

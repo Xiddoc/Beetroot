@@ -6,6 +6,8 @@ the higher-level doctor-verb tests don't easily reach.
 
 from __future__ import annotations
 
+import contextlib
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -226,6 +228,104 @@ class TestCheckMagiskDenylist:
         assert "com.example not enrolled" in (result.reason or "")
 
 
+class TestMagiskSqliteSuQuoting:
+    """Issue #159: the adb backend must hop the root-only DB read via ``su -c``.
+
+    The redroid container's adbd is uid 0 so the bare ``magisk --sqlite``
+    works there; a genuine adopted phone's adbd is the unprivileged
+    ``shell`` user (uid 2000), so the read is permission-denied unless it
+    goes through MagiskSU. These tests pin the EMITTED argv (not just the
+    stubbed return value) so a regression that drops ``su -c`` is caught.
+    """
+
+    @staticmethod
+    def _captured_argv(use_su: bool, sql: str = "SELECT value FROM settings") -> list[str]:
+        with patch("subprocess.run") as run:
+            run.return_value = _proc(0, "value=1\n", "")
+            api._magisk_sqlite_value_over_adb("emulator-5554", sql, use_su=use_su)
+        argv = run.call_args.args[0]
+        assert isinstance(argv, list)
+        return argv
+
+    def test_bare_form_emits_unwrapped_argv(self) -> None:
+        # The redroid path (use_su defaults to False) must keep the
+        # historical bare argv — no ``su``/``-c`` anywhere.
+        argv = self._captured_argv(use_su=False)
+        assert argv == [
+            "adb",
+            "-s",
+            "emulator-5554",
+            "shell",
+            "magisk",
+            "--sqlite",
+            "SELECT value FROM settings",
+        ]
+        assert "su" not in argv
+
+    def test_su_form_wraps_payload_in_su_c(self) -> None:
+        # The adb path must emit ``adb -s <s> shell su -c <quoted>`` with
+        # ``su`` and ``-c`` as consecutive standalone argv elements.
+        argv = self._captured_argv(use_su=True)
+        assert argv[:5] == ["adb", "-s", "emulator-5554", "shell", "su"]
+        assert argv[5] == "-c"
+        assert len(argv) == 7
+
+    def test_su_payload_survives_inner_shell_parse(self) -> None:
+        # The element after ``-c`` is shell-parsed TWICE on-device: the
+        # device shell flattens argv (first split → the single
+        # ``magisk --sqlite <sql>`` word), then MagiskSU re-joins its
+        # post-``-c`` args into a second ``sh -c`` (second split → the
+        # argv tokens). Re-running both splits must recover the exact
+        # ``magisk --sqlite <sql>`` invocation with the SQL string — and
+        # its embedded single quotes — intact, proving the dual-parse
+        # quoting holds.
+        sql = "SELECT value FROM settings WHERE key='zygisk'"
+        argv = self._captured_argv(use_su=True, sql=sql)
+        (outer,) = shlex.split(argv[6])
+        inner = shlex.split(outer)
+        assert inner == ["magisk", "--sqlite", sql]
+
+    def test_zygisk_check_routes_through_su_on_adb_backend(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # End-to-end through the check function: an unprivileged adbd
+        # rejects the bare read (rc!=0) but the su-wrapped read returns
+        # value=1, so the check must emit su -c and report pass.
+        monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/adb")
+
+        def _unprivileged(
+            cmd: list[str], *a: object, **k: object
+        ) -> subprocess.CompletedProcess[str]:
+            del a, k
+            if "su" in cmd and "-c" in cmd:
+                return _proc(0, "value=1\n", "")
+            return _proc(1, "", "sqlite3: unable to open database file (permission denied)")
+
+        with patch("subprocess.run", side_effect=_unprivileged):
+            result = api._check_magisk_zygisk_over_adb("emulator-5554", use_su=True)
+        assert result.status == "pass"
+
+    def test_denylist_check_routes_through_su_on_adb_backend(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/adb")
+        pkg = "com.google.android.gms"
+
+        def _unprivileged(
+            cmd: list[str], *a: object, **k: object
+        ) -> subprocess.CompletedProcess[str]:
+            del a, k
+            if "su" in cmd and "-c" in cmd:
+                return _proc(0, f"package_name={pkg}\n", "")
+            return _proc(1, "", "permission denied")
+
+        with patch("subprocess.run", side_effect=_unprivileged):
+            result = api._check_magisk_denylist_over_adb(
+                "emulator-5554", pkg, enrolled=True, use_su=True
+            )
+        assert result.status == "pass"
+
+
 class TestCheckAdbSerialListed:
     def test_skip_when_adb_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(shutil, "which", lambda _: None)
@@ -310,6 +410,44 @@ class TestAdbDeviceHealth:
             results = api.adb_device_health(device)
         assert "compose.status" not in results
         assert results["frida.handshake"].status == "skip"
+
+    def test_unprivileged_adbd_is_healthy_via_su(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Issue #159 end-to-end: on a genuine adopted phone adbd is uid
+        # 2000, so the bare magisk read is permission-denied but the
+        # su-wrapped read succeeds. The composed adb-backend health dict
+        # must report magisk.zygisk/denylist as pass (not the
+        # false-fail this bug caused), AND every magisk read it issued
+        # must have gone through ``su -c``.
+        device = self._stub()
+        monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/adb")
+        monkeypatch.setattr("socket.create_connection", lambda *a, **k: contextlib.nullcontext())
+        magisk_calls: list[list[str]] = []
+
+        def _unprivileged(
+            cmd: list[str], *a: object, **k: object
+        ) -> subprocess.CompletedProcess[str]:
+            del a, k
+            cmd_str = " ".join(str(x) for x in cmd)
+            if "devices" in cmd:
+                return _proc(0, "List of devices attached\nemulator-5554\tdevice\n")
+            if "magisk --sqlite" in cmd_str:
+                magisk_calls.append(cmd)
+                if "su" not in cmd or "-c" not in cmd:
+                    return _proc(1, "", "permission denied")
+                if "settings" in cmd_str:
+                    return _proc(0, "value=1\n")
+                return _proc(0, "package_name=com.google.android.gms\n")
+            return _proc(0)
+
+        with patch("subprocess.run", side_effect=_unprivileged):
+            results = api.adb_device_health(device)
+        assert results["magisk.zygisk"].status == "pass"
+        assert results["magisk.denylist.com.google.android.gms"].status == "pass"
+        # Every magisk read the adb backend issued used su -c.
+        assert magisk_calls
+        for cmd in magisk_calls:
+            assert "su" in cmd
+            assert "-c" in cmd
 
 
 class TestInstanceHealthExitCodeCap:

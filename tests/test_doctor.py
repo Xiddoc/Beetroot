@@ -39,12 +39,17 @@ def _healthy_subprocess(*args: object, **_kwargs: object) -> subprocess.Complete
     # ``value=1``; magisk denylist → enrolled; adb devices → device;
     # nc / fallthrough → succeed. Single return at the end keeps
     # PLR0911 happy without splintering the dispatch into helpers.
+    # The magisk reads match on ``cmd_str`` substrings rather than
+    # ``"magisk" in cmd`` so the stub serves BOTH backend forms: the
+    # redroid path emits a bare ``... shell magisk --sqlite <sql>`` argv,
+    # while the adb backend wraps the payload in a single ``su -c`` quoted
+    # element (issue #159) so ``magisk`` is no longer a standalone token.
     stdout = ""
     if "compose" in cmd and "ps" in cmd:
         stdout = '{"State": "running"}\n'
-    elif cmd[:1] == ["adb"] and "magisk" in cmd and "settings" in cmd_str:
+    elif cmd[:1] == ["adb"] and "magisk --sqlite" in cmd_str and "settings" in cmd_str:
         stdout = _ZYGISK_ON
-    elif cmd[:1] == ["adb"] and "magisk" in cmd and "denylist" in cmd_str:
+    elif cmd[:1] == ["adb"] and "magisk --sqlite" in cmd_str and "denylist" in cmd_str:
         stdout = _DENYLIST_GMS_ENROLLED
     elif cmd[:1] == ["adb"] and "devices" in cmd:
         stdout = "List of devices attached\nemulator-5554\tdevice\n"
