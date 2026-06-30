@@ -33,6 +33,11 @@ jobs:
     env:
       # Keep in sync with KERNEL_VERSION in src/beetroot/builder.py and e2e.yml.
       KERNEL_VERSION: "6.12.9"
+      # sha256 of linux-${KERNEL_VERSION}.tar.xz from cdn.kernel.org's signed
+      # sha256sums.asc; verified before extract so a tampered CDN tarball can't
+      # be compiled into a published bzImage. Keep in sync with
+      # KERNEL_SOURCE_SHA256 in src/beetroot/builder.py (issue #184).
+      KERNEL_SOURCE_SHA256: "87be0360df0931b340d2bac35161a548070fbc3a8c352c49e21e96666c26aeb4"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
@@ -62,6 +67,8 @@ jobs:
           asset="bzImage-${KERNEL_VERSION}-${fp}"
           cd "$RUNNER_TEMP"
           curl -fsSLO "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz"
+          # Verify the pinned source digest BEFORE extract (issue #184).
+          echo "${KERNEL_SOURCE_SHA256}  linux-${KERNEL_VERSION}.tar.xz" | sha256sum -c -
           tar -xf "linux-${KERNEL_VERSION}.tar.xz"
           cd "linux-${KERNEL_VERSION}"
           make defconfig

@@ -1,0 +1,10 @@
+# Beetroot build context allowlist.
+#
+# `beetroot build` resolves the build context to the repo root (compose.yaml's
+# `context: ${BEETROOT_BUILD_CONTEXT:-.}`), but docker/Dockerfile only COPYs
+# docker/*.sh + docker/stealth.rc. Without this file Docker would tar the whole
+# root (.venv, .git, instance dirs) into the build context. Exclude everything,
+# then re-include only the docker/ tree the build actually consumes.
+*
+!docker/
+!docker/**

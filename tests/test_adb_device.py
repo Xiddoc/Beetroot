@@ -912,7 +912,7 @@ class TestAutoInstallPreflight:
         # longer lists the serial → the batch aborts with the friendly
         # offline error carrying the first module's ok row AND the second
         # module's failed row (it failed *because* the device went
-        # offline mid-install, so it must be accounted for). The third is
+        # offline mid-batch, so it must be accounted for). The third is
         # never pushed and is reflected only in the skipped count.
         monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         first = tmp_path / "First.zip"
@@ -935,6 +935,13 @@ class TestAutoInstallPreflight:
             (str(first), True),
             (str(second), False),
         ]
+        # #223: the failed row's detail is stage-neutral (not the old hardcoded
+        # "mid-install") and retains the underlying adb error for diagnosis.
+        failed_detail = exc_info.value.results[1].detail
+        assert "mid-install" not in failed_detail
+        assert failed_detail.startswith("device went offline during this module")
+        assert "last adb error:" in failed_detail
+        assert "device offline" in failed_detail
         # The failed second push, then the connectivity re-probe, are the
         # last two adb calls — the third module is never pushed.
         assert captured[-2:] == [

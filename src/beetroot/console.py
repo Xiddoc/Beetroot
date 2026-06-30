@@ -12,12 +12,17 @@ JSON print plain text to stdout directly; rich markup would corrupt the stream
 and break downstream parsers.
 
 TTY degradation is handled automatically by rich: when the underlying file is
-not a TTY (e.g. a pipe), ``Console`` strips ANSI codes and renders plain text
-so log files and CI output remain readable. Progress bars still render a single
-summary line in non-TTY mode — they do not spam the log with carriage-return
-sequences because rich's ``Progress``/``Console`` detects a non-interactive
-(non-TTY) console and disables the ``Live`` refresh loop, emitting plain line
-output instead.
+not a TTY (e.g. a pipe), ``Console`` strips ANSI color codes. Stripping color
+is *all* it does by default — box-drawing borders are plain UTF-8 (not ANSI)
+and rich still clips wide table cells to its 80-column default width — so
+piped output is not automatically machine-parseable. Callers that need a stable,
+parseable stream should use a verb's ``--json`` mode, not scrape the human
+table. The :func:`table` helper does render losslessly off-TTY (no borders, no
+cell truncation), but that is a courtesy for log readability, not a contract.
+Progress bars still render a single summary line in non-TTY mode — they do not
+spam the log with carriage-return sequences because rich's ``Progress``/
+``Console`` detects a non-interactive (non-TTY) console and disables the
+``Live`` refresh loop, emitting plain line output instead.
 """
 
 from __future__ import annotations
@@ -244,19 +249,41 @@ def table(columns: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
     """
     Render a rich ``Table`` with the given column headers and rows to stdout.
 
-    Primary results (like ``beetroot ls`` or ``beetroot status``) go to
-    stdout via the stdout console so they can be captured by shell pipelines.
-    Rich strips decoration automatically when stdout is not a TTY.
+    Primary results (like ``beetroot ls`` or ``beetroot modes``) go to stdout
+    via the stdout console. On a TTY the table is fully decorated (borders,
+    color). Off a TTY, rich's defaults would clip wide cells to 80 columns and
+    still draw UTF-8 box borders, so a piped ``ls`` could silently truncate an
+    ADB endpoint or an instance path. To keep piped output lossless this branch
+    drops the borders, folds (never truncates) cells, and prints at a width wide
+    enough for the longest line — so every cell survives verbatim. This is a
+    readability courtesy, not a parsing contract: machine consumers should use a
+    verb's ``--json`` mode.
 
     Args:
         columns: Sequence of column header strings.
         rows: Sequence of rows; each row is a sequence of cell strings whose
             length must match ``columns``.
     """
-    t = Table(*columns)
+    if _stdout_console.is_terminal:
+        t = Table(*columns)
+        for row in rows:
+            t.add_row(*row)
+        _stdout_console.print(t)
+        return
+
+    t = Table(box=None, pad_edge=False)
+    for col in columns:
+        t.add_column(col, overflow="fold", no_wrap=False)
     for row in rows:
         t.add_row(*row)
-    _stdout_console.print(t)
+    # Width the render to the longest content line so rich never falls back to
+    # its 80-column default and clips a cell with an ellipsis.
+    max_cell = max(
+        (len(cell) for line in (columns, *rows) for cell in line),
+        default=0,
+    )
+    width = max(max_cell * len(columns) + len(columns), 80)
+    _stdout_console.print(t, width=width, crop=False)
 
 
 # ---------------------------------------------------------------------------

@@ -223,3 +223,46 @@ def test_fetch_prebuilt_sidecar_fetch_errors(
             out_image=tmp_path / "rootdisk.img",
             docker_version="27.5.1",
         )
+
+
+def test_fetch_prebuilt_marker_written_before_image_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # issue #234: if the process dies in the window between renaming the image
+    # into place and writing the marker, read_rootfs_version() would return None
+    # and silently skip the #82 skew check. The marker must be written BEFORE the
+    # image is renamed, so an installed image is always accompanied by a marker.
+    # Simulate a crash at the marker write and assert no marker-less image
+    # survives.
+    image = b"ext4-image-bytes"
+    payload = zstandard.ZstdCompressor().compress(image)
+    digest = hashlib.sha256(payload).hexdigest()
+    url = rootfs_download.release_url("14", "abc123def456")
+
+    def fake_urlopen(req_url: str, timeout: float) -> _FakeResp:
+        if req_url == url:
+            return _FakeResp(payload)
+        return _FakeResp(f"{digest}  rootfs-14-abc123def456.img.zst\n".encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    out = tmp_path / "rootdisk.img"
+    marker_path = out.with_name(out.name + ".android-version")
+    real_write_text = Path.write_text
+
+    def boom_on_marker(self: Path, *args: object, **kwargs: object) -> int:
+        if self == marker_path:
+            raise OSError("disk full")
+        return real_write_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "write_text", boom_on_marker)
+    with pytest.raises(OSError, match="disk full"):
+        rootfs_download.fetch_prebuilt(
+            android_version=14,
+            fingerprint="abc123def456",
+            out_image=out,
+            docker_version="27.5.1",
+        )
+    # Because the marker is written first, the crash happens before the rename:
+    # no marker-less image is left installed.
+    assert not out.exists()

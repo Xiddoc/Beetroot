@@ -22,12 +22,15 @@ Public surface:
 from __future__ import annotations
 
 import contextlib
+import fcntl
+import hashlib
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import IO, Final, Protocol
 
@@ -66,6 +69,38 @@ def _default_work_dir() -> Path:
     static ``S108`` bandit finding.
     """
     return paths.user_cache_dir("redroid-script")
+
+
+@contextlib.contextmanager
+def _clone_dir_lock(work: Path) -> Iterator[None]:
+    """
+    Hold an exclusive ``fcntl.flock`` on a lockfile beside the clone dir.
+
+    ``build_image`` mutates the shared per-user redroid-script clone dir in
+    place (``rm -rf`` + ``git clone`` + patch); without a lock two concurrent
+    ``beetroot build``s race on the same tree and corrupt each other (issue
+    #232). The lockfile sits at ``<work>.lock`` (a sibling, so it survives the
+    ``rm -rf`` of ``work`` itself) and the exclusive lock serializes the
+    clone+patch steps while still letting the second build reuse the artifacts
+    once the first releases.
+
+    Args:
+        work: The clone directory whose mutation is being serialized.
+
+    Yields:
+        ``None`` while the lock is held; released (and the fd closed) on exit.
+    """
+    lockfile = work.with_name(work.name + ".lock")
+    lockfile.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lockfile, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def _default_build_context() -> Path:
@@ -266,44 +301,64 @@ def build_image(  # noqa: PLR0913  # 7 keyword-only params; each is a distinct i
         ctx = _default_build_context()
     run = runner if runner is not None else DefaultRunner()
 
+    # Validate the (version, gapps, vendor) triple first — a contradictory
+    # config (e.g. ``none`` + a vendor) is a pure input error and must surface
+    # before any daemon/clone work.
     android = _android_for(android_version, gapps, gapps_vendor)
     tag = config.base_image_tag(android)
     vendor = config.resolve_gapps_vendor(android)
     gapps_flags = [] if vendor is None else GAPPS_VENDOR_FLAGS[vendor]
 
-    # Step 1: clone the patcher — skip when an identical clone already exists
-    # so a re-run doesn't discard already-downloaded Houdini / Magisk /
-    # GApps artifacts.  Wipe and re-clone when the URL differs (different fork
-    # or a corrupted work dir).
-    with console.progress("Cloning redroid-script"):
-        if _clone_url_matches(work, redroid_script_url):
-            console.info(f"reusing existing clone at {work}")
-        else:
-            run.run(["rm", "-rf", str(work)])
-            run.run(
-                ["git", "clone", "--depth", "1", redroid_script_url, str(work)],
-            )
+    # Daemon preflight: the patcher and ``docker compose build`` both touch the
+    # Docker daemon, so fail fast with the same actionable remedy the bake path
+    # uses instead of a generic ``command failed (exit 1)`` mid-build (issue
+    # #193).
+    if not _docker_daemon_responsive():
+        raise BootstrapError(
+            f"Docker daemon: `{settings.docker_bin} info` failed (daemon not running?) — "
+            "start the daemon (e.g. `sudo systemctl start docker`)"
+        )
 
-    # Step 2: patch. ``-i`` installs Houdini, ``-m`` installs Magisk.
-    patcher_cmd: list[str] = [
-        "uv",
-        "run",
-        "--with",
-        "requests",
-        "--with",
-        "tqdm",
-        "python",
-        "-W",
-        "ignore",
-        "redroid.py",
-        "-a",
-        f"{android_version}.0.0",
-        *gapps_flags,
-        "-i",
-        "-m",
-    ]
-    with console.progress("Patching base image (Magisk + Houdini + GApps)"):
-        run.run(patcher_cmd, cwd=work)
+    # Steps 1-2 (clone + patch) mutate the shared per-user clone dir in place
+    # (``rm -rf`` + ``git clone`` + patcher). Serialize concurrent builds on the
+    # same host under an exclusive flock so two ``beetroot build``s can't
+    # ``rm -rf``/clone over each other's tree (issue #232). The reuse path
+    # (clone URL matches) holds the lock too, so the ``.git/config`` read is
+    # synchronized with any racing clone.
+    with _clone_dir_lock(work):
+        # Step 1: clone the patcher — skip when an identical clone already
+        # exists so a re-run doesn't discard already-downloaded Houdini /
+        # Magisk / GApps artifacts.  Wipe and re-clone when the URL differs
+        # (different fork or a corrupted work dir).
+        with console.progress("Cloning redroid-script"):
+            if _clone_url_matches(work, redroid_script_url):
+                console.info(f"reusing existing clone at {work}")
+            else:
+                run.run(["rm", "-rf", str(work)])
+                run.run(
+                    ["git", "clone", "--depth", "1", redroid_script_url, str(work)],
+                )
+
+        # Step 2: patch. ``-i`` installs Houdini, ``-m`` installs Magisk.
+        patcher_cmd: list[str] = [
+            "uv",
+            "run",
+            "--with",
+            "requests",
+            "--with",
+            "tqdm",
+            "python",
+            "-W",
+            "ignore",
+            "redroid.py",
+            "-a",
+            f"{android_version}.0.0",
+            *gapps_flags,
+            "-i",
+            "-m",
+        ]
+        with console.progress("Patching base image (Magisk + Houdini + GApps)"):
+            run.run(patcher_cmd, cwd=work)
 
     # Step 3: build the Beetroot layer on top via the bundled compose template.
     # ``build_context`` is the directory Docker uses as the build context — it
@@ -334,6 +389,12 @@ def build_image(  # noqa: PLR0913  # 7 keyword-only params; each is a distinct i
                 "BASE_IMAGE": tag,
                 "BEETROOT_BUILD_CONTEXT": str(ctx),
                 "INSTANCE_NAME": _BUILD_INSTANCE_NAME,
+                # docker/Dockerfile uses the BuildKit-only ``COPY --chmod``; force
+                # BuildKit so the build doesn't abort with "the --chmod option
+                # requires BuildKit" on a host whose default builder is the legacy
+                # one (issue #229).
+                "DOCKER_BUILDKIT": "1",
+                "COMPOSE_DOCKER_CLI_BUILD": "1",
             },
         )
 
@@ -737,6 +798,36 @@ class _RootfsConfig(BaseModel):
         )
 
 
+def _major_version_from_image(image: str) -> int:
+    """
+    Parse the Android major version that leads a redroid image tag.
+
+    The tag follows the last ``:`` and starts with the version (e.g.
+    ``redroid/redroid:13.0.0-latest`` → ``13``). Used so the rootfs version
+    marker records the version of the *actually-baked* image rather than the
+    requested ``android_version`` arg, which a ``REDROID_IMAGE`` override can
+    diverge from (issue #187).
+
+    Args:
+        image: The redroid image reference (``repo:tag``).
+
+    Returns:
+        The integer Android major version leading the tag.
+
+    Raises:
+        BootstrapError: If the tag has no leading integer (malformed).
+    """
+    tag = image.partition(":")[2]
+    leading = tag.split(".")[0]
+    try:
+        return int(leading)
+    except ValueError:
+        raise BootstrapError(
+            f"cannot parse an Android major version from redroid image {image!r}; "
+            "expected a tag like 'redroid/redroid:13.0.0-latest'"
+        ) from None
+
+
 class _RootfsAssembly:
     """Drives one rootfs build inside a scratch ``work`` directory."""
 
@@ -759,12 +850,16 @@ class _RootfsAssembly:
         self.dbin = self.docker_extract / "docker"
 
     def build(self) -> Path:
-        """Fetch the static bundle, assemble the tree, pack the image, write the marker."""
+        """Fetch the static bundle, assemble the tree, write the marker, pack the image."""
         self._fetch_static_bundle()
         self._build_tree()
         self._verify_guest_image_marker()
-        self._pack_image()
+        # Write the host-side version marker BEFORE packing the image, so a crash
+        # mid-pack can't leave a present-but-marker-less image that silently
+        # skips the #82 skew check (issue #234). A stale marker without an image
+        # is harmless — the next bake re-drives both halves.
         self._write_version_marker()
+        self._pack_image()
         return self.cfg.out_image
 
     def _guest_image_marker(self) -> Path:
@@ -798,8 +893,15 @@ class _RootfsAssembly:
     def _write_version_marker(self) -> None:
         """Record the baked Android version beside the image for up/apply skew checks."""
         marker = rootfs_version_marker(self.cfg.out_image)
-        console.info(f"recording baked Android version {self.cfg.android_version} → {marker}")
-        marker.write_text(f"{self.cfg.android_version}\n", encoding="utf-8")
+        # Source the recorded version from the image that was actually baked
+        # (``redroid_image``), not the requested ``android_version`` arg — a
+        # ``REDROID_IMAGE`` override can pin a different version, and the VM
+        # backend's #82 skew check trusts this marker as the guest's real
+        # version, so it must agree with the guest-side /etc/beetroot/redroid-
+        # image marker (issue #187).
+        baked = _major_version_from_image(self.cfg.redroid_image)
+        console.info(f"recording baked Android version {baked} → {marker}")
+        marker.write_text(f"{baked}\n", encoding="utf-8")
 
     def _fetch_static_bundle(self) -> None:
         console.info(f"fetching Docker static bundle {self.cfg.docker_version}")
@@ -1082,6 +1184,13 @@ def _resolve_vm_dir(build_context: Path | None) -> Path:
 # matching prebuilt bzImage exists for the new version.
 KERNEL_VERSION: Final = "6.12.9"
 
+# sha256 of the pinned ``linux-<KERNEL_VERSION>.tar.xz`` source tarball, taken
+# from cdn.kernel.org's signed ``sha256sums.asc``. Verified before ``tar -xf``
+# so a tampered/MITM'd CDN tarball can't be compiled into a trusted bzImage
+# (issue #184). Bump in lockstep with KERNEL_VERSION (and the workflows that
+# fetch + verify the same tarball).
+KERNEL_SOURCE_SHA256: Final = "87be0360df0931b340d2bac35161a548070fbc3a8c352c49e21e96666c26aeb4"
+
 # Where the pinned kernel source tarball is fetched from when the prebuilt
 # fetch misses and the build falls back to a source compile (issue #74). The
 # major-version directory (``v6.x`` for 6.12.9) is derived from KERNEL_VERSION,
@@ -1135,8 +1244,31 @@ def _fetch_kernel_source(run: SubprocessRunner, work: Path) -> Path:
     tarball = work / f"linux-{KERNEL_VERSION}.tar.xz"
     console.info(f"fetching kernel source {url}")
     run.run(["curl", "-fsSL", url, "-o", str(tarball)])
+    # Verify the downloaded bytes against the pinned digest BEFORE extracting,
+    # so a tampered/MITM'd CDN tarball can't be unpacked + compiled into a
+    # trusted bzImage (issue #184).
+    _verify_kernel_source_digest(tarball)
     run.run(["tar", "-xf", str(tarball), "-C", str(work)])
     return work / f"linux-{KERNEL_VERSION}"
+
+
+def _verify_kernel_source_digest(tarball: Path) -> None:
+    """
+    Verify a downloaded kernel source tarball against the pinned sha256.
+
+    Args:
+        tarball: The on-disk ``linux-<version>.tar.xz`` to hash.
+
+    Raises:
+        BootstrapError: If the bytes' sha256 doesn't match
+            :data:`KERNEL_SOURCE_SHA256` (a tampered/MITM'd tarball).
+    """
+    actual = hashlib.sha256(tarball.read_bytes()).hexdigest()
+    if actual != KERNEL_SOURCE_SHA256:
+        raise BootstrapError(
+            f"kernel source sha256 mismatch for {tarball.name}: expected "
+            f"{KERNEL_SOURCE_SHA256}, got {actual}; refusing to compile a tampered kernel"
+        )
 
 
 class VmArtifacts(BaseModel):
@@ -1286,30 +1418,58 @@ def vm_bake_preflight(*, redroid_tar: Path | None = None) -> list[PreflightProbl
                     requirement=tool, detail="not found on PATH", fix=f"apt-get install {pkg}"
                 )
             )
+    # The local bake always spawns a staging dockerd (--data-root/--exec-root,
+    # cgroups, mounts, namespaces) even with REDROID_TAR set, so it needs root.
+    # Surface the privilege gap up front instead of letting the dockerd
+    # readiness loop time out after ~60s on an unprivileged host (issue #231).
+    if os.geteuid() != 0:
+        problems.append(
+            PreflightProblem(
+                requirement="root privilege",
+                detail=(
+                    "the local rootfs bake spawns a staging dockerd, which requires "
+                    "root (cgroups, mounts, namespaces)"
+                ),
+                fix=(
+                    "re-run as root (or in a --privileged container), or fetch the "
+                    "prebuilt rootfs instead of forcing a local bake"
+                ),
+            )
+        )
     # The host Docker CLI + a running daemon bake the redroid image — unless a
-    # pre-saved REDROID_TAR is supplied, which loads without pulling.
-    if redroid_tar is None:
-        if shutil.which(settings.docker_bin) is None:
+    # pre-saved REDROID_TAR is supplied, which loads without pulling. A set
+    # REDROID_TAR must still point at an existing file, else the bake passes
+    # --check then aborts mid-bake at ``docker load`` (issue #186).
+    if redroid_tar is not None:
+        if not redroid_tar.is_file():
             problems.append(
                 PreflightProblem(
-                    requirement=settings.docker_bin,
-                    detail="Docker CLI not found on PATH",
-                    fix="install Docker Engine (apt-get install docker.io)",
+                    requirement="REDROID_TAR",
+                    detail=f"tarball not found at {redroid_tar}",
+                    fix="point REDROID_TAR at an existing `docker save`d image tarball",
                 )
             )
-        elif not _docker_daemon_responsive():
-            problems.append(
-                PreflightProblem(
-                    requirement="Docker daemon",
-                    detail=f"`{settings.docker_bin} info` failed (daemon not running?)",
-                    fix=(
-                        "start the daemon (e.g. `sudo systemctl start docker`). If the "
-                        "redroid pull then hits a Docker Hub rate limit, point REDROID_TAR "
-                        "at a `docker save`d image tarball or use a registry mirror "
-                        "(e.g. mirror.gcr.io)."
-                    ),
-                )
+    elif shutil.which(settings.docker_bin) is None:
+        problems.append(
+            PreflightProblem(
+                requirement=settings.docker_bin,
+                detail="Docker CLI not found on PATH",
+                fix="install Docker Engine (apt-get install docker.io)",
             )
+        )
+    elif not _docker_daemon_responsive():
+        problems.append(
+            PreflightProblem(
+                requirement="Docker daemon",
+                detail=f"`{settings.docker_bin} info` failed (daemon not running?)",
+                fix=(
+                    "start the daemon (e.g. `sudo systemctl start docker`). If the "
+                    "redroid pull then hits a Docker Hub rate limit, point REDROID_TAR "
+                    "at a `docker save`d image tarball or use a registry mirror "
+                    "(e.g. mirror.gcr.io)."
+                ),
+            )
+        )
     return problems
 
 
@@ -1504,6 +1664,11 @@ def build_vm_kernel(  # noqa: PLR0913  # 9 keyword-only params; each is a distin
             tempfile.TemporaryDirectory(prefix="beetroot-kernel-src-") as src_work,
         ):
             source_tree = _fetch_kernel_source(run, Path(src_work))
+            # Quote the build-context-derived paths so a checkout under a path
+            # with spaces/metacharacters doesn't word-split inside the sh -c
+            # (issue #208).
+            config_arg = shlex.quote(str(kernel_config))
+            out_arg = shlex.quote(str(kernel_out))
             run.run(
                 [
                     "sh",
@@ -1511,9 +1676,9 @@ def build_vm_kernel(  # noqa: PLR0913  # 9 keyword-only params; each is a distin
                     # merge the defconfig base with the vendored fragment, then
                     # build, then drop the bzImage where the launcher expects it.
                     "make defconfig && "
-                    f"./scripts/kconfig/merge_config.sh -m .config {kernel_config} && "
+                    f"./scripts/kconfig/merge_config.sh -m .config {config_arg} && "
                     f'make olddefconfig && make {cc_prefix}-j"$(nproc)" bzImage && '
-                    f"cp arch/x86/boot/bzImage {kernel_out}",
+                    f"cp arch/x86/boot/bzImage {out_arg}",
                 ],
                 cwd=source_tree,
             )

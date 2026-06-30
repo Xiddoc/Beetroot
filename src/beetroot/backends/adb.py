@@ -501,16 +501,23 @@ class AdbDevice:
                 # unavailable device aborts the batch.
                 if not serial_is_available(self._config.serial):
                     # The current module failed *because* the device went
-                    # offline mid-install — record its failed row before
-                    # aborting so it is accounted for in the report.
+                    # offline during this module — record its failed row
+                    # before aborting so it is accounted for in the report.
                     # Otherwise it vanishes: its row was never appended to
                     # ``results``, and ``skipped`` counts only the
-                    # truly-un-attempted modules AFTER this position.
+                    # truly-un-attempted modules AFTER this position. Keep the
+                    # detail stage-neutral (the drop can happen at any point of
+                    # the install, not specifically "mid-install") and retain
+                    # the underlying adb error so the row is diagnosable.
+                    adb_error = str(e).strip()
+                    detail = "device went offline during this module"
+                    if adb_error:
+                        detail = f"{detail} — last adb error: {adb_error}"
                     results.append(
                         ModuleInstallResult(
                             source=source,
                             ok=False,
-                            detail="device went offline mid-install",
+                            detail=detail,
                         ),
                     )
                     skipped = len(sources) - index - 1

@@ -195,6 +195,49 @@ def test_daemon_wait_succeeds_within_budget(tmp_path: Path) -> None:
     assert any("REPLACE INTO settings" in q for q in queries)
 
 
+def test_magisk_value_select_failure_aborts_not_masked(tmp_path: Path) -> None:
+    # Issue #239: the prior ``magisk ... | awk`` ran magisk inside a pipeline,
+    # so under ``set -eu`` the substitution's exit status was awk's (always 0)
+    # — a ``magisk --sqlite`` failure after the liveness probe was silently
+    # masked. With the pipe removed, a value-SELECT failure must abort the
+    # helper (non-zero) instead of proceeding with an empty/garbage value.
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    magisk = fake_bin / "magisk"
+    # SELECT 1 (liveness) succeeds; the REPLACE INTO settings writes succeed;
+    # the value-SELECT exits non-zero with no output (a daemon-unreachable
+    # read failure after the probe). The pre-#239 pipe would have masked this.
+    magisk.write_text(
+        """#!/bin/sh
+echo "$@" >> "$MAGISK_LOG"
+case "$2" in
+    "SELECT 1") exit 0 ;;
+    "SELECT value FROM settings WHERE key='zygisk';") exit 7 ;;
+esac
+exit 0
+"""
+    )
+    magisk.chmod(0o755)
+    log = tmp_path / "magisk.log"
+    log.write_text("")
+    res = subprocess.run(  # noqa: S603  # controlled fake-magisk shim; argv is fixed
+        ["sh", str(HELPER)],  # noqa: S607  # `sh` is universal POSIX, matching Android init's invocation
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            "BEETROOT_DENYLIST_PACKAGES": "",
+            "MAGISK_LOG": str(log),
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+        },
+        timeout=10,
+    )
+    assert res.returncode != 0, "value-SELECT failure was masked instead of aborting"
+    # The helper must not have reached the denylist INSERTs after the failed read.
+    queries = [line for line in log.read_text().splitlines() if line]
+    assert not [q for q in queries if "INSERT OR IGNORE INTO denylist" in q]
+
+
 @pytest.mark.parametrize("packages", [",,", ",com.app,", " "])
 def test_malformed_csv_does_not_inject_empty_rows(tmp_path: Path, packages: str) -> None:
     # CSVs with extra commas (``,,``, leading/trailing) must not produce

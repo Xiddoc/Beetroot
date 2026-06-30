@@ -61,18 +61,6 @@ SUPPORTED_API_VERSION: Final = 8
 #   additive; old YAMLs without a frida block default to frida=None).
 _AUTO_BUMPABLE_API_VERSIONS: Final = frozenset({1, 2, 3, 4, 5, 6, 7})
 
-# Non-additive versions that require an explicit migration rather than a
-# silent auto-bump. If a YAML pins one of these and a migration path exists,
-# load_yaml raises a clear, actionable migration error naming the renamed /
-# removed fields.
-#
-# api_version 3 → 4: ``stealth.denylist`` moved to ``magisk.denylist``.
-# The ``stealth:`` key is now rejected with a migration hint pointing at
-# CHANGELOG.md. YAMLs that merely omit ``api_version`` (default=current)
-# are unaffected — only those that explicitly wrote ``api_version: 3`` and
-# also used ``stealth:`` are covered by this path.
-_MIGRATION_REQUIRED_VERSIONS: Final = frozenset[int]()  # none yet beyond auto-bumpable
-
 # The single source of truth for the supported Android major versions. To add a
 # new version, see "Adding a new Android version" in AGENTS.md — the human-
 # readable enumerations elsewhere ("11, 12, 13, or 14") are kept in sync by
@@ -141,6 +129,40 @@ FRIDA_AUTO: Final = "auto"
 FRIDA_LATEST: Final = "latest"
 _FRIDA_SYMBOLIC_VERSIONS: Final = frozenset({FRIDA_AUTO, FRIDA_LATEST})
 
+# A SHA-256 digest is exactly 64 hex characters. Pre-validated at config-load
+# time so a truncated / non-hex / fat-fingered ``frida.sha256`` fails fast
+# instead of after a full download + decompress (the download-time compare in
+# frida_download stays as defence-in-depth). Case-insensitive — Frida release
+# manifests publish lowercase, but a pasted mixed-case digest is equally valid.
+_SHA256_RE: Final = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def _check_sha256_shape(field_name: str, v: str | None) -> str | None:
+    """
+    Reject a non-``None`` ``sha256`` that isn't a 64-character hex digest.
+
+    ``None`` passes through unchanged (the field is optional).
+
+    Args:
+        field_name: The dotted field name for the error message (e.g.
+            ``frida.sha256``).
+        v: The candidate digest, or ``None``.
+
+    Returns:
+        ``v`` unchanged when it is ``None`` or a valid 64-char hex digest.
+
+    Raises:
+        ValueError: If ``v`` is a non-``None`` value that doesn't match the
+            64-character hex grammar.
+    """
+    if v is None or _SHA256_RE.match(v):
+        return v
+    raise ValueError(
+        f"{field_name} {v!r} must be a 64-character hex SHA-256 digest "
+        "(e.g. a 64-char string of 0-9a-f). A truncated or non-hex digest "
+        "can never match the downloaded artifact."
+    )
+
 
 def is_pinned_frida_version(v: str) -> bool:
     """
@@ -172,6 +194,13 @@ _DOCKER_SIZE_RE: Final = re.compile(r"^\d+(\.\d+)?[bkmgtBKMGT]?$")
 # single ``register bravo`` triple-prints because ``all_resolved_ports``
 # cascades into the same load twice. CR #2 finding A2.
 _API_VERSION_BUMP_WARNED: set[Path] = set()
+
+# Companion dedup set for the legacy ports-mapping migration note. The note is
+# emitted from ``load_yaml`` (where the path is known), not from the mode-before
+# validator (which has no path), so a fleet scan that calls ``load_yaml`` once
+# per instance prints the note once per path instead of on every load. Cleared
+# alongside ``_API_VERSION_BUMP_WARNED`` in the conftest autouse fixture.
+_PORTS_MIGRATION_WARNED: set[Path] = set()
 
 
 # Where DRM render nodes live; their presence means the host has a GPU the
@@ -274,7 +303,8 @@ class Resources(BaseModel):
         cpus: CPU cap as a float.
         shared_mem: Shared-memory size (Docker ``shm_size``). Docker size format.
         mem_reservation: Optional soft memory floor. Docker size format.
-        memswap_limit: Optional total memory + swap cap. Docker size format.
+        memswap_limit: Optional total memory + swap cap. Docker size format,
+            plus the documented sentinel ``-1`` (unlimited swap).
         pids_limit: Maximum number of PIDs the container can spawn.
     """
 
@@ -297,6 +327,12 @@ class Resources(BaseModel):
         if v is None:
             return v
         field_name = getattr(info, "field_name", "field")
+        # Docker documents ``memswap_limit: -1`` as "unlimited swap" — a
+        # sentinel, not a size. Accept it only for memswap_limit; the other
+        # size fields (mem_reservation, and the required mem/shared_mem) have
+        # no such sentinel and still reject -1 as a malformed size.
+        if field_name == "memswap_limit" and v == "-1":
+            return v
         return _check_docker_size(f"resources.{field_name}", v)
 
     @model_validator(mode="before")
@@ -350,6 +386,11 @@ class Frida(BaseModel):
             "https://github.com/frida/frida/releases follow the pinned shape; "
             "typos surface 404s at download time otherwise."
         )
+
+    @field_validator("sha256")
+    @classmethod
+    def _check_sha256_shape(cls, v: str | None) -> str | None:
+        return _check_sha256_shape("frida.sha256", v)
 
     @model_validator(mode="after")
     def _reject_sha256_with_symbolic_version(self) -> Self:
@@ -547,6 +588,21 @@ class Android(BaseModel):
                 f"android.gapps_vendor: {self.gapps_vendor!r} names a GApps "
                 "distribution, but android.gapps: none asks for no GApps at all. "
                 "Drop gapps_vendor, or set gapps to minimal/full."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _note_vendor_overrides_intent(self) -> Self:
+        # A pinned vendor wins outright in resolve_gapps_vendor, so the
+        # minimal/full intent's own default-vendor pick is silently discarded
+        # and gapps: minimal vs gapps: full collapse to the same base image.
+        # Warn so the override isn't a surprise (the gapps: none case is the
+        # contradiction handled by _reject_vendor_with_none above, not here).
+        if self.gapps_vendor is not None and self.gapps != "none":
+            console.note(
+                f"android.gapps_vendor: {self.gapps_vendor} is pinned, so it "
+                f"overrides the android.gapps: {self.gapps} intent — the base "
+                "image is selected by the vendor, not the intent."
             )
         return self
 
@@ -878,15 +934,14 @@ class InstanceConfig(BaseModel):
                 f"api_version: {SUPPORTED_API_VERSION}. See CHANGELOG.md."
             )
         # Translate the well-known host overrides into the seeded list form.
+        # The user-facing migration note is emitted once-per-path from
+        # ``load_yaml`` (which has the path); this validator has no path and
+        # runs on every model_validate, so noting here would re-fire on every
+        # fleet-scan load (issue #202).
         migrated = [
             {"service": service, "guest": guest, "host": raw_ports.get(service)}
             for service, guest in WELL_KNOWN_SERVICES.items()
         ]
-        console.note(
-            "migrated legacy ports mapping to the api_version "
-            f"{SUPPORTED_API_VERSION} list form; run 'beetroot apply' to rewrite "
-            "the YAML."
-        )
         return {**data, "ports": migrated}
 
     @model_validator(mode="after")
@@ -908,6 +963,22 @@ class InstanceConfig(BaseModel):
     @model_validator(mode="after")
     def _check_required_addressing_services(self) -> Self:
         services = {m.service for m in self.ports if m.service is not None}
+        # A well-known service's guest port is fixed by the redroid image —
+        # the stride allocator derives the published host port from the
+        # *service name* (ports.resolve_ports), not the guest port, so a
+        # mistyped guest port would publish a host port forwarding to a dead
+        # guest port. Reject any well-known mapping whose guest isn't canonical
+        # (arbitrary/unlabelled mappings stay unconstrained — they name their
+        # own guest port).
+        for m in self.ports:
+            if m.service in WELL_KNOWN_SERVICES and m.guest != WELL_KNOWN_SERVICES[m.service]:
+                raise ValueError(
+                    f"ports mapping for well-known service {m.service!r} has guest "
+                    f"{m.guest}, but its canonical guest port is "
+                    f"{WELL_KNOWN_SERVICES[m.service]} (fixed by the redroid image). "
+                    "Drop the guest override, or use a non-well-known service name "
+                    "for an arbitrary guest port."
+                )
         if "adb" not in services:
             raise ValueError(
                 "ports must include a mapping with service: adb — every backend "
@@ -920,6 +991,14 @@ class InstanceConfig(BaseModel):
                 "block is configured — frida_address is derived from it. Add "
                 "`- {service: frida, guest: 27042}` (host optional), or drop the "
                 "frida: block."
+            )
+        if self.frida is not None and "frida_control" not in services:
+            raise ValueError(
+                "ports must include a mapping with service: frida_control when a "
+                "frida: block is configured — Frida's control channel (guest "
+                "27043) must be published alongside the data channel. Add "
+                "`- {service: frida_control, guest: 27043}` (host optional), or "
+                "drop the frida: block."
             )
         return self
 
@@ -947,9 +1026,9 @@ def inert_fields(cfg: InstanceConfig) -> list[str]:
     Only ``binder: vm`` has inert fields today: it boots an UNMODIFIED
     upstream redroid image (:func:`vm_redroid_image`) with no GApps / Magisk /
     Houdini / Frida layer, so the layered-image knobs (``android.gapps``,
-    ``magisk.denylist``) and the whole ``frida:`` block are inert, and only
-    adb is forwarded so arbitrary ``ports:`` mappings are dropped (issue #44/
-    #108). ``binder: auto``/``host`` honour all of these → empty list.
+    ``magisk.denylist``, ``modules``) and the whole ``frida:`` block are inert,
+    and only adb is forwarded so arbitrary ``ports:`` mappings are dropped
+    (issue #44/#108). ``binder: auto``/``host`` honour all of these → empty list.
 
     Args:
         cfg: The fully-loaded instance config to inspect.
@@ -975,6 +1054,11 @@ def inert_fields(cfg: InstanceConfig) -> list[str]:
         inert.append(
             "magisk.denylist (the guest runs plain redroid with no Magisk, "
             "so the denylist is never applied)"
+        )
+    if cfg.modules:
+        inert.append(
+            "modules (the guest runs plain redroid with no Magisk, so flashed "
+            "modules are never applied)"
         )
     arbitrary = [m for m in cfg.ports if m.service not in WELL_KNOWN_SERVICES]
     if arbitrary:
@@ -1098,6 +1182,27 @@ def load_yaml(path: Path) -> InstanceConfig:
                 )
                 _API_VERSION_BUMP_WARNED.add(resolved)
         raw["api_version"] = SUPPORTED_API_VERSION
+    # Emit the legacy ports-mapping migration note here (where the path is
+    # known) rather than in the mode-before validator (which has no path and
+    # re-runs on every model_validate), deduped per resolved path so a fleet
+    # scan that loads each YAML repeatedly only notes once (issue #202). A
+    # populated well-known mapping is what _migrate_legacy_ports_mapping
+    # translates; a non-well-known key raises a migration error there instead,
+    # so it must not also print this note.
+    if (
+        isinstance(raw, dict)
+        and isinstance(raw.get("ports"), dict)
+        and raw["ports"]
+        and all(k in WELL_KNOWN_SERVICES for k in raw["ports"])
+    ):
+        resolved_ports_path = path.resolve()
+        if resolved_ports_path not in _PORTS_MIGRATION_WARNED:
+            console.note(
+                "migrated legacy ports mapping to the api_version "
+                f"{SUPPORTED_API_VERSION} list form; run 'beetroot apply' to "
+                "rewrite the YAML."
+            )
+            _PORTS_MIGRATION_WARNED.add(resolved_ports_path)
     return InstanceConfig.model_validate(raw)
 
 

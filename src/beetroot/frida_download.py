@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import hashlib
 import lzma
+import os
 import shutil
 import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Final
 
 from . import config, console, paths
 from .settings import settings
@@ -29,6 +32,11 @@ from .settings import settings
 _LATEST_RELEASE_URL = "https://github.com/frida/frida/releases/latest"
 
 _CHUNK_SIZE = 1 << 16  # 64 KiB per read; balances memory and progress granularity
+
+# Ceiling on the *decompressed* frida-server output. A real frida-server is
+# tens of MB; this generous 512 MiB cap turns a corrupt or zip-bomb ``.xz`` into
+# a clean ``FridaFetchError`` instead of an OOM kill of the whole process (#228).
+_MAX_DECOMPRESSED_BYTES: Final[int] = 512 * 1024 * 1024
 
 
 class FridaFetchError(RuntimeError):
@@ -202,36 +210,61 @@ def download(version: str, *, expected_sha256: str | None = None) -> Path:
 
     out.parent.mkdir(parents=True, exist_ok=True)
     url = release_url(version)
+    # Stage into a process-unique temp on the cache filesystem so two concurrent
+    # fetches of the same version can't write a shared fixed ``.tmp`` and publish
+    # a cross-contaminated binary via the atomic rename (#185). The compressed
+    # payload is fed chunk-by-chunk into an incremental LZMA decompressor whose
+    # output streams straight to the temp file — neither the whole compressed nor
+    # the whole decompressed payload is ever resident (#227) — and the running
+    # decompressed total is capped to guard against a zip-bomb ``.xz`` (#228).
+    fd, tmp_name = tempfile.mkstemp(dir=out.parent, suffix=".tmp")
+    tmp = Path(tmp_name)
     try:
-        with urllib.request.urlopen(url, timeout=settings.http_timeout) as resp:  # noqa: S310  # URL built from a pinned GitHub release path; scheme is https
+        decompressor = lzma.LZMADecompressor()
+        decompressed_total = 0
+        with (
+            os.fdopen(fd, "wb") as handle,
+            urllib.request.urlopen(url, timeout=settings.http_timeout) as resp,  # noqa: S310  # URL built from a pinned GitHub release path; scheme is https
+        ):
             raw_length = resp.headers.get("Content-Length")
             total: float | None = float(raw_length) if raw_length else None
-            chunks: list[bytes] = []
             with console.progress(f"Fetching frida-server {version}", total=total) as bar:
                 while True:
                     chunk = resp.read(_CHUNK_SIZE)
                     if not chunk:
                         break
-                    chunks.append(chunk)
+                    piece = decompressor.decompress(chunk)
+                    decompressed_total += len(piece)
+                    if decompressed_total > _MAX_DECOMPRESSED_BYTES:
+                        raise FridaFetchError(
+                            f"frida-server {url} decompressed past the "
+                            f"{_MAX_DECOMPRESSED_BYTES}-byte ceiling — the download may be "
+                            "corrupt or a zip bomb; refusing to continue"
+                        )
+                    handle.write(piece)
                     bar.advance(len(chunk))
-        compressed = b"".join(chunks)
+        tmp.chmod(0o755)
+        tmp.replace(out)
     except urllib.error.HTTPError as e:
+        tmp.unlink(missing_ok=True)
         raise FridaFetchError(f"download failed: HTTP {e.code} fetching {url}") from e
     except TimeoutError as e:
+        tmp.unlink(missing_ok=True)
         raise FridaFetchError(f"download timed out after {settings.http_timeout}s: {url}") from e
     except urllib.error.URLError as e:
+        tmp.unlink(missing_ok=True)
         raise FridaFetchError(f"download failed: cannot reach {url}: {e.reason}") from e
-    try:
-        decompressed = lzma.decompress(compressed)
     except lzma.LZMAError as e:
+        tmp.unlink(missing_ok=True)
         raise FridaFetchError(
             f"decompression failed for frida-server {url}: the download may be "
             "corrupt or truncated — delete the partial cache and retry"
         ) from e
-    tmp = out.with_suffix(".tmp")
-    tmp.write_bytes(decompressed)
-    tmp.chmod(0o755)
-    tmp.replace(out)
+    except BaseException:
+        # Any other failure (the ceiling guard above, an interrupt, a disk-full
+        # write) must not orphan the temp in the user-global cache.
+        tmp.unlink(missing_ok=True)
+        raise
     _check_sha256(out, expected_sha256)
     return out
 
