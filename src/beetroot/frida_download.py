@@ -229,11 +229,25 @@ def download(version: str, *, expected_sha256: str | None = None) -> Path:
             raw_length = resp.headers.get("Content-Length")
             total: float | None = float(raw_length) if raw_length else None
             with console.progress(f"Fetching frida-server {version}", total=total) as bar:
-                while True:
-                    chunk = resp.read(_CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    piece = decompressor.decompress(chunk)
+                while not decompressor.eof:
+                    to_feed = b""
+                    if decompressor.needs_input:
+                        to_feed = resp.read(_CHUNK_SIZE)
+                        if not to_feed:
+                            # Compressed input ran out before the LZMA
+                            # end-of-stream marker: a truncated/incomplete .xz
+                            # that the one-shot ``lzma.decompress`` this loop
+                            # replaced would have rejected (#228).
+                            raise FridaFetchError(
+                                f"frida-server {url} ended mid-stream (truncated or "
+                                "incomplete .xz) — delete the partial cache and retry"
+                            )
+                        bar.advance(len(to_feed))
+                    # Bound the per-call output so a single compressed chunk
+                    # can't expand without limit before the ceiling check
+                    # (#228); the decompressor buffers any unconsumed input for
+                    # the next ``b""`` drain step (#227).
+                    piece = decompressor.decompress(to_feed, max_length=_CHUNK_SIZE)
                     decompressed_total += len(piece)
                     if decompressed_total > _MAX_DECOMPRESSED_BYTES:
                         raise FridaFetchError(
@@ -242,7 +256,6 @@ def download(version: str, *, expected_sha256: str | None = None) -> Path:
                             "corrupt or a zip bomb; refusing to continue"
                         )
                     handle.write(piece)
-                    bar.advance(len(chunk))
         tmp.chmod(0o755)
         tmp.replace(out)
     except urllib.error.HTTPError as e:

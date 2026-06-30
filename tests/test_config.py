@@ -572,8 +572,21 @@ class TestModule:
         assert m.url is None
 
     def test_url_with_sha256_is_valid(self) -> None:
-        m = Module(url="https://example.com/mod.zip", sha256="abc123")
-        assert m.sha256 == "abc123"
+        digest = "abcdef01" * 8
+        m = Module(url="https://example.com/mod.zip", sha256=digest)
+        assert m.sha256 == digest
+
+    def test_short_sha256_rejected(self) -> None:
+        # #194: a non-64-hex module.sha256 is rejected at load time (mirrors
+        # frida.sha256), not late after a full download + extract.
+        with pytest.raises(ValidationError, match="64-character hex SHA-256"):
+            Module(url="https://example.com/mod.zip", sha256="abc123")
+
+    def test_trailing_newline_sha256_rejected(self) -> None:
+        # #194: ``$`` matches before a trailing newline, so a digest pasted with
+        # a trailing ``\n`` must still be rejected (``fullmatch``, not ``match``).
+        with pytest.raises(ValidationError, match="64-character hex SHA-256"):
+            Module(url="https://example.com/mod.zip", sha256="a" * 64 + "\n")
 
     def test_neither_url_nor_path_raises(self) -> None:
         with pytest.raises(ValidationError, match="must set either"):

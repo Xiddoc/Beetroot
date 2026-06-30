@@ -295,6 +295,21 @@ def test_table_non_tty_renders_long_cell_verbatim(monkeypatch: pytest.MonkeyPatc
     assert "…" not in out  # the ellipsis rich inserts when it truncates
 
 
+def test_table_non_tty_wide_cell_not_folded(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A single load-bearing cell WIDER than rich's 80-col non-TTY default must
+    # render on one physical line verbatim, not folded across lines — rich
+    # clamps a print(width=…) request to the console width, so the lossless
+    # branch widens the console for the render (#204). The prior test used a
+    # row that fit within 80 and so never exercised this overflow.
+    c, buf = _make_console(tty=False)
+    monkeypatch.setattr(console, "_stdout_console", c)
+    wide = "localhost:" + "9" * 120  # 130 chars, well past the 80-col default
+    console.table(["NAME", "ADB"], [["alpha", wide]])
+    out = buf.getvalue()
+    assert any(wide in line for line in out.splitlines()), out
+    assert "…" not in out
+
+
 def test_table_non_tty_has_no_box_drawing(monkeypatch: pytest.MonkeyPatch) -> None:
     # Box-drawing borders are plain UTF-8 (not ANSI), so they survive the
     # non-TTY color strip and would pollute piped output. The lossless branch

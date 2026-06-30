@@ -113,6 +113,28 @@ class TestFridaIncrementalStreaming:
                 frida_download.download(VERSION)
         assert not frida_download.cached_binary(VERSION).exists()
 
+    def test_truncated_xz_raises_and_leaves_no_output(self, isolated_registry: Path) -> None:
+        # A valid .xz that ends before its LZMA end-of-stream marker (the
+        # network died mid-download) must be rejected, not silently accepted
+        # as a complete binary — the regression the eof check restores (#228).
+        truncated = FAKE_COMPRESSED[:-1]
+        with patch("urllib.request.urlopen", return_value=_chunked_resp(truncated)):
+            with pytest.raises(frida_download.FridaFetchError, match="ended mid-stream"):
+                frida_download.download(VERSION)
+        assert not frida_download.cached_binary(VERSION).exists()
+
+    def test_bounded_drain_across_buffered_output(
+        self, isolated_registry: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A tiny chunk size forces the bounded decompressor to drain its
+        # internal buffer over several ``b""`` steps (the needs_input=False
+        # path that caps single-chunk expansion, #228); the binary must still
+        # come out byte-identical.
+        monkeypatch.setattr(frida_download, "_CHUNK_SIZE", 8)
+        with patch("urllib.request.urlopen", return_value=_chunked_resp(FAKE_COMPRESSED)):
+            out = frida_download.download(VERSION)
+        assert out.read_bytes() == FAKE_BINARY
+
 
 class TestFridaDecompressionCeiling:
     def test_exceeding_ceiling_raises_and_leaves_no_output(

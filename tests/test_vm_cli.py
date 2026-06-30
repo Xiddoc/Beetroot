@@ -637,7 +637,7 @@ class TestVmLogs:
 
     def test_logs_prints_qemu_console(self, cli_root: Path) -> None:
         root = self._register(cli_root)
-        qemu.QemuProcess(root).console_log.write_text(
+        qemu.QemuProcess(root, 5555).console_log.write_text(
             "[ 0.000000] Linux\n[*] Zygisk newly enabled — restarting zygote\n"
         )
         result = runner.invoke(cli.app, ["logs", "vm1"])

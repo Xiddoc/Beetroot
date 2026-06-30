@@ -302,7 +302,7 @@ class VmDeviceBackend:
         """
         True iff the QEMU process for this instance is alive.
         """
-        return qemu.QemuProcess(self._root).is_running()
+        return self._qemu().is_running()
 
     def install_frida(self, version: str | None = None) -> None:
         """
@@ -365,7 +365,7 @@ class VmDeviceBackend:
             follow: If True, stream continuously with ``tail -f`` instead of
                 printing the current contents once.
         """
-        log = qemu.QemuProcess(self._root).console_log
+        log = self._qemu().console_log
         if not log.is_file():
             console.warn(
                 f"no QEMU console log for {self._name!r} yet at {log} — "
@@ -412,6 +412,16 @@ class VmDeviceBackend:
                 ``/dev/kvm`` is unavailable.
         """
         return qemu.detect_accel(self._cfg.vm.accel)
+
+    def _qemu(self) -> qemu.QemuProcess:
+        """
+        Return this instance's QEMU process manager, keyed by its host ADB port.
+
+        The host ADB port is the per-instance identity token
+        :meth:`qemu.QemuProcess._pid_is_qemu` matches against (#162), so every
+        construction site must supply it.
+        """
+        return qemu.QemuProcess(self._root, ports.well_known(self.ports)["adb"])
 
     def build_argv(self, accel: qemu.ResolvedAccel) -> list[str]:
         """
@@ -476,7 +486,7 @@ class VmDeviceBackend:
             self._up_cached(accel)
             return
         argv = self.build_argv(accel)
-        proc = qemu.QemuProcess(self._root)
+        proc = self._qemu()
         proc.start(argv)
         try:
             self._wait_for_adb_connect(accel, proc)
@@ -573,7 +583,7 @@ class VmDeviceBackend:
                 monitor_socket=monitor,
                 loadvm=loadvm,
             )
-            proc = qemu.QemuProcess(self._root)
+            proc = self._qemu()
             proc.start(argv)
             try:
                 # Pass proc so a dead-on-arrival -loadvm resume is caught fast
@@ -833,7 +843,7 @@ class VmDeviceBackend:
                     f"the QEMU micro-VM for {self._name!r} exited before exposing ADB "
                     f"at {target} (a -loadvm resume onto an unrestorable snapshot, or "
                     f"a launch failure). Inspect the guest console with "
-                    f"`beetroot logs {self._name}` ({qemu.QemuProcess(self._root).console_log})."
+                    f"`beetroot logs {self._name}` ({self._qemu().console_log})."
                 )
             if time.monotonic() >= deadline:
                 raise qemu.QemuLaunchError(
@@ -879,7 +889,7 @@ class VmDeviceBackend:
         """
         Terminate the micro-VM (SIGTERM); a no-op if it isn't running.
         """
-        qemu.QemuProcess(self._root).terminate()
+        self._qemu().terminate()
 
     def restart(self) -> None:
         """
@@ -952,7 +962,7 @@ class VmDeviceBackend:
                 "VmDeviceBackend.destroy() requires yes=True to proceed; "
                 "confirm the destructive operation in the calling code first."
             )
-        qemu.QemuProcess(self._root).terminate()
+        self._qemu().terminate()
         registry.remove(self._name)
         if self._root.exists():
             shutil.rmtree(self._root)
@@ -978,7 +988,7 @@ class VmDeviceBackend:
         from beetroot.api import CheckResult  # noqa: PLC0415  # avoid import cycle with api.py
 
         checks: dict[str, CheckResult] = {}
-        running = qemu.QemuProcess(self._root).is_running()
+        running = self._qemu().is_running()
         checks["vm.process"] = (
             CheckResult(status="pass")
             if running

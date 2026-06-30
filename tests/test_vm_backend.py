@@ -1289,7 +1289,7 @@ class TestWaitForAdbConnect:
             raise AssertionError("a dead QEMU must raise before any backoff sleep")
 
         monkeypatch.setattr("beetroot.backends.vm.time.sleep", _no_sleep)
-        proc = qemu.QemuProcess(backend.root)
+        proc = qemu.QemuProcess(backend.root, 5555)
         monkeypatch.setattr(qemu.QemuProcess, "is_running", lambda _self: False)
         with pytest.raises(qemu.QemuLaunchError, match="exited before exposing ADB"):
             backend._wait_for_adb_connect("tcg", proc)
@@ -1514,7 +1514,7 @@ class TestLogs:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         backend = _make_backend(tmp_path)
-        log = qemu.QemuProcess(backend.root).console_log
+        log = qemu.QemuProcess(backend.root, 5555).console_log
         log.write_text("[ 0.00] Linux\n[*] Zygisk newly enabled — restarting zygote\n")
         backend.logs()
         out = capsys.readouterr().out
@@ -1526,7 +1526,7 @@ class TestLogs:
     ) -> None:
         # Kernel console output can carry non-UTF8 bytes; logs must not crash.
         backend = _make_backend(tmp_path)
-        log = qemu.QemuProcess(backend.root).console_log
+        log = qemu.QemuProcess(backend.root, 5555).console_log
         log.write_bytes(b"boot \xff\xfe done\n")
         backend.logs()
         out = capsys.readouterr().out
@@ -1537,7 +1537,7 @@ class TestLogs:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         backend = _make_backend(tmp_path)
-        log = qemu.QemuProcess(backend.root).console_log
+        log = qemu.QemuProcess(backend.root, 5555).console_log
         log.write_text("x\n")
         called: dict[str, list[str]] = {}
 

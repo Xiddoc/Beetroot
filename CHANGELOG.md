@@ -5,7 +5,7 @@
 ### Security
 
 - **The guest-kernel source tarball is verified against a pinned sha256 before compiling (#184).** The `binder: vm` kernel build (and the release/CI lanes) now hash the downloaded `cdn.kernel.org` tarball and fold the digest into the published prebuilt fingerprint, so a tampered tarball can't be compiled into a trusted `bzImage`.
-- **`frida-server` downloads decompress incrementally with a bounded output ceiling (#228).** A corrupt or zip-bomb `.xz` now raises `FridaFetchError` past the ceiling instead of OOM-ing the host.
+- **`frida-server` downloads decompress incrementally with a bounded output ceiling and a truncation check (#228).** A corrupt or zip-bomb `.xz` raises `FridaFetchError` past the ceiling instead of OOM-ing the host; the per-call output is now capped (so a single chunk can't expand without bound), and a stream that ends before its LZMA end-of-stream marker (a truncated download) is rejected instead of silently accepted as a complete binary.
 - **Relative `path:` module entries are now contained to the instance directory (#152).** A relative `path:` that resolves outside the instance dir (e.g. `path: ../../../etc/shadow`) is rejected at staging time — the path-traversal analogue of the existing `file://` URL block. **Absolute** `path:` entries (e.g. `path: /tmp/mod.zip`) remain permitted and are read as-is (an unchanged, tested feature). No schema/api_version change.
 
 ### Breaking changes
@@ -504,9 +504,9 @@
 ### Quality & internals
 - **`frida-server` and module downloads stream chunk-by-chunk to disk (#227).** Frida decompresses incrementally instead of buffering the whole compressed and decompressed payload in RAM — matching the rootfs streaming idiom and easing the memory posture on constrained TCG/CI hosts.
 - **Added a repo-root `.dockerignore` (#207).** `beetroot build` no longer uploads `.venv/`, `.git/`, or instance dirs as build context — only `docker/` is sent.
-- **Warn when a pinned `gapps_vendor` overrides the `minimal`/`full` intent (#220).** The silently-collapsed image/flag is no longer a surprise.
+- **Warn when a pinned `gapps_vendor` overrides the `minimal`/`full` intent (#220).** The silently-collapsed image/flag is no longer a surprise. The note is emitted once per resolved path from `load_yaml` (not on every `Android` construction), so a fleet scan that re-loads each YAML doesn't reprint it N times.
 - **Removed the dead, never-read `_MIGRATION_REQUIRED_VERSIONS` constant (#242).** Its comment falsely claimed to enforce the 3→4 stealth migration, which is actually handled by `_reject_stealth_key`.
-- **`frida.sha256` is validated as 64-char hex at config-load time (#194).** A fat-fingered digest now fails immediately with a clear error instead of late with a misleading hostile-mirror message. (`module.sha256` validation is tracked as a follow-up — bogus-digest test fixtures need updating first.)
+- **`frida.sha256` and `module.sha256` are validated as 64-char hex at config-load time (#194).** A fat-fingered digest now fails immediately with a clear error instead of late with a misleading hostile-mirror message after a full download. Validation uses `fullmatch`, so a digest pasted with a trailing newline (e.g. straight from `sha256sum`) is rejected too.
 - **Fixed self-contradicting `vm.py` comments that claimed `adb connect` succeeds
   at QEMU `hostfwd`-bind (#241).** It only attaches once the post-boot in-guest
   relay is listening; the comments and the `_wait_for_boot_completed` docstring
@@ -627,7 +627,7 @@
 - **`beetroot build --vm-kernel` fails fast with a root-privilege preflight (#231).** An unprivileged local rootfs bake no longer masquerades as a generic ~60s `staging dockerd did not become ready` timeout.
 - **`beetroot build` serializes concurrent runs with an `fcntl.flock` around the shared clone dir (#232).** Two builds can no longer corrupt each other's `rm -rf`/`git clone`/patch tree.
 - **The rootfs `.android-version` marker is written before the image is renamed into place (#234).** An interrupted download can't leave a marker-less image that silently skips the skew check.
-- **`beetroot ls`/`modes` tables render losslessly when stdout is not a TTY (#204).** No cell truncation or box-drawing borders off-TTY; the overclaiming console docstrings are corrected.
+- **`beetroot ls`/`modes` tables render losslessly when stdout is not a TTY (#204).** No cell truncation or box-drawing borders off-TTY; a load-bearing cell wider than rich's 80-column non-TTY default stays on one physical line (the render width is set on the console, since rich clamps a `print(width=…)` request) rather than being folded across lines, and the overclaiming console docstrings are corrected.
 - **`docker compose logs` raises `ComposeError` on a non-zero exit in non-follow mode (#218).** It no longer silently swallows the failure, while still tolerating the Ctrl-C exit under `--follow`.
 - **`user_config_dir`/`user_registry_file`/`user_cache_dir` ignore a relative `$XDG_*_HOME` and fall back to `~/.config`/`~/.cache` (#225).** This honors their absolute-path contract instead of fragmenting the registry across working directories.
 - **Bundled compose / vm-asset cache materialisation writes via a temp file + `os.replace` (#226).** Concurrent wheel-installed invocations can no longer hand `docker compose` a truncated file.

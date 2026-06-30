@@ -71,13 +71,13 @@ class TestStageForInstanceUrlModule:
         assert staged[0].exists()
 
     def test_sha256_mismatch_raises_value_error(self, instance_root: Path) -> None:
-        cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip", sha256="deadbeef")])
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip", sha256="d" * 64)])
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
             with pytest.raises(ValueError, match="sha256 mismatch"):
                 modules_download.stage_for_instance(instance_root, cfg)
 
     def test_sha256_mismatch_error_contains_both_hashes(self, instance_root: Path) -> None:
-        expected = "deadbeef"
+        expected = "d" * 64
         actual = _sha256(FAKE_ZIP_CONTENT)
         cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip", sha256=expected)])
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
@@ -123,7 +123,7 @@ class TestUrlModuleCache:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(FAKE_ZIP_CONTENT)
 
-        cfg = InstanceConfig(modules=[Module(url=url, sha256="deadbeef")])
+        cfg = InstanceConfig(modules=[Module(url=url, sha256="d" * 64)])
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
             with pytest.raises(ValueError, match="sha256 mismatch"):
                 modules_download.stage_for_instance(instance_root, cfg)
@@ -367,8 +367,8 @@ class TestVerifySha256:
         f = tmp_path / "mod.zip"
         f.write_bytes(FAKE_ZIP_CONTENT)
         with pytest.raises(ValueError, match="sha256 mismatch") as exc_info:
-            modules_download.verify_sha256(f, "deadbeef")
-        assert "deadbeef" in str(exc_info.value)
+            modules_download.verify_sha256(f, "d" * 64)
+        assert "d" * 64 in str(exc_info.value)
         assert _sha256(FAKE_ZIP_CONTENT) in str(exc_info.value)
 
     def test_mismatch_does_not_delete_the_file(self, tmp_path: Path) -> None:
@@ -378,5 +378,5 @@ class TestVerifySha256:
         f = tmp_path / "mod.zip"
         f.write_bytes(FAKE_ZIP_CONTENT)
         with pytest.raises(ValueError, match="sha256 mismatch"):
-            modules_download.verify_sha256(f, "deadbeef")
+            modules_download.verify_sha256(f, "d" * 64)
         assert f.exists()

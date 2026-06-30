@@ -55,7 +55,7 @@ class TestSha256MismatchDoesNotDeleteUserSourceFile:
         src = tmp_path / "external" / "local-mod.zip"
         src.parent.mkdir()
         src.write_bytes(FAKE_ZIP_CONTENT)
-        cfg = InstanceConfig(modules=[Module(path=str(src), sha256="deadbeef")])
+        cfg = InstanceConfig(modules=[Module(path=str(src), sha256="d" * 64)])
 
         with pytest.raises(ValueError, match="sha256 mismatch"):
             modules_download.stage_for_instance(instance_root, cfg)
@@ -71,7 +71,7 @@ class TestSha256MismatchDoesNotDeleteUserSourceFile:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(FAKE_ZIP_CONTENT)
 
-        cfg = InstanceConfig(modules=[Module(url=url, sha256="deadbeef")])
+        cfg = InstanceConfig(modules=[Module(url=url, sha256="d" * 64)])
         with patch("urllib.request.urlopen", return_value=_make_url_resp()):
             with pytest.raises(ValueError, match="sha256 mismatch"):
                 modules_download.stage_for_instance(instance_root, cfg)
