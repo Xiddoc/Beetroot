@@ -981,6 +981,37 @@ def inert_fields(cfg: InstanceConfig) -> list[str]:
     return inert
 
 
+def warn_inert_fields(cfg: InstanceConfig, name: str) -> None:
+    """
+    Emit the single apply-time advisory naming every set-but-inert field.
+
+    Builds the one-shot ``console.note`` from :func:`inert_fields` (issue
+    #104) so the message text and the field→backend applicability matrix are
+    single-sourced here, in code. Called by every ``apply`` path that can
+    change or first observe an instance's effective backend: the redroid
+    ``Instance.apply`` (which flips a hand-edited ``binder: vm`` config to the
+    VM backend kind — the canonical create-redroid → edit-to-vm → apply flow,
+    where the registry still says ``redroid`` so ``Manager.resolve`` never
+    reaches the VM backend) and
+    :meth:`beetroot.backends.vm.VmDeviceBackend._warn_on_inert_vm_config`
+    (re-``apply`` of an already-VM instance). A no-op when nothing is inert
+    (every redroid config, and a VM config that sets no layered-image knobs),
+    so it is safe to call unconditionally at apply time. Non-fatal note.
+
+    Args:
+        cfg: The fully-loaded instance config to inspect.
+        name: The instance name, woven into the advisory for context.
+    """
+    inert = inert_fields(cfg)
+    if not inert:
+        return
+    console.note(
+        f"warning: instance {name!r} uses binder: vm, which boots an "
+        "unmodified upstream redroid image. These beetroot.yaml settings have "
+        "no effect under binder: vm: " + "; ".join(inert) + "."
+    )
+
+
 def load_yaml(path: Path) -> InstanceConfig:
     """
     Load and validate an InstanceConfig from a YAML file.

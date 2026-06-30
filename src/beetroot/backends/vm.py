@@ -648,9 +648,11 @@ class VmDeviceBackend:
         """
         Print a single apply-time advisory naming every set-but-inert field.
 
-        Delegates the field→backend applicability matrix to
-        :func:`config.inert_fields` (issue #104) — the mapping lives there,
-        in code, not in this method's prose. The ``binder: vm`` guest boots an
+        Delegates both the field→backend applicability matrix and the message
+        text to :func:`config.warn_inert_fields` (issue #104) — they live there,
+        in code, single-sourced with the redroid ``Instance.apply`` path that
+        surfaces the same advisory when a hand-edited ``binder: vm`` config
+        first flips the registry kind. The ``binder: vm`` guest boots an
         unmodified upstream redroid image (:func:`config.vm_redroid_image`), so
         the layered-image knobs (``android.gapps``, ``magisk.denylist``) and the
         whole ``frida:`` block are inert; this surfaces them ONCE at ``apply``
@@ -658,14 +660,7 @@ class VmDeviceBackend:
         isn't left debugging missing Play Services. Non-fatal note, matching
         :meth:`_warn_on_rootfs_version_skew`.
         """
-        inert = config.inert_fields(self._cfg)
-        if not inert:
-            return
-        console.note(
-            f"warning: instance {self._name!r} uses binder: vm, which boots an "
-            "unmodified upstream redroid image. These beetroot.yaml settings have "
-            "no effect under binder: vm: " + "; ".join(inert) + "."
-        )
+        config.warn_inert_fields(self._cfg, self._name)
 
     def _warn_on_boot_cache_data_revert(self) -> None:
         """

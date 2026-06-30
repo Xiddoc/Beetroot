@@ -971,7 +971,13 @@ class Instance:
         If the reloaded config now sets ``binder: vm`` (a hand-edit after
         ``create`` registered the redroid kind), the registry row is flipped
         to the QEMU micro-VM backend kind so the next resolution dispatches
-        to ``VmDeviceBackend`` (issue #44).
+        to ``VmDeviceBackend`` (issue #44), and the set-but-inert ``binder:
+        vm`` fields (GApps / Magisk / Frida / arbitrary ports) are surfaced
+        ONCE here via :func:`config.warn_inert_fields` (issue #104). This is
+        the only apply that sees the kind flip: the CLI ``apply`` verb
+        dispatches on the *registry* kind via ``Manager.resolve``, which still
+        reads ``redroid`` at this point, so the VM backend's own apply-time
+        advisory never runs in the canonical create-then-edit flow.
 
         Raises:
             ValueError: If the re-resolved ports collide with another
@@ -982,6 +988,7 @@ class Instance:
         _check_port_collisions(self._name, new_ports)
         self._stage()
         registry.reconcile_backend_kind(self._name, self._cfg.binder)
+        config.warn_inert_fields(self._cfg, self._name)
 
     def destroy(self, *, yes: bool = False) -> None:
         """
