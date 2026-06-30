@@ -353,7 +353,7 @@ def _needs_legacy_migration(path: Path) -> bool:
     Report whether ``path`` would trigger ``_read``'s destructive backup-rename.
 
     Pure inspection — never renames or writes. True iff the file exists
-    and is either unparseable JSON or carries a non-``SCHEMA_VERSION``
+    and is either malformed JSON or carries a non-``SCHEMA_VERSION``
     ``version``. Mirrors the two fall-through predicates in :func:`_read`
     so the shared-lock reader can detect-then-escalate before letting
     ``_read`` perform the rename under an exclusive lock.
