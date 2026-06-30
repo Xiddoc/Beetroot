@@ -445,13 +445,15 @@ def _prepare_destination(target: Path, *, force: bool) -> None:
         if not isinstance(meta.backend, (registry.RedroidBackendConfig, registry.VmBackendConfig)):
             continue
         reg_dir = Path(meta.backend.absolute_path).resolve()
-        # Refuse when ``target`` IS the registered dir or an ANCESTOR of
-        # it: ``rmtree(target)`` on a parent destroys the nested instance
-        # just as surely as rmtree-ing the dir itself. Exact-equality-only
-        # let a ``--force`` restore into a parent directory wipe it.
-        if reg_dir == target or target in reg_dir.parents:
+        # Refuse on ANY path-prefix overlap in either direction: ``target``
+        # IS the registered dir, an ANCESTOR of it (``rmtree(target)`` on a
+        # parent destroys the nested instance just as surely as rmtree-ing
+        # the dir itself), or a DESCENDANT of it (``rmtree`` of a subdir
+        # wipes part of the live instance, #154). Exact-equality-only let a
+        # ``--force`` restore into a parent or child directory wipe it.
+        if reg_dir == target or target in reg_dir.parents or reg_dir in target.parents:
             raise SnapshotError(
-                f"{target} is (or contains) the registered directory of "
+                f"{target} overlaps the registered directory of "
                 f"instance {other_name!r}; refusing to overwrite (even "
                 f"with --force). 'beetroot destroy {other_name}' first, "
                 "or pick a different --path."
