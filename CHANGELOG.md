@@ -603,6 +603,16 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **`resources.cpus` and `resources.pids_limit` are now bound-checked at load
+  time (#181).** Both fields previously had no constraint, so `cpus: 0`,
+  `cpus: -1`, or `pids_limit: 0` validated cleanly and flowed verbatim into the
+  rendered `.env` — where Docker treats `0` as *unlimited* (silently the opposite
+  of a cap) and a negative `cpus` aborts container start with a cgroup error
+  detached from the offending YAML line. They now carry `Field(gt=0)` /
+  `Field(ge=1)`, matching every sibling numeric knob (`Display.width/height/fps`,
+  `Vm.memory_mib`, `Vm.smp`) and the load-time-validation philosophy
+  `_check_docker_size` documents, so a typo fails immediately with an actionable
+  message instead of opaquely at `docker compose up`.
 - **`beetroot restore --force` now refuses a destination *inside* a registered
   instance, not just one that equals or contains it (#154).**
   `snapshot._prepare_destination` guarded the equal and *ancestor* cases (the
