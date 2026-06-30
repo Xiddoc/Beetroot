@@ -442,12 +442,41 @@ class TestAdbDeviceHealth:
         with patch("subprocess.run", side_effect=_unprivileged):
             results = api.adb_device_health(device)
         assert results["magisk.zygisk"].status == "pass"
-        assert results["magisk.denylist.com.google.android.gms"].status == "pass"
+        # issue #201: an adopted device carries no Beetroot-managed denylist,
+        # so the GMS row reports ``skip`` (informational) — and never even
+        # issues a DB read for it.
+        assert results["magisk.denylist.com.google.android.gms"].status == "skip"
         # Every magisk read the adb backend issued used su -c.
         assert magisk_calls
         for cmd in magisk_calls:
             assert "su" in cmd
             assert "-c" in cmd
+
+    def test_gms_denylist_reports_skip_not_fail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # issue #201: the adb backend has no beetroot.yaml, hence no configured
+        # denylist to assert against. The GMS denylist row must be ``skip``
+        # (informational) — NOT a phantom ``fail`` — even on a device whose
+        # Magisk DB has no such row.
+        device = self._stub()
+        monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/adb")
+        monkeypatch.setattr("socket.create_connection", lambda *a, **k: contextlib.nullcontext())
+
+        def _no_gms_row(
+            cmd: list[str], *a: object, **k: object
+        ) -> subprocess.CompletedProcess[str]:
+            del a, k
+            if "devices" in cmd:
+                return _proc(0, "List of devices attached\nemulator-5554\tdevice\n")
+            # GMS is NOT enrolled in this device's denylist; a fail-on-empty
+            # check would surface ``fail`` here. The skip short-circuits first.
+            return _proc(0, "value=1\n")
+
+        with patch("subprocess.run", side_effect=_no_gms_row):
+            results = api.adb_device_health(device)
+
+        row = results["magisk.denylist.com.google.android.gms"]
+        assert row.status == "skip"
+        assert row.reason == "com.google.android.gms not in magisk.denylist"
 
 
 class TestInstanceHealthExitCodeCap:

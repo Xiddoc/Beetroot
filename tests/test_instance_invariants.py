@@ -164,6 +164,106 @@ def test_up_regenerates_missing_compose_override(
     assert called == [("alpha", inst.root)]
 
 
+def test_up_regenerates_missing_env(cli_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # issue #219: ``_base_cmd`` appends ``--env-file <root>/.env``
+    # unconditionally, so a hand-deleted .env hard-fails ``compose up`` and
+    # makes ``ps_status`` misreport a running container as not-created. ``up``
+    # must self-heal a missing .env (not just the override) before starting.
+    api.Instance.create("alpha")
+    inst = api.Instance.load("alpha")
+    env = paths.instance_env(inst.root)
+    env.unlink()
+    assert not env.is_file()
+
+    called: list[tuple[str, Path]] = []
+    monkeypatch.setattr(compose, "up", lambda name, root: called.append((name, root)))
+
+    inst.up()
+
+    assert env.is_file(), "up() did not regenerate the missing .env"
+    assert "INSTANCE_NAME=alpha" in env.read_text()
+    assert called == [("alpha", inst.root)]
+
+
+def test_up_self_heal_rechecks_port_collision(
+    cli_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # issue #166: when ``up`` self-heals a missing override, it must re-run
+    # the cross-instance port-collision precheck that ``apply`` enforces —
+    # otherwise it could re-publish a host port another registered instance
+    # already owns. The check must bail BEFORE staging / compose.up.
+    api.Instance.create("alpha")
+    inst = api.Instance.load("alpha")
+    paths.instance_compose_override(inst.root).unlink()
+
+    # Inject a colliding peer pinned to alpha's ADB host port (5555).
+    peer = cli_root / "bravo"
+    peer.mkdir()
+    pinned = [
+        config.PortMapping(
+            service=m.service, guest=m.guest, host=5555 if m.service == "adb" else None
+        )
+        for m in config._default_port_mappings()
+    ]
+    config.write_yaml(peer / "beetroot.yaml", config.InstanceConfig(ports=pinned))
+    registry.add_allocating("bravo", peer)
+
+    up_called: list[str] = []
+    staged: list[str] = []
+    monkeypatch.setattr(compose, "up", lambda name, root: up_called.append(name))
+    monkeypatch.setattr(inst, "_stage_local", lambda: staged.append("staged"))
+
+    with pytest.raises(ValueError, match="5555"):
+        inst.up()
+
+    assert staged == [], "collision check must bail BEFORE staging"
+    assert up_called == [], "collision check must bail BEFORE compose.up"
+
+
+def test_restart_self_heals_missing_override(
+    cli_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # issue #166: ``restart`` previously called compose.down/up directly with
+    # no self-heal, so a missing override restarted with ZERO published ports.
+    # Routing the start through ``up`` re-stages the override (with its
+    # well-known mappings) before booting.
+    api.Instance.create("alpha")
+    inst = api.Instance.load("alpha")
+    override = paths.instance_compose_override(inst.root)
+    override.unlink()
+
+    order: list[str] = []
+    monkeypatch.setattr(compose, "down", lambda name, root: order.append("down"))
+    monkeypatch.setattr(compose, "up", lambda name, root: order.append("up"))
+
+    inst.restart()
+
+    assert override.is_file(), "restart() did not regenerate the missing override"
+    assert ":5555" in override.read_text()
+    assert order == ["down", "up"]
+
+
+def test_restart_self_heals_missing_env(
+    cli_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # issue #219: a hand-deleted .env must be re-staged by ``restart`` (which
+    # now routes through ``up``) before compose up, mirroring the override case.
+    api.Instance.create("alpha")
+    inst = api.Instance.load("alpha")
+    env = paths.instance_env(inst.root)
+    env.unlink()
+
+    order: list[str] = []
+    monkeypatch.setattr(compose, "down", lambda name, root: order.append("down"))
+    monkeypatch.setattr(compose, "up", lambda name, root: order.append("up"))
+
+    inst.restart()
+
+    assert env.is_file(), "restart() did not regenerate the missing .env"
+    assert "INSTANCE_NAME=alpha" in env.read_text()
+    assert order == ["down", "up"]
+
+
 def test_up_does_not_restage_when_override_present(
     cli_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

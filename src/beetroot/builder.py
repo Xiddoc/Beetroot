@@ -700,6 +700,11 @@ def _parse_image_size_mb(raw: str | None) -> int:
     """
     Parse the ``IMAGE_SIZE_MB`` env knob into a positive integer.
 
+    The value is a **mebibyte (MiB)** count: it is passed straight to
+    ``mke2fs`` with an ``M`` suffix (see :meth:`_RootfsBuilder._pack_image`),
+    and ``mke2fs`` interprets ``M`` as MiB (1 MiB = 1024 KiB), not decimal
+    megabytes. The knob name's ``MB`` is thus a misnomer kept for back-compat.
+
     An absent **or set-but-empty** value (the common ``export IMAGE_SIZE_MB=``
     case) falls back to :data:`_DEFAULT_IMAGE_SIZE_MB`. A present, non-empty
     value that is not a positive integer raises :class:`BootstrapError` so the
@@ -710,7 +715,7 @@ def _parse_image_size_mb(raw: str | None) -> int:
         raw: The raw env value (``None`` when unset).
 
     Returns:
-        The resolved positive megabyte count.
+        The resolved positive mebibyte (MiB) count.
 
     Raises:
         BootstrapError: If ``raw`` is non-empty but not a positive integer.

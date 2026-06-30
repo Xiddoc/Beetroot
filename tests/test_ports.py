@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from beetroot.config import PortMapping, _default_port_mappings
+from beetroot import registry
+from beetroot.config import InstanceConfig, PortMapping, _default_port_mappings, write_yaml
 from beetroot.ports import (
     _MAX_PORT_INDEX,
     ADB_BASE,
@@ -322,3 +325,32 @@ class TestPrivilegedPortAdvisory:
         )
         err = capsys.readouterr().err
         assert err.count("privileged") == 1
+
+    def test_quiet_suppresses_advisory(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # quiet=True silences the advisory entirely (the read-only scan path).
+        resolve_ports(0, [PortMapping(service="adb", guest=5555, host=80)], quiet=True)
+        assert "privileged" not in capsys.readouterr().err
+
+    def test_staging_resolve_still_emits_once(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # The default (quiet=False) staging path keeps emitting exactly once.
+        resolve_ports(0, [PortMapping(service="adb", guest=5555, host=80)])
+        assert capsys.readouterr().err.count("privileged") == 1
+
+    def test_privileged_advisory_not_re_emitted_by_cross_instance_scan(
+        self, isolated_registry: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Register a privileged-port instance, then run the read-only
+        # cross-instance scan twice. Before the fix, resolve_ports' advisory
+        # side-effect leaked through the scan, re-firing once per scan and
+        # being misattributed to an unrelated operation (#224).
+        root = tmp_path / "alpha"
+        root.mkdir()
+        cfg = InstanceConfig(ports=[PortMapping(service="adb", guest=5555, host=80)])
+        write_yaml(root / "beetroot.yaml", cfg)
+        registry.add_allocating("alpha", root)
+        capsys.readouterr()  # discard anything emitted during registration
+
+        registry.all_resolved_host_ports()
+        registry.all_resolved_host_ports()
+
+        assert "privileged" not in capsys.readouterr().err

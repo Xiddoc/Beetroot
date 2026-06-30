@@ -107,6 +107,34 @@ class TestBuildDispatch:
             assert exc.value.code == 0
         mock_bs.assert_called_once_with(gapps="full", gapps_vendor=None, build_context=None)
 
+    def test_build_android_version_without_vm_kernel_errors(self) -> None:
+        # #198: --android-version <non-default> only threads into the
+        # --vm-kernel path; without it the flag silently no-ops. Guard it
+        # like --check so it errors instead.
+        with patch("beetroot.cli.builder.build_image") as mock_bs:
+            result = runner.invoke(cli.app, ["build", "--android-version", "13"])
+        assert result.exit_code == 1
+        assert "--from-source / --android-version only apply to --vm-kernel" in result.stderr
+        mock_bs.assert_not_called()
+
+    def test_build_from_source_without_vm_kernel_errors(self) -> None:
+        with patch("beetroot.cli.builder.build_image") as mock_bs:
+            result = runner.invoke(cli.app, ["build", "--from-source"])
+        assert result.exit_code == 1
+        assert "--from-source / --android-version only apply to --vm-kernel" in result.stderr
+        mock_bs.assert_not_called()
+
+    def test_build_explicit_default_android_version_still_builds(self) -> None:
+        # The False branch of the new guard: --android-version 14 == the
+        # default, so it's a no-op and must NOT be rejected.
+        with patch("beetroot.cli.builder.build_image") as mock_bs:
+            mock_bs.return_value = "redroid/redroid:14.0.0_litegapps_houdini_magisk"
+            result = runner.invoke(
+                cli.app, ["build", "--android-version", str(config.DEFAULT_ANDROID_VERSION)]
+            )
+        assert result.exit_code == 0, result.stderr
+        mock_bs.assert_called_once_with(gapps="minimal", gapps_vendor=None, build_context=None)
+
 
 # ---------------------------------------------------------------------------
 # _ensure_exists
@@ -237,6 +265,28 @@ class TestCmdCreate:
         )
         assert result.exit_code == 1
         assert "not a directory" in result.stderr
+
+    def test_create_invalid_name_with_from_data_skips_copy(self, cli_root: Path) -> None:
+        # #199: an invalid instance name with --from-data must fail BEFORE the
+        # (potentially multi-GB) copytree runs, so no populated data/ tree is
+        # orphaned on the rejected name.
+        src = cli_root / "old-data"
+        src.mkdir()
+        (src / "marker.txt").write_text("hello")
+        called = False
+
+        def _spy(*args: object, **kwargs: object) -> None:
+            nonlocal called
+            called = True
+
+        with patch("beetroot.cli.shutil.copytree", _spy):
+            result = runner.invoke(
+                cli.app, ["create", "Bad Name", "--from-data", str(src)]
+            )
+        assert result.exit_code == 1
+        assert "invalid" in result.stderr
+        assert not called
+        assert not (cli_root / "Bad Name" / "data").exists()
 
     def test_create_writes_exact_minimal_yaml_bytes(self, cli_root: Path) -> None:
         """Behavior test — drive create end-to-end and pin the YAML bytes.
@@ -695,6 +745,32 @@ class TestCmdDestroy:
             result = runner.invoke(cli.app, ["destroy", "alpha", "-y"])
         assert result.exit_code == 0, result.stderr
         assert registry.get("alpha") is None
+
+    def test_destroy_orphan_prompts_then_cleans(self, cli_root: Path) -> None:
+        # #206: an orphan (yaml gone, dir present) is a directory-backed
+        # redroid row the resolver can't build. The capability gate passes,
+        # so the orphan path must STILL prompt before its destructive
+        # cleanup — and proceed on "y".
+        runner.invoke(cli.app, ["create", "alpha"])
+        root = registry.instance_path("alpha")
+        paths.instance_yaml(root).unlink()  # orphan: yaml gone, dir present
+        with _patched_subprocess():
+            result = runner.invoke(cli.app, ["destroy", "alpha"], input="y\n")
+        assert result.exit_code == 0, result.stderr
+        assert registry.get("alpha") is None
+        assert not root.exists()
+
+    def test_destroy_orphan_prompt_no_aborts(self, cli_root: Path) -> None:
+        # The "n" branch of the orphan-path prompt: nothing is removed.
+        runner.invoke(cli.app, ["create", "alpha"])
+        root = registry.instance_path("alpha")
+        paths.instance_yaml(root).unlink()
+        with _patched_subprocess():
+            result = runner.invoke(cli.app, ["destroy", "alpha"], input="n\n")
+        assert result.exit_code == 0, result.stderr
+        assert "aborted" in result.stdout
+        assert registry.get("alpha") is not None
+        assert root.exists()
 
 
 class TestCmdReset:

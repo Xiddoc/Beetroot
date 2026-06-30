@@ -945,15 +945,32 @@ class Instance:
         """
         Start the instance with ``docker compose up -d``.
 
-        Self-heals a missing ``compose.override.yaml`` first: an instance
-        created before v8 (or one whose override was deleted by hand) carries
-        no ports overlay, and the bundled template publishes none of its own —
-        so it would boot with ZERO published ports (a silent adb + frida
-        outage). When the override is absent, re-run the network-free,
-        rollback-safe local stage (re-renders ``.env`` + the override) before
-        starting.
+        Self-heals a missing ``compose.override.yaml`` *or* ``.env`` first:
+        an instance created before v8 (or one whose override was deleted by
+        hand) carries no ports overlay, and the bundled template publishes
+        none of its own — so it would boot with ZERO published ports (a
+        silent adb + frida outage). A hand-deleted ``.env`` is worse still:
+        ``_base_cmd`` appends ``--env-file <root>/.env`` unconditionally, so
+        its absence hard-fails ``compose up`` and makes ``ps_status``
+        misreport a running container as ``not-created`` (issue #219). When
+        either file is absent, re-run the network-free, rollback-safe local
+        stage (re-renders ``.env`` + the override) before starting.
+
+        The self-heal also re-runs the cross-instance port-collision
+        precheck that :meth:`apply` enforces, so re-staging the override can
+        never re-publish a port another registered instance already owns
+        (issue #166).
+
+        Raises:
+            ValueError: If the re-resolved ports collide with another
+                registered instance.
         """
-        if not paths.instance_compose_override(self._root).is_file():
+        if (
+            not paths.instance_compose_override(self._root).is_file()
+            or not paths.instance_env(self._root).is_file()
+        ):
+            new_ports = ports.resolve_ports(self.index, self._cfg.ports)
+            _check_port_collisions(self._name, new_ports)
             self._stage_local()
         compose.up(self._name, self._root)
 
@@ -966,9 +983,19 @@ class Instance:
     def restart(self) -> None:
         """
         Stop then start the instance in sequence.
+
+        Routes the start through :meth:`up`, so a restart inherits the same
+        self-heal: a missing ``compose.override.yaml`` / ``.env`` is
+        re-staged (after the port-collision precheck) before boot, instead
+        of restarting with zero published ports or a hard ``--env-file``
+        failure (issues #166, #219).
+
+        Raises:
+            ValueError: If the re-resolved ports collide with another
+                registered instance.
         """
         compose.down(self._name, self._root)
-        compose.up(self._name, self._root)
+        self.up()
 
     def apply(self) -> None:
         """
@@ -997,8 +1024,15 @@ class Instance:
         self._cfg = config.load_yaml(paths.instance_yaml(self._root))
         new_ports = ports.resolve_ports(self.index, self._cfg.ports)
         _check_port_collisions(self._name, new_ports)
-        self._stage()
+        # Reconcile the registry backend kind BEFORE the network stage, not
+        # after: ``_stage_network`` can raise on a transient Frida/module
+        # fetch failure, and if the flip ran after it a ``binder: vm`` config
+        # would be stranded dispatching the stale redroid backend until the
+        # next successful apply (issue #182). The local render + kind flip
+        # are atomic w.r.t. the fetch step.
+        self._stage_local()
         registry.reconcile_backend_kind(self._name, self._cfg.binder)
+        self._stage_network()
         config.warn_inert_fields(self._cfg, self._name)
 
     def destroy(self, *, yes: bool = False) -> None:
@@ -1284,13 +1318,16 @@ class Instance:
         """
         Stage everything: local artefacts first, then network artefacts.
 
-        Convenience wrapper used by :meth:`apply` (where a single
-        try/except over the whole batch is what the user wants — apply
-        is interactive, and a network failure should surface).
-        :meth:`create` / :meth:`register` / :func:`snapshot.restore`
-        call the two halves explicitly so the network half runs
-        AFTER the registry commits — a Frida 404 there leaves a usable
-        instance behind that the user can retry with ``beetroot apply``.
+        Convenience wrapper. :meth:`apply` no longer uses it directly —
+        since issue #182 it calls the two halves explicitly so the
+        registry backend-kind reconcile lands BETWEEN them (a transient
+        Frida/module fetch failure must not strand a ``binder: vm`` config
+        on the redroid backend). :meth:`create` / :meth:`register` /
+        :func:`snapshot.restore` likewise call the two halves explicitly
+        so the network half runs AFTER the registry commits — a Frida 404
+        there leaves a usable instance behind that the user can retry with
+        ``beetroot apply``. Retained as the patch target of the
+        collision-precheck contract test.
         """
         self._stage_local()
         self._stage_network()
@@ -2052,10 +2089,14 @@ def adb_device_health(device: DeviceBackend) -> dict[str, CheckResult]:
     # ``magisk --sqlite`` DB read must hop through ``su -c`` (issue #159).
     checks["magisk.zygisk"] = _check_magisk_zygisk_over_adb(serial, use_su=True)
     gms_pkg = "com.google.android.gms"
+    # An adopted adb device carries no beetroot.yaml, hence no
+    # Beetroot-managed denylist to assert against. ``enrolled=False``
+    # makes the GMS row report ``skip`` (informational) rather than a
+    # phantom ``fail`` (issue #201).
     checks[f"magisk.denylist.{gms_pkg}"] = _check_magisk_denylist_over_adb(
         serial,
         gms_pkg,
-        enrolled=True,
+        enrolled=False,
         use_su=True,
     )
     return checks

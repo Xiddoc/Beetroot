@@ -34,9 +34,10 @@ STRIDE = 10
 _MAX_PORT: Final = 65535
 
 # Ports below this are the privileged range (0..1023) whose binding traditionally
-# needs elevated privileges; :func:`resolve_ports` warns once when any resolved
-# host port lands there so a pinned ``host: 80`` fails loudly at bind time
-# instead of silently.
+# needs elevated privileges; :func:`resolve_ports` emits a single advisory (once
+# per call, deduped over the resolved set) when any resolved host port lands there
+# so a pinned ``host: 80`` fails loudly at bind time instead of silently — unless
+# the caller passes ``quiet=True`` to suppress it on read-only cross-instance scans.
 _PRIVILEGED_PORT_CEILING: Final = 1024
 
 # Host-side stride base for each well-known service, keyed by service name.
@@ -157,7 +158,9 @@ def _check_index(index: int) -> None:
         )
 
 
-def resolve_ports(index: int, ports: Sequence[PortMapping]) -> list[ResolvedPort]:
+def resolve_ports(
+    index: int, ports: Sequence[PortMapping], *, quiet: bool = False
+) -> list[ResolvedPort]:
     """
     Resolve every ``PortMapping`` to a concrete host port for ``index``.
 
@@ -174,6 +177,10 @@ def resolve_ports(index: int, ports: Sequence[PortMapping]) -> list[ResolvedPort
     Args:
         index: The instance's port index (non-negative integer).
         ports: The instance's ``PortMapping`` list (from its config).
+        quiet: When ``True``, suppress the privileged-port advisory. Read-only
+            cross-instance scans (which re-resolve every registered instance)
+            pass this so a privileged-port instance's advisory isn't re-emitted
+            once per scan and misattributed to an unrelated operation (#224).
 
     Returns:
         A list of :class:`ResolvedPort`, one per input mapping, in order.
@@ -219,7 +226,7 @@ def resolve_ports(index: int, ports: Sequence[PortMapping]) -> list[ResolvedPort
             "colliding with stride-of-10 / extra-pool defaults."
         )
     privileged = sorted({rp.host for rp in resolved if rp.host < _PRIVILEGED_PORT_CEILING})
-    if privileged:
+    if privileged and not quiet:
         console.note(
             f"resolved host port(s) {privileged} are below {_PRIVILEGED_PORT_CEILING}; "
             "binding privileged ports may require elevated privileges (run Docker with "

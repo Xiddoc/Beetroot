@@ -4,6 +4,7 @@
 
 ### Security
 
+- **`rootfs-release.yml` installs `uv` via the SHA-pinned `astral-sh/setup-uv` action (#209).** This closes the last bypass of the single pinned `uv` path in the `contents: write` release workflow (it used an unpinned `pipx install uv`).
 - **The guest-kernel source tarball is verified against a pinned sha256 before compiling (#184).** The `binder: vm` kernel build (and the release/CI lanes) now hash the downloaded `cdn.kernel.org` tarball and fold the digest into the published prebuilt fingerprint, so a tampered tarball can't be compiled into a trusted `bzImage`.
 - **`frida-server` downloads decompress incrementally with a bounded output ceiling and a truncation check (#228).** A corrupt or zip-bomb `.xz` raises `FridaFetchError` past the ceiling instead of OOM-ing the host; the per-call output is now capped (so a single chunk can't expand without bound), and a stream that ends before its LZMA end-of-stream marker (a truncated download) is rejected instead of silently accepted as a complete binary.
 - **Relative `path:` module entries are now contained to the instance directory (#152).** A relative `path:` that resolves outside the instance dir (e.g. `path: ../../../etc/shadow`) is rejected at staging time — the path-traversal analogue of the existing `file://` URL block. **Absolute** `path:` entries (e.g. `path: /tmp/mod.zip`) remain permitted and are read as-is (an unchanged, tested feature). No schema/api_version change.
@@ -99,6 +100,7 @@
 
 ### Features
 
+- **New `beetroot install-frida <name> --version <tag>` verb (#205).** Pushes and launches `frida-server` on an adb-adopted device, wiring the previously API-only `AdbDevice.install_frida()` into the CLI that the `adopt` hint already advertised.
 - **Set-but-inert fields under `binder: vm` now surface once at config time, not on every boot (#104).**
   The advisory that names `beetroot.yaml` settings the plain-redroid VM can't
   honour — a non-`none` `android.gapps`, a customised `magisk.denylist`, any
@@ -502,6 +504,11 @@
   pre-abort rows in its `results` attribute).
 
 ### Quality & internals
+- **CI `apt-get install` steps now run `apt-get update` first (#211).** A stale hosted-runner apt index no longer 404s and fails the install step (e2e, benchmark, beetroot-ci).
+- **Migration docs refreshed to `api_version` 8 (#213).** Added the 6→7 (gapps intent/vendor split) and 7→8 (ports list) walkthroughs and dropped the stale "set `api_version: 6`" instructions, with a test guarding the documented version against `SUPPORTED_API_VERSION`.
+- **`architecture.md` compose env-file contract corrected (#214).** Removed the retired `ADB_PORT`/`FRIDA_PORT`/`FRIDA_PORT_CONTROL` tokens and pointed at the per-instance `compose.override.yaml` ports overlay.
+- **Corrected the `entrypoint.sh`/`flash-modules.sh`/`magisk-env.sh`/`CLAUDE.md` comments that claimed the trailing `wait` keeps the container alive (#240).** Container lifetime is owned by `/init` (PID 1), not the entrypoint.
+- **Documented that `IMAGE_SIZE_MB` is interpreted as MiB (#233).** Matches the `mke2fs` `M` suffix and the progress log; the unit contract is now pinned in tests.
 - **`frida-server` and module downloads stream chunk-by-chunk to disk (#227).** Frida decompresses incrementally instead of buffering the whole compressed and decompressed payload in RAM — matching the rootfs streaming idiom and easing the memory posture on constrained TCG/CI hosts.
 - **Added a repo-root `.dockerignore` (#207).** `beetroot build` no longer uploads `.venv/`, `.git/`, or instance dirs as build context — only `docker/` is sent.
 - **Warn when a pinned `gapps_vendor` overrides the `minimal`/`full` intent (#220).** The silently-collapsed image/flag is no longer a surprise. The note is emitted once per resolved path from `load_yaml` (not on every `Android` construction), so a fleet scan that re-loads each YAML doesn't reprint it N times.
@@ -617,6 +624,24 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **`beetroot up` self-heal now runs the cross-instance port-collision precheck, and `restart` self-heals a missing compose override (#166).** Neither boots with a colliding or zero-port mapping anymore.
+- **`beetroot apply` flips the registry backend kind before staging Frida/modules (#182).** A transient fetch failure no longer leaves a `binder: vm` config dispatching the redroid backend.
+- **`beetroot doctor` against an adopted adb device no longer reports a phantom `fail` for the GMS Magisk-denylist check (#201).** The row is `skip` since adb devices carry no Beetroot-managed denylist.
+- **`beetroot up`/`restart` re-stage a hand-deleted `.env` (not just the compose override) before starting (#219).** The container boots and status reports correctly.
+- **`beetroot apply` prints a friendly `error: …` and exits 1 (not a raw traceback) when a Frida download or version resolution fails (#167).**
+- **`--from-data` copy failures (`PermissionError`, `shutil.Error`, ENOSPC) map to a friendly `error: …` line and exit 1 (#180).**
+- **`beetroot build --from-source` / `--android-version <non-default>` without `--vm-kernel` now error instead of silently no-opping (#198).** Mirrors the existing `--check` guard.
+- **`create` validates the instance name before the `--from-data` copy (#199).** An invalid name no longer orphans a populated `data/` tree.
+- **The backend-capability gate runs before the destructive-wipe confirmation in `reset` (vm/adb) and `destroy` (adb) (#206).** An unsupported backend fails fast (exit 2) without ever prompting to authorize an impossible wipe.
+- **A signal-killed `beetroot shell` returns the POSIX `128+N` exit code (SIGINT→130, SIGTERM→143) instead of leaking 254/241 (#217).**
+- **Registry `_write` fsyncs the temp file before `os.replace` and the parent directory after (#203).** A crash racing a registry write can no longer reset `instances.json` to empty.
+- **A poisoned instance's explicitly-pinned host ports stay in the cross-instance collision precheck (#216).** They're no longer replaced with phantom stride defaults when its ports fail to resolve.
+- **The privileged-port advisory no longer re-emits on every read-only cross-instance port scan (#224).** It was misattributed to an unrelated instance.
+- **Non-positive `BEETROOT_HTTP_TIMEOUT` / `BEETROOT_VM_ADB_CONNECT_TIMEOUT` are rejected at startup (#196).** They used to silently turn every download into an instant failure.
+- **The e2e workflow's `pull_request` trigger now includes `opened` (#210).** A PR opened already carrying the `e2e` label actually starts the e2e tiers.
+- **The changelog linter validates every `beetroot` invocation in a `&&`/`||`/`;`/`|`-chained example, not just the first (#212).** A bad second verb or flag is now caught.
+- **The benchmark regression alert is computed on the host-normalized ratio, not absolute wall-time (#188).** This eliminates runner-noise false positives (and host-vs-host self-flags) and unmasks real VM-only slowdowns.
+- **The `lsposed-hook-e2e` PASS grep accepts the documented compact `BEETROOT_HOOK_FIRED pkg=` form (#236).** Not just the non-empty-middle variant.
 - **Module URLs carrying a query string or fragment now stage a clean `.zip` basename (#168).** The redroid flash glob (`*.zip`) matches it, so a `m.zip?v=2` URL's module is actually flashed instead of silently skipped.
 - **Frida, module, and kernel downloads stage into a process-unique temp file before the atomic rename (#185).** Concurrent fetches of the same artifact can no longer poison the shared user-global cache with a torn file.
 - **`beetroot build --vm-kernel [--check]` validates that a set `REDROID_TAR` points at an existing file (#186).** A typo'd tarball fails preflight instead of aborting mid-bake at `docker load`.

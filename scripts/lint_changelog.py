@@ -58,6 +58,15 @@ INLINE_CODE_SPAN = re.compile(r"`([^`\n]+)`")
 # content begins with ``from `` or ``import ``.
 _PYTHON_IMPORT_PREFIXES = ("from ", "import ")
 
+# Shell command separators. A single CHANGELOG line can chain several
+# ``beetroot`` invocations with ``&&``/``||``/``;``/``|`` (or an embedded
+# newline). ``BEETROOT_INVOCATION``'s ``[^\n#`]+`` class greedily spans those
+# separators to end-of-line, so without splitting first ``finditer`` yields one
+# match per line — a bad *second* verb (or a flag mis-attributed across the
+# separator) sails through (#212). Split each line on these separators and run
+# the matcher per segment so every invocation is validated independently.
+_SHELL_SEPARATORS = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
+
 
 def _slurp(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines()
@@ -222,34 +231,39 @@ def _check_invocations(
             # Python-import statement quoted in prose, not a CLI
             # invocation — skip the whole span (see comment above).
             continue
-        for match in BEETROOT_INVOCATION.finditer(raw):
-            rest = match.group("rest").strip()
-            tokens = rest.split()
-            if not tokens:
-                continue
-            verb = tokens[0]
-            if verb.startswith("-"):
-                continue
-            if verb not in known_verbs:
-                errors.append(
-                    f"CHANGELOG.md:{line_no}: unknown beetroot verb {verb!r} "
-                    f"(line: {raw.strip()!r})",
-                )
-                continue
-            if verb not in flag_cache:
-                flag_cache[verb] = _verb_long_flags(verb)
-            allowed = flag_cache[verb]
-            for tok in tokens[1:]:
-                if tok == "--":
-                    break
-                if not tok.startswith("--"):
+        # Split on shell separators FIRST, then run the matcher per segment,
+        # so a second ``beetroot <verb>`` after a ``&&``/``;``/``|`` is checked
+        # too and a post-separator flag never leaks into the prior verb's token
+        # list (#212). Each segment keeps the line's number for anchoring.
+        for segment in _SHELL_SEPARATORS.split(raw):
+            for match in BEETROOT_INVOCATION.finditer(segment):
+                rest = match.group("rest").strip()
+                tokens = rest.split()
+                if not tokens:
                     continue
-                bare = tok.split("=", 1)[0]
-                if bare not in allowed:
+                verb = tokens[0]
+                if verb.startswith("-"):
+                    continue
+                if verb not in known_verbs:
                     errors.append(
-                        f"CHANGELOG.md:{line_no}: unknown flag {bare!r} for verb "
-                        f"{verb!r} (line: {raw.strip()!r})",
+                        f"CHANGELOG.md:{line_no}: unknown beetroot verb {verb!r} "
+                        f"(line: {raw.strip()!r})",
                     )
+                    continue
+                if verb not in flag_cache:
+                    flag_cache[verb] = _verb_long_flags(verb)
+                allowed = flag_cache[verb]
+                for tok in tokens[1:]:
+                    if tok == "--":
+                        break
+                    if not tok.startswith("--"):
+                        continue
+                    bare = tok.split("=", 1)[0]
+                    if bare not in allowed:
+                        errors.append(
+                            f"CHANGELOG.md:{line_no}: unknown flag {bare!r} for verb "
+                            f"{verb!r} (line: {raw.strip()!r})",
+                        )
     return errors
 
 

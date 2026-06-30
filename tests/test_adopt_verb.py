@@ -219,6 +219,38 @@ class TestAdoptedInstanceDispatch:
         assert "not supported" in err
         assert "adb" in err
 
+    def test_destroy_adb_gates_before_confirm(
+        self,
+        isolated_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # #206: the capability gate must run BEFORE the destructive-wipe
+        # confirmation so an adb backend (no Lifecycle) fails fast (exit 2)
+        # without ever prompting the user to authorize an impossible wipe.
+        from unittest.mock import MagicMock
+
+        runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
+        confirm = MagicMock()
+        monkeypatch.setattr("beetroot.cli.typer.confirm", confirm)
+        code, _ = _run_main_with_argv(["beetroot", "destroy", "phone"], monkeypatch)
+        assert code == 2
+        confirm.assert_not_called()
+
+    def test_reset_adb_gates_before_confirm(
+        self,
+        isolated_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # #206: same ordering for reset — adb backends aren't Resettable.
+        from unittest.mock import MagicMock
+
+        runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
+        confirm = MagicMock()
+        monkeypatch.setattr("beetroot.cli.typer.confirm", confirm)
+        code, _ = _run_main_with_argv(["beetroot", "reset", "phone"], monkeypatch)
+        assert code == 2
+        confirm.assert_not_called()
+
     def test_snapshot_raises_backend_capability_error(
         self,
         isolated_registry: Path,
@@ -486,3 +518,76 @@ class TestDefaultNameBuilder:
         # ``[a-z0-9_-]+`` grammar in unusual cases.
         out = cli._adopt_default_name("a-" + "x" * 64)
         assert not out.endswith("--")
+
+
+class TestInstallFridaVerb:
+    """#205: the `install-frida` verb the adopt hint advertises.
+
+    It resolves the backend and calls ``backend.install_frida(version)``,
+    mapping ``ValueError`` / ``AdbNotInstalledError`` to the friendly
+    ``error: ...`` contract. ``--version`` is required.
+    """
+
+    def test_install_frida_calls_backend(
+        self,
+        isolated_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
+        backend = MagicMock()
+        monkeypatch.setattr(api.Manager, "resolve", lambda name: backend)
+        result = runner.invoke(cli.app, ["install-frida", "phone", "--version", "16.4.10"])
+        assert result.exit_code == 0, result.stderr
+        backend.install_frida.assert_called_once_with("16.4.10")
+
+    def test_install_frida_value_error_is_friendly(
+        self,
+        isolated_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
+        backend = MagicMock()
+        backend.install_frida.side_effect = ValueError("bad version")
+        monkeypatch.setattr(api.Manager, "resolve", lambda name: backend)
+        code, err = _run_main_with_argv(
+            ["beetroot", "install-frida", "phone", "--version", "nope"],
+            monkeypatch,
+        )
+        assert code == 1
+        assert "error:" in err
+        assert "bad version" in err
+        assert "Traceback" not in err
+
+    def test_install_frida_adb_missing_is_friendly(
+        self,
+        isolated_registry: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
+        backend = MagicMock()
+        backend.install_frida.side_effect = api.AdbNotInstalledError(
+            "adb not found on PATH (install android-tools)"
+        )
+        monkeypatch.setattr(api.Manager, "resolve", lambda name: backend)
+        code, err = _run_main_with_argv(
+            ["beetroot", "install-frida", "phone", "--version", "16.4.10"],
+            monkeypatch,
+        )
+        assert code == 1
+        assert "error:" in err
+        assert "adb not found" in err
+        assert "Traceback" not in err
+
+    def test_install_frida_missing_instance_errors(
+        self,
+        isolated_registry: Path,
+    ) -> None:
+        result = runner.invoke(cli.app, ["install-frida", "ghost", "--version", "16.4.10"])
+        assert result.exit_code == 1
+        assert "no instance named" in result.stderr

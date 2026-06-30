@@ -79,11 +79,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             busybox-static socat iptables e2fsprogs curl zstd libc-bin
 
+      - name: Install uv
+        if: steps.gate.outputs.run == 'true'
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+
       - name: Sync uv project deps
         if: steps.gate.outputs.run == 'true'
         run: |
           set -euxo pipefail
-          pipx install uv
           uv sync
 
       - name: Compute the composite rootfs fingerprint

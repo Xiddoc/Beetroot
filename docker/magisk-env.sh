@@ -23,8 +23,10 @@
 #
 # Idempotent: skips when MAGISKBIN already holds util_functions.sh (the exact
 # file module_installer.sh checks). Sourced by entrypoint.sh under `set -e`,
-# so — like the other helpers — it must never `exit`; every branch falls
-# through and external commands that could fail are guarded.
+# so — like the other helpers — it must never `exit`: an `exit` here would
+# terminate the sourcing parent shell and skip every later helper
+# (flash-modules.sh, launch-frida.sh, and the trailing `wait`). Every branch
+# falls through and external commands that could fail are guarded.
 set -eu # fail fast on undefined vars and unhandled errors (T3).
 
 MAGISK_BIN_DIR="${BEETROOT_MAGISK_BIN_DIR:-/data/adb/magisk}"

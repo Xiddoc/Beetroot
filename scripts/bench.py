@@ -19,8 +19,10 @@ Design constraints, straight from the issue:
   nightly workflow and is never a per-PR gate.
 * **Ratio over absolutes.** The host-vs-vm ratio is the headline number; raw
   seconds are reported too, but the ratio is what we trend.
-* **Regression alert at 2x.** A backend/metric that is more than
-  :data:`DEFAULT_REGRESSION_FACTOR` times slower than the baseline is flagged.
+* **Regression alert at 2x.** A backend/metric whose host-normalized *ratio*
+  grew by more than :data:`DEFAULT_REGRESSION_FACTOR` over the baseline ratio is
+  flagged. Comparing ratios (not absolute seconds) cancels runner-wide hardware
+  noise — a uniformly slower runner leaves every ratio unchanged (#188).
 
 The split (this pure-Python analysis vs the boot-timing shell in the workflow)
 keeps the load-bearing logic unit-testable without a runner: see
@@ -74,14 +76,18 @@ class Sample:
 @dataclass(frozen=True)
 class Regression:
     """
-    A backend/metric that ran materially slower than the committed baseline.
+    A backend/metric whose host-normalized ratio grew materially over baseline.
+
+    The comparison is on the host-vs-host-baseline *ratio* (issue #188), not
+    absolute wall-time, so a uniformly slower runner cancels out instead of
+    tripping every pair.
 
     Attributes:
         backend: The backend that regressed.
         metric: The metric that regressed.
-        current: The current aggregated wall-time (seconds).
-        baseline: The baseline aggregated wall-time (seconds).
-        factor: ``current / baseline`` — how many times slower the run is.
+        current: The current host-normalized ratio.
+        baseline: The baseline host-normalized ratio.
+        factor: ``current / baseline`` — how many times the ratio grew.
     """
 
     backend: str
@@ -196,42 +202,53 @@ def compute_ratios(aggregated: dict[tuple[str, str], float]) -> dict[str, dict[s
 
 
 def detect_regressions(
-    current: dict[tuple[str, str], float],
-    baseline: dict[tuple[str, str], float],
+    current: dict[str, dict[str, float]],
+    baseline: dict[str, dict[str, float]],
     *,
     factor: float = DEFAULT_REGRESSION_FACTOR,
 ) -> list[Regression]:
     """
-    Flag backend/metrics that are more than ``factor`` times slower than baseline.
+    Flag backend/metrics whose host-normalized ratio grew by more than ``factor``.
 
-    Only keys present in *both* maps are compared — a newly added backend or a
-    dropped baseline entry is silently ignored rather than reported as noise.
+    Both arguments are :func:`compute_ratios` outputs (``{metric: {backend:
+    ratio}}``) — comparing ratios, not absolute seconds, is what cancels
+    runner-wide hardware noise (#188): a runner uniformly slower than the
+    baseline runner leaves every ratio unchanged, so nothing trips, while a real
+    VM-only slowdown still moves its ratio. The host backend's ratio is ``1.0``
+    by construction, so it never self-regresses against itself.
+
+    Only ``(metric, backend)`` pairs present in *both* maps are compared — a
+    newly added backend or a dropped baseline entry is silently ignored rather
+    than reported as noise.
 
     Args:
-        current: This run's aggregated means.
-        baseline: The committed baseline's aggregated means.
-        factor: The slowdown multiple above which a result is a regression.
+        current: This run's host-normalized ratios.
+        baseline: The committed baseline's host-normalized ratios.
+        factor: The growth multiple above which a ratio shift is a regression.
 
     Returns:
-        The regressions, sorted by descending slowdown factor.
+        The regressions, sorted by descending growth factor.
     """
     found: list[Regression] = []
-    for key, now in current.items():
-        before = baseline.get(key)
-        if before is None or before == 0:
+    for metric, per_backend in current.items():
+        baseline_backends = baseline.get(metric)
+        if baseline_backends is None:
             continue
-        ratio = now / before
-        if ratio > factor:
-            backend, metric = key
-            found.append(
-                Regression(
-                    backend=backend,
-                    metric=metric,
-                    current=now,
-                    baseline=before,
-                    factor=ratio,
+        for backend, now in per_backend.items():
+            before = baseline_backends.get(backend)
+            if before is None or before == 0:
+                continue
+            growth = now / before
+            if growth > factor:
+                found.append(
+                    Regression(
+                        backend=backend,
+                        metric=metric,
+                        current=now,
+                        baseline=before,
+                        factor=growth,
+                    )
                 )
-            )
     return sorted(found, key=lambda r: r.factor, reverse=True)
 
 
@@ -295,10 +312,10 @@ def render_markdown(
     if regressions:
         lines.append(f"### :warning: {len(regressions)} regression(s)")
         lines.append("")
-        lines.append("| backend | metric | baseline | current | factor |")
+        lines.append("| backend | metric | baseline ratio | current ratio | factor |")
         lines.append("| --- | --- | --- | --- | --- |")
         lines.extend(
-            f"| {r.backend} | {r.metric} | {r.baseline:.1f}s | {r.current:.1f}s | {r.factor:.2f}x |"
+            f"| {r.backend} | {r.metric} | {r.baseline:.2f}x | {r.current:.2f}x | {r.factor:.2f}x |"
             for r in regressions
         )
     else:
@@ -411,8 +428,8 @@ def report(args: argparse.Namespace) -> int:
     if args.baseline:
         baseline_path = Path(args.baseline)
         if baseline_path.exists():
-            baseline = aggregate(load_samples(baseline_path))
-            regressions = detect_regressions(aggregated, baseline, factor=args.factor)
+            baseline_ratios = compute_ratios(aggregate(load_samples(baseline_path)))
+            regressions = detect_regressions(ratios, baseline_ratios, factor=args.factor)
         else:
             print(f"bench: baseline {baseline_path} not found; skipping regression check")
 
@@ -446,8 +463,9 @@ def report(args: argparse.Namespace) -> int:
 
     for r in regressions:
         print(
-            f"::warning title=Benchmark regression::{r.backend}/{r.metric} is "
-            f"{r.factor:.2f}x slower than baseline ({r.current:.1f}s vs {r.baseline:.1f}s)"
+            f"::warning title=Benchmark regression::{r.backend}/{r.metric} "
+            f"host-normalized ratio grew {r.factor:.2f}x over baseline "
+            f"({r.current:.2f}x vs {r.baseline:.2f}x)"
         )
     return 0
 

@@ -45,6 +45,17 @@ cmd_setup() {
     echo "[*] setup done — reboot the instance, then run: $0 check $SERIAL $target"
 }
 
+# Match BEETROOT_HOOK_FIRED for $1=target on stdin. The middle token is
+# OPTIONAL: the documented contract is `BEETROOT_HOOK_FIRED <…> pkg=<target>`
+# where <…> may be empty, so the compact `BEETROOT_HOOK_FIRED pkg=<target>`
+# form must PASS too (#236). The target's dots are escaped so they match
+# literally rather than any char in the BRE.
+_hook_match() {
+    local target_re
+    target_re=$(printf '%s' "$1" | sed 's/[.]/\\./g')
+    grep -Eq "BEETROOT_HOOK_FIRED( .*)? pkg=$target_re"
+}
+
 cmd_check() {
     local target="$1"
     echo "[*] launching $target to trigger the hook"
@@ -53,7 +64,7 @@ cmd_check() {
     # Give the emulated guest time to start the activity (slow under TCG).
     local deadline=$(($(date +%s) + 90))
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        if _sh "cat $LSPD_LOG 2>/dev/null" | grep -q "BEETROOT_HOOK_FIRED .* pkg=$target"; then
+        if _sh "cat $LSPD_LOG 2>/dev/null" | _hook_match "$target"; then
             echo "[+] PASS — module hook fired:"
             _sh "cat $LSPD_LOG 2>/dev/null" | grep "BEETROOT_HOOK" | tail -5
             return 0
@@ -65,8 +76,34 @@ cmd_check() {
     return 1
 }
 
+# Self-check the PASS matcher with no device: both the compact
+# `BEETROOT_HOOK_FIRED pkg=` form and the `<…>`-middle form must match, and a
+# different package must NOT (guards against an over-broad relaxation) (#236).
+cmd_selftest() {
+    local pkg="com.example.app"
+    printf 'BEETROOT_HOOK_FIRED pkg=%s\n' "$pkg" | _hook_match "$pkg" ||
+        {
+            echo "[!] selftest FAIL: compact form not matched" >&2
+            return 1
+        }
+    printf 'BEETROOT_HOOK_FIRED onCreate pkg=%s\n' "$pkg" | _hook_match "$pkg" ||
+        {
+            echo "[!] selftest FAIL: middle-token form not matched" >&2
+            return 1
+        }
+    if printf 'BEETROOT_HOOK_FIRED pkg=com.other.pkg\n' | _hook_match "$pkg"; then
+        echo "[!] selftest FAIL: matched a different package" >&2
+        return 1
+    fi
+    echo "[+] selftest PASS"
+}
+
 main() {
-    local sub="${1:?usage: $0 setup|check <serial> ...}"
+    local sub="${1:?usage: $0 setup|check|selftest <serial> ...}"
+    if [ "$sub" = "selftest" ]; then
+        cmd_selftest
+        return
+    fi
     SERIAL="${2:?adb serial required (e.g. localhost:5555)}"
     adb connect "$SERIAL" >/dev/null 2>&1 || true
     adb -s "$SERIAL" root >/dev/null 2>&1 || true

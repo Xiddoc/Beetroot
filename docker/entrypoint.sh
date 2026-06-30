@@ -1,7 +1,9 @@
 #!/system/bin/sh
 # entrypoint.sh — boot-time glue triggered by stealth.rc on
-# sys.boot_completed=1. Sources the helpers in order, then blocks on
-# `wait` so logs stream to `docker compose logs`. See
+# sys.boot_completed=1. Sources the helpers in order, then `wait`s. Container
+# lifetime is owned by /init (PID 1), not this entrypoint; the trailing `wait`
+# only blocks while Frida — the sole backgrounded child (launch-frida.sh) — is
+# running, and returns immediately when no Frida server was started. See
 # docs/how-it-works/boot-scripts.md for each helper's contract.
 # shellcheck disable=SC1091  # helpers live at container root, not this tree.
 set -eu # fail fast on undefined vars and unhandled errors (T3).

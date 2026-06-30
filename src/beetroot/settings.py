@@ -31,6 +31,7 @@ are decoupled from the instance .env contract.
 
 from __future__ import annotations
 
+from pydantic import PositiveInt
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -95,7 +96,7 @@ class Settings(BaseSettings):
 
     docker_bin: str = "docker"
     frida_arch: str = "android-x86_64"
-    http_timeout: int = 30
+    http_timeout: PositiveInt = 30
     magisk_db: str = "/data/adb/magisk.db"
     modules_dir: str = "/data/adb/modules_update"
     frida_bin: str = "/data/local/tmp/frida-server"
@@ -104,7 +105,7 @@ class Settings(BaseSettings):
     qemu_img_bin: str = "qemu-img"
     vm_kernel: str = ""
     vm_rootfs: str = ""
-    vm_adb_connect_timeout: int = 60
+    vm_adb_connect_timeout: PositiveInt = 60
 
 
 settings = Settings()

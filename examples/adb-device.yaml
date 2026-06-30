@@ -39,9 +39,9 @@ created_at: "2026-05-19T00:00:00+00:00"
 #
 # - `android:` block — the device's Android version is whatever the
 #   device's bootloader / vendor blob provides.
-# - `frida:` block — call `beetroot install_frida <name> --version X`
-#   (v0.5 verb; for v0.4 push frida-server manually) to install. The
-#   `AdbDevice.install_frida()` Python API method works today.
+# - `frida:` block — call `beetroot install-frida <name> --version X`
+#   to push and launch frida-server. It wraps the
+#   `AdbDevice.install_frida()` Python API method.
 # - `modules:` block — install via the Magisk app's Modules tab. The
 #   `beetroot module <name> <zip>` verb pushes the zip to
 #   /sdcard/Download/<name> and prints the next-step instruction.
