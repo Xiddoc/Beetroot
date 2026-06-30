@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Security
+
+- **Relative `path:` module entries are now contained to the instance directory (#152).** A relative `path:` that resolves outside the instance dir (e.g. `path: ../../../etc/shadow`) is rejected at staging time — the path-traversal analogue of the existing `file://` URL block. **Absolute** `path:` entries (e.g. `path: /tmp/mod.zip`) remain permitted and are read as-is (an unchanged, tested feature). No schema/api_version change.
+
 ### Breaking changes
 
 - **`ports` generalised to a list of named guest→host mappings; `api_version` bumped 7 → 8 (#108).**

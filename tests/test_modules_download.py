@@ -196,6 +196,49 @@ class TestStageForInstancePathModule:
         with pytest.raises(FileNotFoundError):
             modules_download.stage_for_instance(instance_root, cfg)
 
+    def test_relative_path_escaping_instance_root_is_rejected(self, instance_root: Path) -> None:
+        # An existing, readable file OUTSIDE the instance tree reached via a
+        # ``..``-escaping relative path must be refused — and refused BEFORE
+        # the existence check, so the guard (not FileNotFoundError) is what
+        # fires. instance_root is ``<tmp_path>/alpha``; ``outside.zip`` is its
+        # sibling under <tmp_path>, reached as ``../outside.zip``.
+        outside = instance_root.parent / "outside.zip"
+        outside.write_bytes(FAKE_ZIP_CONTENT)
+        cfg = InstanceConfig(modules=[Module(path="../outside.zip")])
+        with pytest.raises(
+            modules_download.ModuleResolveError, match="escapes the instance directory"
+        ):
+            modules_download.stage_for_instance(instance_root, cfg)
+        # ModuleResolveError is a ValueError — the family bad-entry rejections use.
+        assert issubclass(modules_download.ModuleResolveError, ValueError)
+        # Nothing was staged into the instance's modules dir.
+        assert list(paths.instance_modules(instance_root).glob("*.zip")) == []
+
+    def test_relative_path_with_dotdot_staying_in_tree_is_allowed(
+        self, instance_root: Path
+    ) -> None:
+        # ``sub/../keep.zip`` resolves back inside instance_root — the check is
+        # resolve-based containment, not a naive ``".." in path`` string match.
+        (instance_root / "sub").mkdir()
+        (instance_root / "keep.zip").write_bytes(FAKE_ZIP_CONTENT)
+        cfg = InstanceConfig(modules=[Module(path="sub/../keep.zip")])
+        staged = modules_download.stage_for_instance(instance_root, cfg)
+        assert len(staged) == 1
+        assert staged[0].read_bytes() == FAKE_ZIP_CONTENT
+
+    def test_absolute_path_outside_instance_root_is_allowed(
+        self, instance_root: Path, tmp_path: Path
+    ) -> None:
+        # An explicit ABSOLUTE path outside the instance tree is the supported
+        # half of the policy — it bypasses containment and stages as-is.
+        external = tmp_path / "external" / "abs-mod.zip"
+        external.parent.mkdir()
+        external.write_bytes(FAKE_ZIP_CONTENT)
+        cfg = InstanceConfig(modules=[Module(path=str(external))])
+        staged = modules_download.stage_for_instance(instance_root, cfg)
+        assert len(staged) == 1
+        assert staged[0].read_bytes() == FAKE_ZIP_CONTENT
+
 
 class TestStaleZipWiping:
     def test_stale_zips_are_removed_on_re_stage(self, instance_root: Path) -> None:
