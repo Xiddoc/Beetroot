@@ -314,6 +314,46 @@ class TestRestoreForce:
         assert (vm_dir / "data" / "marker.txt").read_bytes() == (b"vm nested data")
         assert registry.get("beta") is None
 
+    def test_refuses_nonexistent_descendant_of_registered_redroid_dir(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # #172: the overlap guard used to be gated behind ``occupied``, so
+        # a restore into a NON-EXISTENT subdir of a registered instance
+        # (no --force) slipped past it and registered a nested instance.
+        # The guard now runs unconditionally, so the brand-new nested
+        # path is refused before any mkdir / registry write.
+        src = _make_instance(tmp_path / "alpha")
+        registry.add_allocating("alpha", src)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+
+        phone = _make_instance(tmp_path / "phone", data_bytes=b"redroid precious data")
+        registry.add_allocating("phone", phone)
+
+        with pytest.raises(snapshot.SnapshotError, match="phone"):
+            snapshot.restore(archive, dest_name="beta", dest_path=phone / "sub")
+        assert not (phone / "sub").exists()
+        assert registry.get("beta") is None
+
+    def test_refuses_nonexistent_descendant_of_registered_vm_dir(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # #172 for the vm backend: the unconditional overlap loop fires on
+        # the VmBackendConfig arm too, for a not-yet-existent nested path.
+        src = _make_instance(tmp_path / "alpha")
+        registry.add_allocating("alpha", src)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+
+        vm_dir = _make_instance(tmp_path / "vmphone", data_bytes=b"vm nested data")
+        registry.add_allocating(
+            "vmphone",
+            backend=registry.VmBackendConfig(absolute_path=str(vm_dir)),
+        )
+
+        with pytest.raises(snapshot.SnapshotError, match="vmphone"):
+            snapshot.restore(archive, dest_name="beta", dest_path=vm_dir / "sub")
+        assert not (vm_dir / "sub").exists()
+        assert registry.get("beta") is None
+
     def test_empty_existing_dir_is_allowed_without_force(
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
@@ -362,6 +402,56 @@ class TestRestoreForce:
         assert (nested / "more.txt").read_bytes() == b"also important"
         # Beta did not get registered.
         assert registry.get("beta") is None
+
+
+_VM_YAML = "api_version: 3\nandroid:\n  version: 14\nbinder: vm\n"
+
+
+class TestRestoreReconcilesArchivedBinder:
+    def test_restore_rejects_archived_binder_vm_and_rolls_back(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # #171: restore() always registers a RedroidBackendConfig row, but
+        # the EXTRACTED beetroot.yaml is the source of truth for the
+        # backend. An archive whose config sets ``binder: vm`` (e.g. an
+        # unapplied edit on the source — the registry row stays redroid)
+        # would otherwise restore as a redroid row and dispatch the wrong
+        # backend silently. Restore must refuse it (snapshots are
+        # redroid-only, #128) and roll back the half-registered row +
+        # extracted directory.
+        src = tmp_path / "alpha"
+        src.mkdir(parents=True)
+        (src / "beetroot.yaml").write_text(_VM_YAML)
+        (src / "data").mkdir()
+        (src / "data" / "marker.txt").write_bytes(b"hello")
+        # Registered as redroid, simulating the unapplied-edit state where
+        # the YAML already says vm but the registry row is still redroid.
+        registry.add_allocating("alpha", src)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+        registry.remove("alpha")
+
+        target = tmp_path / "beta"
+        with pytest.raises(snapshot.SnapshotError, match="vm"):
+            snapshot.restore(archive, dest_name="beta", dest_path=target)
+
+        # The half-registered row was torn down and the created directory
+        # removed — no nested redroid row masquerading over a vm config.
+        assert registry.get("beta") is None
+        assert not target.exists()
+
+    def test_restore_succeeds_for_redroid_archive(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # Control: a normal redroid archive still restores cleanly through
+        # the new binder-reconciliation guard.
+        src = _make_instance(tmp_path / "alpha")
+        registry.add_allocating("alpha", src)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+        registry.remove("alpha")
+
+        restored = snapshot.restore(archive, dest_name="beta", dest_path=tmp_path / "beta")
+        assert restored == (tmp_path / "beta").resolve()
+        assert registry.get("beta") is not None
 
 
 class TestRestoreErrors:

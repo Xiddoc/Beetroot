@@ -4,6 +4,8 @@
 
 ### Security
 
+- **The guest-kernel source tarball is verified against a pinned sha256 before compiling (#184).** The `binder: vm` kernel build (and the release/CI lanes) now hash the downloaded `cdn.kernel.org` tarball and fold the digest into the published prebuilt fingerprint, so a tampered tarball can't be compiled into a trusted `bzImage`.
+- **`frida-server` downloads decompress incrementally with a bounded output ceiling (#228).** A corrupt or zip-bomb `.xz` now raises `FridaFetchError` past the ceiling instead of OOM-ing the host.
 - **Relative `path:` module entries are now contained to the instance directory (#152).** A relative `path:` that resolves outside the instance dir (e.g. `path: ../../../etc/shadow`) is rejected at staging time — the path-traversal analogue of the existing `file://` URL block. **Absolute** `path:` entries (e.g. `path: /tmp/mod.zip`) remain permitted and are read as-is (an unchanged, tested feature). No schema/api_version change.
 
 ### Breaking changes
@@ -500,6 +502,11 @@
   pre-abort rows in its `results` attribute).
 
 ### Quality & internals
+- **`frida-server` and module downloads stream chunk-by-chunk to disk (#227).** Frida decompresses incrementally instead of buffering the whole compressed and decompressed payload in RAM — matching the rootfs streaming idiom and easing the memory posture on constrained TCG/CI hosts.
+- **Added a repo-root `.dockerignore` (#207).** `beetroot build` no longer uploads `.venv/`, `.git/`, or instance dirs as build context — only `docker/` is sent.
+- **Warn when a pinned `gapps_vendor` overrides the `minimal`/`full` intent (#220).** The silently-collapsed image/flag is no longer a surprise.
+- **Removed the dead, never-read `_MIGRATION_REQUIRED_VERSIONS` constant (#242).** Its comment falsely claimed to enforce the 3→4 stealth migration, which is actually handled by `_reject_stealth_key`.
+- **`frida.sha256` is validated as 64-char hex at config-load time (#194).** A fat-fingered digest now fails immediately with a clear error instead of late with a misleading hostile-mirror message. (`module.sha256` validation is tracked as a follow-up — bogus-digest test fixtures need updating first.)
 - **Fixed self-contradicting `vm.py` comments that claimed `adb connect` succeeds
   at QEMU `hostfwd`-bind (#241).** It only attaches once the post-boot in-guest
   relay is listening; the comments and the `_wait_for_boot_completed` docstring
@@ -610,6 +617,29 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **Module URLs carrying a query string or fragment now stage a clean `.zip` basename (#168).** The redroid flash glob (`*.zip`) matches it, so a `m.zip?v=2` URL's module is actually flashed instead of silently skipped.
+- **Frida, module, and kernel downloads stage into a process-unique temp file before the atomic rename (#185).** Concurrent fetches of the same artifact can no longer poison the shared user-global cache with a torn file.
+- **`beetroot build --vm-kernel [--check]` validates that a set `REDROID_TAR` points at an existing file (#186).** A typo'd tarball fails preflight instead of aborting mid-bake at `docker load`.
+- **The rootfs `.android-version` marker records the major version of the actually-baked `REDROID_IMAGE` (#187).** The `binder: vm` skew check no longer trusts a marker that lies when `REDROID_IMAGE` overrides the version.
+- **`beetroot build` runs a Docker-daemon preflight (#193).** A daemonless host gets a friendly "start the daemon" message instead of a bare `command failed (exit 1)`.
+- **Shell-quote the build-context-derived kernel paths in the `--vm-kernel --from-source` compile (#208).** A checkout under a path with spaces/metacharacters no longer breaks the `merge_config`/`cp` step.
+- **Force BuildKit when `beetroot build` runs `docker compose build` (#229).** The BuildKit-only `COPY --chmod` in the Dockerfile no longer aborts on a BuildKit-disabled host.
+- **`beetroot build --vm-kernel` fails fast with a root-privilege preflight (#231).** An unprivileged local rootfs bake no longer masquerades as a generic ~60s `staging dockerd did not become ready` timeout.
+- **`beetroot build` serializes concurrent runs with an `fcntl.flock` around the shared clone dir (#232).** Two builds can no longer corrupt each other's `rm -rf`/`git clone`/patch tree.
+- **The rootfs `.android-version` marker is written before the image is renamed into place (#234).** An interrupted download can't leave a marker-less image that silently skips the skew check.
+- **`beetroot ls`/`modes` tables render losslessly when stdout is not a TTY (#204).** No cell truncation or box-drawing borders off-TTY; the overclaiming console docstrings are corrected.
+- **`docker compose logs` raises `ComposeError` on a non-zero exit in non-follow mode (#218).** It no longer silently swallows the failure, while still tolerating the Ctrl-C exit under `--follow`.
+- **`user_config_dir`/`user_registry_file`/`user_cache_dir` ignore a relative `$XDG_*_HOME` and fall back to `~/.config`/`~/.cache` (#225).** This honors their absolute-path contract instead of fragmenting the registry across working directories.
+- **Bundled compose / vm-asset cache materialisation writes via a temp file + `os.replace` (#226).** Concurrent wheel-installed invocations can no longer hand `docker compose` a truncated file.
+- **`beetroot restore` rejects a snapshot whose archived `beetroot.yaml` sets `binder: vm` instead of silently restoring it as a redroid instance (#171).**
+- **snapshot restore runs the cross-instance directory-overlap guard even when the target doesn't yet exist (#172).** It refuses a restore into a non-existent descendant/ancestor of a registered instance instead of registering a nested one.
+- **`beetroot snapshot` excludes its own output archive by resolved path at any directory depth (#173).** Running it from a subdirectory of the instance no longer packs the partially-written archive into itself.
+- **Reject a well-known `ports:` mapping whose guest port isn't canonical, and require `frida_control` alongside `frida` (#195).** A mistyped guest port no longer publishes a host port forwarding to a dead guest port.
+- **Dedup the legacy ports-mapping migration note by resolved path (#202).** It no longer re-prints on every `load_yaml` across a fleet scan.
+- **Accept Docker's documented `memswap_limit: -1` (unlimited swap) (#215).** It's no longer rejected as an invalid size, while `-1` stays rejected for the other size fields.
+- **The `binder: vm` inert-config advisory also flags a non-empty `modules:` list (#200).** The Magisk-less guest can never flash them.
+- **The mid-batch offline-abort module row is stage-neutral and retains the underlying adb error (#223).** It no longer hardcodes a "mid-install" detail or drops the adb error text.
+- **Restructure the magisk-config.sh zygisk read so the `magisk --sqlite` exit status is observed under `set -eu` (#239).** A post-liveness daemon flap no longer triggers a needless zygote restart or a misleading boot abort.
 - **`binder: vm` `down`/`restart`/`destroy` verify the recorded PID still names
   this instance's QEMU before signalling (#162).** A stale or reused pidfile can
   no longer SIGTERM/SIGKILL an unrelated process; `is_running()` and the

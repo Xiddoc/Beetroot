@@ -268,6 +268,17 @@ class TestLogs:
         logs_idx = cmd.index("logs")
         assert "-f" not in cmd[logs_idx:]
 
+    def test_logs_raises_on_nonzero_non_follow(self, tmp_path: Path) -> None:
+        with patch("subprocess.run", return_value=_fail_result(1)):
+            with pytest.raises(ComposeError, match="compose logs"):
+                compose.logs("alpha", tmp_path, follow=False)
+
+    def test_logs_tolerates_nonzero_in_follow(self, tmp_path: Path) -> None:
+        # Ctrl-C out of a ``logs -f`` stream surfaces as a non-zero (SIGINT)
+        # exit; that is the expected way to stop it, so it must not raise.
+        with patch("subprocess.run", return_value=_fail_result(-2)):
+            compose.logs("alpha", tmp_path, follow=True)
+
 
 class TestBuild:
     def test_build_includes_build_subcommand(self, tmp_path: Path) -> None:

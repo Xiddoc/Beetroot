@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import re
+import shlex
 import shutil
 import subprocess
 from collections.abc import Sequence
@@ -48,6 +51,25 @@ class FakeRunner:
         self.calls.append(_Call(list(cmd), cwd, check, env))
         if self.fail_on is not None and cmd[0] == self.fail_on:
             raise BootstrapError(f"fake failure on {self.fail_on} (exit {self.fail_exit})")
+
+
+# The real daemon-preflight callable, captured before the autouse fixture
+# below stubs the module attribute — so the few tests that exercise the real
+# implementation can restore it.
+_REAL_DAEMON_RESPONSIVE = builder._docker_daemon_responsive
+
+
+@pytest.fixture(autouse=True)
+def _daemon_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Default the Docker-daemon preflight to "up" for every builder test.
+
+    ``build_image`` grew a daemon preflight (#193); without this the daemonless
+    test host would short-circuit every existing build_image test. Tests that
+    exercise the daemon-down branch re-patch it to ``False`` themselves; tests
+    of the real probe restore :data:`_REAL_DAEMON_RESPONSIVE`.
+    """
+    monkeypatch.setattr(builder, "_docker_daemon_responsive", lambda: True)
 
 
 class TestGappsVendorFlags:
@@ -587,6 +609,15 @@ class TestBuildVmKernel:
         # ready host so the local-bake path proceeds; enforcement tests inject a
         # failing bake_preflight explicitly.
         monkeypatch.setattr(builder, "vm_bake_preflight", lambda **_k: [])
+
+        # ``_fetch_kernel_source`` now sha256-verifies the downloaded tarball
+        # against the pinned digest (#184); the FakeRunner doesn't materialise
+        # the tarball on its ``curl`` call, so the real read+hash would raise.
+        # Neutralise just the verify (a no-op) so the genuine curl/tar/return
+        # flow — including the real cdn.kernel.org URL the dispatch tests assert
+        # on — still runs; the verify-before-extract branch itself is covered by
+        # TestFetchKernelSource with a side-effecting runner.
+        monkeypatch.setattr(builder, "_verify_kernel_source_digest", lambda _tarball: None)
 
     def test_runs_kernel_then_rootfs_steps(self, tmp_path: Path) -> None:
         runner = FakeRunner()
@@ -1610,6 +1641,7 @@ class TestSleepHelper:
 
 class TestDockerDaemonResponsive:
     def test_true_when_info_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(builder, "_docker_daemon_responsive", _REAL_DAEMON_RESPONSIVE)
         monkeypatch.setattr(
             "beetroot.builder.subprocess.run",
             lambda *_a, **_k: subprocess.CompletedProcess(args=[], returncode=0),
@@ -1617,6 +1649,7 @@ class TestDockerDaemonResponsive:
         assert builder._docker_daemon_responsive() is True
 
     def test_false_when_info_nonzero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(builder, "_docker_daemon_responsive", _REAL_DAEMON_RESPONSIVE)
         monkeypatch.setattr(
             "beetroot.builder.subprocess.run",
             lambda *_a, **_k: subprocess.CompletedProcess(args=[], returncode=1),
@@ -1624,6 +1657,8 @@ class TestDockerDaemonResponsive:
         assert builder._docker_daemon_responsive() is False
 
     def test_false_when_docker_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(builder, "_docker_daemon_responsive", _REAL_DAEMON_RESPONSIVE)
+
         def _boom(*_a: object, **_k: object) -> object:
             raise FileNotFoundError
 
@@ -1647,7 +1682,7 @@ class TestVmBuildPreflight:
             xtables_multi=paths["xtables-legacy-multi"],
         )
 
-    def _ready(
+    def _ready(  # noqa: PLR0913  # test helper; each kwarg toggles one preflight branch
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
@@ -1655,11 +1690,15 @@ class TestVmBuildPreflight:
         present: tuple[str, ...] = ("busybox", "socat", "xtables-legacy-multi"),
         which: object = None,
         daemon: bool = True,
+        euid: int = 0,
     ) -> None:
         cfg = self._cfg(tmp_path, present=present)
         monkeypatch.setattr(builder._RootfsConfig, "from_env", lambda **_k: cfg)
         monkeypatch.setattr("beetroot.builder.shutil.which", which or (lambda _n: "/usr/bin/found"))
         monkeypatch.setattr(builder, "_docker_daemon_responsive", lambda: daemon)
+        # The bake's root-privilege preflight (#231) — default to root so the
+        # other branches stay isolated; root-specific tests override ``euid``.
+        monkeypatch.setattr("beetroot.builder.os.geteuid", lambda: euid)
 
     def test_ready_host_has_no_problems(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1704,8 +1743,11 @@ class TestVmBuildPreflight:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         self._ready(monkeypatch, tmp_path, daemon=False)
-        # With a pre-saved tarball the bake never pulls, so a down daemon is fine.
-        assert builder.vm_build_preflight(redroid_tar=tmp_path / "redroid.tar") == []
+        # With a pre-saved tarball the bake never pulls, so a down daemon is fine
+        # — but the tarball must actually exist (issue #186).
+        tar = tmp_path / "redroid.tar"
+        tar.write_bytes(b"tar")
+        assert builder.vm_build_preflight(redroid_tar=tar) == []
 
     def test_reports_everything_missing_in_one_pass(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1714,3 +1756,236 @@ class TestVmBuildPreflight:
         self._ready(monkeypatch, tmp_path, present=(), which=lambda _n: None, daemon=False)
         names = {p.requirement for p in builder.vm_build_preflight()}
         assert {"busybox", "socat", "xtables-legacy-multi", "curl", "tar"} <= names
+
+    def test_missing_redroid_tar_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # issue #186: a set-but-missing REDROID_TAR must be a preflight problem,
+        # not a mid-bake `docker load` 404 after --check passed.
+        self._ready(monkeypatch, tmp_path, daemon=False)
+        problems = builder.vm_bake_preflight(redroid_tar=tmp_path / "nope.tar")
+        assert [p.requirement for p in problems] == ["REDROID_TAR"]
+        assert "not found" in problems[0].detail
+
+    def test_existing_redroid_tar_skips_daemon_even_when_down(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A genuinely-present tarball: no REDROID_TAR problem AND no daemon
+        # problem, even with the daemon probe forced down (#186 skip branch).
+        self._ready(monkeypatch, tmp_path, daemon=False)
+        tar = tmp_path / "redroid.tar"
+        tar.write_bytes(b"tar")
+        problems = builder.vm_bake_preflight(redroid_tar=tar)
+        assert all(p.requirement not in {"REDROID_TAR", "Docker daemon"} for p in problems)
+
+    def test_unprivileged_euid_reported_without_redroid_tar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # issue #231: the staging dockerd needs root; surface it up front.
+        self._ready(monkeypatch, tmp_path, euid=1000)
+        names = [p.requirement for p in builder.vm_bake_preflight()]
+        assert "root privilege" in names
+
+    def test_unprivileged_euid_reported_with_redroid_tar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The root check is NOT gated on REDROID_TAR — the staging dockerd is
+        # spawned even when loading from a tarball (#231).
+        self._ready(monkeypatch, tmp_path, euid=1000)
+        tar = tmp_path / "redroid.tar"
+        tar.write_bytes(b"tar")
+        names = [p.requirement for p in builder.vm_bake_preflight(redroid_tar=tar)]
+        assert "root privilege" in names
+
+    def test_root_euid_has_no_privilege_problem(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._ready(monkeypatch, tmp_path, euid=0)
+        names = [p.requirement for p in builder.vm_bake_preflight()]
+        assert "root privilege" not in names
+
+
+class TestBuildImageDaemonPreflight:
+    """issue #193: ``beetroot build`` runs a Docker-daemon preflight."""
+
+    def test_daemon_down_raises_friendly_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(builder, "_docker_daemon_responsive", lambda: False)
+        runner = FakeRunner()
+        with pytest.raises(BootstrapError, match="Docker daemon") as exc:
+            build_image(runner=runner)
+        assert "start the daemon" in str(exc.value)
+        # Fails before any clone/patch/build runner call.
+        assert runner.calls == []
+
+    def test_daemon_up_proceeds_to_build(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(builder, "_docker_daemon_responsive", lambda: True)
+        runner = FakeRunner()
+        build_image(runner=runner)
+        # rm, clone, patch, build all run when the daemon is up.
+        assert [c.cmd[0] for c in runner.calls] == ["rm", "git", "uv", "docker"]
+
+
+class TestBuildImageBuildKit:
+    """issue #229: force BuildKit for the BuildKit-only ``COPY --chmod``."""
+
+    def test_compose_build_env_forces_buildkit(self) -> None:
+        runner = FakeRunner()
+        build_image(runner=runner)
+        build_call = runner.calls[-1]
+        assert build_call.cmd[1] == "compose"
+        assert build_call.env is not None
+        assert build_call.env["DOCKER_BUILDKIT"] == "1"
+        assert build_call.env["COMPOSE_DOCKER_CLI_BUILD"] == "1"
+
+
+class TestBuildImageCloneLock:
+    """issue #232: serialize concurrent builds with an fcntl.flock."""
+
+    def test_lock_acquired_before_clone_released_after_patch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events: list[str] = []
+        real_flock = fcntl.flock
+
+        def recording_flock(fd: int, op: int) -> None:
+            if op == fcntl.LOCK_EX:
+                events.append("lock")
+            elif op == fcntl.LOCK_UN:
+                events.append("unlock")
+            real_flock(fd, op)
+
+        monkeypatch.setattr("beetroot.builder.fcntl.flock", recording_flock)
+
+        @dataclass
+        class _RecordingRunner:
+            def run(
+                self,
+                cmd: Sequence[str],
+                *,
+                cwd: Path | None = None,
+                check: bool = True,
+                env: dict[str, str] | None = None,
+            ) -> None:
+                events.append(cmd[0])
+
+        build_image(work_dir=tmp_path / "work", runner=_RecordingRunner())
+        # Lock is acquired before the rm/clone, released after the patch (uv),
+        # and the docker build runs after release.
+        assert events.index("lock") < events.index("rm")
+        assert events.index("lock") < events.index("git")
+        assert events.index("uv") < events.index("unlock")
+        assert events.index("unlock") < events.index("docker")
+
+    def test_reuse_path_holds_lock_across_clone_url_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An existing matching clone reuses artifacts but must still hold the
+        # lock while reading .git/config (synchronizing with a racing clone).
+        work = tmp_path / "work"
+        held: list[bool] = []
+
+        def check_lock_held(work_dir: Path, url: str) -> bool:
+            # The lockfile exists while the reuse branch runs under the held lock.
+            held.append(work.with_name("work.lock").exists())
+            return True
+
+        monkeypatch.setattr(builder, "_clone_url_matches", check_lock_held)
+        build_image(work_dir=work, runner=FakeRunner())
+        assert held == [True]
+
+
+class TestKernelConfigShellQuoting:
+    """issue #208: build-context-derived paths are shell-quoted in the compile."""
+
+    def test_paths_with_spaces_are_quoted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ctx = tmp_path / "My Checkout"
+        _make_vm_context(ctx)
+        out = tmp_path / "My Out"
+        runner = FakeRunner()
+        # build_vm_kernel's autouse fixture lives on TestBuildVmKernel; here we
+        # need the source-digest verify stub too (the FakeRunner doesn't
+        # materialise the tarball), so patch it locally.
+        monkeypatch.setattr(builder, "_verify_kernel_source_digest", lambda _t: None)
+        builder.build_vm_kernel(
+            out_dir=out,
+            build_context=ctx,
+            runner=runner,
+            rootfs_build=_RootfsBuildRecorder(),
+            from_source=True,
+            bake_preflight=lambda **_k: [],
+        )
+        compile_cmd = runner.calls[-1].cmd[2]
+        kernel_config = (ctx / "docker" / "vm" / "kernel.config").resolve()
+        bzimage = (out / "bzImage").resolve()
+        # Both interpolated paths appear as single shlex-quoted tokens.
+        assert shlex.quote(str(kernel_config)) in compile_cmd
+        assert shlex.quote(str(bzimage)) in compile_cmd
+        # The bare unquoted (space-splitting) forms are absent.
+        assert f"-m .config {kernel_config} " not in compile_cmd
+
+
+class TestFetchKernelSource:
+    """issue #184: verify the kernel source tarball against a pinned sha256."""
+
+    def _runner_writing(self, contents: bytes) -> FakeRunner:
+        # A FakeRunner whose curl call materialises the tarball bytes, so the
+        # real ``_fetch_kernel_source`` can read + hash them.
+        runner = FakeRunner()
+        real_run = runner.run
+
+        def writing_run(
+            cmd: Sequence[str],
+            *,
+            cwd: Path | None = None,
+            check: bool = True,
+            env: dict[str, str] | None = None,
+        ) -> None:
+            real_run(cmd, cwd=cwd, check=check, env=env)
+            if cmd[0] == "curl":
+                Path(cmd[cmd.index("-o") + 1]).write_bytes(contents)
+
+        runner.run = writing_run  # type: ignore[method-assign]
+        return runner
+
+    def test_mismatch_raises_and_skips_tar(self, tmp_path: Path) -> None:
+        runner = self._runner_writing(b"tampered-bytes")
+        with pytest.raises(BootstrapError, match="sha256 mismatch"):
+            builder._fetch_kernel_source(runner, tmp_path)
+        # tar must NOT have run — extraction is gated behind verification.
+        assert not any(c.cmd[0] == "tar" for c in runner.calls)
+
+    def test_match_proceeds_to_extract(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        good = b"genuine-kernel-source"
+        monkeypatch.setattr(
+            builder, "KERNEL_SOURCE_SHA256", hashlib.sha256(good).hexdigest()
+        )
+        runner = self._runner_writing(good)
+        tree = builder._fetch_kernel_source(runner, tmp_path)
+        assert any(c.cmd[0] == "tar" for c in runner.calls)
+        assert tree == tmp_path / f"linux-{builder.KERNEL_VERSION}"
+
+
+@pytest.mark.usefixtures("_no_sleep")
+class TestMajorVersionFromImage:
+    """issue #187: the rootfs marker records the baked REDROID_IMAGE version."""
+
+    def test_parses_leading_major(self) -> None:
+        assert builder._major_version_from_image("redroid/redroid:13.0.0-latest") == 13
+
+    def test_malformed_tag_raises(self) -> None:
+        with pytest.raises(BootstrapError, match="Android major version"):
+            builder._major_version_from_image("redroid/redroid:latest")
+
+    def test_marker_records_baked_image_version_not_arg(self, tmp_path: Path) -> None:
+        # android_version arg says 14 but REDROID_IMAGE bakes 13 — the marker
+        # must follow the actually-baked image (#187).
+        cfg = _make_rootfs_config(
+            tmp_path, android_version=14, redroid_image="redroid/redroid:13.0.0-latest"
+        )
+        runner = FakeRootfsRunner(applets=("sh",))
+        out = _run_assembly(tmp_path, runner, cfg)
+        assert builder.read_rootfs_version(out) == 13

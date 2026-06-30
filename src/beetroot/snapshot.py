@@ -319,9 +319,13 @@ def _add_instance_tree(tar: tarfile.TarFile, instance_root: Path, final_dest: Pa
     into the cwd, which is normally the instance dir, so the just-created
     (still-open, partially-flushed) archive would otherwise be packed into
     itself as a phantom ``./<name>.tar.zst`` member and re-extracted on
-    restore. The match is by resolved absolute path, so a destination
-    outside ``instance_root`` is unaffected and a same-named file elsewhere
-    in the tree is not wrongly excluded.
+    restore. The exclusion applies at ANY directory depth (via the
+    ``tar.add`` ``filter`` callback), so a dest nested in a subdir such as
+    ``data/<name>.tar.zst`` — the CLI default resolved against a cwd inside
+    ``data/`` (#173) — is dropped too, not just a top-level dest. The match
+    is by resolved absolute path, so a destination outside ``instance_root``
+    is unaffected and a same-named file elsewhere in the tree is not wrongly
+    excluded.
 
     Args:
         tar: The open tar stream to append members to.
@@ -330,12 +334,21 @@ def _add_instance_tree(tar: tarfile.TarFile, instance_root: Path, final_dest: Pa
             falls inside ``instance_root``.
     """
     dest_resolved = final_dest.resolve()
+
+    def _skip_dest(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        # ``info.name`` is the arcname (e.g. ``./data/alpha.tar.zst``);
+        # resolving it against ``instance_root`` recovers the on-disk path so
+        # the still-open destination archive is dropped at any depth (#173).
+        if (instance_root / info.name).resolve() == dest_resolved:
+            return None
+        return info
+
     for entry in sorted(instance_root.iterdir()):
         if entry.name in _EXCLUDED_TOP_LEVEL:
             continue
         if entry.resolve() == dest_resolved:
             continue
-        tar.add(entry, arcname=f"./{entry.name}", recursive=True)
+        tar.add(entry, arcname=f"./{entry.name}", recursive=True, filter=_skip_dest)
 
 
 def _add_manifest(tar: tarfile.TarFile, manifest: Manifest) -> None:
@@ -435,8 +448,12 @@ def _prepare_destination(target: Path, *, force: bool) -> None:
         # ``target`` is an existing regular file; iterdir() blows up.
         # Re-raise as a SnapshotError so callers see a consistent type.
         raise SnapshotError(f"{target} exists and is a file, not a directory") from None
-    if not occupied:
-        return
+    # The cross-instance overlap loop runs UNCONDITIONALLY — before the
+    # ``occupied`` early-return — because the predicate below is a pure
+    # path comparison that is just as valid for a not-yet-existent target.
+    # Gating it behind ``occupied`` (#172) let a restore into a brand-new
+    # nested path like ``<registered-peer>/sub`` slip past the guard and
+    # register a nested instance inside a registered peer with no --force.
     for other_name, meta in registry.list_instances().items():
         # Both redroid and vm backends are directory-backed and carry an
         # ``absolute_path``; an adb row carries a serial, not a path, so
@@ -458,6 +475,10 @@ def _prepare_destination(target: Path, *, force: bool) -> None:
                 f"with --force). 'beetroot destroy {other_name}' first, "
                 "or pick a different --path."
             )
+    # Overlap guard cleared: a non-existent or empty target needs no
+    # further clearing, so return before the force/overwrite tail.
+    if not occupied:
+        return
     if not force:
         raise SnapshotError(
             f"{target} already exists and is non-empty; "
@@ -583,6 +604,17 @@ def restore(
         # the try block, so a corrupt member left a partially-extracted
         # tree behind that the user had to clean up manually.
         _extract_archive_into(archive, target)
+        # #171: reconcile the EXTRACTED beetroot.yaml's binder mode. The
+        # registry row is always written as RedroidBackendConfig above, but
+        # the archived config is the source of truth for the backend — a
+        # ``binder: vm`` archive (e.g. an unapplied edit on the source)
+        # would otherwise restore as a redroid row and dispatch the wrong
+        # backend silently. Snapshots are redroid-only (#128), so refuse it
+        # here, inside the rollback try/except so the half-registered row +
+        # extracted tree are torn down. Mirrors the source-side gate in
+        # ``_find_registry_entry``.
+        if config.load_yaml(paths.instance_yaml(target)).binder == "vm":
+            raise SnapshotError(unsupported_backend_message("restore", dest_name, "vm"))
         # T4: replay the snapshot's path_layout into the new registry
         # entry's stealth_paths slot. v0.4 manifests carry ``{}`` so
         # this is a structural no-op today; a v0.6 snapshot carrying

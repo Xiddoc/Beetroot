@@ -110,7 +110,7 @@ GApps is split across two axes (issue #107): an **intent** that says *what you g
 |-------|------|---------|-------------|
 | `version` | int | `14` | Android version. Valid: `11`, `12`, `13`, `14`. |
 | `gapps` | enum | `minimal` | GApps **intent**: `none` (no Play Services), `minimal` (a slim Play Services), or `full` (the full suite). |
-| `gapps_vendor` | enum | _(unset)_ | Optional **vendor** override: `litegapps`, `opengapps`, or `mindthegapps`. Unset lets the intent pick the vendor (`minimal` → LiteGApps, `full` → OpenGApps). Cannot be combined with `gapps: none`. |
+| `gapps_vendor` | enum | _(unset)_ | Optional **vendor** override: `litegapps`, `opengapps`, or `mindthegapps`. Unset lets the intent pick the vendor (`minimal` → LiteGApps, `full` → OpenGApps). When set alongside `minimal`/`full`, the vendor wins and the intent is overridden (a one-line note is printed). Cannot be combined with `gapps: none`. |
 
 ```yaml
 android:
@@ -169,7 +169,7 @@ Docker resource limits for the container.
 | `cpus` | float | `2.0` | CPU limit in fractional cores. |
 | `shared_mem` | string | `256m` | Shared memory size (`/dev/shm`, Docker `shm_size`). Docker size format. |
 | `mem_reservation` | string | none | Soft memory floor. Docker size format. Docker scheduler reserves this for the container but allows it to use more up to `mem`. |
-| `memswap_limit` | string | none | Combined memory + swap cap. Docker size format. Unset → Docker's normal swap allowance applies; set it equal to `mem` to disable swap entirely and prevent swap storms. |
+| `memswap_limit` | string | none | Combined memory + swap cap. Docker size format, plus Docker's documented sentinel `-1` for unlimited swap. Unset → Docker's normal swap allowance applies; set it equal to `mem` to disable swap entirely and prevent swap storms. |
 | `pids_limit` | int | `4096` | Maximum number of PIDs the container can spawn. |
 
 ```yaml
@@ -183,7 +183,7 @@ resources:
     The old `resources.shm` field was renamed to `resources.shared_mem` for clarity. Loading a YAML with the legacy field raises a `ValidationError` pointing at this migration — see `CHANGELOG.md`.
 
 !!! note "Docker size format"
-    All string memory fields (`mem`, `shared_mem`, `mem_reservation`, `memswap_limit`) must use Docker's size format: a number optionally followed by a single suffix — `b`, `k`, `m`, `g`, or `t` (case-insensitive). Examples: `3g`, `512m`, `1.5G`. Values like `3gb` (two-letter suffix) fail at load time with a clear error rather than being silently misinterpreted at `docker compose up`.
+    All string memory fields (`mem`, `shared_mem`, `mem_reservation`, `memswap_limit`) must use Docker's size format: a number optionally followed by a single suffix — `b`, `k`, `m`, `g`, or `t` (case-insensitive). Examples: `3g`, `512m`, `1.5G`. Values like `3gb` (two-letter suffix) fail at load time with a clear error rather than being silently misinterpreted at `docker compose up`. `memswap_limit` additionally accepts Docker's documented `-1` sentinel (unlimited swap); the other size fields reject `-1` as a malformed size.
 
 !!! note "`resources.mem` vs `vm.memory_mib`"
     `resources.mem` is the Docker container memory cap, **authoritative for `binder: auto` / `host`** (redroid). For `binder: vm` the guest RAM is `vm.memory_mib` (the QEMU `-m`). Both knobs are deliberately kept — collapsing them into one field is deferred. Decision recorded in [#104](https://github.com/Xiddoc/Beetroot/issues/104).
@@ -197,7 +197,7 @@ Frida server configuration. **Opt-in starting in v0.3** — omit the block entir
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `version` | string | `"auto"` | Which `frida-server` release to stage. One of: **`auto`** (default) — match your host's installed `frida-tools` version so the staged server and the client you attach with agree on major+minor, falling back to `latest` when `frida-tools` isn't installed; **`latest`** — the current upstream release, resolved at download time; or a pinned **`major.minor.patch`** tag (e.g. `"16.4.10"`) for reproducibility. `auto` / `latest` are resolved to a concrete tag at staging time; a malformed pinned tag fails at config-load. |
-| `sha256` | string \| null | `null` | Optional expected hex digest of the decompressed `frida-server` binary. When set, it's verified against the downloaded binary at download time (case-insensitive); a mismatch raises an error rather than staging a tampered binary. **Requires a pinned `version`** — a digest can't match the moving target `auto` / `latest` resolve to, so that combination is rejected at load. |
+| `sha256` | string \| null | `null` | Optional expected hex digest of the decompressed `frida-server` binary. Validated at config-load time as a 64-character hex digest (case-insensitive) so a truncated or fat-fingered value fails fast instead of after a full download; when set, it's also verified against the downloaded binary at download time, and a mismatch raises an error rather than staging a tampered binary. **Requires a pinned `version`** — a digest can't match the moving target `auto` / `latest` resolve to, so that combination is rejected at load. |
 
 ```yaml
 # Opt in, tracking your host frida-tools (recommended):
@@ -271,7 +271,7 @@ ports:
   - {service: metrics, guest: 9100}           # arbitrary, auto-allocated host
 ```
 
-If you omit the block entirely (the default), the three well-known services are stride-allocated. The list is validated: duplicate `service` names, duplicate `guest` ports, and duplicate explicit `host` ports are all rejected at load time. If a resolved host port collides with another instance, `beetroot create` and `beetroot apply` exit with a clear error before staging:
+If you omit the block entirely (the default), the three well-known services are stride-allocated. The list is validated: duplicate `service` names, duplicate `guest` ports, and duplicate explicit `host` ports are all rejected at load time. A well-known service (`adb` / `frida` / `frida_control`) must use its **canonical** guest port (`5555` / `27042` / `27043` — fixed by the redroid image); a mistyped guest there is rejected, since the published host port is derived from the service *name*, not the guest, and a wrong guest would forward to a dead port. A `frida:` block additionally requires both a `service: frida` **and** a `service: frida_control` mapping. If a resolved host port collides with another instance, `beetroot create` and `beetroot apply` exit with a clear error before staging:
 
 ```
 error: port 5555 (adb) collides with instance 'alpha' (which also uses 5555). Pin or remove one.

@@ -78,3 +78,29 @@ def test_snapshot_keeps_same_named_archive_outside_instance_dir(
 
     members = _list_archive_members(archive)
     assert "./data/alpha.tar.zst" in members
+
+
+def test_snapshot_excludes_nested_dest_archive_at_any_depth(
+    isolated_registry: Path, tmp_path: Path
+) -> None:
+    """A dest nested in a subdir (e.g. data/) is excluded, not just top-level.
+
+    The CLI default ``<name>.tar.zst`` resolves against the cwd; run from
+    inside ``data/`` it lands at ``data/<name>.tar.zst``. The top-level
+    ``entry.resolve()`` check never sees that path — only the depth-
+    independent filter callback drops it (#173). Asserting on both the
+    dropped and the kept member exercises both branches of the callback.
+    """
+    src = _make_instance(tmp_path / "alpha")
+    registry.add_allocating("alpha", src)
+
+    dest = src / "data" / "alpha.tar.zst"
+    archive = snapshot.snapshot(src, dest)
+    assert archive == dest
+
+    members = _list_archive_members(archive)
+    # The still-open output archive is dropped (filter returns None) even
+    # though it lives a directory deep, not at the instance root.
+    assert "./data/alpha.tar.zst" not in members
+    # A sibling under the same subdir is kept (filter returns the info).
+    assert "./data/marker.txt" in members

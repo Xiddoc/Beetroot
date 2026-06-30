@@ -50,7 +50,16 @@ echo "[*] Enabling Zygisk + denylist"
 # is the one that flips it on. Zygisk only injects zygote at zygote start, so a
 # 0/missing → 1 transition this boot means the running zygote predates Zygisk
 # and needs a one-shot restart to activate it (and any flashed Zygisk module).
-PREV_ZYGISK="$(magisk --sqlite "SELECT value FROM settings WHERE key='zygisk';" | awk -F'=' '{print $NF}')"
+# ``magisk --sqlite`` prints each row as ``column=value``; we want the value.
+# The prior ``magisk ... | awk -F= '{print $NF}'`` did the right extraction but
+# put magisk *inside a pipeline*, so under ``set -eu`` the substitution's exit
+# status was awk's (always 0) — a magisk failure after the liveness probe was
+# silently masked, leaving PREV_ZYGISK empty and spuriously flagging Zygisk as
+# newly enabled. Capture magisk's raw output in its own command substitution
+# (so a magisk failure aborts the script), then strip the ``value=`` prefix
+# with shell parameter expansion — no pipe (issue #239).
+PREV_ZYGISK_ROW="$(magisk --sqlite "SELECT value FROM settings WHERE key='zygisk';")"
+PREV_ZYGISK="${PREV_ZYGISK_ROW##*=}"
 magisk --sqlite "REPLACE INTO settings (key, value) VALUES ('zygisk', 1);"
 magisk --sqlite "REPLACE INTO settings (key, value) VALUES ('denylist', 1);"
 if [ "$PREV_ZYGISK" != "1" ]; then
@@ -65,9 +74,14 @@ fi
 # container with denylist=1 but zygisk=0 and no root hiding — a
 # user-visible behaviour change that v0.3 had no detection for.
 # (T2 Agent 1 / Agent 2 F-9 / Agent 3 1.2.)
-ZYGISK_VALUE="$(magisk --sqlite "SELECT value FROM settings WHERE key='zygisk';" | awk -F'=' '{print $NF}')"
+# Same structure as PREV_ZYGISK above: read into its own command substitution
+# (so a magisk failure aborts under ``set -eu`` rather than being masked into
+# an empty value that misreports as "setting did not take"), then strip the
+# ``value=`` prefix without a pipe (issue #239).
+ZYGISK_ROW="$(magisk --sqlite "SELECT value FROM settings WHERE key='zygisk';")"
+ZYGISK_VALUE="${ZYGISK_ROW##*=}"
 if [ "$ZYGISK_VALUE" != "1" ]; then
-    echo "[!] Magisk Zygisk setting did not take (got: '$ZYGISK_VALUE'). Aborting."
+    echo "[!] Magisk reports zygisk='$ZYGISK_VALUE' after the REPLACE INTO (expected '1'); the setting did not persist. Aborting." >&2
     exit 1
 fi
 

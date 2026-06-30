@@ -338,6 +338,10 @@ jobs:
     env:
       # The binder-enabled guest kernel pinned by docs/design/vm-rnd-log.md.
       KERNEL_VERSION: "6.12.9"
+      # sha256 of linux-${KERNEL_VERSION}.tar.xz; verified before extract so a
+      # tampered CDN tarball can't be compiled. Keep in sync with
+      # KERNEL_SOURCE_SHA256 in src/beetroot/builder.py (issue #184).
+      KERNEL_SOURCE_SHA256: "87be0360df0931b340d2bac35161a548070fbc3a8c352c49e21e96666c26aeb4"
       VM_OUT: ${{ github.workspace }}/vm-artifacts
       BEETROOT_VM_KERNEL: ${{ github.workspace }}/vm-artifacts/bzImage
       BEETROOT_VM_ROOTFS: ${{ github.workspace }}/vm-artifacts/rootdisk.img
@@ -377,6 +381,8 @@ jobs:
           mkdir -p "$VM_OUT"
           cd "$RUNNER_TEMP"
           curl -fsSLO "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz"
+          # Verify the pinned source digest BEFORE extract (issue #184).
+          echo "${KERNEL_SOURCE_SHA256}  linux-${KERNEL_VERSION}.tar.xz" | sha256sum -c -
           tar -xf "linux-${KERNEL_VERSION}.tar.xz"
           cd "linux-${KERNEL_VERSION}"
           make defconfig

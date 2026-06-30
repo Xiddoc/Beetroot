@@ -18,6 +18,8 @@ honoured automatically by platformdirs on Linux.
 from __future__ import annotations
 
 import importlib.resources
+import os
+import tempfile
 from pathlib import Path
 
 from platformdirs import user_cache_path, user_config_path
@@ -164,6 +166,31 @@ def bundled_vm_dir() -> Path:
     return _materialise_bundled_vm_dir()
 
 
+def _atomic_write_bytes(target: Path, contents: bytes) -> None:
+    """
+    Write ``contents`` to ``target`` via a same-directory temp file + rename.
+
+    The cache these helpers write to is process-global and shared with
+    concurrent wheel-installed invocations that hand the same path to
+    ``docker compose -f``. An in-place ``write_bytes`` truncates first, so a
+    concurrent reader can observe an empty / half-written file. Staging to a
+    sibling temp file and ``os.replace``-ing it in is atomic on the same
+    filesystem, so a reader always sees either the old bytes or the full new
+    bytes — never a truncated view.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=target.name, suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(contents)
+        # ``os.replace`` is the atomic-rename primitive; ``Path.replace`` wraps
+        # it but obscures the intent (and the spy in the tests targets it here).
+        os.replace(tmp, target)  # noqa: PTH105
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 _BUNDLED_VM_DIR_CACHE: Path | None = None
 
 
@@ -195,7 +222,7 @@ def _materialise_bundled_vm_dir() -> Path:
         contents = pkg.joinpath(name).read_bytes()
         dst = target / name
         if not dst.exists() or dst.read_bytes() != contents:
-            dst.write_bytes(contents)
+            _atomic_write_bytes(dst, contents)
     _BUNDLED_VM_DIR_CACHE = target
     return _BUNDLED_VM_DIR_CACHE
 
@@ -235,7 +262,7 @@ def _materialise_bundled_compose() -> Path:
     cache_target = user_cache_dir("templates") / "compose.yaml"
     cache_target.parent.mkdir(parents=True, exist_ok=True)
     if not cache_target.exists() or cache_target.read_bytes() != contents:
-        cache_target.write_bytes(contents)
+        _atomic_write_bytes(cache_target, contents)
     _BUNDLED_COMPOSE_CACHE = cache_target
     return _BUNDLED_COMPOSE_CACHE
 
@@ -252,7 +279,12 @@ def user_config_dir() -> Path:
     Returns:
         Absolute path to the per-user Beetroot config dir.
     """
-    return user_config_path(_APP_NAME)
+    # platformdirs honours a relative ``$XDG_CONFIG_HOME`` literally, but the
+    # XDG spec says relative values are invalid and must be ignored — and a
+    # cwd-relative registry would fragment the user-global registry across
+    # working directories. Fall back to the spec default when not absolute.
+    p = user_config_path(_APP_NAME)
+    return p if p.is_absolute() else (Path.home() / ".config" / _APP_NAME)
 
 
 def user_registry_file() -> Path:
@@ -288,4 +320,8 @@ def user_cache_dir(subdir: str) -> Path:
     Returns:
         Absolute path to the requested cache subdirectory.
     """
-    return user_cache_path(_APP_NAME) / subdir
+    # As with ``user_config_dir``: a relative ``$XDG_CACHE_HOME`` is invalid
+    # per the XDG spec, so ignore it and fall back to ``~/.cache``.
+    c = user_cache_path(_APP_NAME)
+    base = c if c.is_absolute() else (Path.home() / ".cache" / _APP_NAME)
+    return base / subdir

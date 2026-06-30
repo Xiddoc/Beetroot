@@ -34,6 +34,8 @@ guards against a truncated/corrupt download. It is *not* a supply-chain anchor
 from __future__ import annotations
 
 import hashlib
+import os
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -189,7 +191,17 @@ def fetch_prebuilt(*, version: str, fingerprint: str, out_path: Path) -> Path:
             f"sha256 mismatch for {url}: expected {expected.lower()}, got {actual.lower()}"
         )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out_path.with_suffix(".tmp")
-    tmp.write_bytes(payload)
-    tmp.replace(out_path)
+    # Stage into a process-unique temp on the destination filesystem so two
+    # concurrent fetches of the same kernel can't write a shared fixed ``.tmp``
+    # and publish a cross-contaminated bzImage via the atomic rename (#185).
+    fd, tmp_name = tempfile.mkstemp(dir=out_path.parent, suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+        tmp.replace(out_path)
+    except BaseException:
+        # A mid-write crash must not orphan the temp beside the destination.
+        tmp.unlink(missing_ok=True)
+        raise
     return out_path

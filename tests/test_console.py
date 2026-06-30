@@ -277,6 +277,48 @@ def test_table_writes_to_stdout_not_stderr(monkeypatch: pytest.MonkeyPatch) -> N
     assert "alpha" not in stderr_buf.getvalue()
 
 
+def test_table_non_tty_renders_long_cell_verbatim(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Off-TTY, rich's 80-col default would clip a wide ls/modes row with an
+    # ellipsis. The lossless branch must emit the ADB endpoint and the full
+    # path verbatim, with no "…" truncation marker anywhere (#204).
+    c, buf = _make_console(tty=False)
+    monkeypatch.setattr(console, "_stdout_console", c)
+    long_path = "/home/user/very/long/path/to/instance"
+    console.table(
+        ["NAME", "ADB", "PATH"],
+        [["alpha-research-phone", "localhost:5555", long_path]],
+    )
+    out = buf.getvalue()
+    assert "localhost:5555" in out
+    assert long_path in out
+    assert "alpha-research-phone" in out
+    assert "…" not in out  # the ellipsis rich inserts when it truncates
+
+
+def test_table_non_tty_has_no_box_drawing(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Box-drawing borders are plain UTF-8 (not ANSI), so they survive the
+    # non-TTY color strip and would pollute piped output. The lossless branch
+    # drops them entirely (#204).
+    c, buf = _make_console(tty=False)
+    monkeypatch.setattr(console, "_stdout_console", c)
+    console.table(["NAME", "ADB"], [["alpha", "localhost:5555"]])
+    out = buf.getvalue()
+    for glyph in "┏┳┓┃│┗┻┛┡╇┩─":
+        assert glyph not in out
+
+
+def test_table_tty_keeps_decorated_box(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The TTY branch is unchanged: interactive output stays a decorated rich
+    # Table with box-drawing borders.
+    c, buf = _make_console(tty=True)
+    monkeypatch.setattr(console, "_stdout_console", c)
+    console.table(["NAME", "ADB"], [["alpha", "localhost:5555"]])
+    out = buf.getvalue()
+    assert "alpha" in out
+    assert "localhost:5555" in out
+    assert any(glyph in out for glyph in "┏┓│─")
+
+
 # ---------------------------------------------------------------------------
 # ProgressContext — direct use
 # ---------------------------------------------------------------------------

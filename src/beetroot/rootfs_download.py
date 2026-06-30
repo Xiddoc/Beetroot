@@ -325,7 +325,11 @@ def fetch_prebuilt(
                 zstandard.ZstdDecompressor().copy_stream(src, dst)
         except zstandard.ZstdError as e:
             raise RootfsFetchError(f"corrupt/truncated zstd payload for {url}: {e}") from e
+        # Write the version marker BEFORE the image is renamed into place, so an
+        # interrupted fetch can never leave a present-but-marker-less image that
+        # silently skips the #82 skew check. A stale marker without an image is
+        # harmless — the next fetch re-drives both halves (issue #234).
+        marker = out_image.with_name(out_image.name + _ROOTFS_VERSION_MARKER_SUFFIX)
+        marker.write_text(f"{android_version}\n", encoding="utf-8")
         tmp.replace(out_image)
-    marker = out_image.with_name(out_image.name + _ROOTFS_VERSION_MARKER_SUFFIX)
-    marker.write_text(f"{android_version}\n", encoding="utf-8")
     return out_image

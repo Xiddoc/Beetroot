@@ -391,7 +391,12 @@ class TestPreflightTaxonomy:
             "(reconnect it, accept its USB-debugging authorization prompt "
             "if one is shown, and check `adb devices`)" in result.stderr
         )
-        assert f"[beetroot] failed: {second} — device went offline mid-install" in result.stderr
+        # The row is stage-neutral and retains the underlying adb error
+        # (#223), instead of the old hardcoded "mid-install" detail.
+        assert f"[beetroot] failed: {second} — device went offline during this module" in (
+            result.stderr
+        )
+        assert "last adb error:" in result.stderr
 
 
 class TestCapabilityGating:

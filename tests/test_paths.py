@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.resources
+import os
 from pathlib import Path
 
 import pytest
@@ -279,6 +280,110 @@ class TestBundledVmDir:
             assert (result / name).stat().st_mtime_ns == mtimes[name], name
 
 
+class TestAtomicCacheMaterialisation:
+    """Issue #226: cache writes go through a temp file + ``os.replace``.
+
+    A concurrent wheel-installed reader handing the same path to
+    ``docker compose -f`` must never observe a truncated file, and the helpers
+    must not leave ``.tmp`` debris behind.
+    """
+
+    @staticmethod
+    def _patch_zip_install(
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        payloads: dict[str, bytes],
+    ) -> None:
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+        import contextlib
+        from collections.abc import Iterator
+
+        class _ZipResource:
+            def __init__(self, name: str) -> None:
+                self._name = name
+
+            def is_file(self) -> bool:
+                return False
+
+            def read_bytes(self) -> bytes:
+                return payloads[self._name]
+
+        class _Files:
+            def joinpath(self, name: str) -> _ZipResource:
+                return _ZipResource(name)
+
+        @contextlib.contextmanager
+        def _fake_as_file(resource: _ZipResource) -> Iterator[_ZipResource]:
+            yield resource
+
+        monkeypatch.setattr(importlib.resources, "files", lambda _pkg: _Files())
+        monkeypatch.setattr(importlib.resources, "as_file", _fake_as_file)
+
+    def test_compose_leaves_no_tmp_artifact(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._patch_zip_install(monkeypatch, tmp_path, {"compose.yaml": b"compose: v1\n"})
+        monkeypatch.setattr(paths, "_BUNDLED_COMPOSE_CACHE", None)
+        result = paths.bundled_compose_file()
+        assert result.read_bytes() == b"compose: v1\n"
+        leftovers = list(result.parent.glob("*.tmp"))
+        assert leftovers == [], f"left temp files behind: {leftovers}"
+
+    def test_compose_uses_os_replace(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._patch_zip_install(monkeypatch, tmp_path, {"compose.yaml": b"compose: v2\n"})
+        monkeypatch.setattr(paths, "_BUNDLED_COMPOSE_CACHE", None)
+        calls: list[tuple[str, str]] = []
+        real_replace = os.replace
+
+        def _spy(src: object, dst: object, /, **kw: object) -> None:
+            calls.append((str(src), str(dst)))
+            real_replace(src, dst)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(os, "replace", _spy)
+        result = paths.bundled_compose_file()
+        assert len(calls) == 1, "atomic write must replace exactly once"
+        # The rename lands on the final cache path, not a temp name.
+        assert calls[0][1] == str(result)
+
+    def test_vm_assets_leave_no_tmp_artifact(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        payloads = {
+            "kernel.config": b"CONFIG_FOO=y\n",
+            "guest-init.sh": b"#!/bin/sh\n",
+            "adbprobe.c": b"int main(){}\n",
+        }
+        self._patch_zip_install(monkeypatch, tmp_path, payloads)
+        monkeypatch.setattr(paths, "_BUNDLED_VM_DIR_CACHE", None)
+        result = paths.bundled_vm_dir()
+        for name, content in payloads.items():
+            assert (result / name).read_bytes() == content
+        leftovers = list(result.glob("*.tmp"))
+        assert leftovers == [], f"left temp files behind: {leftovers}"
+
+    def test_atomic_write_unlinks_temp_on_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The except-branch: if the rename fails, the staged temp file must be
+        # cleaned up rather than leaked into the cache dir.
+        target = tmp_path / "out.bin"
+
+        class _BoomError(RuntimeError):
+            pass
+
+        def _bad_replace(_src: object, _dst: object, /, **_kw: object) -> None:
+            raise _BoomError
+
+        monkeypatch.setattr(os, "replace", _bad_replace)
+        with pytest.raises(_BoomError):
+            paths._atomic_write_bytes(target, b"data")
+        assert not target.exists()
+        assert list(tmp_path.glob("*.tmp")) == [], "temp file leaked on failure"
+
+
 class TestUserRegistryFile:
     def test_default_under_home_config(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -292,6 +397,49 @@ class TestUserRegistryFile:
     ) -> None:
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "myxdg"))
         assert paths.user_registry_file() == (tmp_path / "myxdg" / "beetroot" / "instances.json")
+
+
+class TestRelativeXdgIsIgnored:
+    """Issue #225: a relative ``$XDG_*_HOME`` must not yield a relative path.
+
+    The XDG spec treats relative env values as invalid; honouring one would
+    fragment the user-global registry across working directories. The accessors
+    fall back to the spec default (``~/.config`` / ``~/.cache``) instead.
+    """
+
+    def test_relative_xdg_config_home_falls_back_to_home(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("XDG_CONFIG_HOME", "relconfig")
+        config_dir = paths.user_config_dir()
+        registry = paths.user_registry_file()
+        assert config_dir.is_absolute()
+        assert config_dir == tmp_path / ".config" / "beetroot"
+        assert registry.is_absolute()
+        assert registry == tmp_path / ".config" / "beetroot" / "instances.json"
+
+    def test_relative_xdg_cache_home_falls_back_to_home(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("XDG_CACHE_HOME", "relcache")
+        cache = paths.user_cache_dir("frida")
+        assert cache.is_absolute()
+        assert cache == tmp_path / ".cache" / "beetroot" / "frida"
+
+    def test_absolute_xdg_config_home_used_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The ``is_absolute()`` true-branch: an absolute XDG dir is honoured.
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "abs"))
+        assert paths.user_config_dir() == tmp_path / "abs" / "beetroot"
+
+    def test_absolute_xdg_cache_home_used_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "abs"))
+        assert paths.user_cache_dir("modules") == tmp_path / "abs" / "beetroot" / "modules"
 
 
 class TestUserCacheDir:

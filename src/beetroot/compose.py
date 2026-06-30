@@ -180,11 +180,18 @@ def logs(name: str, instance_root: Path, follow: bool = False) -> None:
         name: Instance name.
         instance_root: The instance directory.
         follow: If ``True``, stream logs continuously (``-f``).
+
+    Raises:
+        ComposeError: If compose exits with a non-zero status in non-follow
+            mode. In follow mode a non-zero exit is tolerated, because
+            ``Ctrl-C``-ing out of the stream is the expected way to stop it.
     """
     args = ["logs"]
     if follow:
         args.append("-f")
-    run(name, instance_root, args)
+    res = run(name, instance_root, args)
+    if not follow and res.returncode != 0:
+        raise ComposeError(f"`compose logs` failed for {name} (exit {res.returncode})")
 
 
 def ps_status(name: str, instance_root: Path) -> ComposeStatus:

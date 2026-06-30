@@ -237,6 +237,10 @@ jobs:
         working-directory: .beetroot
         env:
           KERNEL_VERSION: "6.12.9"
+          # sha256 of linux-${KERNEL_VERSION}.tar.xz; verified before extract so
+          # a tampered CDN tarball can't be compiled. Keep in sync with
+          # KERNEL_SOURCE_SHA256 in src/beetroot/builder.py (issue #184).
+          KERNEL_SOURCE_SHA256: "87be0360df0931b340d2bac35161a548070fbc3a8c352c49e21e96666c26aeb4"
           VM_OUT: ${{ github.workspace }}/.beetroot-vm
         run: |
           set -euxo pipefail
@@ -251,9 +255,14 @@ jobs:
           mkdir -p "$VM_OUT"
           work="$RUNNER_TEMP/linux"
           mkdir -p "$work"
+          # Download to a file and verify the pinned source digest BEFORE extract
+          # (split the curl | tar pipe so the bytes can be hashed first) (#184).
+          tarball="$RUNNER_TEMP/linux-${KERNEL_VERSION}.tar.xz"
           curl -fsSL \
             "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz" \
-            | tar -xJ -C "$work" --strip-components=1
+            -o "$tarball"
+          echo "${KERNEL_SOURCE_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xJ -C "$work" --strip-components=1 -f "$tarball"
           cd "$work"
           make defconfig
           ./scripts/kconfig/merge_config.sh -m .config \

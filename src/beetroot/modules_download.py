@@ -16,8 +16,11 @@ corruption or supply-chain substitution.
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
+import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -67,9 +70,14 @@ def _module_cache_dir() -> Path:
 
 def _filename_from_url(url: str) -> str:
     """
-    Return the basename of the URL path, or ``module.zip`` if empty.
+    Return the basename of the URL *path*, or ``module.zip`` if empty.
+
+    Derived from the path component only (via :func:`urllib.parse.urlsplit`) so a
+    trailing ``?query`` or ``#fragment`` never leaks into the staged filename —
+    otherwise a staged ``m.zip?v=2`` would never match the ``*.zip`` flash glob
+    in ``flash-modules.sh`` and the module would be silently skipped (#168).
     """
-    return url.rsplit("/", 1)[-1] or "module.zip"
+    return urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1] or "module.zip"
 
 
 def _cache_path_for_url(url: str) -> Path:
@@ -106,31 +114,45 @@ def _fetch_url(url: str) -> Path:
         return cache
     cache.parent.mkdir(parents=True, exist_ok=True)
     filename = _filename_from_url(url)
+    # Stage into a process-unique temp on the cache filesystem so two concurrent
+    # fetches of the same URL can't write the same fixed ``.tmp`` and publish a
+    # cross-contaminated zip via the atomic rename (#185). The payload streams
+    # straight to disk chunk-by-chunk rather than buffering the whole zip in RAM
+    # (#227), mirroring ``rootfs_download``.
+    fd, tmp_name = tempfile.mkstemp(dir=cache.parent, suffix=".tmp")
+    tmp = Path(tmp_name)
     try:
-        with urllib.request.urlopen(url, timeout=settings.http_timeout) as resp:  # noqa: S310  # scheme validated by Module pydantic model + _fetch_url allowlist
+        with (
+            os.fdopen(fd, "wb") as out,
+            urllib.request.urlopen(url, timeout=settings.http_timeout) as resp,  # noqa: S310  # scheme validated by Module pydantic model + _fetch_url allowlist
+        ):
             raw_length = resp.headers.get("Content-Length")
             total: float | None = float(raw_length) if raw_length else None
-            chunks: list[bytes] = []
             with console.progress(f"Fetching module {filename}", total=total) as bar:
                 while True:
                     chunk = resp.read(_CHUNK_SIZE)
                     if not chunk:
                         break
-                    chunks.append(chunk)
+                    out.write(chunk)
                     bar.advance(len(chunk))
-        data = b"".join(chunks)
+        tmp.replace(cache)
     except urllib.error.HTTPError as e:
+        tmp.unlink(missing_ok=True)
         raise ModuleFetchError(
             f"download failed: HTTP {e.code} fetching {url}; "
             "verify the URL is current (the upstream release may have moved)"
         ) from e
     except TimeoutError as e:
+        tmp.unlink(missing_ok=True)
         raise ModuleFetchError(f"download timed out after {settings.http_timeout}s: {url}") from e
     except urllib.error.URLError as e:
+        tmp.unlink(missing_ok=True)
         raise ModuleFetchError(f"download failed: cannot reach {url}: {e.reason}") from e
-    tmp = cache.with_suffix(".tmp")
-    tmp.write_bytes(data)
-    tmp.replace(cache)
+    except BaseException:
+        # A mid-write crash (interrupt, disk-full) must not orphan the temp in
+        # the user-global cache; the successful path already renamed it away.
+        tmp.unlink(missing_ok=True)
+        raise
     return cache
 
 
