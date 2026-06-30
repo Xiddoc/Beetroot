@@ -98,9 +98,10 @@
   honour — a non-`none` `android.gapps`, a customised `magisk.denylist`, any
   `frida:` block, and arbitrary `ports:` mappings beyond the well-known services —
   moved from firing on every `beetroot up` to firing **once, at config time**:
-  whenever a `binder: vm` config is committed via `create`, adopted via
-  `register`, or reconciled via `apply` (a config-time surface, not a per-boot
-  log line; this covers the `register` → `up` flow, which skips `apply`). The field→backend
+  whenever a `binder: vm` config reaches a config-time entry point — adopted via
+  `register`, reconciled via `apply`, or committed through the `Instance.create`
+  API (the `beetroot create` verb itself always writes a redroid default) — not a
+  per-boot log line. This covers the `register` → `up` flow, which skips `apply`. The field→backend
   applicability matrix is now expressed **structurally** via
   `config.inert_fields(cfg)`, a function that returns the list of set-but-inert
   field names for the active backend; the warning is built from that single

@@ -22,8 +22,8 @@ binder: vm
 android:
   # binder: vm boots an unmodified upstream redroid image — it has no GApps,
   # Magisk, or Houdini layer. Pin gapps: none so the config matches what the
-  # VM actually runs; any other value is silently inert here and beetroot up
-  # will warn about it (see issue #96).
+  # VM actually runs; any other value is silently inert here and beetroot
+  # apply (or register) will warn about it once at config time (see issue #104).
   gapps: none
 
 vm:

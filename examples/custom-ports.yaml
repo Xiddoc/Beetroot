@@ -12,7 +12,7 @@
 #     extra-pool band (host = 40000 + index*10 + slot).
 #
 # Note: under `binder: vm` only adb is forwarded to the guest; arbitrary
-# mappings beyond the well-known services are ignored (beetroot up warns).
+# mappings beyond the well-known services are ignored (beetroot apply warns).
 
 api_version: 8
 
