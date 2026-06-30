@@ -262,6 +262,46 @@ class TestVmDispatch:
         assert result.exit_code == 0, result.stderr
         assert "no effect under binder: vm" not in result.stderr
 
+    def test_register_vm_with_inert_fields_emits_advisory_once(self, cli_root: Path) -> None:
+        # issue #104 regression: a `register`-ed binder: vm dir is recorded as
+        # kind=vm directly and its success hint is `next: beetroot up` (no
+        # `apply` in between). Since `up` no longer warns per-boot, `register`
+        # itself must surface the set-but-inert fields ONCE, naming them —
+        # otherwise the register→up flow names them nowhere.
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(
+            root / "beetroot.yaml",
+            config.InstanceConfig(
+                binder="vm",
+                android={"gapps": "full"},  # type: ignore[arg-type]
+                frida=config.Frida(version="16.4.10"),
+                magisk=config.Magisk(denylist=["com.example.app"]),
+            ),
+        )
+        result = runner.invoke(cli.app, ["register", str(root)])
+        assert result.exit_code == 0, result.stderr
+        err = result.stderr
+        assert err.count("no effect under binder: vm") == 1
+        assert "android.gapps: full" in err
+        assert "frida" in err
+        assert "magisk.denylist" in err
+
+    def test_register_vm_with_no_inert_fields_is_silent(self, cli_root: Path) -> None:
+        # Contrast: registering a binder: vm dir with nothing set-but-inert
+        # (gapps none, default denylist, no frida) emits no advisory — the
+        # early-return path. Note a *default* vm config has gapps "minimal",
+        # which IS inert, so this must pin gapps none explicitly.
+        root = cli_root / "vm2"
+        root.mkdir()
+        config.write_yaml(
+            root / "beetroot.yaml",
+            config.InstanceConfig(binder="vm", android={"gapps": "none"}),  # type: ignore[arg-type]
+        )
+        result = runner.invoke(cli.app, ["register", str(root)])
+        assert result.exit_code == 0, result.stderr
+        assert "no effect under binder: vm" not in result.stderr
+
 
 @pytest.fixture
 def _stub_adb_connect_wait(monkeypatch: pytest.MonkeyPatch) -> None:

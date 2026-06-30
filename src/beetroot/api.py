@@ -676,6 +676,10 @@ class Instance:
         # ``beetroot apply <name>`` once the network heals. (T2 Agent
         # 2 B-2.)
         _stage_network_soft(inst)
+        # Surface set-but-inert binder: vm fields ONCE here (issue #104), so a
+        # ``create``-then-``up`` flow with a hand-supplied vm config still names
+        # them — ``up`` no longer warns per-boot. No-op for redroid configs.
+        config.warn_inert_fields(inst._cfg, name)
         return inst
 
     @classmethod
@@ -742,6 +746,12 @@ class Instance:
         # registered instance behind for the user to retry via
         # ``beetroot apply``. (T2 Agent 2 B-2.)
         _stage_network_soft(inst)
+        # Surface set-but-inert binder: vm fields ONCE here (issue #104). A
+        # ``register``-ed vm instance is registered as kind=vm directly, and its
+        # ``next: beetroot up`` hint skips ``apply``; ``up`` no longer warns
+        # per-boot, so without this the inert fields would be named NOWHERE.
+        # No-op for redroid configs.
+        config.warn_inert_fields(inst._cfg, resolved_name)
         return inst
 
     @classmethod

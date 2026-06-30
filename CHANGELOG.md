@@ -93,12 +93,14 @@
 
 ### Features
 
-- **Set-but-inert fields under `binder: vm` now surface once at `apply` time, not on every boot (#104).**
+- **Set-but-inert fields under `binder: vm` now surface once at config time, not on every boot (#104).**
   The advisory that names `beetroot.yaml` settings the plain-redroid VM can't
   honour — a non-`none` `android.gapps`, a customised `magisk.denylist`, any
   `frida:` block, and arbitrary `ports:` mappings beyond the well-known services —
-  moved from firing on every `beetroot up` to firing **once, at `beetroot apply`**
-  (a config-time surface, not a per-boot log line). The field→backend
+  moved from firing on every `beetroot up` to firing **once, at config time**:
+  whenever a `binder: vm` config is committed via `create`, adopted via
+  `register`, or reconciled via `apply` (a config-time surface, not a per-boot
+  log line; this covers the `register` → `up` flow, which skips `apply`). The field→backend
   applicability matrix is now expressed **structurally** via
   `config.inert_fields(cfg)`, a function that returns the list of set-but-inert
   field names for the active backend; the warning is built from that single
