@@ -603,6 +603,17 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **The default-rendered `memswap_limit` no longer silently disables container
+  swap (#169).** The bundled compose template defaulted `memswap_limit` to
+  `${MEMSWAP_LIMIT:-${MEM_LIMIT:-3g}}`, so an all-defaults instance resolved to
+  `memswap_limit == mem_limit` — which Docker reads as *zero swap*, contradicting
+  the documented `none` default and risking an OOM kill (and the baffling
+  "container up, adb never connects" mode) during the memory-heavy first boot on
+  hosts that have swap. The default is now `${MEMSWAP_LIMIT:-0}`; Docker treats
+  `memswap_limit: 0` as unset, and `docker compose config` drops the key
+  entirely, so the container gets Docker's normal swap allowance unless the user
+  opts into a cap. A `docker compose config` regression test now asserts the
+  resolved default has no `memswap_limit` and that an explicit value is honoured.
 - **The adb backend's `magisk.zygisk` / `magisk.denylist.<pkg>` doctor checks
   now read the root-only Magisk DB through `su -c` (#159).** `magisk --sqlite`
   reads `/data/adb/magisk.db`, which only root can open. The shared
