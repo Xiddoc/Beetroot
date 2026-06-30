@@ -265,7 +265,12 @@ class Resources(BaseModel):
     Docker resource caps for the container.
 
     Attributes:
-        mem: Hard memory limit (e.g. ``3g``). Docker size format.
+        mem: Hard memory limit (e.g. ``3g``). Docker size format. This is the
+            Docker container cap, authoritative for redroid (``binder:
+            auto``/``host``); for ``binder: vm`` the guest RAM is
+            :attr:`Vm.memory_mib` (the QEMU ``-m``). Both knobs are
+            intentionally kept (issue #104) — collapsing into one field is
+            deferred.
         cpus: CPU cap as a float.
         shared_mem: Shared-memory size (Docker ``shm_size``). Docker size format.
         mem_reservation: Optional soft memory floor. Docker size format.
@@ -710,6 +715,9 @@ class Vm(BaseModel):
             logical-CPU count would hit on a hyperthreaded host. Pin an
             explicit value to leave host cores free or to override.
         memory_mib: Guest RAM in MiB (``-m``). Must be >= 256. Default 8192.
+            Authoritative for ``binder: vm``; :attr:`Resources.mem` is the
+            Docker cap used by ``binder: auto``/``host``. Both knobs kept by
+            decision in #104.
         boot_cache: Opt into the warm-start boot cache (default ``False``).
             When ``True``, the first ``beetroot up`` cold-boots through a
             qcow2 overlay and checkpoints the running machine state with QEMU
@@ -920,6 +928,57 @@ class InstanceConfig(BaseModel):
                 f"CHANGELOG.md for the migration."
             )
         return self
+
+
+def inert_fields(cfg: InstanceConfig) -> list[str]:
+    """
+    Return human-readable descriptions of beetroot.yaml fields the backend ignores.
+
+    Expresses the field→backend applicability matrix structurally (issue
+    #104): given a fully-loaded config, returns one entry per set-but-inert
+    field for the ACTIVE backend, each naming the field and why it no-ops.
+    Empty list means every set field is honoured. The caller turns a non-empty
+    list into a single apply-time advisory.
+
+    Only ``binder: vm`` has inert fields today: it boots an UNMODIFIED
+    upstream redroid image (:func:`vm_redroid_image`) with no GApps / Magisk /
+    Houdini / Frida layer, so the layered-image knobs (``android.gapps``,
+    ``magisk.denylist``) and the whole ``frida:`` block are inert, and only
+    adb is forwarded so arbitrary ``ports:`` mappings are dropped (issue #44/
+    #108). ``binder: auto``/``host`` honour all of these → empty list.
+
+    Args:
+        cfg: The fully-loaded instance config to inspect.
+
+    Returns:
+        One human-readable string per set-but-inert field for ``cfg``'s
+        active backend; empty when every set field is honoured.
+    """
+    inert: list[str] = []
+    if cfg.binder != "vm":
+        return inert
+    if cfg.android.gapps != "none":
+        inert.append(
+            f"android.gapps: {cfg.android.gapps} (the guest boots plain "
+            "redroid with no GApps — Play Services will be absent)"
+        )
+    if cfg.frida is not None:
+        inert.append(
+            "frida (the network-isolated guest can't reach a frida-server; "
+            "the frida verbs are unsupported on binder: vm)"
+        )
+    if cfg.magisk.denylist and cfg.magisk.denylist != Magisk().denylist:
+        inert.append(
+            "magisk.denylist (the guest runs plain redroid with no Magisk, "
+            "so the denylist is never applied)"
+        )
+    arbitrary = [m for m in cfg.ports if m.service not in WELL_KNOWN_SERVICES]
+    if arbitrary:
+        inert.append(
+            "arbitrary ports: entries (only adb is forwarded under binder: vm; "
+            "extra guest→host mappings are ignored)"
+        )
+    return inert
 
 
 def load_yaml(path: Path) -> InstanceConfig:

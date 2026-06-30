@@ -457,7 +457,6 @@ class VmDeviceBackend:
                 "registry before `beetroot up`."
             )
         self._warn_on_rootfs_version_skew()
-        self._warn_on_inert_vm_config()
         accel = self.resolved_accel()
         if self._cfg.vm.boot_cache:
             self._up_cached(accel)
@@ -647,43 +646,19 @@ class VmDeviceBackend:
 
     def _warn_on_inert_vm_config(self) -> None:
         """
-        Warn (without aborting) about beetroot.yaml settings the VM can't honour.
+        Print a single apply-time advisory naming every set-but-inert field.
 
-        The ``binder: vm`` guest boots an **unmodified upstream** redroid image
-        (:func:`config.vm_redroid_image`) — no GApps, no Magisk, no Houdini — in
-        a network-isolated guest. Settings that only mean something for the
-        layered ``beetroot build`` image (``android.gapps``, ``magisk.denylist``)
-        or for Frida are therefore silently inert under ``binder: vm``. #82 added
-        a loud warning for the analogous ``android.version`` skew; this closes
-        the same silent config-vs-reality gap for the rest of the knobs (issue
-        #96) so a researcher who set ``gapps: full`` isn't left debugging missing
-        Play Services. A non-fatal note, matching :meth:`_warn_on_rootfs_version_skew`.
+        Delegates the field→backend applicability matrix to
+        :func:`config.inert_fields` (issue #104) — the mapping lives there,
+        in code, not in this method's prose. The ``binder: vm`` guest boots an
+        unmodified upstream redroid image (:func:`config.vm_redroid_image`), so
+        the layered-image knobs (``android.gapps``, ``magisk.denylist``) and the
+        whole ``frida:`` block are inert; this surfaces them ONCE at ``apply``
+        time (no longer on every ``up``) so a researcher who set ``gapps: full``
+        isn't left debugging missing Play Services. Non-fatal note, matching
+        :meth:`_warn_on_rootfs_version_skew`.
         """
-        inert: list[str] = []
-        if self._cfg.android.gapps != "none":
-            inert.append(
-                f"android.gapps: {self._cfg.android.gapps} (the guest boots plain "
-                "redroid with no GApps — Play Services will be absent)"
-            )
-        if self._cfg.frida is not None:
-            inert.append(
-                "frida (the network-isolated guest can't reach a frida-server; "
-                "the frida verbs are unsupported on binder: vm)"
-            )
-        if self._cfg.magisk.denylist and self._cfg.magisk.denylist != config.Magisk().denylist:
-            inert.append(
-                "magisk.denylist (the guest runs plain redroid with no Magisk, "
-                "so the denylist is never applied)"
-            )
-        # The vm backend forwards only adb to qemu (issue #44); arbitrary
-        # guest→host ``ports:`` entries beyond the well-known services are a
-        # redroid/compose-backend feature and are silently dropped here.
-        arbitrary = [m for m in self._cfg.ports if m.service not in config.WELL_KNOWN_SERVICES]
-        if arbitrary:
-            inert.append(
-                "arbitrary ports: entries (only adb is forwarded under binder: vm; "
-                "extra guest→host mappings are ignored)"
-            )
+        inert = config.inert_fields(self._cfg)
         if not inert:
             return
         console.note(

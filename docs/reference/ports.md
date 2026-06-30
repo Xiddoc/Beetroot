@@ -107,7 +107,7 @@ An arbitrary entry whose `host` is unset is auto-allocated from a dedicated **ex
     Because the extra-pool slot shares the per-instance stride window of 10, an instance may auto-allocate at most **`STRIDE` (10) arbitrary entries** before the next index's band would overlap. Beetroot enforces this eagerly during allocation: the 11th host-unset arbitrary entry raises `PortCollisionError` (the slot would spill into the next index's window). Pin explicit `host` ports for entries beyond that bound.
 
 !!! note "Arbitrary mappings under `binder: vm`"
-    The `binder: vm` backend forwards only adb to the guest; arbitrary mappings beyond the well-known services are ignored there (`beetroot up` warns).
+    The `binder: vm` backend forwards only adb to the guest; arbitrary mappings beyond the well-known services are ignored there (`beetroot apply` warns).
 
 ## Common pitfalls
 
