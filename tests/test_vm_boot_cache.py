@@ -291,21 +291,59 @@ class TestOverlayIdentity:
 
     def test_base_identity_stable_and_order_independent(self, tmp_path: Path) -> None:
         kernel, rootfs = self._files(tmp_path)
-        first = boot_cache.base_identity(kernel, rootfs)
+        first = boot_cache.base_identity(kernel, rootfs, 4, 8192)
         # Argument order must not matter (folded in basename order).
-        assert first == boot_cache.base_identity(rootfs, kernel)
+        assert first == boot_cache.base_identity(rootfs, kernel, 4, 8192)
         assert len(first) == 16
 
     def test_base_identity_changes_with_content(self, tmp_path: Path) -> None:
         kernel, rootfs = self._files(tmp_path)
-        before = boot_cache.base_identity(kernel, rootfs)
+        before = boot_cache.base_identity(kernel, rootfs, 4, 8192)
         kernel.write_bytes(b"REBUILT KERNEL")
-        assert boot_cache.base_identity(kernel, rootfs) != before
+        assert boot_cache.base_identity(kernel, rootfs, 4, 8192) != before
+
+    def test_base_identity_changes_with_smp(self, tmp_path: Path) -> None:
+        # #161: a -smp geometry change must alter the fingerprint, since QEMU
+        # rejects a -loadvm resume into a mismatched vCPU count.
+        kernel, rootfs = self._files(tmp_path)
+        assert boot_cache.base_identity(kernel, rootfs, 8, 8192) != boot_cache.base_identity(
+            kernel, rootfs, 4, 8192
+        )
+
+    def test_base_identity_changes_with_memory(self, tmp_path: Path) -> None:
+        # #161: a -m (RAM) geometry change must alter the fingerprint too.
+        kernel, rootfs = self._files(tmp_path)
+        assert boot_cache.base_identity(kernel, rootfs, 4, 8192) != boot_cache.base_identity(
+            kernel, rootfs, 4, 4096
+        )
+
+    def test_base_identity_order_independent_with_colliding_basenames(self, tmp_path: Path) -> None:
+        # #235: two inputs sharing a basename must hash to the same key
+        # regardless of argument order (the tie breaks on content hash).
+        a = tmp_path / "dirA"
+        a.mkdir()
+        b = tmp_path / "dirB"
+        b.mkdir()
+        ka = a / "bzImage"
+        ka.write_bytes(b"KERNEL-X")
+        kb = b / "bzImage"
+        kb.write_bytes(b"KERNEL-Y")
+        assert boot_cache.base_identity(ka, kb, 4, 8192) == boot_cache.base_identity(kb, ka, 4, 8192)
 
     def test_record_and_read_roundtrip(self, tmp_path: Path) -> None:
         kernel, rootfs = self._files(tmp_path)
-        boot_cache.record_identity(tmp_path, kernel, rootfs)
-        assert boot_cache.read_identity(tmp_path) == boot_cache.base_identity(kernel, rootfs)
+        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192)
+        assert boot_cache.read_identity(tmp_path) == boot_cache.base_identity(
+            kernel, rootfs, 4, 8192
+        )
+
+    def test_record_identity_is_atomic_no_temp_left(self, tmp_path: Path) -> None:
+        # #175: the sidecar is written via temp + replace, so no .tmp file is
+        # left behind and the final write is all-or-nothing.
+        kernel, rootfs = self._files(tmp_path)
+        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192)
+        assert not (tmp_path / "vm-overlay.cache-key.tmp").exists()
+        assert boot_cache.read_identity(tmp_path) is not None
 
     def test_read_identity_none_when_absent(self, tmp_path: Path) -> None:
         assert boot_cache.read_identity(tmp_path) is None
@@ -321,23 +359,30 @@ class TestOverlayIdentity:
 
     def test_overlay_is_stale_false_when_matching(self, tmp_path: Path) -> None:
         kernel, rootfs = self._files(tmp_path)
-        boot_cache.record_identity(tmp_path, kernel, rootfs)
-        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs) is False
+        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192)
+        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 4, 8192) is False
 
     def test_overlay_is_stale_true_when_content_changed(self, tmp_path: Path) -> None:
         kernel, rootfs = self._files(tmp_path)
-        boot_cache.record_identity(tmp_path, kernel, rootfs)
+        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192)
         rootfs.write_bytes(b"REBUILT ROOTFS")
-        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs) is True
+        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 4, 8192) is True
+
+    def test_overlay_is_stale_true_when_geometry_changed(self, tmp_path: Path) -> None:
+        # #161: an unchanged kernel/rootfs but a different -smp/-m must read stale.
+        kernel, rootfs = self._files(tmp_path)
+        boot_cache.record_identity(tmp_path, kernel, rootfs, 8, 8192)
+        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 4, 8192) is True
+        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 8, 4096) is True
 
     def test_overlay_is_stale_true_when_no_key(self, tmp_path: Path) -> None:
         kernel, rootfs = self._files(tmp_path)
-        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs) is True
+        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 4, 8192) is True
 
     def test_discard_overlay_removes_overlay_and_key(self, tmp_path: Path) -> None:
         kernel, rootfs = self._files(tmp_path)
         boot_cache.overlay_path(tmp_path).write_bytes(b"q")
-        boot_cache.record_identity(tmp_path, kernel, rootfs)
+        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192)
         boot_cache.discard_overlay(tmp_path)
         assert not boot_cache.overlay_path(tmp_path).exists()
         assert not boot_cache.overlay_key_path(tmp_path).exists()

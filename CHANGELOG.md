@@ -500,6 +500,13 @@
   pre-abort rows in its `results` attribute).
 
 ### Quality & internals
+- **Fixed self-contradicting `vm.py` comments that claimed `adb connect` succeeds
+  at QEMU `hostfwd`-bind (#241).** It only attaches once the post-boot in-guest
+  relay is listening; the comments and the `_wait_for_boot_completed` docstring
+  now match `guest-init.sh`.
+- **The e2e `tier-vm-qemu` job caches the booted `binder: vm` savevm overlay and
+  resumes it on repeat runs (#49).** Keyed by the kernel+rootfs hash, it skips the
+  ~100s cold TCG boot for functional/post-boot jobs.
 - **The supported Android-version list is now drift-checked and the "add a new
   version" path is documented + tested (#98).** `config._VALID_ANDROID_VERSIONS`
   has always been the single source of truth, but the human-readable "11, 12,
@@ -603,6 +610,46 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **`binder: vm` `down`/`restart`/`destroy` verify the recorded PID still names
+  this instance's QEMU before signalling (#162).** A stale or reused pidfile can
+  no longer SIGTERM/SIGKILL an unrelated process; `is_running()` and the
+  kill-escalation both route through a `/proc/<pid>/cmdline` identity check tied
+  to this instance's argv.
+- **`binder: vm` `doctor` no longer reports a healthy VM as broken (#163).** The
+  upstream-redroid VM guest ships no Magisk, so the `magisk.zygisk` /
+  `magisk.denylist` health rows (which always failed there) are dropped
+  alongside the already-skipped `frida.handshake` row.
+- **A `binder: vm` `up` that times out waiting for ADB now terminates the QEMU it
+  just launched (#174).** Previously it orphaned the emulator, trapping the next
+  `up`; the post-launch waits now tear the guest down on any failure before
+  re-raising.
+- **`binder: vm` boot_cache recreates the qcow2 overlay before a cold boot when
+  the existing overlay carries no snapshot (#175).** An interrupted first boot no
+  longer leaves a dirty COW layer that later cold boots accumulate over; the
+  cache-key sidecar is also written atomically.
+- **`binder: vm` boot_cache re-checks QEMU liveness during the ADB wait and falls
+  back to a single cold boot when a warm `-loadvm` resume dies (#176).** An
+  unrestorable snapshot no longer burns the full `vm_adb_connect_timeout` with a
+  misleading TCG-slowness error.
+- **The `binder: vm` ADB-connect wait is accelerator-aware (#160).** Under TCG it
+  uses a boot-completed-scale deadline instead of the flat 60s, so a cold TCG
+  boot (~222s on Android 14) no longer fails `beetroot up` before the guest
+  exposes ADB; KVM keeps the short configurable default.
+- **`binder: vm` boot_cache folds the resolved `-smp` / `-m` geometry into the
+  overlay staleness fingerprint (#161).** Editing `vm.smp` / `vm.memory_mib` (or
+  an `smp: "auto"` host-core change) now invalidates the checkpoint and cold-boots
+  once instead of `-loadvm`-resuming into a geometry QEMU rejects.
+- **`compute_cache_key` / `boot_cache.base_identity` break basename ties on
+  content hash (#235).** Two inputs sharing a basename now hash to the same key
+  regardless of argument order, honoring the documented order-independence; each
+  input is hashed exactly once.
+- **The `binder: vm` ADB port is fixed to a single `5555` contract (#237).** The
+  in-guest relay can no longer diverge from the QEMU `hostfwd` target via a stray
+  `ADB_TCP_PORT` override.
+- **Hardened the `binder: vm` adb relay (#238).** It now targets IPv6 loopback
+  (dropping the `bindv6only` dependency), verifies `eth0` received `10.0.2.15`,
+  surfaces sysctl/bring-up failures as distinct warnings, and loops `adbprobe`'s
+  read so a short read never prints uninitialized bytes.
 - **The default-rendered `memswap_limit` no longer silently disables container
   swap (#169).** The bundled compose template defaulted `memswap_limit` to
   `${MEMSWAP_LIMIT:-${MEM_LIMIT:-3g}}`, so an all-defaults instance resolved to

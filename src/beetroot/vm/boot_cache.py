@@ -122,19 +122,25 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def base_identity(kernel: Path, rootfs: Path) -> str:
+def base_identity(kernel: Path, rootfs: Path, smp: int, memory_mib: int) -> str:
     """
-    Compute a stable digest over the kernel + rootfs an overlay is built from.
+    Compute a stable digest over the kernel + rootfs + geometry an overlay uses.
 
     Mirrors ``scripts/vm_cache_key.compute_cache_key``'s algorithm — each file's
-    basename plus its streamed SHA-256, folded in basename order so the result
-    is independent of argument order. A kernel or rootfs rebuild changes the
-    digest, which is what lets :func:`overlay_is_stale` invalidate a checkpoint
-    taken against the old artifacts (issue #126 / #49).
+    basename plus its streamed SHA-256, folded in (basename, content-hash) order
+    so the result is independent of argument order even when two inputs share a
+    basename (issue #235). The resolved ``-smp``/``-m`` geometry is folded in too
+    (as decimal bytes): a ``-loadvm`` resume into a different vCPU/RAM geometry is
+    rejected by QEMU, so a geometry change must invalidate the checkpoint (issue
+    #161). A kernel/rootfs rebuild or a geometry edit changes the digest, which is
+    what lets :func:`overlay_is_stale` invalidate a checkpoint taken against the
+    old artifacts (issue #126 / #49).
 
     Args:
         kernel: The guest ``bzImage`` the overlay boots.
         rootfs: The raw rootfs image the overlay backs onto.
+        smp: The resolved (concrete, not ``"auto"``) vCPU count QEMU launches with.
+        memory_mib: The guest RAM in MiB QEMU launches with.
 
     Returns:
         A 16-hex-character identity digest.
@@ -142,28 +148,47 @@ def base_identity(kernel: Path, rootfs: Path) -> str:
     Raises:
         FileNotFoundError: If either input file does not exist.
     """
+    # Hash each input file exactly once (the rootfs is multi-GB; hashing it
+    # inside the sort key AND again in the fold would double its cost on every
+    # `up`). Precompute {path: digest}, then sort + fold off that dict.
+    digests = {path: _hash_file(path) for path in (kernel, rootfs)}
     combined = hashlib.sha256()
-    for path in sorted((kernel, rootfs), key=lambda p: p.name):
+    for path in sorted(digests, key=lambda p: (p.name, digests[p])):
         combined.update(path.name.encode())
         combined.update(b"\0")
-        combined.update(_hash_file(path).encode())
+        combined.update(digests[path].encode())
         combined.update(b"\0")
+    combined.update(str(smp).encode())
+    combined.update(b"\0")
+    combined.update(str(memory_mib).encode())
+    combined.update(b"\0")
     return combined.hexdigest()[:_IDENTITY_HEX_LEN]
 
 
-def record_identity(instance_dir: Path, kernel: Path, rootfs: Path) -> None:
+def record_identity(
+    instance_dir: Path, kernel: Path, rootfs: Path, smp: int, memory_mib: int
+) -> None:
     """
-    Write the overlay's base-identity sidecar (the kernel + rootfs digest).
+    Write the overlay's base-identity sidecar (kernel + rootfs + geometry digest).
 
-    Called when the overlay is (re)created so a later kernel/rootfs change is
-    detectable. Arguments mirror :func:`base_identity`.
+    Called when the overlay is (re)created so a later kernel/rootfs change or a
+    ``-smp``/``-m`` geometry edit is detectable. Arguments mirror
+    :func:`base_identity`. The sidecar is written atomically (temp file +
+    ``os.replace``) so an interrupted ``record_identity`` never leaves a
+    keyless overlay that the next ``up`` would judge stale and discard (issue
+    #175).
 
     Args:
         instance_dir: The instance directory the sidecar is written into.
         kernel: The guest ``bzImage`` the overlay boots.
         rootfs: The raw rootfs image the overlay backs onto.
+        smp: The resolved vCPU count QEMU launches with.
+        memory_mib: The guest RAM in MiB QEMU launches with.
     """
-    overlay_key_path(instance_dir).write_text(base_identity(kernel, rootfs), encoding="utf-8")
+    target = overlay_key_path(instance_dir)
+    tmp = target.with_name(f"{target.name}.tmp")
+    tmp.write_text(base_identity(kernel, rootfs, smp, memory_mib), encoding="utf-8")
+    tmp.replace(target)
 
 
 def read_identity(instance_dir: Path) -> str | None:
@@ -182,24 +207,30 @@ def read_identity(instance_dir: Path) -> str | None:
         return None
 
 
-def overlay_is_stale(instance_dir: Path, kernel: Path, rootfs: Path) -> bool:
+def overlay_is_stale(
+    instance_dir: Path, kernel: Path, rootfs: Path, smp: int, memory_mib: int
+) -> bool:
     """
-    Return True iff the overlay's recorded identity ≠ the current kernel/rootfs.
+    Return True iff the overlay's recorded identity ≠ the current kernel/rootfs/geometry.
 
     A missing/unreadable sidecar (e.g. an overlay built before issue #126) also
     counts as stale: we can't prove it matches the current artifacts, and
-    resuming a stale checkpoint is worse than one cold boot. The caller then
-    discards + recreates the overlay and re-checkpoints.
+    resuming a stale checkpoint is worse than one cold boot. A ``-smp``/``-m``
+    geometry edit flips this too (issue #161) — QEMU rejects a ``-loadvm`` into a
+    mismatched geometry. The caller then discards + recreates the overlay and
+    re-checkpoints.
 
     Args:
         instance_dir: The instance directory holding the overlay + sidecar.
         kernel: The currently-resolved guest kernel.
         rootfs: The currently-resolved raw rootfs.
+        smp: The resolved vCPU count QEMU will launch with.
+        memory_mib: The guest RAM in MiB QEMU will launch with.
 
     Returns:
         ``True`` if the checkpoint should be invalidated, else ``False``.
     """
-    return read_identity(instance_dir) != base_identity(kernel, rootfs)
+    return read_identity(instance_dir) != base_identity(kernel, rootfs, smp, memory_mib)
 
 
 def discard_overlay(instance_dir: Path) -> None:

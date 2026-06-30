@@ -20,9 +20,22 @@ int main(int argc,char**argv){
   unsigned int cmd=0x4e584e43,a0=0x01000001,a1=256*1024;
   const char*sysid="host::\0"; unsigned len=strlen(sysid)+1; unsigned crc=0; for(unsigned i=0;i<len;i++)crc+=(unsigned char)sysid[i];
   unsigned int hdr[6]={cmd,a0,a1,len,crc,cmd^0xffffffff};
-  write(fd,hdr,sizeof hdr); write(fd,sysid,len);
-  unsigned char buf[256]; int n=read(fd,buf,sizeof buf);
-  if(n<=0){printf("PROBE: connected but NO REPLY (n=%d)\n",n);return 5;}
-  printf("PROBE: REPLY n=%d first4=%c%c%c%c\n",n,buf[0],buf[1],buf[2],buf[3]);
+  /* Check both writes: a short/failed write means the handshake never left, so
+     a later short read is meaningless. Mirrors the read-side hardening and
+     keeps the probe -Wall -Werror clean (no discarded write() results). */
+  ssize_t wh=write(fd,hdr,sizeof hdr); ssize_t ws=write(fd,sysid,len);
+  if(wh!=(ssize_t)sizeof hdr||ws!=(ssize_t)len){printf("PROBE: short/failed write (hdr=%zd sysid=%zd)\n",wh,ws);return 6;}
+  /* adbd's CNXN reply may dribble in across multiple reads; accumulate until we
+     hold the 4-byte command word or the socket closes/times out. Printing
+     first4 from a 0<n<4 short read would leak uninitialized stack bytes into the
+     'first4=CNXN' match at the call site (issue #238). */
+  unsigned char buf[256]; int total=0;
+  while(total<4){
+    int n=read(fd,buf+total,sizeof buf-(unsigned)total);
+    if(n<=0)break;
+    total+=n;
+  }
+  if(total<4){printf("PROBE: connected but NO REPLY (n=%d)\n",total);return 5;}
+  printf("PROBE: REPLY n=%d first4=%c%c%c%c\n",total,buf[0],buf[1],buf[2],buf[3]);
   return 0;
 }

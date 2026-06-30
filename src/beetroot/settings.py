@@ -78,8 +78,12 @@ class Settings(BaseSettings):
             up (default: ``60``). The guest restarts adbd to enable TCP a few
             seconds *after* ``sys.boot_completed=1``, so the first connect
             races that late bind; ``up`` retries with backoff until the
-            endpoint accepts or this deadline elapses. Bump it for slow TCG
-            first boots.
+            endpoint accepts or this deadline elapses. This flat default is the
+            KVM (near-native) budget — under TCG software emulation, where a
+            cold boot to first ADB is minutes (issue #160), the deadline is
+            auto-extended to a boot-completed-scale floor so a slow first boot
+            doesn't abort ``up`` before the guest exposes ADB. Bump it to raise
+            the floor further on an unusually slow host.
     """
 
     model_config = SettingsConfigDict(

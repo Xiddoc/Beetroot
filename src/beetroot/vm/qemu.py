@@ -373,13 +373,50 @@ class QemuProcess:
         except ValueError:
             return None
 
+    def _read_proc_cmdline(self, pid: int) -> str | None:
+        """
+        Return ``/proc/<pid>/cmdline`` as NUL-delimited text, or ``None``.
+
+        The kernel separates argv entries with NUL bytes; we keep them so a
+        caller can substring-match a whole argument. Any read failure (the
+        process exited between the liveness probe and this read, or a host
+        with no ``/proc``) returns ``None``.
+        """
+        try:
+            return Path(f"/proc/{pid}/cmdline").read_text()
+        except OSError:
+            return None
+
+    def _pid_is_qemu(self, pid: int) -> bool:
+        """
+        Return True iff ``pid`` is THIS instance's QEMU process.
+
+        The pidfile is persistent and the kernel recycles PIDs, so a recorded
+        PID that is merely *live* is not enough — a stale entry can name an
+        unrelated process that reused the number. We require
+        ``/proc/<pid>/cmdline`` to both look like a ``qemu-system`` invocation
+        and reference this instance's directory (which every path in the argv
+        built by :func:`build_qemu_argv` lives under), so a reused PID
+        belonging to anything else reports False and is never signalled
+        (issue #162). A missing ``/proc`` entry (the process is gone) is also
+        False.
+        """
+        cmdline = self._read_proc_cmdline(pid)
+        if cmdline is None:
+            return False
+        names_qemu = "qemu-system" in cmdline
+        names_instance = str(self._instance_dir) in cmdline
+        return names_qemu and names_instance
+
     def is_running(self) -> bool:
         """
-        Return True iff the recorded PID names a live process.
+        Return True iff the recorded PID is this instance's live QEMU process.
 
-        Probes with ``os.kill(pid, 0)`` — signal 0 performs the existence
-        and permission check without delivering a signal. A missing pidfile
-        or a stale PID (process gone) returns False.
+        Probes with ``os.kill(pid, 0)`` — signal 0 performs the existence and
+        permission check without delivering a signal — then confirms the PID
+        still *names* this instance's QEMU via :meth:`_pid_is_qemu`. A missing
+        pidfile, a stale PID (process gone), or a live-but-reused PID that now
+        belongs to an unrelated process (issue #162) all return False.
         """
         pid = self.read_pid()
         if pid is None:
@@ -388,9 +425,10 @@ class QemuProcess:
             os.kill(pid, 0)
         except OSError as exc:
             # ESRCH = no such process (stale pid). EPERM = process exists but
-            # we can't signal it — still counts as running.
-            return exc.errno == errno.EPERM
-        return True
+            # we can't signal it — still alive, pending the identity check.
+            if exc.errno != errno.EPERM:
+                return False
+        return self._pid_is_qemu(pid)
 
     def start(self, argv: list[str]) -> int:
         """
@@ -438,16 +476,6 @@ class QemuProcess:
         self.pidfile.write_text(str(proc.pid))
         return proc.pid
 
-    def _pid_alive(self, pid: int) -> bool:
-        """
-        Return True iff ``pid`` names a live process (signal-0 probe).
-        """
-        try:
-            os.kill(pid, 0)
-        except OSError as exc:
-            return exc.errno == errno.EPERM
-        return True
-
     def terminate(self) -> bool:
         """
         Terminate the recorded QEMU process and remove the pidfile.
@@ -460,13 +488,23 @@ class QemuProcess:
         already-dead process is a no-op. The pidfile is removed regardless
         so a subsequent ``up`` starts fresh.
 
+        The recorded PID is verified to still NAME this instance's QEMU
+        (:meth:`_pid_is_qemu`) before any signal is sent: the pidfile is
+        persistent and PIDs are recycled, so a stale entry pointing at a
+        reused PID must never SIGTERM/SIGKILL an unrelated process
+        (issue #162). A live-but-mismatched PID is left untouched and only
+        its stale pidfile is cleared.
+
         Returns:
-            True if a signal was delivered to a live process, False if there
-            was nothing to terminate.
+            True if a signal was delivered to this instance's QEMU, False if
+            there was nothing of ours to terminate.
         """
         pid = self.read_pid()
         signalled = False
-        if pid is not None:
+        # Only signal a PID that still names THIS instance's QEMU. A reused
+        # PID (or a process we can no longer see in /proc) is left alone — the
+        # stale pidfile is cleared below.
+        if pid is not None and self._pid_is_qemu(pid):
             try:
                 os.kill(pid, signal.SIGTERM)
                 signalled = True
@@ -483,20 +521,23 @@ class QemuProcess:
         """
         Force-kill ``pid`` if it ignores SIGTERM past the grace window.
 
-        Polls liveness every :data:`_TERM_POLL_SECONDS` for up to
-        :data:`_TERM_GRACE_SECONDS`; the moment the process exits, returns
-        without escalating. A process still alive at the deadline gets
-        ``SIGKILL`` (best-effort — a race where it dies between the final
-        poll and the signal is harmless).
+        Polls every :data:`_TERM_POLL_SECONDS` for up to
+        :data:`_TERM_GRACE_SECONDS`; the moment the process is no longer this
+        instance's QEMU (it exited, or — racing the kernel — its PID was
+        recycled), returns without escalating. A process still ours at the
+        deadline gets ``SIGKILL`` (best-effort — a race where it dies between
+        the final poll and the signal is harmless). Re-checking identity
+        (:meth:`_pid_is_qemu`) rather than bare liveness keeps the SIGKILL
+        from landing on a reused PID (issue #162).
 
         Args:
             pid: The PID already sent ``SIGTERM``.
         """
         deadline = time.monotonic() + _TERM_GRACE_SECONDS
         while time.monotonic() < deadline:
-            if not self._pid_alive(pid):
+            if not self._pid_is_qemu(pid):
                 return
             time.sleep(_TERM_POLL_SECONDS)
-        if self._pid_alive(pid):
+        if self._pid_is_qemu(pid):
             with contextlib.suppress(OSError):
                 os.kill(pid, signal.SIGKILL)

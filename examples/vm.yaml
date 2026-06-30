@@ -6,7 +6,10 @@
 #
 # accel: auto prefers KVM when /dev/kvm is available (near-native) and
 # falls back to TCG (software emulation, ~5-20x slower) otherwise. A slow
-# first boot under TCG is expected, not a hang.
+# first boot under TCG is expected, not a hang — `up`'s ADB-connect wait is
+# accel-aware, so under TCG it waits out the minutes-long cold boot instead of
+# timing out (raise BEETROOT_VM_ADB_CONNECT_TIMEOUT only on an unusually slow
+# host; issue #160).
 #
 # Faster TCG iteration: the default Android version is 14, which cold-boots in
 # ~190-200 s under TCG; redroid 11 boots in ~100 s (~40% faster) on the same
