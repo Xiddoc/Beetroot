@@ -1487,10 +1487,15 @@ class Instance:
         checks["magisk.zygisk"] = _check_magisk_zygisk_over_adb(f"localhost:{adb_port}")
         denylist = self._cfg.magisk.denylist
         gms_pkg = "com.google.android.gms"
+        # Denylist entries are ``package[/process]`` (issue #170); match by the
+        # PACKAGE half so an entry that only writes ``gms/<proc>`` still counts
+        # as enrolled (the SQL check keys on package_name, which is now the real
+        # package regardless of the process the entry targets).
+        enrolled = any(entry.split("/", 1)[0] == gms_pkg for entry in denylist)
         checks[f"magisk.denylist.{gms_pkg}"] = _check_magisk_denylist_over_adb(
             f"localhost:{adb_port}",
             gms_pkg,
-            enrolled=gms_pkg in denylist,
+            enrolled=enrolled,
         )
         return checks
 

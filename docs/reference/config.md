@@ -292,17 +292,19 @@ The variable-length port list is written to a per-instance `compose.override.yam
 
 ## `magisk`
 
-Magisk configuration, including the boot-time denylist. Processes listed here are denylisted in the Magisk SQLite database at boot time, before any app launches.
+Magisk configuration, including the boot-time denylist. Entries listed here are enrolled in the Magisk SQLite database at boot time, before any app launches.
+
+Each entry is encoded as `package[/process]` — a package, optionally followed by a slash and a **process** that belongs to it. With no slash, the process is the package itself (root is hidden from the package's main process). With a slash, the package goes into the denylist's `package_name` column and the process into its `process` column. This matters because Magisk keys the denylist on `(package_name, process)`: Play Integrity's DroidGuard runs as the `com.google.android.gms.unstable` **process** of the `com.google.android.gms` package — it is *not* an installed package of its own, so it must be enrolled as `com.google.android.gms/com.google.android.gms.unstable`. Enrolling the bare `com.google.android.gms.unstable` as if it were a package matches no installed app, and vanilla (non-Shamiko) Magisk then never hides root there.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `denylist` | list[string] | `["com.google.android.gms", "com.google.android.gms.unstable"]` | Package names to add to Magisk's denylist. Each entry must match the Android package-id grammar (`[a-zA-Z0-9._]+`) — validated at load time as SQL-injection prophylaxis. |
+| `denylist` | list[string] | `["com.google.android.gms", "com.google.android.gms/com.google.android.gms.unstable"]` | `package[/process]` entries to enrol in Magisk's denylist. Both halves must match the Android package-id grammar (`[a-zA-Z0-9._]+`), separated by at most one `/` — validated at load time as SQL-injection prophylaxis. The default hides root in the GMS main process **and** its `.unstable` DroidGuard process, both under the real `com.google.android.gms` package. |
 
 ```yaml
 magisk:
   denylist:
     - com.google.android.gms
-    - com.google.android.gms.unstable
+    - com.google.android.gms/com.google.android.gms.unstable  # DroidGuard process of GMS
     - com.google.android.gms.persistent
     - com.android.vending
 ```
@@ -440,7 +442,7 @@ modules:
 magisk:
   denylist:
     - com.google.android.gms
-    - com.google.android.gms.unstable
+    - com.google.android.gms/com.google.android.gms.unstable  # DroidGuard process of GMS
     - com.google.android.gms.persistent
     - com.android.vending
     - com.target.app

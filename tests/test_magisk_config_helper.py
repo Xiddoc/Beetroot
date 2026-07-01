@@ -100,16 +100,65 @@ def _run_helper(
 
 
 def test_default_denylist_enrols_gms_pair(tmp_path: Path) -> None:
+    # issue #170: the default denylist enrols the GMS main process plus its
+    # ``.unstable`` DroidGuard process, both under the REAL package
+    # ``com.google.android.gms``. The helper must split ``package/process`` and
+    # NEVER copy ``com.google.android.gms.unstable`` into package_name (col 1),
+    # where it matches no installed package and vanilla Magisk hides nothing.
     code, _out, queries = _run_helper(
         tmp_path,
         env={
-            "BEETROOT_DENYLIST_PACKAGES": ("com.google.android.gms,com.google.android.gms.unstable")
+            "BEETROOT_DENYLIST_PACKAGES": (
+                "com.google.android.gms,"
+                "com.google.android.gms/com.google.android.gms.unstable"
+            )
         },
     )
     assert code == 0
     gms_inserts = [q for q in queries if "INSERT OR IGNORE INTO denylist" in q]
-    assert any("com.google.android.gms'" in q for q in gms_inserts)
-    assert any("com.google.android.gms.unstable" in q for q in gms_inserts)
+    # The plain package enrols both columns as the package itself.
+    assert sum(
+        1 for q in gms_inserts if "('com.google.android.gms', 'com.google.android.gms')" in q
+    ) == 1
+    # The DroidGuard entry: real package in package_name, unstable in process.
+    assert sum(
+        1
+        for q in gms_inserts
+        if "('com.google.android.gms', 'com.google.android.gms.unstable')" in q
+    ) == 1
+    # Regression guard: the .unstable string must NEVER land in package_name.
+    for q in gms_inserts:
+        assert "('com.google.android.gms.unstable'," not in q, (
+            f"DroidGuard process wrongly enrolled as a package_name: {q!r}"
+        )
+
+
+def test_no_slash_entry_copies_package_into_both_columns(tmp_path: Path) -> None:
+    # An entry with no ``/`` has the process default to the package (the
+    # historical single-process behaviour), so both columns carry the package.
+    code, _out, queries = _run_helper(
+        tmp_path,
+        env={"BEETROOT_DENYLIST_PACKAGES": "com.example.app"},
+    )
+    assert code == 0
+    inserts = [q for q in queries if "INSERT OR IGNORE INTO denylist" in q]
+    assert sum(1 for q in inserts if "('com.example.app', 'com.example.app')" in q) == 1
+
+
+def test_slash_entry_splits_package_and_process(tmp_path: Path) -> None:
+    # A ``package/process`` entry splits on the first slash: the package goes
+    # into package_name, the process into process — never the whole entry.
+    code, _out, queries = _run_helper(
+        tmp_path,
+        env={"BEETROOT_DENYLIST_PACKAGES": "com.pkg/com.pkg.proc"},
+    )
+    assert code == 0
+    inserts = [q for q in queries if "INSERT OR IGNORE INTO denylist" in q]
+    assert sum(1 for q in inserts if "('com.pkg', 'com.pkg.proc')" in q) == 1
+    for q in inserts:
+        assert "com.pkg/com.pkg.proc" not in q, (
+            f"unsplit package/process entry leaked into the INSERT: {q!r}"
+        )
 
 
 def test_custom_denylist_csv_parsed(tmp_path: Path) -> None:

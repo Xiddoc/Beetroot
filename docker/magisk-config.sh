@@ -18,10 +18,17 @@
 #     internally. Echoed in the waiting log so the user knows which DB
 #     we're targeting when v0.4 stealth-posture work randomises it.
 #   BEETROOT_DENYLIST_PACKAGES=
-#     Comma-separated list of Android package ids to enrol in Magisk's
-#     denylist (per-package SQL-injection prophylaxis lives in pydantic;
-#     see Magisk._check_packages in src/beetroot/config.py). Empty by
-#     default — the helper SQL'es nothing extra.
+#     Comma-separated list of ``package[/process]`` entries to enrol in
+#     Magisk's denylist. Each entry is a package, optionally followed by a
+#     slash and a process that belongs to it; no slash means the process
+#     equals the package. The helper splits on the first '/' and INSERTs the
+#     package into package_name and the process into process — Magisk keys the
+#     denylist on (package_name, process), so the DroidGuard process
+#     com.google.android.gms.unstable must be enrolled under its real package
+#     com.google.android.gms, never as a package of its own (issue #170).
+#     Per-half SQL-injection prophylaxis lives in pydantic; see
+#     Magisk._check_packages in src/beetroot/config.py. Empty by default —
+#     the helper SQL'es nothing extra.
 #   BEETROOT_MAGISK_WAIT_SECS=120
 #     Upper bound (in 1-second probe attempts) on the Magisk daemon wait.
 #     Conservative because a first boot of redroid+Magisk can legitimately
@@ -129,6 +136,21 @@ if [ -n "$DENYLIST_PACKAGES" ]; then
         if [ -z "$pkg" ]; then
             continue
         fi
-        magisk --sqlite "INSERT OR IGNORE INTO denylist (package_name, process) VALUES ('$pkg', '$pkg');"
+        # Split the ``package[/process]`` entry (issue #170). The package is
+        # everything before the first '/', the process everything after it;
+        # an entry with no '/' has the process default to the package. Magisk
+        # keys the denylist on (package_name, process), so the DroidGuard
+        # process com.google.android.gms.unstable must land in the process
+        # column under its real package com.google.android.gms — never copied
+        # into package_name, where it matches no installed package and vanilla
+        # (non-Shamiko) Magisk never hides root. Toybox sh has no arrays; use
+        # POSIX parameter expansion (``%%/*`` = before first '/', ``#*/`` =
+        # after first '/') rather than a bash-ism.
+        pkg_name="${pkg%%/*}"
+        pkg_proc="${pkg#*/}"
+        if [ "$pkg_proc" = "$pkg" ]; then
+            pkg_proc="$pkg_name"
+        fi
+        magisk --sqlite "INSERT OR IGNORE INTO denylist (package_name, process) VALUES ('$pkg_name', '$pkg_proc');"
     done
 fi

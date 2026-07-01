@@ -106,11 +106,17 @@ def validate_android_version(v: int) -> int:
 _MIN_PORT: Final = 1
 _MAX_PORT: Final = 65535
 
-# Magisk/stealth denylist packages must look like a normal Android package
-# id: alphanumerics, dots, and underscores only. Pre-validated at
-# config-load time as SQL-injection prophylaxis for the wire-up of
-# the denylist through ``magisk-config.sh``'s sqlite REPLACE INTO.
-_DENYLIST_PKG_RE: Final = re.compile(r"^[a-zA-Z0-9._]+$")
+# Magisk/stealth denylist entries encode a package and an optional process it
+# belongs to as ``package[/process]``. Both halves must look like a normal
+# Android package id: alphanumerics, dots, and underscores only (the ``/`` is
+# only the separator, never inside a half). Magisk's denylist keys on
+# (package_name, process), and a process like ``com.google.android.gms.unstable``
+# (DroidGuard) is NOT an installed package — it must be enrolled under its real
+# package ``com.google.android.gms`` or vanilla (non-Shamiko) Magisk never hides
+# root there (issue #170). Pre-validated at config-load time — on BOTH halves —
+# as SQL-injection prophylaxis for the wire-up of the denylist through
+# ``magisk-config.sh``'s sqlite INSERT.
+_DENYLIST_PKG_RE: Final = re.compile(r"^[a-zA-Z0-9._]+(/[a-zA-Z0-9._]+)?$")
 
 # Frida release tags follow the major.minor.patch shape upstream.
 # Pre-validated so a typo in ``frida.version`` (e.g. ``"16.4"`` or
@@ -474,7 +480,7 @@ class Module(BaseModel):
 
 _DEFAULT_DENYLIST: Final = (
     "com.google.android.gms",
-    "com.google.android.gms.unstable",
+    "com.google.android.gms/com.google.android.gms.unstable",
 )
 
 
@@ -483,17 +489,27 @@ class Magisk(BaseModel):
     Magisk configuration, including the boot-time denylist.
 
     Attributes:
-        denylist: Package names added to Magisk's denylist at boot. Each
-            entry must match the Android package-id grammar
-            (``[a-zA-Z0-9._]+``) — see :data:`_DENYLIST_PKG_RE`. The
-            grammar is enforced at validation time so
-            ``magisk-config.sh`` can compose the entries into a SQLite
-            REPLACE-INTO statement without escaping; any shape that
-            wouldn't be a valid package name today is assumed to be
-            either a typo or an injection attempt.
-            Defaults to the GMS package pair (the v0.3 helper enrolled
-            these unconditionally; the config move keeps the default
-            behaviour identical while putting the user in control).
+        denylist: Entries added to Magisk's denylist at boot, each encoded
+            as ``package[/process]`` — a package, optionally followed by a
+            slash and a process that belongs to it (no slash means the
+            process equals the package). Both halves must match the Android
+            package-id grammar (``[a-zA-Z0-9._]+``) — see
+            :data:`_DENYLIST_PKG_RE`. The grammar is enforced on BOTH halves
+            at validation time so ``magisk-config.sh`` can split the entry
+            and compose the package + process into a SQLite INSERT without
+            escaping; any shape that wouldn't be a valid package name today
+            is assumed to be either a typo or an injection attempt. The
+            ``package/process`` form matters because Magisk's denylist keys
+            on ``(package_name, process)``: DroidGuard runs as the
+            ``com.google.android.gms.unstable`` *process* of the
+            ``com.google.android.gms`` package — not an installed package of
+            its own — so it must be enrolled under its real package or
+            vanilla (non-Shamiko) Magisk never hides root there (issue #170).
+            Defaults to the GMS main process plus the ``.unstable``
+            DroidGuard process, both under the real ``com.google.android.gms``
+            package (the v0.3 helper enrolled the GMS pair unconditionally;
+            the config move keeps the intent identical while putting the user
+            in control and fixing the process it targets).
     """
 
     denylist: list[str] = Field(default_factory=lambda: list(_DEFAULT_DENYLIST))
@@ -501,11 +517,12 @@ class Magisk(BaseModel):
     @field_validator("denylist")
     @classmethod
     def _check_packages(cls, value: list[str]) -> list[str]:
-        for pkg in value:
-            if not _DENYLIST_PKG_RE.match(pkg):
+        for entry in value:
+            if not _DENYLIST_PKG_RE.match(entry):
                 raise ValueError(
-                    f"magisk.denylist entry {pkg!r} is not a valid Android "
-                    "package id (must match [a-zA-Z0-9._]+)"
+                    f"magisk.denylist entry {entry!r} is not a valid "
+                    "package[/process] id (both halves must match [a-zA-Z0-9._]+, "
+                    "with an optional single '/' separating package and process)"
                 )
         return value
 
@@ -1313,9 +1330,11 @@ def render_env(
         f"DISPLAY_FPS={cfg.display.fps}",
         f"DISPLAY_GPU={resolve_rendering(cfg.display.rendering)}",
         # Encoded as a comma-separated list because toybox sh has no array
-        # support — the helper iterates over ``IFS=,``. Per-package shape is
-        # already validated by the ``Magisk._check_packages`` regex, so we
-        # can safely join with a delimiter that's not in the package-id grammar.
+        # support — the helper iterates over ``IFS=,``, then splits each
+        # ``package[/process]`` entry on the ``/``. Per-entry shape (both
+        # halves + the single optional ``/``) is already validated by the
+        # ``Magisk._check_packages`` regex, so we can safely join with a comma
+        # (which is not in the entry grammar) and split on ``/`` in the helper.
         f"BEETROOT_DENYLIST_PACKAGES={','.join(cfg.magisk.denylist)}",
         # v0.4 stealth-posture overrides — emitted with the known-safe
         # defaults. render_env is the single source of truth instead of the

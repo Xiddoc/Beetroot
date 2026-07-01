@@ -26,4 +26,4 @@ modules:
 magisk:
   denylist:
     - com.google.android.gms
-    - com.google.android.gms.unstable
+    - com.google.android.gms/com.google.android.gms.unstable
