@@ -45,6 +45,12 @@ if TYPE_CHECKING:
 
 _ADB = "adb"
 
+# Sidecar the warm-resume console trace is copied to before a warm→cold-boot
+# fallback: the cold retry's `proc.start` truncates the live console log the
+# QemuLaunchError pointed the user at, so the warm-failure trace is preserved
+# here for post-mortem (issue #267).
+_WARM_FAIL_CONSOLE_SUFFIX = ".warm-fail"
+
 # How often ``up`` re-tries ``adb connect`` against the freshly-launched
 # guest, and the per-attempt subprocess timeout. The deadline itself is the
 # configurable ``settings.vm_adb_connect_timeout`` — the guest restarts adbd
@@ -497,7 +503,7 @@ class VmDeviceBackend:
             self.down()
             raise
 
-    def _up_cached(self, accel: qemu.ResolvedAccel) -> None:
+    def _up_cached(self, accel: qemu.ResolvedAccel) -> None:  # noqa: PLR0915  # one cohesive boot-cache orchestration sharing the _launch closure + many locals
         """
         Boot via the warm-start boot cache: resume a checkpoint, or cold-boot + checkpoint.
 
@@ -543,12 +549,12 @@ class VmDeviceBackend:
         # artifacts is worse than one cold boot. An overlay with no recorded
         # identity (pre-#126) also counts as stale, so it is re-keyed next boot.
         if overlay.exists() and boot_cache.overlay_is_stale(
-            self._root, kernel, base_rootfs, resolved_smp, memory_mib
+            self._root, kernel, base_rootfs, resolved_smp, memory_mib, accel
         ):
             console.note(
                 f"{self._name!r} boot-cache overlay was built from a different "
-                "kernel/rootfs/geometry; discarding the stale checkpoint and "
-                "cold-booting once to re-cache."
+                "kernel/rootfs/geometry/accelerator; discarding the stale checkpoint "
+                "and cold-booting once to re-cache."
             )
             boot_cache.discard_overlay(self._root)
         elif overlay.exists() and not boot_cache.snapshot_present(overlay):
@@ -560,7 +566,9 @@ class VmDeviceBackend:
         if not overlay.exists():
             boot_cache.create_overlay(base_rootfs, overlay)
             # Record what this overlay was built from so a later rebuild invalidates it.
-            boot_cache.record_identity(self._root, kernel, base_rootfs, resolved_smp, memory_mib)
+            boot_cache.record_identity(
+                self._root, kernel, base_rootfs, resolved_smp, memory_mib, accel
+            )
         warm = boot_cache.snapshot_present(overlay)
         if warm:
             console.info(f"resuming cached boot snapshot for {self._name!r} (warm start)")
@@ -601,6 +609,11 @@ class VmDeviceBackend:
                 # The warm resume died on an unrestorable snapshot. Fall back to
                 # a single cold boot on a fresh overlay rather than failing the
                 # `up` outright (#176) — bounded to one retry, no recursion.
+                # Preserve the warm-failure console trace first: the cold retry's
+                # `proc.start` truncates the console log the QemuLaunchError just
+                # pointed the user at, so copy it to a sidecar before it's lost
+                # (#267).
+                self._preserve_warm_fail_console()
                 console.warn(
                     f"warm resume for {self._name!r} failed; discarding the "
                     "snapshot and cold-booting once. See `beetroot logs`."
@@ -608,7 +621,7 @@ class VmDeviceBackend:
                 boot_cache.discard_overlay(self._root)
                 boot_cache.create_overlay(base_rootfs, overlay)
                 boot_cache.record_identity(
-                    self._root, kernel, base_rootfs, resolved_smp, memory_mib
+                    self._root, kernel, base_rootfs, resolved_smp, memory_mib, accel
                 )
                 warm = False
                 _launch(loadvm=None)
@@ -636,6 +649,25 @@ class VmDeviceBackend:
                 f"could not checkpoint {self._name!r} (savevm failed); "
                 "the next `up` will cold-boot again. See `beetroot logs`."
             )
+
+    def _preserve_warm_fail_console(self) -> None:
+        """
+        Copy the console log to a ``.warm-fail`` sidecar before a cold-boot retry (#267).
+
+        The warm-resume failure raises a :class:`qemu.QemuLaunchError` whose
+        message points the user at the QEMU console log, but the very next cold
+        retry's :meth:`qemu.QemuProcess.start` truncates that log — so the trace
+        the error names would be gone by the time the user reads it. Snapshot the
+        console log to ``<console>.warm-fail`` first so the warm-failure output
+        survives the cold retry. Best-effort: a missing console log (QEMU died
+        before writing one) is a no-op, matching the boot cache's best-effort
+        posture.
+        """
+        console_log = self._qemu().console_log
+        if not console_log.is_file():
+            return
+        sidecar = console_log.with_name(console_log.name + _WARM_FAIL_CONSOLE_SUFFIX)
+        shutil.copy2(console_log, sidecar)
 
     def _wait_for_boot_completed(self) -> bool:
         """

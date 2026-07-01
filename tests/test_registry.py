@@ -79,6 +79,22 @@ class TestRegistryAdd:
         assert alpha.index == 0
         assert bravo.index == 1
 
+    def test_add_over_cap_index_raises_at_registration(
+        self, isolated_registry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A registry already full to the stride cap must reject the next
+        # allocation AT registration — not later, when every port resolution
+        # crashes on the over-cap index (#267). Shrink the cap so filling it
+        # is cheap: indices 0 and 1 fill it, so allocating a third fails.
+        monkeypatch.setattr(ports_mod, "_MAX_PORT_INDEX", 1)
+        _seed(tmp_path, "alpha")
+        _seed(tmp_path, "bravo")
+        with pytest.raises(ValueError, match="exceeds the maximum supported index"):
+            registry.add_allocating("charlie", tmp_path / "charlie")
+        # The rejected instance was NOT written — the registry is unmutated.
+        assert registry.get("charlie") is None
+        assert set(registry.list_instances()) == {"alpha", "bravo"}
+
 
 class TestRegistryGet:
     def test_get_missing_returns_none(self, isolated_registry: Path) -> None:

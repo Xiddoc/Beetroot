@@ -480,11 +480,12 @@ _DEFAULT_DOCKER_VERSION: Final[str] = "27.5.1"
 # verified before it is tar-xzf'd into the trusted guest rootfs so a
 # tampered/MITM'd download.docker.com CDN tarball can't ship a backdoored
 # ``dockerd`` into the VM (issue #262, mirroring the kernel-source pin of #184).
-# ``None`` means the literal digest is not yet pinned: verification machinery is
-# in place but the default bundle is treated as an unverified source (a warning
-# is printed) until the real digest is filled in. Bump in lockstep with
-# ``_DEFAULT_DOCKER_VERSION``.
-_DEFAULT_DOCKER_BUNDLE_SHA256: Final[str | None] = None
+# A ``DOCKER_URL`` / ``DOCKER_VERSION`` override away from the default URL drops
+# this pin (the bundle is then unverified unless the caller supplies
+# ``DOCKER_SHA256``). Bump in lockstep with ``_DEFAULT_DOCKER_VERSION``.
+_DEFAULT_DOCKER_BUNDLE_SHA256: Final[str | None] = (
+    "4f798b3ee1e0140eab5bf30b0edc4e84f4cdb53255a429dc3bbae9524845d640"
+)
 
 
 def _default_docker_url(version: str) -> str:
@@ -1329,6 +1330,33 @@ def _fetch_kernel_source(run: SubprocessRunner, work: Path) -> Path:
     return work / f"linux-{KERNEL_VERSION}"
 
 
+# Read size for streaming file hashing — 64 KiB, matching the download modules'
+# ``_CHUNK_SIZE`` so a multi-hundred-MiB kernel tarball is hashed without landing
+# whole in RAM (issue #267).
+_HASH_CHUNK_SIZE: Final[int] = 1 << 16
+
+
+def _sha256_file(path: Path) -> str:
+    """
+    Return the hex SHA-256 of ``path``, read in 64 KiB chunks.
+
+    Streams the file through the hash rather than :meth:`Path.read_bytes`-ing it
+    whole, so a large tarball (the kernel source is hundreds of MiB) is never
+    fully resident in RAM (issue #267).
+
+    Args:
+        path: The file to hash.
+
+    Returns:
+        The lowercase hex SHA-256 digest of the file's bytes.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(_HASH_CHUNK_SIZE):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _verify_kernel_source_digest(tarball: Path) -> None:
     """
     Verify a downloaded kernel source tarball against the pinned sha256.
@@ -1340,7 +1368,7 @@ def _verify_kernel_source_digest(tarball: Path) -> None:
         BootstrapError: If the bytes' sha256 doesn't match
             :data:`KERNEL_SOURCE_SHA256` (a tampered/MITM'd tarball).
     """
-    actual = hashlib.sha256(tarball.read_bytes()).hexdigest()
+    actual = _sha256_file(tarball)
     if actual != KERNEL_SOURCE_SHA256:
         raise BootstrapError(
             f"kernel source sha256 mismatch for {tarball.name}: expected "
@@ -1437,6 +1465,45 @@ def vm_fetch_preflight() -> list[PreflightProblem]:
     return problems
 
 
+def _resolve_preflight_config(problems: list[PreflightProblem]) -> _RootfsConfig:
+    """
+    Resolve the bake config for preflight, tolerating a malformed ``IMAGE_SIZE_MB``.
+
+    :meth:`_RootfsConfig.from_env` raises :class:`BootstrapError` when
+    ``IMAGE_SIZE_MB`` is set to a non-positive-integer value; letting that
+    propagate would abort the whole ``--check`` preflight instead of reporting
+    the bad value beside the other missing prerequisites (issue #267). This
+    catches it, appends a :class:`PreflightProblem`, and re-resolves the config
+    with the offending env var removed so the remaining host checks still run.
+
+    Args:
+        problems: The running preflight problem list; a malformed ``IMAGE_SIZE_MB``
+            appends one entry here.
+
+    Returns:
+        The resolved :class:`_RootfsConfig` (with a defaulted image size when
+        the env value was malformed).
+    """
+    try:
+        return _RootfsConfig.from_env(out_image=Path("preflight"), vm_dir=Path("preflight"))
+    except BootstrapError as e:
+        problems.append(
+            PreflightProblem(
+                requirement="IMAGE_SIZE_MB",
+                detail=str(e),
+                fix="unset IMAGE_SIZE_MB or set it to a positive integer (MiB)",
+            )
+        )
+        # Re-resolve with the bad value dropped so the rest of the preflight
+        # (static bins, tools, docker daemon) is still reported in one pass.
+        saved = os.environ.pop("IMAGE_SIZE_MB", None)
+        try:
+            return _RootfsConfig.from_env(out_image=Path("preflight"), vm_dir=Path("preflight"))
+        finally:
+            if saved is not None:
+                os.environ["IMAGE_SIZE_MB"] = saved
+
+
 def vm_bake_preflight(*, redroid_tar: Path | None = None) -> list[PreflightProblem]:
     """
     Check the host prerequisites the *local rootfs bake* needs.
@@ -1459,8 +1526,13 @@ def vm_bake_preflight(*, redroid_tar: Path | None = None) -> list[PreflightProbl
         One :class:`PreflightProblem` per missing bake prerequisite (empty when
         the host is ready), each carrying an actionable ``fix``.
     """
-    cfg = _RootfsConfig.from_env(out_image=Path("preflight"), vm_dir=Path("preflight"))
     problems: list[PreflightProblem] = []
+    # A malformed ``IMAGE_SIZE_MB`` must be *reported* alongside every other
+    # missing prerequisite, not abort the whole ``--check`` pass with a raised
+    # ``BootstrapError`` (issue #267). Validate it defensively here; on failure
+    # record the problem and resolve the rest of the config with the bad value
+    # neutralised so the remaining checks still run.
+    cfg = _resolve_preflight_config(problems)
     # The local bake is genuinely x86_64-only: it stages x86_64-linux-gnu libs,
     # pins /lib64/ld-linux-x86-64.so.2, and ``cp``s arch/x86/boot/bzImage — all
     # of which assume an x86_64 build host. A non-x86_64 host can't bake, but it

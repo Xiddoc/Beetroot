@@ -39,6 +39,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import BinaryIO
 
 from . import console
 from .settings import settings
@@ -132,6 +133,10 @@ def _fetch_bytes(url: str, description: str) -> bytes:
     """
     Download ``url`` into memory with a progress bar, mapping errors.
 
+    Used only for the tiny ``.sha256`` sidecar (~80 bytes); the ~12 MiB bzImage
+    itself is streamed straight to disk by :func:`_stream_to_handle` so it never
+    lands in RAM whole (issue #246).
+
     Raises:
         KernelFetchError: On HTTP errors, timeouts, or unreachable URLs.
     """
@@ -156,12 +161,58 @@ def _fetch_bytes(url: str, description: str) -> bytes:
         raise KernelFetchError(f"cannot reach {url}: {e.reason}") from e
 
 
+def _stream_to_handle(url: str, description: str, handle: BinaryIO) -> str:
+    """
+    Stream ``url`` into an open ``handle`` chunk-by-chunk, returning the SHA-256.
+
+    The bzImage (~12 MiB) is written straight to ``handle`` as each 64 KiB chunk
+    arrives and folded into a running SHA-256, so the payload is never held whole
+    in RAM and its digest is computed over exactly the bytes on disk without a
+    second pass (issue #246). Mirrors :func:`rootfs_download._download_to_file`,
+    but writes into the caller's already-open temp handle so the atomic-rename
+    staging (issue #185) stays here in :func:`fetch_prebuilt`.
+
+    Args:
+        url: The release-asset URL to download.
+        description: Progress-bar label.
+        handle: The open (binary, writable) temp file the bytes are streamed into.
+
+    Returns:
+        The lowercase hex SHA-256 of the streamed bytes.
+
+    Raises:
+        KernelFetchError: On HTTP errors, timeouts, or unreachable URLs.
+    """
+    digest = hashlib.sha256()
+    try:
+        with urllib.request.urlopen(url, timeout=settings.http_timeout) as resp:  # noqa: S310  # URL built from a pinned GitHub release path; scheme is https
+            raw_length = resp.headers.get("Content-Length")
+            total: float | None = float(raw_length) if raw_length else None
+            with console.progress(description, total=total) as bar:
+                while True:
+                    chunk = resp.read(_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    digest.update(chunk)
+                    bar.advance(len(chunk))
+    except urllib.error.HTTPError as e:
+        raise KernelFetchError(f"HTTP {e.code} fetching {url}") from e
+    except TimeoutError as e:
+        raise KernelFetchError(f"timed out after {settings.http_timeout}s: {url}") from e
+    except urllib.error.URLError as e:
+        raise KernelFetchError(f"cannot reach {url}: {e.reason}") from e
+    return digest.hexdigest()
+
+
 def fetch_prebuilt(*, version: str, fingerprint: str, out_path: Path) -> Path:
     """
     Download the prebuilt ``bzImage`` for (version, fingerprint) to ``out_path``.
 
-    Fetches the binary and its ``.sha256`` sidecar, verifies the digest, and
-    writes the kernel atomically to ``out_path``.
+    Streams the binary straight to a temp file (hashing incrementally, so the
+    ~12 MiB payload never lands in RAM whole — issue #246), fetches its
+    ``.sha256`` sidecar, verifies the digest, and renames the kernel atomically
+    into ``out_path``.
 
     Args:
         version: The pinned kernel version.
@@ -176,20 +227,6 @@ def fetch_prebuilt(*, version: str, fingerprint: str, out_path: Path) -> Path:
             the downloaded bytes do not match the published digest.
     """
     url = release_url(version, fingerprint)
-    payload = _fetch_bytes(url, f"Fetching prebuilt guest kernel {version}")
-    sidecar = _fetch_bytes(f"{url}.sha256", "Fetching kernel checksum")
-    try:
-        expected = sidecar.decode().split()[0].strip()
-    except (UnicodeDecodeError, IndexError) as e:
-        # A 200-OK but empty (``.split()`` → ``[]``) or non-UTF-8 sidecar must
-        # fall back to a source compile like any other fetch failure, not crash
-        # ``build_vm_kernel`` (which only catches ``KernelFetchError``).
-        raise KernelFetchError(f"malformed/empty checksum sidecar {url}.sha256: {e}") from e
-    actual = hashlib.sha256(payload).hexdigest()
-    if actual.lower() != expected.lower():
-        raise KernelFetchError(
-            f"sha256 mismatch for {url}: expected {expected.lower()}, got {actual.lower()}"
-        )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     # Stage into a process-unique temp on the destination filesystem so two
     # concurrent fetches of the same kernel can't write a shared fixed ``.tmp``
@@ -198,10 +235,23 @@ def fetch_prebuilt(*, version: str, fingerprint: str, out_path: Path) -> Path:
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "wb") as handle:
-            handle.write(payload)
+            actual = _stream_to_handle(url, f"Fetching prebuilt guest kernel {version}", handle)
+        sidecar = _fetch_bytes(f"{url}.sha256", "Fetching kernel checksum")
+        try:
+            expected = sidecar.decode().split()[0].strip()
+        except (UnicodeDecodeError, IndexError) as e:
+            # A 200-OK but empty (``.split()`` → ``[]``) or non-UTF-8 sidecar
+            # must fall back to a source compile like any other fetch failure,
+            # not crash ``build_vm_kernel`` (which only catches ``KernelFetchError``).
+            raise KernelFetchError(f"malformed/empty checksum sidecar {url}.sha256: {e}") from e
+        if actual.lower() != expected.lower():
+            raise KernelFetchError(
+                f"sha256 mismatch for {url}: expected {expected.lower()}, got {actual.lower()}"
+            )
         tmp.replace(out_path)
     except BaseException:
-        # A mid-write crash must not orphan the temp beside the destination.
+        # A mid-stream crash or a failed verification must not orphan the temp
+        # beside the destination.
         tmp.unlink(missing_ok=True)
         raise
     return out_path

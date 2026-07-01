@@ -292,7 +292,9 @@ class TestAddModule:
         captured_adb: list[list[str]],
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         zip_path = tmp_path / "MyModule.zip"
         zip_path.write_bytes(b"PK\x03\x04fake")
         _make_device(serial="emulator-5554").add_module(str(zip_path))
@@ -317,7 +319,9 @@ class TestAddModule:
         self,
         captured_adb: list[list[str]],
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         with pytest.raises(ValueError, match="does not exist"):
             _make_device().add_module(str(tmp_path / "missing.zip"))
         assert captured_adb == []
@@ -326,7 +330,9 @@ class TestAddModule:
         self,
         captured_adb: list[list[str]],
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         dir_path = tmp_path / "a_dir.zip"
         dir_path.mkdir()
         with pytest.raises(ValueError, match="directory"):
@@ -337,7 +343,9 @@ class TestAddModule:
         self,
         captured_adb: list[list[str]],
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         not_zip = tmp_path / "module.apk"
         not_zip.write_bytes(b"PK\x03\x04fake")
         with pytest.raises(ValueError, match=r"\.zip"):
@@ -348,15 +356,35 @@ class TestAddModule:
         self,
         captured_adb: list[list[str]],
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # The sha256 kwarg is enforced only by auto_install_modules; on
         # the safe-default push-to-Downloads path it stays a no-op. Pass
         # a deliberately-wrong hex to confirm the parameter is ignored
         # without error.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         zip_path = tmp_path / "M.zip"
         zip_path.write_bytes(b"PK\x03\x04fake")
         _make_device().add_module(str(zip_path), sha256="0" * 64)
         assert len(captured_adb) == 1
+
+    def test_raises_when_adb_not_on_path(
+        self,
+        captured_adb: list[list[str]],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Issue #275: add_module must raise the typed AdbNotInstalledError
+        # (like every sibling method) when adb is absent, not a raw
+        # FileNotFoundError from the first _adb push. The guard fires
+        # before any host-side zip validation, so a valid zip never
+        # reaches an adb push on a platform-tools-less host.
+        zip_path = tmp_path / "MyModule.zip"
+        zip_path.write_bytes(b"PK\x03\x04fake")
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        with pytest.raises(api.AdbNotInstalledError, match="adb not found on PATH"):
+            _make_device().add_module(str(zip_path))
+        assert captured_adb == []
 
 
 class TestAutoInstallModules:

@@ -198,6 +198,22 @@ def is_pinned_frida_version(v: str) -> bool:
 # docker compose silently misinterprets or rejects opaquely at runtime.
 _DOCKER_SIZE_RE: Final = re.compile(r"^\d+(\.\d+)?[bkmgtBKMGT]?$")
 
+# Binary multipliers for the Docker size suffixes (Docker treats k/m/g/t as
+# powers of 1024, matching ``docker run``'s own parser). Keyed on the lowercased
+# suffix; a bare number (no suffix) or an explicit ``b`` is raw bytes.
+_DOCKER_SIZE_MULTIPLIERS: Final[dict[str, int]] = {
+    "b": 1,
+    "k": 1024,
+    "m": 1024**2,
+    "g": 1024**3,
+    "t": 1024**4,
+}
+
+# Sentinel ``memswap_limit`` value meaning "unlimited swap" (documented by
+# Docker). It has no byte size, so the soft-floor / swap-cap comparison in
+# :meth:`Resources._check_memory_ordering` treats it as no cap at all.
+_MEMSWAP_UNLIMITED: Final = "-1"
+
 # Module-level set of YAML paths we've already printed the "auto-bumped
 # api_version" warning for in this process. Without the dedup,
 # ``beetroot ls`` over 5 legacy instances prints 5+ warning lines; a
@@ -305,6 +321,27 @@ def _check_docker_size(field_name: str, v: str) -> str:
     return v
 
 
+def _docker_size_to_bytes(v: str) -> int:
+    """
+    Convert a validated Docker size string to a byte count.
+
+    Assumes ``v`` already passed :func:`_check_docker_size` (matches
+    :data:`_DOCKER_SIZE_RE`), so the trailing character is either a known
+    suffix or a digit. Docker's suffixes are binary (k = 1024, m = 1024²,
+    …), matching ``docker run``'s own parser.
+
+    Args:
+        v: A Docker size string (e.g. ``"3g"``, ``"512m"``, ``"1024"``).
+
+    Returns:
+        The size in bytes, rounded down to the nearest integer.
+    """
+    suffix = v[-1].lower()
+    if suffix in _DOCKER_SIZE_MULTIPLIERS:
+        return int(float(v[:-1]) * _DOCKER_SIZE_MULTIPLIERS[suffix])
+    return int(float(v))
+
+
 class Resources(BaseModel):
     """
     Docker resource caps for the container.
@@ -347,7 +384,7 @@ class Resources(BaseModel):
         # sentinel, not a size. Accept it only for memswap_limit; the other
         # size fields (mem_reservation, and the required mem/shared_mem) have
         # no such sentinel and still reject -1 as a malformed size.
-        if field_name == "memswap_limit" and v == "-1":
+        if field_name == "memswap_limit" and v == _MEMSWAP_UNLIMITED:
             return v
         return _check_docker_size(f"resources.{field_name}", v)
 
@@ -360,6 +397,40 @@ class Resources(BaseModel):
                 "See CHANGELOG.md for the migration."
             )
         return data
+
+    @model_validator(mode="after")
+    def _check_memory_ordering(self) -> Self:
+        """
+        Reject an inverted soft-floor / swap-cap against the hard ``mem`` limit.
+
+        The field validators only check each size's *shape*; they can't see
+        ``mem`` to compare against. Docker's own contract is that the soft
+        floor (``mem_reservation``) can't exceed the hard cap (``mem``) and the
+        combined memory+swap cap (``memswap_limit``) can't be below it —
+        otherwise ``docker compose up`` fails opaquely. Parse the (already
+        shape-valid) sizes to bytes and enforce both here so the error surfaces
+        at load time (#267). The ``memswap_limit: -1`` sentinel means unlimited
+        swap, so it is never "below" ``mem`` and is skipped.
+        """
+        mem_bytes = _docker_size_to_bytes(self.mem)
+        if self.mem_reservation is not None:
+            reservation_bytes = _docker_size_to_bytes(self.mem_reservation)
+            if reservation_bytes > mem_bytes:
+                raise ValueError(
+                    f"resources.mem_reservation ({self.mem_reservation}) is a soft "
+                    f"memory floor and cannot exceed the hard resources.mem cap "
+                    f"({self.mem}). Lower mem_reservation or raise mem."
+                )
+        if self.memswap_limit is not None and self.memswap_limit != _MEMSWAP_UNLIMITED:
+            memswap_bytes = _docker_size_to_bytes(self.memswap_limit)
+            if memswap_bytes < mem_bytes:
+                raise ValueError(
+                    f"resources.memswap_limit ({self.memswap_limit}) is the total "
+                    f"memory+swap cap and cannot be below the hard resources.mem cap "
+                    f"({self.mem}). Raise memswap_limit (or set it to -1 for unlimited "
+                    "swap), or lower mem."
+                )
+        return self
 
 
 class Frida(BaseModel):

@@ -1463,13 +1463,35 @@ class TestRootfsAssembly:
     def test_absent_digest_warns_but_proceeds(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # issue #262: with no pinned digest (override without DOCKER_SHA256, or
-        # the default digest not yet filled in) the bake proceeds but prints an
-        # explicit unverified-source warning.
+        # issue #262: with no pinned digest (a DOCKER_URL/DOCKER_VERSION override
+        # that supplied no DOCKER_SHA256) the bake proceeds but prints an
+        # explicit unverified-source warning. The *default* URL is now pinned
+        # (see test_default_url_bundle_is_verified), so this is the override path.
         cfg = _make_rootfs_config(tmp_path, docker_url_sha256=None)
         runner = FakeRootfsRunner()
         _run_assembly(tmp_path, runner, cfg)
         assert "UNVERIFIED" in capsys.readouterr().err
+        assert (tmp_path / "work" / "root" / "bin" / "dockerd").is_file()
+
+    def test_default_url_bundle_is_verified(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # issue #262: the default download.docker.com URL now carries the pinned
+        # digest, so a from_env config verifies the bundle (no UNVERIFIED warning)
+        # and a matching download extracts. The fake curl writes b"tgz", so point
+        # the pinned digest at that to drive the verify-then-extract happy path.
+        for var in ("DOCKER_URL", "DOCKER_VERSION", "DOCKER_SHA256", "IMAGE_SIZE_MB"):
+            monkeypatch.delenv(var, raising=False)
+        cfg = builder._RootfsConfig.from_env(
+            out_image=tmp_path / "rootdisk.img", vm_dir=tmp_path / "vm"
+        )
+        assert cfg.docker_url == builder._default_docker_url(builder._DEFAULT_DOCKER_VERSION)
+        assert cfg.docker_url_sha256 == builder._DEFAULT_DOCKER_BUNDLE_SHA256
+        # Re-pin to the fake curl's bytes so the assembly's verify step passes,
+        # proving the default path verifies rather than warns.
+        cfg = _make_rootfs_config(tmp_path, docker_url_sha256=hashlib.sha256(b"tgz").hexdigest())
+        _run_assembly(tmp_path, FakeRootfsRunner(), cfg)
+        assert "UNVERIFIED" not in capsys.readouterr().err
         assert (tmp_path / "work" / "root" / "bin" / "dockerd").is_file()
 
 
@@ -1489,9 +1511,12 @@ class TestRootfsConfigFromEnv:
         cfg = builder._RootfsConfig.from_env(out_image=Path("/o.img"), vm_dir=Path("/vm"))
         assert cfg.docker_version == "27.5.1"
         assert cfg.docker_url.endswith("docker-27.5.1.tgz")
-        # issue #262: the default bundle carries the pinned digest (currently
-        # None until the literal sha256 is filled in — deferred).
+        # issue #262: the default bundle now carries a concrete pinned digest
+        # (the verified sha256 of docker-27.5.1.tgz), so the default URL is
+        # verified, not unverified.
         assert cfg.docker_url_sha256 == builder._DEFAULT_DOCKER_BUNDLE_SHA256
+        assert cfg.docker_url_sha256 is not None
+        assert len(cfg.docker_url_sha256) == 64
         assert cfg.redroid_tar is None
         assert cfg.adbprobe_bin is None
         assert cfg.image_size_mb == 8192
@@ -2045,6 +2070,47 @@ class TestFetchKernelSource:
         tree = builder._fetch_kernel_source(runner, tmp_path)
         assert any(c.cmd[0] == "tar" for c in runner.calls)
         assert tree == tmp_path / f"linux-{builder.KERNEL_VERSION}"
+
+
+class TestSha256FileChunked:
+    """issue #267: the kernel source tarball is hashed in 64 KiB chunks, not read whole."""
+
+    def test_multi_chunk_matches_whole_file_digest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A tiny chunk size forces many read() iterations over a payload that
+        # spans several chunks; the streamed digest must equal the one-shot hash.
+        monkeypatch.setattr(builder, "_HASH_CHUNK_SIZE", 8)
+        payload = bytes(range(256)) * 5  # 1280 bytes -> 160 chunks of 8
+        f = tmp_path / "linux.tar.xz"
+        f.write_bytes(payload)
+        assert builder._sha256_file(f) == hashlib.sha256(payload).hexdigest()
+
+    def test_empty_file_hashes_to_empty_digest(self, tmp_path: Path) -> None:
+        # The walrus loop must terminate immediately on a zero-byte file.
+        f = tmp_path / "empty.tar.xz"
+        f.write_bytes(b"")
+        assert builder._sha256_file(f) == hashlib.sha256(b"").hexdigest()
+
+    def test_verify_accepts_matching_multi_chunk_tarball(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(builder, "_HASH_CHUNK_SIZE", 16)
+        payload = b"multi-chunk-kernel-source" * 100
+        monkeypatch.setattr(builder, "KERNEL_SOURCE_SHA256", hashlib.sha256(payload).hexdigest())
+        tarball = tmp_path / f"linux-{builder.KERNEL_VERSION}.tar.xz"
+        tarball.write_bytes(payload)
+        # No raise means the chunked digest matched the pin.
+        builder._verify_kernel_source_digest(tarball)
+
+    def test_verify_rejects_multi_chunk_mismatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(builder, "_HASH_CHUNK_SIZE", 16)
+        tarball = tmp_path / f"linux-{builder.KERNEL_VERSION}.tar.xz"
+        tarball.write_bytes(b"tampered-source" * 100)
+        with pytest.raises(BootstrapError, match="sha256 mismatch"):
+            builder._verify_kernel_source_digest(tarball)
 
 
 @pytest.mark.usefixtures("_no_sleep")

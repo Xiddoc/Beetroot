@@ -556,7 +556,7 @@ The guest rootfs bakes the **plain upstream redroid image** for the chosen Andro
 
 The verb:
 
-1. Clones [`ayasa520/redroid-script`](https://github.com/ayasa520/redroid-script) into `/tmp/redroid`.
+1. Clones [`ayasa520/redroid-script`](https://github.com/ayasa520/redroid-script) into `~/.cache/beetroot/redroid-script` (the per-user cache dir, respecting `$XDG_CACHE_HOME`).
 2. Runs the patcher to produce a local Docker image (e.g. `redroid/redroid:14.0.0_litegapps_houdini_magisk`).
 3. Runs `docker compose build` to layer `entrypoint.sh` and `stealth.rc` on top.
 

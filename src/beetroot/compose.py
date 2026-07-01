@@ -31,6 +31,12 @@ from .settings import settings
 # ``status``, ``doctor``) — hang forever. Mirrors ``capabilities._DOCKER_INFO_TIMEOUT``.
 _PS_STATUS_TIMEOUT: Final[int] = 20
 
+# Max chars of daemon stderr folded into a raised ``ComposeError`` message
+# (issue #276). A full compose failure log can be many kilobytes; we keep the
+# tail — the last, most-relevant lines — so programmatic callers get the
+# reason without the error string ballooning.
+_STDERR_TAIL_CHARS: Final[int] = 500
+
 # Lowercased stderr markers the Docker CLI emits when the daemon is
 # unreachable. The CLI uses more than one phrasing — ``cannot connect to the
 # docker daemon`` (default socket) and ``failed to connect to the docker API
@@ -152,6 +158,21 @@ def run(
     return result
 
 
+def _lifecycle_error(verb: str, name: str, res: subprocess.CompletedProcess[str]) -> ComposeError:
+    """
+    Build a ``ComposeError`` for a failed lifecycle call, folding in stderr.
+
+    The trimmed tail of the daemon's stderr (issue #276) is appended when
+    present so programmatic callers see *why* compose failed, not just the
+    exit code.
+    """
+    message = f"`compose {verb}` failed for {name} (exit {res.returncode})"
+    stderr_tail = (res.stderr or "").strip()[-_STDERR_TAIL_CHARS:]
+    if stderr_tail:
+        message = f"{message}: {stderr_tail}"
+    return ComposeError(message)
+
+
 def up(name: str, instance_root: Path) -> None:
     """
     Start an instance with ``compose up -d``.
@@ -161,11 +182,14 @@ def up(name: str, instance_root: Path) -> None:
         instance_root: The instance directory.
 
     Raises:
-        ComposeError: If compose exits with a non-zero status.
+        ComposeError: If compose exits with a non-zero status. The daemon's
+            stderr tail is folded into the message (issue #276).
     """
-    res = run(name, instance_root, ["up", "-d"])
+    # Capture stderr only (issue #276) so its tail can be folded into the error;
+    # stdout stays inherited so any compose progress streams to the terminal.
+    res = run(name, instance_root, ["up", "-d"], stderr=subprocess.PIPE, text=True)
     if res.returncode != 0:
-        raise ComposeError(f"`compose up` failed for {name} (exit {res.returncode})")
+        raise _lifecycle_error("up", name, res)
 
 
 def down(name: str, instance_root: Path, *, volumes: bool = False) -> None:
@@ -178,14 +202,16 @@ def down(name: str, instance_root: Path, *, volumes: bool = False) -> None:
         volumes: If ``True``, also remove named volumes.
 
     Raises:
-        ComposeError: If compose exits with a non-zero status.
+        ComposeError: If compose exits with a non-zero status. The daemon's
+            stderr tail is folded into the message (issue #276).
     """
     args = ["down"]
     if volumes:
         args.append("--volumes")
-    res = run(name, instance_root, args)
+    # Capture stderr only (issue #276); stdout stays inherited (streams).
+    res = run(name, instance_root, args, stderr=subprocess.PIPE, text=True)
     if res.returncode != 0:
-        raise ComposeError(f"`compose down` failed for {name} (exit {res.returncode})")
+        raise _lifecycle_error("down", name, res)
 
 
 def logs(name: str, instance_root: Path, follow: bool = False) -> None:
@@ -199,15 +225,22 @@ def logs(name: str, instance_root: Path, follow: bool = False) -> None:
 
     Raises:
         ComposeError: If compose exits with a non-zero status in non-follow
-            mode. In follow mode a non-zero exit is tolerated, because
+            mode; the daemon's stderr tail is folded into the message (issue
+            #276). In follow mode a non-zero exit is tolerated, because
             ``Ctrl-C``-ing out of the stream is the expected way to stop it.
     """
     args = ["logs"]
     if follow:
-        args.append("-f")
-    res = run(name, instance_root, args)
-    if not follow and res.returncode != 0:
-        raise ComposeError(f"`compose logs` failed for {name} (exit {res.returncode})")
+        # Follow mode streams to the terminal — inherit stdio (no capture) so
+        # the live tail is visible; a non-zero (SIGINT) exit is expected.
+        run(name, instance_root, [*args, "-f"])
+        return
+    # Non-follow: the logs are the deliverable and go to stdout, so stdout must
+    # stay inherited (streamed to the terminal). Capture stderr only so a
+    # failure still carries the daemon's reason (issue #276).
+    res = run(name, instance_root, args, stderr=subprocess.PIPE, text=True)
+    if res.returncode != 0:
+        raise _lifecycle_error("logs", name, res)
 
 
 def ps_status(name: str, instance_root: Path) -> ComposeStatus:
@@ -262,6 +295,11 @@ def ps_status(name: str, instance_root: Path) -> ComposeStatus:
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
+        # A well-formed JSON line that isn't an object (a bare list, string,
+        # or number) has no ``.get`` — skip it rather than let the
+        # AttributeError escape the ``json.JSONDecodeError``-only ``except``.
+        if not isinstance(entry, dict):
+            continue
         state = str(entry.get("State", "")).lower()
         if state:
             return _STATE_TO_STATUS.get(state, "unknown")
@@ -279,6 +317,10 @@ def build(name: str, instance_root: Path) -> None:
     Raises:
         ComposeError: If compose exits with a non-zero status.
     """
+    # ``docker compose build`` is verbose and streams its progress (BuildKit
+    # writes to stderr), and it is the user-facing deliverable of the command,
+    # so it inherits stdio — capturing it would run the build silently. The
+    # error stays exit-code-only (the log was already on the terminal).
     res = run(name, instance_root, ["build"])
     if res.returncode != 0:
         raise ComposeError(f"`compose build` failed for {name} (exit {res.returncode})")

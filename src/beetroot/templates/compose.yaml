@@ -28,8 +28,10 @@ services:
     # ``docker compose`` invocation without a Beetroot-rendered .env file)
     # still boots the container the same way as ``render_env`` would.
     # BEETROOT_DENYLIST_PACKAGES is a comma-separated list consumed by
-    # magisk-config.sh via ``IFS=,``; defaults to the GMS pair (Magisk.denylist
-    # default) so root is hidden from GMS unless overridden.
+    # magisk-config.sh via ``IFS=,``. The compose default is EMPTY (the ``:-``
+    # below): the CLI's render_env supplies the GMS pair, so a bare
+    # ``docker compose`` (no render_env) leaves the denylist empty and root
+    # unhidden until BEETROOT_DENYLIST_PACKAGES is set.
     environment:
       BEETROOT_MAGISK_DB: ${BEETROOT_MAGISK_DB:-/data/adb/magisk.db}
       BEETROOT_MODULES_DIR: ${BEETROOT_MODULES_DIR:-/data/adb/modules_update}

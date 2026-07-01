@@ -318,7 +318,9 @@ def plan_binder_runtime(mode: BinderMode, status: BinderStatus) -> BinderPlan:
       is available yet).
     * a binder-ready host always returns ``proceed`` for ``auto`` /
       ``host``.
-    * ``host`` on a non-ready host returns ``block`` (fail fast).
+    * ``host`` on a non-ready host returns ``block`` (fail fast) — its
+      remedy carries the same ``binder: vm`` hint as ``warn`` so a
+      fail-fast user discovers the escape hatch too.
     * ``auto`` on a non-ready host returns ``warn`` (start anyway, advise)
       and appends the ``binder: vm`` hint to the remedy so the user
       discovers the escape hatch — but it is **never** auto-engaged.
@@ -334,7 +336,7 @@ def plan_binder_runtime(mode: BinderMode, status: BinderStatus) -> BinderPlan:
         return BinderPlan(action="vm", reason=_VM_ENGAGED, remedy="")
     if status.available:
         return BinderPlan(action="proceed", reason=status.reason, remedy="")
-    if mode == "host":
-        return BinderPlan(action="block", reason=status.reason, remedy=status.remedy)
     remedy = f"{status.remedy}. {_VM_HINT}" if status.remedy else _VM_HINT
+    if mode == "host":
+        return BinderPlan(action="block", reason=status.reason, remedy=remedy)
     return BinderPlan(action="warn", reason=status.reason, remedy=remedy)

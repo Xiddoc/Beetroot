@@ -741,6 +741,14 @@ def add_allocating(
             raise ValueError(f"instance {name!r} already in registry")
         used = {meta.index for meta in data.instances.values()}
         index = ports.lowest_free_index(used)
+        # Bound the freshly-allocated index by the stride cap here, inside the
+        # lock, BEFORE the row is written. A registry that already holds
+        # _MAX_PORT_INDEX+1 instances would otherwise register an over-cap row
+        # that every later port resolution crashes on (ports.resolve_ports /
+        # ports_for_index both call _check_index) — so fail at registration
+        # with the exact error the resolver would raise, leaving the registry
+        # unmutated (#267).
+        ports._check_index(index)  # noqa: SLF001  # ports is a sibling module; _check_index is the shared bound
         data.instances[name] = InstanceMeta(
             backend=backend,
             index=index,

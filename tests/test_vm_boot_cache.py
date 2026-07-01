@@ -292,30 +292,40 @@ class TestOverlayIdentity:
 
     def test_base_identity_stable_and_order_independent(self, tmp_path: Path) -> None:
         kernel, rootfs = self._files(tmp_path)
-        first = boot_cache.base_identity(kernel, rootfs, 4, 8192)
+        first = boot_cache.base_identity(kernel, rootfs, 4, 8192, "tcg")
         # Argument order must not matter (folded in basename order).
-        assert first == boot_cache.base_identity(rootfs, kernel, 4, 8192)
+        assert first == boot_cache.base_identity(rootfs, kernel, 4, 8192, "tcg")
         assert len(first) == 16
 
     def test_base_identity_changes_with_content(self, tmp_path: Path) -> None:
         kernel, rootfs = self._files(tmp_path)
-        before = boot_cache.base_identity(kernel, rootfs, 4, 8192)
+        before = boot_cache.base_identity(kernel, rootfs, 4, 8192, "tcg")
         kernel.write_bytes(b"REBUILT KERNEL")
-        assert boot_cache.base_identity(kernel, rootfs, 4, 8192) != before
+        assert boot_cache.base_identity(kernel, rootfs, 4, 8192, "tcg") != before
 
     def test_base_identity_changes_with_smp(self, tmp_path: Path) -> None:
         # #161: a -smp geometry change must alter the fingerprint, since QEMU
         # rejects a -loadvm resume into a mismatched vCPU count.
         kernel, rootfs = self._files(tmp_path)
-        assert boot_cache.base_identity(kernel, rootfs, 8, 8192) != boot_cache.base_identity(
-            kernel, rootfs, 4, 8192
+        assert boot_cache.base_identity(kernel, rootfs, 8, 8192, "tcg") != boot_cache.base_identity(
+            kernel, rootfs, 4, 8192, "tcg"
         )
 
     def test_base_identity_changes_with_memory(self, tmp_path: Path) -> None:
         # #161: a -m (RAM) geometry change must alter the fingerprint too.
         kernel, rootfs = self._files(tmp_path)
-        assert boot_cache.base_identity(kernel, rootfs, 4, 8192) != boot_cache.base_identity(
-            kernel, rootfs, 4, 4096
+        assert boot_cache.base_identity(kernel, rootfs, 4, 8192, "tcg") != boot_cache.base_identity(
+            kernel, rootfs, 4, 4096, "tcg"
+        )
+
+    def test_base_identity_changes_with_accel(self, tmp_path: Path) -> None:
+        # #273: a savevm checkpoint is accel-sensitive (KVM boots -cpu host, TCG
+        # -cpu max), so the resolved accelerator must alter the fingerprint —
+        # otherwise a checkpoint saved under one accel would be -loadvm-resumed
+        # under the other and fail.
+        kernel, rootfs = self._files(tmp_path)
+        assert boot_cache.base_identity(kernel, rootfs, 4, 8192, "kvm") != boot_cache.base_identity(
+            kernel, rootfs, 4, 8192, "tcg"
         )
 
     def test_base_identity_order_independent_with_colliding_basenames(self, tmp_path: Path) -> None:
@@ -329,20 +339,22 @@ class TestOverlayIdentity:
         ka.write_bytes(b"KERNEL-X")
         kb = b / "bzImage"
         kb.write_bytes(b"KERNEL-Y")
-        assert boot_cache.base_identity(ka, kb, 4, 8192) == boot_cache.base_identity(kb, ka, 4, 8192)
+        assert boot_cache.base_identity(ka, kb, 4, 8192, "tcg") == boot_cache.base_identity(
+            kb, ka, 4, 8192, "tcg"
+        )
 
     def test_record_and_read_roundtrip(self, tmp_path: Path) -> None:
         kernel, rootfs = self._files(tmp_path)
-        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192)
+        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192, "tcg")
         assert boot_cache.read_identity(tmp_path) == boot_cache.base_identity(
-            kernel, rootfs, 4, 8192
+            kernel, rootfs, 4, 8192, "tcg"
         )
 
     def test_record_identity_is_atomic_no_temp_left(self, tmp_path: Path) -> None:
         # #175: the sidecar is written via temp + replace, so no .tmp file is
         # left behind and the final write is all-or-nothing.
         kernel, rootfs = self._files(tmp_path)
-        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192)
+        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192, "tcg")
         assert not (tmp_path / "vm-overlay.cache-key.tmp").exists()
         assert boot_cache.read_identity(tmp_path) is not None
 
@@ -360,30 +372,38 @@ class TestOverlayIdentity:
 
     def test_overlay_is_stale_false_when_matching(self, tmp_path: Path) -> None:
         kernel, rootfs = self._files(tmp_path)
-        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192)
-        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 4, 8192) is False
+        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192, "tcg")
+        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 4, 8192, "tcg") is False
 
     def test_overlay_is_stale_true_when_content_changed(self, tmp_path: Path) -> None:
         kernel, rootfs = self._files(tmp_path)
-        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192)
+        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192, "tcg")
         rootfs.write_bytes(b"REBUILT ROOTFS")
-        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 4, 8192) is True
+        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 4, 8192, "tcg") is True
 
     def test_overlay_is_stale_true_when_geometry_changed(self, tmp_path: Path) -> None:
         # #161: an unchanged kernel/rootfs but a different -smp/-m must read stale.
         kernel, rootfs = self._files(tmp_path)
-        boot_cache.record_identity(tmp_path, kernel, rootfs, 8, 8192)
-        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 4, 8192) is True
-        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 8, 4096) is True
+        boot_cache.record_identity(tmp_path, kernel, rootfs, 8, 8192, "tcg")
+        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 4, 8192, "tcg") is True
+        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 8, 4096, "tcg") is True
+
+    def test_overlay_is_stale_true_when_accel_flipped(self, tmp_path: Path) -> None:
+        # #273: an unchanged kernel/rootfs/geometry but a different resolved accel
+        # must read stale — a checkpoint saved under TCG can't be -loadvm-resumed
+        # under KVM (accel-sensitive savevm state).
+        kernel, rootfs = self._files(tmp_path)
+        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192, "tcg")
+        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 4, 8192, "kvm") is True
 
     def test_overlay_is_stale_true_when_no_key(self, tmp_path: Path) -> None:
         kernel, rootfs = self._files(tmp_path)
-        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 4, 8192) is True
+        assert boot_cache.overlay_is_stale(tmp_path, kernel, rootfs, 4, 8192, "tcg") is True
 
     def test_discard_overlay_removes_overlay_and_key(self, tmp_path: Path) -> None:
         kernel, rootfs = self._files(tmp_path)
         boot_cache.overlay_path(tmp_path).write_bytes(b"q")
-        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192)
+        boot_cache.record_identity(tmp_path, kernel, rootfs, 4, 8192, "tcg")
         boot_cache.discard_overlay(tmp_path)
         assert not boot_cache.overlay_path(tmp_path).exists()
         assert not boot_cache.overlay_key_path(tmp_path).exists()
@@ -422,11 +442,11 @@ class TestHashCache:
         rootfs = tmp_path / "rootdisk.img"
         rootfs.write_bytes(b"ROOTFS")
 
-        first = boot_cache.base_identity(kernel, rootfs, 4, 8192)
+        first = boot_cache.base_identity(kernel, rootfs, 4, 8192, "tcg")
         assert sorted(hashed) == [str(kernel), str(rootfs)]  # both hashed once
 
         hashed.clear()
-        second = boot_cache.base_identity(kernel, rootfs, 4, 8192)
+        second = boot_cache.base_identity(kernel, rootfs, 4, 8192, "tcg")
         assert second == first  # identical fingerprint from the cache
         assert hashed == []  # nothing re-streamed on the hot path
 
@@ -439,12 +459,12 @@ class TestHashCache:
         rootfs = tmp_path / "rootdisk.img"
         rootfs.write_bytes(b"ROOTFS")
 
-        before = boot_cache.base_identity(kernel, rootfs, 4, 8192)
+        before = boot_cache.base_identity(kernel, rootfs, 4, 8192, "tcg")
         hashed.clear()
 
         # A content edit that bumps size *and* mtime invalidates the cache entry.
         rootfs.write_bytes(b"REBUILT ROOTFS")
-        after = boot_cache.base_identity(kernel, rootfs, 4, 8192)
+        after = boot_cache.base_identity(kernel, rootfs, 4, 8192, "tcg")
 
         assert after != before  # digest changed with the rebuilt rootfs
         assert hashed == [str(rootfs)]  # only the changed rootfs was re-streamed
@@ -460,12 +480,12 @@ class TestHashCache:
         kernel = tmp_path / "bzImage"
         kernel.write_bytes(b"KERNEL")
 
-        before = boot_cache.base_identity(kernel, rootfs, 4, 8192)
+        before = boot_cache.base_identity(kernel, rootfs, 4, 8192, "tcg")
         stat = rootfs.stat()
         rootfs.write_bytes(b"BBBB")  # same size, new content
         os.utime(rootfs, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
         hashed.clear()
 
-        after = boot_cache.base_identity(kernel, rootfs, 4, 8192)
+        after = boot_cache.base_identity(kernel, rootfs, 4, 8192, "tcg")
         assert after != before
         assert hashed == [str(rootfs)]  # mtime bump forced a re-stream
