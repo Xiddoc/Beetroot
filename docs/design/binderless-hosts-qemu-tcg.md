@@ -382,8 +382,8 @@ expensive step.
    the instance's stride-allocated host ADB port.
 4. **`doctor` + banners** — ✅ done (issue #44): `beetroot up` prints the
    §7.3 capability banner (quiet on KVM, loud on TCG) and `beetroot doctor`
-   runs `vm.process` + `vm.accel` rows. `binder: auto`/`host` keep their
-   existing behaviour.
+   runs `vm.process` + `vm.accel` + `vm.qemu` + `vm.artifacts` + `adb.connect`
+   rows (issue #191/#164). `binder: auto`/`host` keep their existing behaviour.
 5. **KVM fast path** — ✅ done (issue #44): `detect_accel` probes
    `/dev/kvm` (read+write) and prefers `-accel kvm` (`-cpu host`); `auto`
    falls back to TCG, an explicit `kvm` request on a host without `/dev/kvm`

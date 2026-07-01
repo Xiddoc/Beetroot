@@ -28,7 +28,7 @@ from .settings import settings
 # Bounded deadline for the read-only ``docker compose ps`` probe. A wedged
 # (reachable-but-unresponsive) daemon or an unresponsive TCP ``DOCKER_HOST``
 # would otherwise make ``ps_status`` — and every verb that reads it (``ls``,
-# ``status``, ``doctor``) — hang forever. Mirrors ``builder._DOCKER_INFO_TIMEOUT``.
+# ``status``, ``doctor``) — hang forever. Mirrors ``capabilities._DOCKER_INFO_TIMEOUT``.
 _PS_STATUS_TIMEOUT: Final[int] = 20
 
 # Lowercased stderr markers the Docker CLI emits when the daemon is

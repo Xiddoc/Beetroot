@@ -424,6 +424,8 @@ Redroid checks: `compose.status`, `host.binder`, `adb.connect`, `frida.handshake
 
 Adb checks: `adb.serial`, `frida.handshake`, `magisk.zygisk`, `magisk.denylist.com.google.android.gms`. `compose.status` is not applicable.
 
+VM (`binder: vm`) checks: `vm.process` (is QEMU alive?), `vm.accel` (KVM vs the slow-TCG note), `vm.qemu` (the QEMU emulator is on `PATH`), `vm.artifacts` (the guest kernel + rootfs exist — else a `beetroot build --vm-kernel` hint), and `adb.connect` (connect-then-verify against the forwarded loopback port, not the USB-style `adb.serial`). The Frida and Magisk rows are omitted — the network-isolated guest has no Frida and boots a plain redroid image with no Magisk.
+
 ---
 
 ## `modes`

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from beetroot import api, config, frida_download, registry
+from beetroot import api, capabilities, config, frida_download, registry
 from beetroot.backends import vm as vm_backend
 from beetroot.settings import Settings
 from beetroot.vm import boot_cache, qemu
@@ -307,7 +307,9 @@ class TestLifecycle:
             return 1234
 
         monkeypatch.setattr(qemu.QemuProcess, "start", _start)
-        monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self, *_a: None)
+        monkeypatch.setattr(
+            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self, *_a: None
+        )
         backend.up()
         assert launched["argv"][0] == "qemu-system-x86_64"
 
@@ -353,7 +355,9 @@ class TestLifecycle:
             return 1
 
         monkeypatch.setattr(qemu.QemuProcess, "start", _start)
-        monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self, *_a: None)
+        monkeypatch.setattr(
+            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self, *_a: None
+        )
         backend.up()
         argv = launched["argv"]
         assert argv[0] == "qemu-system-x86_64"
@@ -426,7 +430,9 @@ class TestLifecycle:
         )
         backend = _make_backend(tmp_path, cfg=cfg)
         monkeypatch.setattr(qemu, "detect_accel", lambda _req: "tcg")
-        monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self, *_a: None)
+        monkeypatch.setattr(
+            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self, *_a: None
+        )
         # Default: the guest boots (cold path gates savevm on this). The
         # not-booted branch is exercised explicitly below.
         monkeypatch.setattr(
@@ -876,7 +882,9 @@ class TestRootfsVersionSkewWarning:
     def _silence_launch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(qemu, "detect_accel", lambda _req: "tcg")
         monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 1)
-        monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self, *_a: None)
+        monkeypatch.setattr(
+            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self, *_a: None
+        )
 
     def test_up_warns_on_version_mismatch(
         self,
@@ -1070,7 +1078,9 @@ class TestInertVmConfigWarning:
         backend = _make_backend(tmp_path, cfg=cfg)
         monkeypatch.setattr(qemu, "detect_accel", lambda _req: "tcg")
         monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, _argv: 1)
-        monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self, *_a: None)
+        monkeypatch.setattr(
+            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self, *_a: None
+        )
         backend.up()
         err = capsys.readouterr().err
         assert "android.gapps: full" not in err
@@ -1350,29 +1360,108 @@ class TestWaitForAdbConnect:
 # ---------------------------------------------------------------------------
 
 
+def _healthy_adb_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+    """Stub ``subprocess.run`` so ``_check_adb_connect`` reports a clean attach."""
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout="connected", stderr="")
+
+
 class TestHealth:
-    def test_health_includes_vm_rows(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_health_happy_path_qemu_artifacts_and_adb_connect(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # qemu on PATH + kernel/rootfs staged + a healthy adb connect ⇒ every row
+        # passes, and it's an ``adb.connect`` (connect-then-verify) row, not the
+        # USB-style always-listed ``adb.serial`` that false-fails a fresh VM (#164).
+        kernel, rootfs = _stage_artifacts(monkeypatch, tmp_path)
+        del kernel, rootfs
         backend = _make_backend(tmp_path)
         monkeypatch.setattr(qemu.QemuProcess, "is_running", lambda _self: True)
         monkeypatch.setattr(qemu, "detect_accel", lambda _req: "kvm")
-        # adb_device_health shells out — stub adb absent so it returns skip rows.
-        monkeypatch.setattr(shutil, "which", lambda _n: None)
+        monkeypatch.setattr(shutil, "which", lambda _n: "/usr/bin/found")
+        connect_calls: list[list[str]] = []
+
+        def _record_adb_run(
+            cmd: list[str], *_a: object, **_k: object
+        ) -> subprocess.CompletedProcess[str]:
+            connect_calls.append(list(cmd))
+            return _healthy_adb_run()
+
+        monkeypatch.setattr(subprocess, "run", _record_adb_run)
         rows = backend.health()
         assert rows["vm.process"].status == "pass"
         assert rows["vm.accel"].status == "pass"
         assert "near-native" in (rows["vm.accel"].reason or "")
-        # The shared adb.serial row is present (uniform check names).
-        assert "adb.serial" in rows
-        # Frida can never pass on the network-isolated guest (#44), so the
-        # handshake row is omitted rather than a permanent fail.
+        assert rows["vm.qemu"].status == "pass"
+        assert rows["vm.artifacts"].status == "pass"
+        # #164: a healthy VM from a fresh adb-server lifetime must pass via a
+        # connect-then-verify row, and the misleading serial-listed row is gone.
+        assert rows["adb.connect"].status == "pass"
+        assert "adb.serial" not in rows
+        # The connect row must target *this* instance's forwarded adb endpoint —
+        # a bare `adb devices` scan (the old serial-listed row) would not connect.
+        assert any(
+            c[:2] == ["adb", "connect"] and c[-1] == backend.adb_address for c in connect_calls
+        ), connect_calls
+        # Frida can never pass on the network-isolated guest (#44), and the guest
+        # runs plain redroid with no Magisk (#163) — both row families stay absent.
         assert "frida.handshake" not in rows
-        # The guest runs plain redroid with no Magisk (#163), so the magisk
-        # rows are dropped rather than reported as a permanent fail.
         assert not any(name.startswith("magisk.") for name in rows)
+
+    def test_health_qemu_missing_fails_with_install_remedy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #191: qemu-system not on PATH ⇒ vm.qemu fails carrying the shared
+        # modes install remedy (a green vm.accel alone must not read as ready).
+        kernel, rootfs = _stage_artifacts(monkeypatch, tmp_path)
+        del kernel, rootfs
+        backend = _make_backend(tmp_path)
+        monkeypatch.setattr(qemu.QemuProcess, "is_running", lambda _self: True)
+        monkeypatch.setattr(qemu, "detect_accel", lambda _req: "tcg")
+        monkeypatch.setattr(shutil, "which", lambda _n: None)
+        rows = backend.health()
+        assert rows["vm.qemu"].status == "fail"
+        assert capabilities._QEMU_INSTALL in (rows["vm.qemu"].reason or "")
+
+    def test_health_artifacts_missing_fails_with_build_hint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #191: qemu present but the guest kernel/rootfs was never built ⇒
+        # vm.artifacts fails, naming the missing artifact + the build hint.
+        monkeypatch.setattr(vm_backend, "settings", Settings(vm_kernel="", vm_rootfs=""))
+        backend = _make_backend(tmp_path)
+        monkeypatch.setattr(qemu.QemuProcess, "is_running", lambda _self: True)
+        monkeypatch.setattr(qemu, "detect_accel", lambda _req: "tcg")
+        monkeypatch.setattr(shutil, "which", lambda _n: "/usr/bin/qemu-system-x86_64")
+        rows = backend.health()
+        assert rows["vm.qemu"].status == "pass"
+        assert rows["vm.artifacts"].status == "fail"
+        assert "kernel" in (rows["vm.artifacts"].reason or "")
+        assert "beetroot build --vm-kernel" in (rows["vm.artifacts"].reason or "")
+
+    def test_health_adb_absent_skips_connect_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # adb not installed ⇒ the connect row skips (not fails), so a host with no
+        # adb doesn't false-fail doctor on connectivity it can't even attempt.
+        kernel, rootfs = _stage_artifacts(monkeypatch, tmp_path)
+        del kernel, rootfs
+        backend = _make_backend(tmp_path)
+        monkeypatch.setattr(qemu.QemuProcess, "is_running", lambda _self: True)
+        monkeypatch.setattr(qemu, "detect_accel", lambda _req: "kvm")
+
+        def _which(name: str) -> str | None:
+            # qemu present (so vm.qemu passes) but adb absent (connect skips).
+            return None if name == "adb" else "/usr/bin/found"
+
+        monkeypatch.setattr(shutil, "which", _which)
+        rows = backend.health()
+        assert rows["adb.connect"].status == "skip"
 
     def test_health_process_down_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        kernel, rootfs = _stage_artifacts(monkeypatch, tmp_path)
+        del kernel, rootfs
         backend = _make_backend(tmp_path)
         monkeypatch.setattr(qemu.QemuProcess, "is_running", lambda _self: False)
         monkeypatch.setattr(qemu, "detect_accel", lambda _req: "tcg")
