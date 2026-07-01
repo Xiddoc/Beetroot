@@ -282,7 +282,15 @@ class TestModuleVerbAdbDispatch:
         isolated_registry: Path,
         stub_adb: list[list[str]],
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        import shutil
+
+        # ``AdbDevice.add_module`` now guards on ``shutil.which("adb")`` (#275),
+        # so stub it present — otherwise this dispatch test depends on whether
+        # ``adb`` happens to be on the host PATH (present in the sandbox, absent
+        # on CI runners), which is exactly the ambient dependency the guard adds.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
         zip_path = tmp_path / "ModX.zip"
         zip_path.write_bytes(b"PK\x03\x04")
         runner.invoke(cli.app, ["adopt", "emulator-5554", "--name", "phone"])
