@@ -75,24 +75,28 @@ adb binaries, then classifies each mode:
 
 | Verdict | When |
 |---------|------|
-| `supported` | binder is **ready** (`/dev/binder*` nodes exist, or `binder` is in `/proc/filesystems`) **and** the Docker CLI is present. |
+| `supported` | host is **x86_64**, binder is **ready** (`/dev/binder*` nodes exist, or `binder` is in `/proc/filesystems`) **and** the Docker CLI is present. |
 | `needs-setup` | binder is **loadable** (`CONFIG_ANDROID_BINDER_IPC=m`/`=y` but not loaded) → `sudo modprobe binder_linux devices=binder,hwbinder,vndbinder`; **or** binder is ready but Docker isn't installed. |
-| `unsupported` | the kernel has binder **compiled out** (`# CONFIG_ANDROID_BINDER_IPC is not set`) — no Docker flag can fix this. |
+| `unsupported` | the kernel has binder **compiled out** (`# CONFIG_ANDROID_BINDER_IPC is not set`) — no Docker flag can fix this; **or** the host is **not x86_64** — Beetroot's redroid image is the x86_64 `*_houdini_magisk` build and runs natively against the host kernel (no emulation), so it can't boot on, e.g., arm64 (issue [#190](https://github.com/Xiddoc/Beetroot/issues/190)) — use `binder: vm` (TCG cross-arch) instead. |
 | `unknown` | binder isn't present and the kernel config couldn't be read (e.g. macOS, locked-down `/proc`). |
 
 ### `redroid (binder: vm, KVM accel)`
 
+The guest is x86_64, and KVM only virtualizes the host's **native** architecture, so this row is **x86_64-only** — on a non-x86_64 host KVM can never accelerate the x86_64 guest (issue [#190](https://github.com/Xiddoc/Beetroot/issues/190)).
+
 | Verdict | When |
 |---------|------|
-| `supported` | `/dev/kvm` is usable **and** QEMU is installed. (You still build the guest once: `beetroot build --vm-kernel`.) |
-| `needs-setup` | `/dev/kvm` usable but QEMU missing → install `qemu-system-x86`. |
-| `unsupported` | no usable `/dev/kvm` — use the TCG row instead, or move to a KVM-capable host/runner. |
+| `supported` | host is **x86_64**, `/dev/kvm` is usable, **and** QEMU is installed. (You still build the guest once: `beetroot build --vm-kernel`.) |
+| `needs-setup` | host is x86_64, `/dev/kvm` usable, but QEMU missing → install `qemu-system-x86`. |
+| `unsupported` | no usable `/dev/kvm` (use the TCG row, or move to a KVM-capable host/runner); **or** the host is **not x86_64** (KVM can't accelerate the x86_64 guest cross-arch — use the TCG row). |
 
 ### `redroid (binder: vm, TCG accel)`
 
+Software emulation, so this row is reachable **cross-arch**: `qemu-system-x86_64` under TCG boots the x86_64 guest even on a non-x86_64 host (just even slower).
+
 | Verdict | When |
 |---------|------|
-| `supported` | QEMU is installed. Works with **no** host binder and **no** KVM. Build the guest once with `beetroot build --vm-kernel`. |
+| `supported` | QEMU is installed. Works with **no** host binder and **no** KVM. On a non-x86_64 host the reason flags the extra **cross-arch** cost (even slower than native-arch TCG). Build the guest once with `beetroot build --vm-kernel`. |
 | `needs-setup` | QEMU missing → install `qemu-system-x86`, then `beetroot build --vm-kernel`. |
 
 ### `adb backend (adopt remote device)`

@@ -1608,6 +1608,30 @@ class TestAccelCheck:
         assert row.status == "fail"
         assert "/dev/kvm" in (row.reason or "")
 
+    def test_explicit_kvm_on_foreign_arch_is_cross_arch_fail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # issue #190: doctor's vm.accel row routes through the real detect_accel,
+        # so a foreign-arch host with an explicit kvm request reports a truthful
+        # cross-arch fail — not a near-native pass.
+        monkeypatch.setattr("beetroot.vm.qemu.platform.machine", lambda: "aarch64")
+        row = vm_backend._accel_check("kvm")
+        assert row.status == "fail"
+        assert "cannot accelerate the x86_64" in (row.reason or "")
+        assert "near-native" not in (row.reason or "")
+
+    def test_auto_on_foreign_arch_is_tcg_row_not_near_native(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``auto`` on a foreign arch resolves to TCG even if a native /dev/kvm
+        # exists — the doctor row must be the TCG note, not a near-native pass.
+        monkeypatch.setattr("beetroot.vm.qemu.platform.machine", lambda: "aarch64")
+        monkeypatch.setattr(qemu, "_dev_kvm_usable", lambda: True)
+        row = vm_backend._accel_check("auto")
+        assert row.status == "pass"
+        assert "5-20x" in (row.reason or "")
+        assert "near-native" not in (row.reason or "")
+
 
 # ---------------------------------------------------------------------------
 # logs (LogReader capability — reads the persisted QEMU serial console)

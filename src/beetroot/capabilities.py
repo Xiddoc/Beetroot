@@ -26,6 +26,7 @@ and delegates to it.
 
 from __future__ import annotations
 
+import platform
 import shutil
 import subprocess
 
@@ -111,8 +112,8 @@ class ModeSupport(BaseModel):
     remedy: str
 
 
-def _redroid_host(
-    binder: hostcheck.BinderStatus, *, docker: bool, docker_daemon: bool
+def _redroid_host(  # noqa: PLR0911  # one verdict per host-state branch; splitting hurts readability
+    binder: hostcheck.BinderStatus, *, docker: bool, docker_daemon: bool, host_is_x86_64: bool
 ) -> ModeSupport:
     """
     Classify the ``redroid`` backend on the host-binder path.
@@ -123,10 +124,27 @@ def _redroid_host(
         docker_daemon: Whether the Docker *daemon* answers ``docker info``.
             Only meaningful when ``docker`` is ``True`` (there's no daemon to
             probe without the CLI).
+        host_is_x86_64: Whether the host machine is x86_64. Beetroot's redroid
+            image is the x86_64 ``*_houdini_magisk`` tag, so a non-x86_64 host
+            can't run it natively no matter how ready the binder driver is.
 
     Returns:
         The :class:`ModeSupport` verdict for ``binder: host`` / ``auto``.
     """
+    if not host_is_x86_64:
+        # redroid runs Android's userspace against the host kernel with no
+        # emulation, so the x86_64 image can't execute on a non-x86_64 host —
+        # no binder/Docker step would fix the arch mismatch. Point at the vm
+        # TCG path, which *can* boot the x86_64 guest cross-arch.
+        return ModeSupport(
+            mode=MODE_REDROID_HOST,
+            status="unsupported",
+            reason=(
+                f"host is {platform.machine()}; Beetroot's redroid image is x86_64 and "
+                "runs natively against the host kernel (no emulation), so it can't boot here"
+            ),
+            remedy="use `binder: vm` (TCG cross-arch emulation), or run on an x86_64 host",
+        )
     if binder.state == "ready":
         if not docker:
             return ModeSupport(
@@ -163,17 +181,33 @@ def _redroid_host(
     )
 
 
-def _vm_kvm(*, kvm: bool, qemu_present: bool) -> ModeSupport:
+def _vm_kvm(*, kvm: bool, qemu_present: bool, host_is_x86_64: bool) -> ModeSupport:
     """
     Classify the ``binder: vm`` KVM (near-native) fast path.
 
     Args:
         kvm: Whether a usable ``/dev/kvm`` is present.
         qemu_present: Whether the QEMU system emulator is on ``PATH``.
+        host_is_x86_64: Whether the host machine is x86_64. KVM can only
+            virtualize the host's native arch, so it can never accelerate the
+            x86_64 guest on a non-x86_64 host.
 
     Returns:
         The :class:`ModeSupport` verdict for ``binder: vm`` under KVM.
     """
+    if not host_is_x86_64:
+        # KVM cross-arch is physically impossible: an x86_64 guest can't be
+        # KVM-accelerated on an arm64 (or other) host. This is unambiguously
+        # unsupported — no /dev/kvm or QEMU install would help. TCG is the path.
+        return ModeSupport(
+            mode=MODE_VM_KVM,
+            status="unsupported",
+            reason=(
+                f"host is {platform.machine()}; KVM cannot accelerate the x86_64 guest "
+                "(KVM only virtualizes the host's native arch) — use the TCG path"
+            ),
+            remedy="use the `binder: vm` TCG path (cross-arch software emulation), no KVM needed",
+        )
     if not kvm:
         return ModeSupport(
             mode=MODE_VM_KVM,
@@ -196,30 +230,44 @@ def _vm_kvm(*, kvm: bool, qemu_present: bool) -> ModeSupport:
     )
 
 
-def _vm_tcg(*, qemu_present: bool) -> ModeSupport:
+def _vm_tcg(*, qemu_present: bool, host_is_x86_64: bool) -> ModeSupport:
     """
     Classify the ``binder: vm`` TCG (software-emulation) fallback path.
 
     This is the path for hosts with neither host binder nor KVM — it needs only
-    QEMU and the built guest artifacts.
+    QEMU and the built guest artifacts. It stays reachable on a non-x86_64 host
+    (``qemu-system-x86_64`` under TCG boots the x86_64 guest cross-arch), but the
+    reason then flags the extra cross-arch cost so the host isn't told the path
+    is plainly fast.
 
     Args:
         qemu_present: Whether the QEMU system emulator is on ``PATH``.
+        host_is_x86_64: Whether the host machine is x86_64. When ``False`` the
+            reason gains a cross-arch note (even slower) — but the verdict is
+            never ``unsupported``, since TCG *can* emulate the x86_64 guest.
 
     Returns:
         The :class:`ModeSupport` verdict for ``binder: vm`` under TCG.
     """
+    # On a non-x86_64 host, qemu-system-x86_64 under TCG still boots the guest —
+    # it just emulates a foreign ISA on top of the usual software emulation, so
+    # it is even slower. Flag that honestly instead of promising ~5-20x.
+    speed = (
+        f"cross-arch x86_64 emulation on {platform.machine()} — even slower than native-arch TCG"
+        if not host_is_x86_64
+        else "software emulation (~5-20x slower, no KVM needed)"
+    )
     if not qemu_present:
         return ModeSupport(
             mode=MODE_VM_TCG,
             status="needs-setup",
-            reason="the QEMU system emulator was not found",
+            reason=f"the QEMU system emulator was not found ({speed})",
             remedy=_QEMU_INSTALL,
         )
     return ModeSupport(
         mode=MODE_VM_TCG,
         status="supported",
-        reason=f"QEMU installed; software emulation (~5-20x slower, no KVM needed) — {_BUILD_HINT}",
+        reason=f"QEMU installed; {speed} — {_BUILD_HINT}",
         remedy="",
     )
 
@@ -263,6 +311,7 @@ def classify_modes(  # noqa: PLR0913  # each keyword-only param is a distinct ho
     docker: bool,
     docker_daemon: bool,
     adb_present: bool,
+    host_is_x86_64: bool,
 ) -> list[ModeSupport]:
     """
     Fold the raw host probes into the per-mode support matrix.
@@ -278,14 +327,20 @@ def classify_modes(  # noqa: PLR0913  # each keyword-only param is a distinct ho
         docker_daemon: Whether the Docker daemon answers ``docker info``
             (only meaningful when ``docker`` is ``True``).
         adb_present: Whether the ``adb`` client is on ``PATH``.
+        host_is_x86_64: Whether the host machine is the x86_64 guest arch. The
+            whole ``binder: vm`` stack (and the redroid image) is x86_64, so a
+            non-x86_64 host can never KVM-accelerate or natively run it — only
+            the cross-arch TCG path stays reachable (issue #190).
 
     Returns:
         One :class:`ModeSupport` per mode, in a stable display order.
     """
     return [
-        _redroid_host(binder, docker=docker, docker_daemon=docker_daemon),
-        _vm_kvm(kvm=kvm, qemu_present=qemu_present),
-        _vm_tcg(qemu_present=qemu_present),
+        _redroid_host(
+            binder, docker=docker, docker_daemon=docker_daemon, host_is_x86_64=host_is_x86_64
+        ),
+        _vm_kvm(kvm=kvm, qemu_present=qemu_present, host_is_x86_64=host_is_x86_64),
+        _vm_tcg(qemu_present=qemu_present, host_is_x86_64=host_is_x86_64),
         _adb_adopt(adb_present=adb_present),
     ]
 
@@ -309,7 +364,9 @@ def survey(settings: Settings | None = None) -> list[ModeSupport]:
     docker_present = shutil.which(cfg.docker_bin) is not None
     return classify_modes(
         binder=hostcheck.binder_status(),
-        # ``detect_accel("auto")`` returns "kvm" only when /dev/kvm is usable.
+        # ``detect_accel("auto")`` returns "kvm" only when /dev/kvm is usable
+        # AND the host is the x86_64 guest arch — on a foreign arch it resolves
+        # to "tcg" regardless of /dev/kvm, so this KVM probe reads False there.
         kvm=qemu.detect_accel("auto") == "kvm",
         qemu_present=shutil.which(cfg.qemu_bin) is not None,
         docker=docker_present,
@@ -318,4 +375,5 @@ def survey(settings: Settings | None = None) -> list[ModeSupport]:
         # the flag on the no-CLI path anyway.
         docker_daemon=docker_present and docker_daemon_responsive(),
         adb_present=shutil.which("adb") is not None,
+        host_is_x86_64=qemu.host_is_guest_arch(),
     )

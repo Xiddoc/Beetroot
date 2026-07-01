@@ -25,6 +25,7 @@ import contextlib
 import fcntl
 import hashlib
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -38,6 +39,7 @@ from pydantic import BaseModel, ConfigDict
 
 from . import capabilities, config, console, kernel_download, paths, rootfs_download
 from .settings import settings
+from .vm import qemu
 
 # The patcher CLI flag each GApps vendor needs. Keyed by the *resolved* vendor
 # (config.GappsVendor) rather than the user-facing intent, so the build matches
@@ -1459,6 +1461,25 @@ def vm_bake_preflight(*, redroid_tar: Path | None = None) -> list[PreflightProbl
     """
     cfg = _RootfsConfig.from_env(out_image=Path("preflight"), vm_dir=Path("preflight"))
     problems: list[PreflightProblem] = []
+    # The local bake is genuinely x86_64-only: it stages x86_64-linux-gnu libs,
+    # pins /lib64/ld-linux-x86-64.so.2, and ``cp``s arch/x86/boot/bzImage — all
+    # of which assume an x86_64 build host. A non-x86_64 host can't bake, but it
+    # CAN still *fetch* the prebuilt artifacts (which run under TCG cross-arch),
+    # so this is a bake-only problem, never a fetch-path one (issue #190).
+    if not qemu.host_is_guest_arch():
+        problems.append(
+            PreflightProblem(
+                requirement="x86_64 build host",
+                detail=(
+                    f"the local rootfs bake only runs on an x86_64 build host "
+                    f"(this host is {platform.machine()})"
+                ),
+                fix=(
+                    "fetch the prebuilt artifacts instead of forcing a local bake "
+                    "(the default `beetroot build --vm-kernel`), or bake on an x86_64 host"
+                ),
+            )
+        )
     for attr, pkg in _VM_STATIC_BINS:
         path: Path = getattr(cfg, attr)
         if not path.is_file():

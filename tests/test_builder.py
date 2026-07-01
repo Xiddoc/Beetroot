@@ -1735,6 +1735,7 @@ class TestVmBuildPreflight:
         which: object = None,
         daemon: bool = True,
         euid: int = 0,
+        machine: str = "x86_64",
     ) -> None:
         cfg = self._cfg(tmp_path, present=present)
         monkeypatch.setattr(builder._RootfsConfig, "from_env", lambda **_k: cfg)
@@ -1743,6 +1744,9 @@ class TestVmBuildPreflight:
         # The bake's root-privilege preflight (#231) — default to root so the
         # other branches stay isolated; root-specific tests override ``euid``.
         monkeypatch.setattr("beetroot.builder.os.geteuid", lambda: euid)
+        # The bake's host-arch preflight (#190) — default to the x86_64 guest arch
+        # so the other branches stay isolated; arch-specific tests override it.
+        monkeypatch.setattr("beetroot.builder.platform.machine", lambda: machine)
 
     def test_ready_host_has_no_problems(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1847,6 +1851,36 @@ class TestVmBuildPreflight:
         self._ready(monkeypatch, tmp_path, euid=0)
         names = [p.requirement for p in builder.vm_bake_preflight()]
         assert "root privilege" not in names
+
+    def test_non_x86_64_bake_preflight_reports_arch_problem(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # issue #190: the local bake is genuinely x86_64-only (x86_64-linux-gnu
+        # libs, /lib64/ld-linux-x86-64.so.2, arch/x86/boot/bzImage), so a foreign
+        # arch must surface a bake preflight problem.
+        self._ready(monkeypatch, tmp_path, machine="aarch64")
+        problems = builder.vm_bake_preflight()
+        arch = next(p for p in problems if p.requirement == "x86_64 build host")
+        assert "aarch64" in arch.detail
+        assert "prebuilt" in arch.fix
+
+    def test_x86_64_bake_preflight_has_no_arch_problem(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._ready(monkeypatch, tmp_path, machine="x86_64")
+        names = [p.requirement for p in builder.vm_bake_preflight()]
+        assert "x86_64 build host" not in names
+
+    def test_non_x86_64_fetch_preflight_has_no_arch_problem(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The fetch path works cross-arch under TCG, so the arch problem must
+        # NOT appear in vm_fetch_preflight (issue #190). curl/tar present so the
+        # fetch preflight is otherwise clean.
+        self._ready(monkeypatch, tmp_path, machine="aarch64")
+        names = [p.requirement for p in builder.vm_fetch_preflight()]
+        assert "x86_64 build host" not in names
+        assert names == []
 
 
 class TestBuildImageDaemonPreflight:
