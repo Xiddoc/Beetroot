@@ -185,7 +185,9 @@ def up(name: str, instance_root: Path) -> None:
         ComposeError: If compose exits with a non-zero status. The daemon's
             stderr tail is folded into the message (issue #276).
     """
-    res = run(name, instance_root, ["up", "-d"], capture_output=True, text=True)
+    # Capture stderr only (issue #276) so its tail can be folded into the error;
+    # stdout stays inherited so any compose progress streams to the terminal.
+    res = run(name, instance_root, ["up", "-d"], stderr=subprocess.PIPE, text=True)
     if res.returncode != 0:
         raise _lifecycle_error("up", name, res)
 
@@ -206,7 +208,8 @@ def down(name: str, instance_root: Path, *, volumes: bool = False) -> None:
     args = ["down"]
     if volumes:
         args.append("--volumes")
-    res = run(name, instance_root, args, capture_output=True, text=True)
+    # Capture stderr only (issue #276); stdout stays inherited (streams).
+    res = run(name, instance_root, args, stderr=subprocess.PIPE, text=True)
     if res.returncode != 0:
         raise _lifecycle_error("down", name, res)
 
@@ -232,7 +235,10 @@ def logs(name: str, instance_root: Path, follow: bool = False) -> None:
         # the live tail is visible; a non-zero (SIGINT) exit is expected.
         run(name, instance_root, [*args, "-f"])
         return
-    res = run(name, instance_root, args, capture_output=True, text=True)
+    # Non-follow: the logs are the deliverable and go to stdout, so stdout must
+    # stay inherited (streamed to the terminal). Capture stderr only so a
+    # failure still carries the daemon's reason (issue #276).
+    res = run(name, instance_root, args, stderr=subprocess.PIPE, text=True)
     if res.returncode != 0:
         raise _lifecycle_error("logs", name, res)
 
@@ -309,9 +315,12 @@ def build(name: str, instance_root: Path) -> None:
         instance_root: The instance directory.
 
     Raises:
-        ComposeError: If compose exits with a non-zero status. The daemon's
-            stderr tail is folded into the message (issue #276).
+        ComposeError: If compose exits with a non-zero status.
     """
-    res = run(name, instance_root, ["build"], capture_output=True, text=True)
+    # ``docker compose build`` is verbose and streams its progress (BuildKit
+    # writes to stderr), and it is the user-facing deliverable of the command,
+    # so it inherits stdio — capturing it would run the build silently. The
+    # error stays exit-code-only (the log was already on the terminal).
+    res = run(name, instance_root, ["build"])
     if res.returncode != 0:
-        raise _lifecycle_error("build", name, res)
+        raise ComposeError(f"`compose build` failed for {name} (exit {res.returncode})")

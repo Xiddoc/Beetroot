@@ -98,12 +98,15 @@ class TestUp:
             with pytest.raises(ComposeError, match="compose up"):
                 compose.up("alpha", tmp_path)
 
-    def test_up_captures_stderr_for_error_message(self, tmp_path: Path) -> None:
-        # #276: the failure surfaces the daemon's stderr, not just the exit code.
+    def test_up_captures_stderr_only_and_streams_stdout(self, tmp_path: Path) -> None:
+        # #276: capture stderr (so its tail can be folded into the error) but
+        # leave stdout inherited so compose progress still streams to the
+        # terminal — NOT capture_output=True (which would hide all output).
         with patch("subprocess.run", return_value=_ok_result()) as mock_run:
             compose.up("alpha", tmp_path)
-        assert mock_run.call_args.kwargs["capture_output"] is True
+        assert mock_run.call_args.kwargs["stderr"] is subprocess.PIPE
         assert mock_run.call_args.kwargs["text"] is True
+        assert "capture_output" not in mock_run.call_args.kwargs
 
     def test_up_folds_stderr_into_compose_error(self, tmp_path: Path) -> None:
         # #276: the raised message must carry the daemon's reason.
@@ -345,12 +348,15 @@ class TestLogs:
             with pytest.raises(ComposeError, match="no such service"):
                 compose.logs("alpha", tmp_path, follow=False)
 
-    def test_logs_non_follow_captures_stderr(self, tmp_path: Path) -> None:
-        # #276: non-follow mode captures stderr so it can be folded into errors.
+    def test_logs_non_follow_captures_stderr_only(self, tmp_path: Path) -> None:
+        # #276: non-follow mode captures stderr (for the error) but leaves
+        # stdout inherited — the logs themselves are on stdout and must stream
+        # to the terminal, so it must NOT use capture_output=True.
         with patch("subprocess.run", return_value=_ok_result()) as mock_run:
             compose.logs("alpha", tmp_path, follow=False)
-        assert mock_run.call_args.kwargs["capture_output"] is True
+        assert mock_run.call_args.kwargs["stderr"] is subprocess.PIPE
         assert mock_run.call_args.kwargs["text"] is True
+        assert "capture_output" not in mock_run.call_args.kwargs
 
     def test_logs_follow_does_not_capture_stderr(self, tmp_path: Path) -> None:
         # #276: follow mode must keep streaming to the terminal (inherit stdio),
@@ -378,12 +384,20 @@ class TestBuild:
             with pytest.raises(ComposeError, match="compose build"):
                 compose.build("alpha", tmp_path)
 
-    def test_build_folds_stderr_into_compose_error(self, tmp_path: Path) -> None:
-        # #276: the raised message must carry the daemon's build reason.
+    def test_build_streams_output_and_error_is_exit_code_only(self, tmp_path: Path) -> None:
+        # #276: `docker compose build` is verbose and its output is the
+        # deliverable, so build inherits stdio (no capture) and its output
+        # streams to the terminal. The error therefore stays exit-code-only —
+        # the build log was already visible on the terminal.
         stderr = "failed to solve: dockerfile parse error on line 3"
-        with patch("subprocess.run", return_value=_fail_result(1, stderr=stderr)):
-            with pytest.raises(ComposeError, match="dockerfile parse error"):
+        with patch("subprocess.run", return_value=_fail_result(1, stderr=stderr)) as mock_run:
+            with pytest.raises(ComposeError) as excinfo:
                 compose.build("alpha", tmp_path)
+        assert "capture_output" not in mock_run.call_args.kwargs
+        assert "stderr" not in mock_run.call_args.kwargs
+        # stderr is NOT folded in (it was never captured — it streamed live).
+        assert "dockerfile parse error" not in str(excinfo.value)
+        assert str(excinfo.value) == "`compose build` failed for alpha (exit 1)"
 
 
 class TestLifecycleErrorFormatting:
