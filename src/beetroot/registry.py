@@ -17,8 +17,11 @@ strongly-typed pydantic model that round-trips via
 ``adb``) are pre-registered; third-party backends register their own
 :class:`BackendConfigBase` subclass via :func:`register_backend_config`.
 An unknown ``kind`` is preserved as an opaque :class:`UnresolvedBackendConfig`
-that round-trips byte-for-byte — it is never silently wiped. Only a genuinely
-corrupt envelope (bad JSON / missing version) triggers ``.bak``-and-empty.
+that round-trips byte-for-byte — it is never silently wiped, and neither is a
+known-kind row whose backend payload is rejected (it too is preserved opaquely
+so its port index stays reserved). Only a genuinely corrupt envelope (bad JSON
+/ missing version) — or a row so broken it has no usable integer index —
+triggers ``.bak``-and-empty; a row is never silently dropped (#252).
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
@@ -56,6 +59,20 @@ _LEGACY_HINT_PRINTED = False
 class RegistryError(RuntimeError):
     """
     Raised on registry consistency errors (e.g. unknown name lookups).
+    """
+
+
+class RegistryRowError(RegistryError):
+    """
+    Raised when a single registry row is corrupt beyond opaque salvage.
+
+    A row that passes the envelope checks (valid JSON, ``version == 3``,
+    a dict ``backend`` sub-object) can still fail row-level validation —
+    for example a non-parseable ``created_at`` or a missing / non-integer
+    ``index``. Such a row cannot be preserved opaquely because there is no
+    usable integer index to keep reserved, so :func:`_read` surfaces it
+    loudly (via the envelope-corruption backup path) instead of silently
+    dropping it and handing its port index to the next ``create`` (#252).
     """
 
 
@@ -259,8 +276,28 @@ def _parse_backend_config(raw: dict[str, object]) -> BackendConfigBase:
     kind = kind_val if isinstance(kind_val, str) else ""
     cls = _BACKEND_CONFIG_REGISTRY.get(kind)
     if cls is None:
-        return UnresolvedBackendConfig(kind=kind, raw=raw)
+        return _opaque_backend(raw)
     return cls.model_validate(raw)
+
+
+def _opaque_backend(raw: dict[str, object]) -> UnresolvedBackendConfig:
+    """
+    Wrap a backend sub-dict opaquely, preserving it byte-for-byte.
+
+    Used both for genuinely unknown kinds (:func:`_parse_backend_config`)
+    and to salvage a known-kind row whose payload was rejected
+    (:func:`_parse_row`, #252). Either way the raw dict round-trips
+    verbatim so the row's port index stays reserved.
+
+    Args:
+        raw: The raw ``backend`` sub-dict from the registry JSON.
+
+    Returns:
+        An :class:`UnresolvedBackendConfig` carrying ``raw`` unchanged.
+    """
+    kind_val = raw.get("kind", "")
+    kind = kind_val if isinstance(kind_val, str) else ""
+    return UnresolvedBackendConfig(kind=kind, raw=raw)
 
 
 class InstanceMeta(BaseModel):
@@ -368,15 +405,106 @@ def _needs_legacy_migration(path: Path) -> bool:
     return version != SCHEMA_VERSION
 
 
+def _backup_and_warn(path: Path, reason: str) -> RegistryFile:
+    """
+    Rename a corrupt registry to ``<file>.bak`` and return a fresh empty one.
+
+    Shared by every envelope-corruption branch in :func:`_read` (bad
+    JSON, wrong schema version, and — since #252 — a row too broken to
+    salvage opaquely). The rename is racy under the shared reader lock,
+    so a concurrent reader that already backed the file up and removed
+    the source is treated as "already migrated": we return the same
+    empty registry the winning reader does rather than crashing an
+    innocuous read command.
+
+    Args:
+        path: The registry file to back up.
+        reason: A human-readable clause describing why the file was
+            rejected (spliced into the stderr hint).
+
+    Returns:
+        An empty :class:`RegistryFile`.
+    """
+    global _LEGACY_HINT_PRINTED  # noqa: PLW0603
+    backup = path.with_suffix(path.suffix + ".bak")
+    try:
+        path.rename(backup)
+    except FileNotFoundError:
+        return RegistryFile()
+    if not _LEGACY_HINT_PRINTED:
+        console.note(
+            f"registry at {path} {reason}; renamed to {backup.name}. "
+            f"Re-register your instances with `beetroot register <path>`."
+        )
+        _LEGACY_HINT_PRINTED = True
+    return RegistryFile()
+
+
+def _parse_row(meta_dict: dict[str, object]) -> InstanceMeta:
+    """
+    Validate one registry row, preserving a known-kind-but-invalid backend opaquely.
+
+    A row can fail :class:`InstanceMeta` validation for two very
+    different reasons, and they must not be conflated (#252):
+
+    * the **backend** sub-dict has a *known* ``kind`` but rejects
+      validation (e.g. a ``redroid`` row carrying a stray field). The
+      row is otherwise sound — it has a good ``index`` and
+      ``created_at`` — so it is salvaged by wrapping the backend in an
+      opaque :class:`UnresolvedBackendConfig`. The row loads, its index
+      stays reserved, and it round-trips byte-for-byte, exactly like an
+      unknown-kind row.
+    * the **meta** itself is unusable (bad / missing ``index`` or
+      ``created_at``). There is no integer index to keep reserved, so
+      the row cannot be salvaged; :class:`RegistryRowError` propagates
+      and :func:`_read` surfaces it via the loud backup-and-empty path
+      rather than silently dropping the row (which would free its port
+      index for reuse and delete it on the next write).
+
+    Args:
+        meta_dict: The raw per-instance dict from the registry JSON.
+
+    Returns:
+        A validated :class:`InstanceMeta`.
+
+    Raises:
+        RegistryRowError: If the row cannot be validated even after
+            opaquely preserving the backend.
+    """
+    # The caller (_read) has already checked ``backend`` is a dict.
+    backend_raw = cast("dict[str, object]", meta_dict["backend"])
+    try:
+        # ``_parse_backend_config`` validates a *known* kind against its
+        # model (which can raise) but wraps an *unknown* kind opaquely
+        # (which never raises). Either way, meta validation follows.
+        backend = _parse_backend_config(backend_raw)
+        return InstanceMeta.model_validate({**meta_dict, "backend": backend})
+    except Exception as first_exc:  # noqa: BLE001  # ValidationError et al.; salvage below or re-raise as RegistryRowError
+        # The failure is either a rejected known-kind backend payload or
+        # a meta-level defect. Re-wrap the backend opaquely (preserving
+        # it byte-for-byte) and retry: if the row now validates, the only
+        # defect was the backend and the row is salvaged with its index
+        # reserved; if it still fails, the meta itself (index /
+        # created_at) is unusable and the row is truly corrupt.
+        opaque = _opaque_backend(backend_raw)
+        try:
+            return InstanceMeta.model_validate({**meta_dict, "backend": opaque})
+        except Exception as second_exc:  # noqa: BLE001  # unsalvageable meta — surface loudly, never drop silently
+            raise RegistryRowError(str(second_exc)) from first_exc
+
+
 def _read(path: Path) -> RegistryFile:
     """
     Read and parse the registry, auto-handling legacy-schema migrations.
 
     Per-row validation uses :func:`_parse_backend_config` so an
     unknown ``kind`` is preserved as :class:`UnresolvedBackendConfig`
-    rather than triggering a file-level backup-and-empty. Only a
-    corrupt envelope (bad JSON / non-3 version) triggers the `.bak`
-    fallback. A single unknown-kind row NEVER wipes the file.
+    rather than triggering a file-level backup-and-empty. A known-kind
+    row whose backend payload is rejected is likewise preserved opaquely
+    so its port index stays reserved (#252). Only a corrupt envelope
+    (bad JSON / non-3 version) — or a row so broken it has no usable
+    integer index — triggers the `.bak` fallback. A single unknown-kind
+    (or opaquely-salvageable) row NEVER wipes the file.
 
     A v1 / v2 registry is renamed to ``<file>.bak`` and an empty v3
     registry is returned. The user must re-register their instances
@@ -385,7 +513,6 @@ def _read(path: Path) -> RegistryFile:
     a free-form dict that won't survive validation against
     :class:`InstanceMeta`).
     """
-    global _LEGACY_HINT_PRINTED  # noqa: PLW0603
     _check_v02_registry_at_cwd(path)
     if not path.exists():
         return RegistryFile()
@@ -393,51 +520,20 @@ def _read(path: Path) -> RegistryFile:
     try:
         raw = json.loads(raw_text)
     except (json.JSONDecodeError, ValueError):
-        backup = path.with_suffix(path.suffix + ".bak")
-        try:
-            path.rename(backup)
-        except FileNotFoundError:
-            # We hold only a shared lock, so a concurrent reader can have
-            # already backed the file up and removed the source out from
-            # under us. Treat that as "already migrated" and return the
-            # same empty registry the winning reader does, rather than
-            # crashing an innocuous read command.
-            return RegistryFile()
-        if not _LEGACY_HINT_PRINTED:
-            console.note(
-                f"registry at {path} could not be parsed as JSON; "
-                f"renamed to {backup.name}. "
-                f"Re-register your instances with "
-                f"`beetroot register <path>`."
-            )
-            _LEGACY_HINT_PRINTED = True
-        return RegistryFile()
+        return _backup_and_warn(path, "could not be parsed as JSON")
 
     # Version check: only v3 is supported; anything else triggers backup.
     version = raw.get("version") if isinstance(raw, dict) else None
     if version != SCHEMA_VERSION:
-        backup = path.with_suffix(path.suffix + ".bak")
-        try:
-            path.rename(backup)
-        except FileNotFoundError:
-            # Same shared-lock race as the unparseable-JSON branch above:
-            # a concurrent reader already backed up and removed the file.
-            # It is already migrated, so return the winning reader's empty
-            # registry instead of raising FileNotFoundError.
-            return RegistryFile()
-        if not _LEGACY_HINT_PRINTED:
-            console.note(
-                f"registry at {path} was schema "
-                f"v{version!r}; renamed to {backup.name}. "
-                f"Re-register your instances with "
-                f"`beetroot register <path>`."
-            )
-            _LEGACY_HINT_PRINTED = True
-        return RegistryFile()
+        return _backup_and_warn(path, f"was schema v{version!r}")
 
     # Parse per-row with open-union backend dispatch. Unknown kinds
     # become UnresolvedBackendConfig and are preserved — they do NOT
-    # wipe the file.
+    # wipe the file. A known-kind row whose backend payload is rejected
+    # is likewise preserved opaquely (index stays reserved). A row too
+    # broken to salvage (no usable integer index) is envelope-level
+    # corruption: surface it loudly via backup-and-empty rather than
+    # silently dropping it and freeing its port index for reuse (#252).
     instances: dict[str, InstanceMeta] = {}
     raw_instances = raw.get("instances", {})
     if not isinstance(raw_instances, dict):
@@ -449,14 +545,9 @@ def _read(path: Path) -> RegistryFile:
         if not isinstance(backend_raw, dict):
             continue
         try:
-            backend = _parse_backend_config(backend_raw)
-            # Validate the rest of the meta fields via pydantic,
-            # substituting the pre-parsed backend so it doesn't go
-            # through the closed union.
-            meta = InstanceMeta.model_validate({**meta_dict, "backend": backend})
-            instances[name] = meta
-        except Exception:  # noqa: BLE001, S112  # corrupt row (ValidationError, ValueError, etc.) — skip silently; the envelope is valid
-            continue
+            instances[name] = _parse_row(meta_dict)
+        except RegistryRowError:
+            return _backup_and_warn(path, f"has an unsalvageable row ({name!r})")
     return RegistryFile(instances=instances)
 
 

@@ -1030,8 +1030,12 @@ def inert_fields(cfg: InstanceConfig) -> list[str]:
     upstream redroid image (:func:`vm_redroid_image`) with no GApps / Magisk /
     Houdini / Frida layer, so the layered-image knobs (``android.gapps``,
     ``magisk.denylist``, ``modules``) and the whole ``frida:`` block are inert,
-    and only adb is forwarded so arbitrary ``ports:`` mappings are dropped
-    (issue #44/#108). ``binder: auto``/``host`` honour all of these → empty list.
+    only adb is forwarded so arbitrary ``ports:`` mappings are dropped
+    (issue #44/#108), and the ``display`` geometry is dropped because the VM's
+    ``guest-init.sh`` passes no ``redroid_width``/``height``/``fps`` props to
+    the guest (issue #264 — only flagged when ``display`` differs from the
+    default, so an all-defaults config stays quiet). ``binder: auto``/``host``
+    honour all of these → empty list.
 
     Args:
         cfg: The fully-loaded instance config to inspect.
@@ -1062,6 +1066,11 @@ def inert_fields(cfg: InstanceConfig) -> list[str]:
         inert.append(
             "modules (the guest runs plain redroid with no Magisk, so flashed "
             "modules are never applied)"
+        )
+    if cfg.display != Display():
+        inert.append(
+            "display (the vm guest-init passes no redroid_width/height/fps "
+            "props, so display geometry is inert under binder: vm)"
         )
     arbitrary = [m for m in cfg.ports if m.service not in WELL_KNOWN_SERVICES]
     if arbitrary:
