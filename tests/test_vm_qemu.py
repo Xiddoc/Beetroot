@@ -58,6 +58,57 @@ class TestDetectAccel:
         assert captured["mode"] == os.R_OK | os.W_OK
 
 
+class TestDetectAccelHostArch:
+    """issue #190: KVM cross-arch is impossible; the guard is arch-aware."""
+
+    def test_host_is_guest_arch_true_on_x86_64(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("beetroot.vm.qemu.platform.machine", lambda: "x86_64")
+        assert qemu.host_is_guest_arch() is True
+
+    def test_host_is_guest_arch_true_on_amd64_case_insensitive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("beetroot.vm.qemu.platform.machine", lambda: "AMD64")
+        assert qemu.host_is_guest_arch() is True
+
+    def test_host_is_guest_arch_false_on_arm(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("beetroot.vm.qemu.platform.machine", lambda: "aarch64")
+        assert qemu.host_is_guest_arch() is False
+
+    def test_explicit_kvm_raises_cross_arch_on_foreign_host_even_with_dev_kvm(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A foreign-arch host may have its own native /dev/kvm, but it can't
+        # accelerate the x86_64 guest — the cross-arch rejection precedes the
+        # /dev/kvm probe, so os.access must never be reached.
+        monkeypatch.setattr("beetroot.vm.qemu.platform.machine", lambda: "aarch64")
+
+        def _boom(*_a: object, **_k: object) -> bool:
+            raise AssertionError("cross-arch kvm must reject before probing /dev/kvm")
+
+        monkeypatch.setattr("beetroot.vm.qemu.os.access", _boom)
+        with pytest.raises(qemu.QemuLaunchError, match="cannot accelerate the x86_64") as exc:
+            qemu.detect_accel("kvm")
+        assert "aarch64" in str(exc.value)
+        assert "beetroot modes" in str(exc.value)
+
+    def test_auto_resolves_to_tcg_on_foreign_host_even_with_dev_kvm(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``auto`` on a foreign arch must be TCG regardless of a present, usable
+        # native /dev/kvm — KVM can't virtualize the x86_64 guest here.
+        monkeypatch.setattr("beetroot.vm.qemu.platform.machine", lambda: "aarch64")
+        monkeypatch.setattr("beetroot.vm.qemu.os.access", lambda *_a, **_k: True)
+        assert qemu.detect_accel("auto") == "tcg"
+
+    def test_x86_64_host_behavior_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # On x86_64 the /dev/kvm probe still decides, unchanged.
+        monkeypatch.setattr("beetroot.vm.qemu.platform.machine", lambda: "x86_64")
+        monkeypatch.setattr("beetroot.vm.qemu.os.access", lambda *_a, **_k: True)
+        assert qemu.detect_accel("auto") == "kvm"
+        assert qemu.detect_accel("kvm") == "kvm"
+
+
 # ---------------------------------------------------------------------------
 # build_qemu_argv
 # ---------------------------------------------------------------------------

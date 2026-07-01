@@ -28,6 +28,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
+import platform
 import signal
 import subprocess
 import time
@@ -37,6 +38,30 @@ from typing import Literal
 # Resolved accelerator — what QEMU is actually told to use, after folding
 # the configured ``auto``/``kvm``/``tcg`` against the live host probe.
 ResolvedAccel = Literal["kvm", "tcg"]
+
+# The ``platform.machine()`` values that name the x86_64 guest architecture the
+# entire ``binder: vm`` stack is built for (``qemu-system-x86_64``, the guest
+# bzImage/rootfs, the x86_64 redroid image). The single source of truth for
+# "is this host the guest arch?", reused by :mod:`beetroot.capabilities` and
+# :mod:`beetroot.builder` so the literal isn't re-spelled per call site.
+GUEST_ARCH_MACHINES: frozenset[str] = frozenset({"x86_64", "amd64"})
+
+
+def host_is_guest_arch() -> bool:
+    """
+    Return True iff this host's machine is the x86_64 guest architecture.
+
+    The ``binder: vm`` guest is hard-x86_64, so KVM (which can only virtualize
+    the host's *native* arch) can accelerate it only when the host itself is
+    x86_64. A non-x86_64 host can still boot the guest under TCG (full software
+    emulation, cross-arch), just slower.
+
+    Returns:
+        ``True`` when ``platform.machine()`` is one of
+        :data:`GUEST_ARCH_MACHINES`, else ``False``.
+    """
+    return platform.machine().lower() in GUEST_ARCH_MACHINES
+
 
 # The guest-side ADB port redroid listens on. The user-net ``hostfwd`` maps
 # this to a per-instance host port so ``adb connect localhost:<host>`` reaches
@@ -73,7 +98,14 @@ def _dev_kvm_usable() -> bool:
 
 def detect_accel(requested: Literal["auto", "kvm", "tcg"]) -> ResolvedAccel:
     """
-    Resolve the configured accelerator against the live ``/dev/kvm`` probe.
+    Resolve the configured accelerator against the host arch + ``/dev/kvm`` probe.
+
+    KVM can only virtualize the host's *native* architecture, and the
+    ``binder: vm`` guest is hard-x86_64, so on a non-x86_64 host KVM can never
+    accelerate the guest (:func:`host_is_guest_arch`) — an explicit ``kvm``
+    there is a hard cross-arch error and ``auto`` resolves straight to ``tcg``
+    regardless of ``/dev/kvm``. On an x86_64 host the live ``/dev/kvm`` probe
+    decides.
 
     Args:
         requested: The configured ``vm.accel`` value (``auto`` / ``kvm`` /
@@ -83,11 +115,28 @@ def detect_accel(requested: Literal["auto", "kvm", "tcg"]) -> ResolvedAccel:
         ``"kvm"`` or ``"tcg"`` — the concrete accelerator to pass to QEMU.
 
     Raises:
-        QemuLaunchError: If ``requested`` is ``"kvm"`` but ``/dev/kvm`` is
-            absent or not read/writable. The expensive TCG path is never
-            silently substituted for an explicit KVM request.
+        QemuLaunchError: If ``requested`` is ``"kvm"`` but this host cannot
+            accelerate the x86_64 guest — either the host arch is not x86_64
+            (cross-arch, no setup would fix it) or ``/dev/kvm`` is absent or
+            not read/writable. The expensive TCG path is never silently
+            substituted for an explicit KVM request.
     """
     if requested == "tcg":
+        return "tcg"
+    # KVM cross-arch is physically impossible: an x86_64 guest can't be KVM-
+    # accelerated on, say, an arm64 host. Rule it out before the /dev/kvm probe
+    # so a foreign-arch host with a stray /dev/kvm (its own native KVM) isn't
+    # mistaken for a usable guest accelerator.
+    if not host_is_guest_arch():
+        if requested == "kvm":
+            raise QemuLaunchError(
+                f"vm.accel: kvm was requested but KVM cannot accelerate the x86_64 "
+                f"micro-VM guest on a {platform.machine()!r} host — KVM only "
+                "virtualizes the host's native architecture. Use accel: tcg (slow, "
+                "cross-arch software emulation) or accel: auto (auto-falls back to "
+                "tcg here). Run `beetroot modes` to see what this host supports."
+            )
+        # ``auto`` on a foreign arch: TCG is the only reachable path, never KVM.
         return "tcg"
     if requested == "kvm":
         if not _dev_kvm_usable():

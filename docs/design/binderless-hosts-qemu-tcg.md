@@ -387,7 +387,14 @@ expensive step.
 5. **KVM fast path** — ✅ done (issue #44): `detect_accel` probes
    `/dev/kvm` (read+write) and prefers `-accel kvm` (`-cpu host`); `auto`
    falls back to TCG, an explicit `kvm` request on a host without `/dev/kvm`
-   errors loudly.
+   errors loudly. The whole guest stack is x86_64, and KVM only virtualizes
+   the host's **native** architecture, so `detect_accel` is host-arch-aware
+   (issue #190): on a non-x86_64 host an explicit `kvm` is a cross-arch error
+   and `auto` resolves to TCG regardless of `/dev/kvm` (a stray native
+   `/dev/kvm` can't accelerate the x86_64 guest). `beetroot modes` reports the
+   KVM path — and the native `binder: host/auto` redroid path — as
+   `unsupported` on a non-x86_64 host, while the TCG path stays reachable
+   cross-arch (even slower).
 
 ### Usage
 
