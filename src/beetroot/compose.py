@@ -20,10 +20,26 @@ import shutil
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 from . import paths
 from .settings import settings
+
+# Bounded deadline for the read-only ``docker compose ps`` probe. A wedged
+# (reachable-but-unresponsive) daemon or an unresponsive TCP ``DOCKER_HOST``
+# would otherwise make ``ps_status`` — and every verb that reads it (``ls``,
+# ``status``, ``doctor``) — hang forever. Mirrors ``builder._DOCKER_INFO_TIMEOUT``.
+_PS_STATUS_TIMEOUT: Final[int] = 20
+
+# Lowercased stderr markers the Docker CLI emits when the daemon is
+# unreachable. The CLI uses more than one phrasing — ``cannot connect to the
+# docker daemon`` (default socket) and ``failed to connect to the docker API
+# at ...`` (custom/rootless socket via ``DOCKER_HOST``) — so we match a
+# family of substrings rather than a single exact string.
+_DAEMON_UNREACHABLE_MARKERS: Final[tuple[str, ...]] = (
+    "cannot connect to the docker daemon",
+    "failed to connect to the docker",
+)
 
 # Closed enum of the strings ``ps_status`` may return. The compose
 # subcommand reports a free-form ``State`` field; this enum gates every
@@ -201,7 +217,9 @@ def ps_status(name: str, instance_root: Path) -> ComposeStatus:
     Queries ``docker compose ps --format json`` live; never reads from
     cache. Distinguishes "docker daemon unreachable" from "not-created"
     so callers (``beetroot doctor``, ``ls --json``) can give a precise
-    diagnostic.
+    diagnostic. The probe is bounded by :data:`_PS_STATUS_TIMEOUT`: a
+    wedged-but-reachable daemon (or an unresponsive TCP ``DOCKER_HOST``)
+    degrades to ``"docker-unreachable"`` instead of hanging the verb.
 
     Args:
         name: Instance name.
@@ -220,17 +238,21 @@ def ps_status(name: str, instance_root: Path) -> ComposeStatus:
             ["ps", "--format", "json"],
             capture_output=True,
             text=True,
+            timeout=_PS_STATUS_TIMEOUT,
         )
-    except ComposeError:
-        # ``_ensure_docker`` raised — docker binary not on PATH.
+    except (ComposeError, subprocess.TimeoutExpired):
+        # ``ComposeError``: ``_ensure_docker`` raised — docker binary not on
+        # PATH. ``TimeoutExpired``: a reachable-but-wedged daemon, or a TCP
+        # ``DOCKER_HOST`` that accepts the connection but never answers. Both
+        # degrade gracefully rather than block ``ls``/``status``/``doctor``.
         return "docker-unreachable"
     if res.returncode != 0:
         # Non-zero is most commonly "no such project" → not created.
-        # We could distinguish "daemon not running" via stderr scraping,
-        # but that's fragile; map to docker-unreachable only when
-        # compose stderr explicitly reports it.
+        # A daemon-unreachable failure is distinguished by scraping stderr
+        # for any of the CLI's connection-failure phrasings; everything
+        # else is treated as a missing project.
         stderr = (res.stderr or "").lower()
-        if "cannot connect to the docker daemon" in stderr:
+        if any(marker in stderr for marker in _DAEMON_UNREACHABLE_MARKERS):
             return "docker-unreachable"
         return "not-created"
     if not res.stdout.strip():
