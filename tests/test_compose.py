@@ -227,6 +227,35 @@ class TestPsStatus:
         monkeypatch.setattr(shutil, "which", lambda name: None)
         assert compose.ps_status("alpha", tmp_path) == "docker-unreachable"
 
+    def test_failed_to_connect_api_phrasing_is_docker_unreachable(self, tmp_path: Path) -> None:
+        # #178: a custom/rootless socket via DOCKER_HOST fails with the
+        # "failed to connect to the docker API at ..." phrasing, which lacks
+        # the "cannot connect to the docker daemon" substring. It must still
+        # map to ``docker-unreachable`` (not the misleading ``not-created``).
+        stderr = (
+            "failed to connect to the docker API at unix:///tmp/missing.sock; "
+            "check if the path is correct and if the daemon is running"
+        )
+        res = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=stderr)
+        with patch("subprocess.run", return_value=res):
+            assert compose.ps_status("alpha", tmp_path) == "docker-unreachable"
+
+    def test_timeout_returns_docker_unreachable(self, tmp_path: Path) -> None:
+        # #178: a reachable-but-wedged daemon (or an unresponsive TCP
+        # DOCKER_HOST) must degrade to ``docker-unreachable`` rather than
+        # hang the verb forever.
+        with patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="docker compose ps", timeout=1),
+        ):
+            assert compose.ps_status("alpha", tmp_path) == "docker-unreachable"
+
+    def test_ps_status_passes_bounded_timeout(self, tmp_path: Path) -> None:
+        # The read-only probe must be bounded so ls/status/doctor can't hang.
+        with patch("subprocess.run", return_value=_ok_result("")) as mock_run:
+            compose.ps_status("alpha", tmp_path)
+        assert mock_run.call_args.kwargs["timeout"] == compose._PS_STATUS_TIMEOUT
+
 
 class TestComposeError:
     def test_is_runtime_error(self) -> None:
