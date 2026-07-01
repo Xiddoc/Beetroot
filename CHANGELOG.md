@@ -630,6 +630,10 @@
   are absent), so shell regressions are caught locally before the push.
 
 ### Bug fixes
+- **`registry._read()` no longer silently drops an instance row that fails row-level validation (#252).** A row with a known backend kind but a rejected payload is now preserved opaquely so its port index stays reserved and it round-trips; a row too broken to salvage (bad `created_at`, missing/non-int index) is surfaced loudly (backed up to `.bak` with a hint) instead of being dropped and having its index silently reused.
+- **`create`/`register` now refuse a directory that nests inside — or contains — another registered instance (#255).** Previously the overlap guard existed only for `restore`, so a nested `create` could later be wiped out by a `destroy` of the outer instance. The guard runs before any `mkdir`/registry write, so a refused operation is a no-op.
+- **`beetroot adopt <IP:port>` (the help's own example) now auto-derives a valid instance name (#257).** `_adopt_default_name` collapses every non-alphanumeric run (including the dots in an IP) to a hyphen, so a network serial no longer fails the name-grammar guard and demands `--name`.
+- **`binder: vm` now warns once at `apply` time that a customized `display` (width/height/fps) is inert (#264).** The vm guest ignores those props; the advisory joins the existing gapps/denylist/modules inert notes (an all-defaults `display` stays quiet).
 - **Fixed a `KeyError: 'frida'` crash on a Frida-less `ports:` config (#158).** It took down `ls`/`status`/`doctor`/`frida-addr` (and the whole-fleet `ls`); `frida_address` now returns the `unsupported` sentinel like the vm backend.
 - **The cross-instance host-port collision check runs inside the exclusive registry lock (#183).** Two concurrent `apply`/`create` operations pinning the same `host:` port can no longer both pass and double-bind at `up`.
 - **`beetroot apply` no longer wipes a working `frida-server` to an empty placeholder before re-downloading (#165).** A failed cache-miss re-fetch leaves the prior binary intact (staged via temp + atomic replace).

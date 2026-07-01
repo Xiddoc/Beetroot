@@ -197,6 +197,41 @@ class TestInstanceCreate:
         if bad:
             assert not (cli_root / bad).exists()
 
+    def test_create_into_descendant_of_registered_dir_raises(self, cli_root: Path) -> None:
+        # #255: a create whose target NESTS INSIDE a registered peer's dir must
+        # be refused — a later `destroy alpha` would rmtree the nested bravo.
+        api.Instance.create("alpha", path=cli_root / "alpha")
+        with pytest.raises(ValueError, match="overlaps the registered directory"):
+            api.Instance.create("bravo", path=cli_root / "alpha" / "sub" / "bravo")
+        # Refused before any side effect: no registry row, no dir created.
+        assert registry.get("bravo") is None
+        assert not (cli_root / "alpha" / "sub").exists()
+
+    def test_create_into_ancestor_of_registered_dir_raises(self, cli_root: Path) -> None:
+        # #255: a create whose target CONTAINS a registered peer's dir must be
+        # refused too — `destroy bravo` (the outer) would rmtree the inner alpha.
+        api.Instance.create("alpha", path=cli_root / "outer" / "inner" / "alpha")
+        with pytest.raises(ValueError, match="overlaps the registered directory"):
+            api.Instance.create("bravo", path=cli_root / "outer")
+        assert registry.get("bravo") is None
+
+    def test_create_non_overlapping_sibling_still_works(self, cli_root: Path) -> None:
+        # The guard must NOT reject a genuinely disjoint sibling dir.
+        api.Instance.create("alpha", path=cli_root / "alpha")
+        bravo = api.Instance.create("bravo", path=cli_root / "bravo")
+        assert bravo.name == "bravo"
+        assert registry.get("bravo") is not None
+
+    def test_create_ignores_adb_rows_in_overlap_scan(self, cli_root: Path) -> None:
+        # #255: adb rows carry a serial, not a path, so the overlap scan must
+        # skip them — a create must not trip over a registered adb device.
+        registry.add_allocating(
+            "phone", backend=registry.AdbBackendConfig(serial="emulator-5554")
+        )
+        inst = api.Instance.create("alpha", path=cli_root / "alpha")
+        assert inst.name == "alpha"
+        assert registry.get("alpha") is not None
+
 
 # ---------------------------------------------------------------------------
 # Instance.register
@@ -258,6 +293,34 @@ class TestInstanceRegister:
         config.write_yaml(target / "beetroot.yaml", config.InstanceConfig())
         with pytest.raises(ValueError, match="instance name"):
             api.Instance.register(target)
+
+    def test_register_descendant_of_registered_dir_raises(self, cli_root: Path) -> None:
+        # #255: adopting a dir nested inside a registered peer must be refused.
+        api.Instance.create("alpha", path=cli_root / "alpha")
+        nested = cli_root / "alpha" / "sub" / "bravo"
+        nested.mkdir(parents=True)
+        config.write_yaml(nested / "beetroot.yaml", config.InstanceConfig())
+        with pytest.raises(ValueError, match="overlaps the registered directory"):
+            api.Instance.register(nested, name="bravo")
+        assert registry.get("bravo") is None
+
+    def test_register_ancestor_of_registered_dir_raises(self, cli_root: Path) -> None:
+        # #255: adopting a dir that CONTAINS a registered peer must be refused.
+        api.Instance.create("alpha", path=cli_root / "outer" / "inner" / "alpha")
+        outer = cli_root / "outer"
+        config.write_yaml(outer / "beetroot.yaml", config.InstanceConfig())
+        with pytest.raises(ValueError, match="overlaps the registered directory"):
+            api.Instance.register(outer, name="bravo")
+        assert registry.get("bravo") is None
+
+    def test_register_non_overlapping_sibling_still_works(self, cli_root: Path) -> None:
+        api.Instance.create("alpha", path=cli_root / "alpha")
+        target = cli_root / "bravo"
+        target.mkdir()
+        config.write_yaml(target / "beetroot.yaml", config.InstanceConfig())
+        inst = api.Instance.register(target, name="bravo")
+        assert inst.name == "bravo"
+        assert registry.get("bravo") is not None
 
 
 # ---------------------------------------------------------------------------

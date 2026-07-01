@@ -1170,6 +1170,31 @@ class TestInertFields:
         inert = config.inert_fields(cfg)
         assert any("arbitrary ports" in entry for entry in inert)
 
+    def test_inert_fields_customized_display_flagged(self) -> None:
+        # issue #264: a vm config with a non-default display geometry is inert.
+        cfg = config.InstanceConfig(
+            binder="vm",
+            android={"gapps": "none"},  # type: ignore[arg-type]
+            display=config.Display(width=1080, height=1920, fps=60),
+        )
+        inert = config.inert_fields(cfg)
+        assert any(entry.startswith("display ") for entry in inert)
+
+    def test_inert_fields_default_display_not_flagged(self) -> None:
+        # issue #264: an all-defaults vm config does NOT warn about display.
+        cfg = config.InstanceConfig(binder="vm", android={"gapps": "none"})  # type: ignore[arg-type]
+        assert cfg.display == config.Display()
+        assert config.inert_fields(cfg) == []
+
+    def test_inert_fields_display_honored_on_redroid(self) -> None:
+        # issue #264: display geometry is honored on the redroid backend, so a
+        # customized display yields no inert entry there.
+        cfg = config.InstanceConfig(
+            binder="host",
+            display=config.Display(width=1080, height=1920, fps=60),
+        )
+        assert config.inert_fields(cfg) == []
+
 
 class TestWaitForAdbConnect:
     def _connect_result(self, *, ok: bool) -> subprocess.CompletedProcess[str]:

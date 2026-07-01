@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from collections.abc import Sequence
@@ -426,10 +427,14 @@ def _adopt_default_name(serial: str) -> str:
     """
     Derive a deterministic default registry name from an adb serial.
 
-    The shape is ``adb-<serial-with-colons-and-underscores-as-hyphens>``,
+    The shape is ``adb-<serial-with-non-alnum-runs-as-hyphens>``,
     lowercased, truncated to 24 chars total so the result always fits
-    inside the Docker compose project-name grammar
-    (``[a-z0-9_-]+``) and feels reasonable at the CLI. Truncation is
+    inside the ``_INSTANCE_NAME_RE`` grammar (``[a-z0-9_-]+``) and
+    feels reasonable at the CLI. Every character outside ``[a-z0-9]``
+    — colons, dots (IPv4-shaped serials like ``192.168.1.10:5555``),
+    underscores, and any other punctuation — collapses to a single
+    hyphen, so the help's own ``<IP:port>`` example derives a valid
+    name instead of failing the grammar guard. Truncation is
     deterministic — a user who runs ``beetroot adopt <long-serial>``
     twice gets the same name both times — so collision detection in
     the registry produces a friendly "already exists" error rather
@@ -441,7 +446,7 @@ def _adopt_default_name(serial: str) -> str:
     Returns:
         A registry name guaranteed to match ``_INSTANCE_NAME_RE``.
     """
-    munged = serial.replace(":", "-").replace("_", "-").lower()
+    munged = re.sub(r"[^a-z0-9]+", "-", serial.lower())
     candidate = f"adb-{munged}"[:24]
     return candidate.rstrip("-") or "adb-device"
 

@@ -89,18 +89,25 @@ class TestAdoptVerb:
         assert isinstance(meta.backend, registry.AdbBackendConfig)
         assert meta.backend.serial == "emulator-5554"
 
-    def test_adopt_with_network_serial_requires_explicit_name(
+    def test_adopt_with_network_serial_auto_derives_valid_name(
         self,
         isolated_registry: Path,
     ) -> None:
-        # IPv4-shaped serials like ``192.168.1.10:5555`` contain dots,
-        # which the [a-z0-9_-]+ grammar rejects. The CLI surfaces a
-        # friendly "pass --name" error rather than half-registering
-        # the row.
-        result = runner.invoke(cli.app, ["adopt", "192.168.1.10:5555"])
-        assert result.exit_code != 0
-        assert "invalid" in result.stderr.lower()
-        assert "--name" in result.stderr
+        # #257: IPv4-shaped serials like ``192.168.1.10:5555`` (the
+        # help's own example) contain dots and a colon. The default
+        # name builder collapses every non-alnum run to a hyphen, so
+        # adopt succeeds with no --name and the derived name satisfies
+        # the [a-z0-9_-]+ grammar rather than half-registering the row.
+        serial = "192.168.1.10:5555"
+        derived = cli._adopt_default_name(serial)
+        assert cli._INSTANCE_NAME_RE.fullmatch(derived)
+
+        result = runner.invoke(cli.app, ["adopt", serial])
+        assert result.exit_code == 0, result.stderr
+        meta = registry.get(derived)
+        assert meta is not None
+        assert isinstance(meta.backend, registry.AdbBackendConfig)
+        assert meta.backend.serial == serial
 
     def test_adopt_with_network_serial_and_explicit_name(
         self,
@@ -502,10 +509,16 @@ class TestDefaultNameBuilder:
         assert cli._adopt_default_name("ABCD1234") == "adb-abcd1234"
 
     def test_colons_become_hyphens(self) -> None:
-        # ``192.168.1.10:5555`` → colons → hyphens; dots remain (the
-        # caller must pass --name for IPv4-shaped serials).
         out = cli._adopt_default_name("ip:5555")
         assert out == "adb-ip-5555"
+
+    def test_dots_become_hyphens(self) -> None:
+        # #257: dots (IPv4-shaped serials) collapse to hyphens too, so
+        # the derived name matches the [a-z0-9_-]+ grammar with no
+        # --name required.
+        out = cli._adopt_default_name("192.168.1.10:5555")
+        assert out == "adb-192-168-1-10-5555"
+        assert cli._INSTANCE_NAME_RE.fullmatch(out)
 
     def test_truncated_to_24_chars(self) -> None:
         long_serial = "x" * 64

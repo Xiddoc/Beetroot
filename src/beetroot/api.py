@@ -603,8 +603,10 @@ class Instance:
 
         Raises:
             ValueError: If ``name`` is already in the registry, the resolved
-                ports collide with another instance, or ``lifecycle`` is passed
-                alongside an explicit ``cfg``.
+                ports collide with another instance, ``target_root`` overlaps
+                (nests inside or contains) another registered instance's
+                directory, or ``lifecycle`` is passed alongside an explicit
+                ``cfg``.
             FileExistsError: If ``path`` already contains a
                 ``beetroot.yaml`` (use :meth:`register` to adopt it).
         """
@@ -622,6 +624,11 @@ class Instance:
             raise FileExistsError(
                 f"{yaml_path} already exists — use Instance.register(path) to adopt it"
             )
+        # Refuse a target that nests inside (or contains) a registered peer's
+        # directory: a later ``destroy`` of the outer instance would ``rmtree``
+        # the inner one's live state (#255). Runs before any mkdir so a refused
+        # create leaves no debris.
+        _check_directory_overlap(name, target_root)
 
         effective_cfg = (
             cfg if cfg is not None else config.InstanceConfig(lifecycle=lifecycle or "durable")
@@ -698,8 +705,10 @@ class Instance:
 
         Raises:
             FileNotFoundError: If ``path`` has no ``beetroot.yaml``.
-            ValueError: If the chosen name is already registered, or if
-                the resolved ports collide with another instance.
+            ValueError: If the chosen name is already registered, if
+                ``path`` overlaps (nests inside or contains) another
+                registered instance's directory, or if the resolved ports
+                collide with another instance.
         """
         target_root = path.resolve()
         yaml_path = paths.instance_yaml(target_root)
@@ -709,6 +718,11 @@ class Instance:
         _validate_instance_name(resolved_name)
         if registry.get(resolved_name) is not None:
             raise ValueError(f"instance {resolved_name!r} already in registry")
+        # Refuse adopting a directory that nests inside (or contains) a
+        # registered peer's directory (#255) — same overlap guard as
+        # ``create``. Runs before the registry write so a refused adopt is a
+        # pure no-op.
+        _check_directory_overlap(resolved_name, target_root)
         cfg = config.load_yaml(yaml_path)
         # Atomic allocation + registration under one file lock. ``binder: vm``
         # registers the QEMU micro-VM backend kind (issue #44).
@@ -1568,6 +1582,52 @@ def _rollback_partial_create(name: str, target_root: Path, *, created_dir: bool)
     registry.remove(name)
     if created_dir and target_root.exists():
         shutil.rmtree(target_root)
+
+
+def _check_directory_overlap(name: str, target_root: Path) -> None:
+    """
+    Raise ``ValueError`` if ``target_root`` overlaps a registered instance's dir.
+
+    Mirrors the cross-instance overlap guard that
+    :func:`beetroot.snapshot._prepare_destination` enforces on restore, but
+    for the ``create`` / ``register`` registration paths (which previously had
+    no such guard). Iterates every directory-backed
+    (:class:`~beetroot.registry.RedroidBackendConfig` /
+    :class:`~beetroot.registry.VmBackendConfig`) registered instance and
+    refuses when ``target_root`` IS one, is an ANCESTOR of one, or is a
+    DESCENDANT of one — any of which would let a later ``destroy`` of the outer
+    instance ``rmtree`` the inner instance's live state (or vice versa).
+
+    Adb-backed rows carry a serial, not a path, so they can never overlap and
+    are skipped. Both callers run their own name-uniqueness check first, so
+    ``name`` is guaranteed absent from the registry here — the scan needs no
+    self-skip.
+
+    Args:
+        name: The name being registered (surfaced in the error message).
+        target_root: The resolved absolute instance directory to register.
+
+    Raises:
+        ValueError: If ``target_root`` equals, is a parent of, or is a child
+            of any directory-backed registered instance's resolved path.
+    """
+    for other_name, meta in registry.list_instances().items():
+        backend = meta.backend
+        if not isinstance(backend, (registry.RedroidBackendConfig, registry.VmBackendConfig)):
+            continue
+        reg_dir = Path(backend.absolute_path).resolve()
+        if (
+            reg_dir == target_root
+            or target_root in reg_dir.parents
+            or reg_dir in target_root.parents
+        ):
+            raise ValueError(
+                f"cannot register {name!r} at {target_root}: it overlaps the "
+                f"registered directory of instance {other_name!r} ({reg_dir}); "
+                f"refusing — a later `beetroot destroy` of either instance would "
+                f"delete the other's state. Pick a non-nested path, or "
+                f"`beetroot destroy {other_name}` first."
+            )
 
 
 def _check_port_collisions(name: str, new_ports: list[ports.ResolvedPort]) -> None:
