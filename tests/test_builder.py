@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from beetroot import builder, config, kernel_download, rootfs_download
+from beetroot import builder, capabilities, config, kernel_download, rootfs_download
 from beetroot.builder import (
     GAPPS_VENDOR_FLAGS,
     BootstrapError,
@@ -53,23 +53,18 @@ class FakeRunner:
             raise BootstrapError(f"fake failure on {self.fail_on} (exit {self.fail_exit})")
 
 
-# The real daemon-preflight callable, captured before the autouse fixture
-# below stubs the module attribute — so the few tests that exercise the real
-# implementation can restore it.
-_REAL_DAEMON_RESPONSIVE = builder._docker_daemon_responsive
-
-
 @pytest.fixture(autouse=True)
 def _daemon_up(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     Default the Docker-daemon preflight to "up" for every builder test.
 
     ``build_image`` grew a daemon preflight (#193); without this the daemonless
-    test host would short-circuit every existing build_image test. Tests that
-    exercise the daemon-down branch re-patch it to ``False`` themselves; tests
-    of the real probe restore :data:`_REAL_DAEMON_RESPONSIVE`.
+    test host would short-circuit every existing build_image test. The probe now
+    lives in :mod:`beetroot.capabilities` (issue #179), and builder calls it via
+    the module attribute, so patching it there covers every builder call site.
+    Tests that exercise the daemon-down branch re-patch it to ``False``.
     """
-    monkeypatch.setattr(builder, "_docker_daemon_responsive", lambda: True)
+    monkeypatch.setattr(capabilities, "docker_daemon_responsive", lambda: True)
 
 
 class TestGappsVendorFlags:
@@ -1715,33 +1710,6 @@ class TestSleepHelper:
         assert slept == [0.0]
 
 
-class TestDockerDaemonResponsive:
-    def test_true_when_info_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(builder, "_docker_daemon_responsive", _REAL_DAEMON_RESPONSIVE)
-        monkeypatch.setattr(
-            "beetroot.builder.subprocess.run",
-            lambda *_a, **_k: subprocess.CompletedProcess(args=[], returncode=0),
-        )
-        assert builder._docker_daemon_responsive() is True
-
-    def test_false_when_info_nonzero(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(builder, "_docker_daemon_responsive", _REAL_DAEMON_RESPONSIVE)
-        monkeypatch.setattr(
-            "beetroot.builder.subprocess.run",
-            lambda *_a, **_k: subprocess.CompletedProcess(args=[], returncode=1),
-        )
-        assert builder._docker_daemon_responsive() is False
-
-    def test_false_when_docker_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(builder, "_docker_daemon_responsive", _REAL_DAEMON_RESPONSIVE)
-
-        def _boom(*_a: object, **_k: object) -> object:
-            raise FileNotFoundError
-
-        monkeypatch.setattr("beetroot.builder.subprocess.run", _boom)
-        assert builder._docker_daemon_responsive() is False
-
-
 class TestVmBuildPreflight:
     def _cfg(self, tmp_path: Path, *, present: tuple[str, ...]) -> builder._RootfsConfig:
         # Build a _RootfsConfig whose static-binary paths point under tmp_path;
@@ -1771,7 +1739,7 @@ class TestVmBuildPreflight:
         cfg = self._cfg(tmp_path, present=present)
         monkeypatch.setattr(builder._RootfsConfig, "from_env", lambda **_k: cfg)
         monkeypatch.setattr("beetroot.builder.shutil.which", which or (lambda _n: "/usr/bin/found"))
-        monkeypatch.setattr(builder, "_docker_daemon_responsive", lambda: daemon)
+        monkeypatch.setattr(capabilities, "docker_daemon_responsive", lambda: daemon)
         # The bake's root-privilege preflight (#231) — default to root so the
         # other branches stay isolated; root-specific tests override ``euid``.
         monkeypatch.setattr("beetroot.builder.os.geteuid", lambda: euid)
@@ -1885,7 +1853,7 @@ class TestBuildImageDaemonPreflight:
     """issue #193: ``beetroot build`` runs a Docker-daemon preflight."""
 
     def test_daemon_down_raises_friendly_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(builder, "_docker_daemon_responsive", lambda: False)
+        monkeypatch.setattr(capabilities, "docker_daemon_responsive", lambda: False)
         runner = FakeRunner()
         with pytest.raises(BootstrapError, match="Docker daemon") as exc:
             build_image(runner=runner)
@@ -1894,7 +1862,7 @@ class TestBuildImageDaemonPreflight:
         assert runner.calls == []
 
     def test_daemon_up_proceeds_to_build(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(builder, "_docker_daemon_responsive", lambda: True)
+        monkeypatch.setattr(capabilities, "docker_daemon_responsive", lambda: True)
         runner = FakeRunner()
         build_image(runner=runner)
         # rm, clone, patch, build all run when the daemon is up.

@@ -111,7 +111,7 @@ They answer different questions and you'll use both:
 | Scope | the **host** | one **existing instance** |
 | When | *before* creating an instance / picking `binder` | *after* `up`, to debug a running instance |
 | Needs an instance? | No | Yes |
-| Answers | "what can this machine run?" | "is this instance healthy?" (adb, magisk, frida, `host.binder`, `vm.process`, `vm.accel`) |
+| Answers | "what can this machine run?" | "is this instance healthy?" (adb, magisk, frida, `host.binder`, `vm.process`, `vm.accel`, `vm.qemu`, `vm.artifacts`) |
 
 `doctor`'s `host.binder` row reports the same binder probe `modes` uses, but
 only in the context of a single instance; `modes` is the standalone,

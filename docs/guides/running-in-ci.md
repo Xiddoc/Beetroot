@@ -155,7 +155,8 @@ hosted runner (the Option A path above) in three tiers:
   is heavy and non-blocking while it's hardened.
 * **Tier-VM** builds the binder-enabled guest kernel + rootfs, boots redroid
   inside the `binder: vm` QEMU micro-VM, and drives it through the adb backend
-  (`ls` / `shell` / the `doctor` `vm.process` + `vm.accel` rows; Frida is
+  (`ls` / `shell` / the `doctor` `vm.process` + `vm.accel` + `vm.qemu` +
+  `vm.artifacts` + `adb.connect` rows; Frida is
   asserted to report its "not yet supported on the vm backend" message). On a
   GitHub-hosted runner there is no `/dev/kvm`, so it runs under TCG — a slow
   (~100 s+) but real boot. The kernel + rootfs build is the long pole.

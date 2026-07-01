@@ -28,13 +28,13 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
 
-from beetroot import builder, config, console, paths, ports, registry
+from beetroot import builder, capabilities, config, console, paths, ports, registry
 from beetroot.api import (
     FRIDA_ADDRESS_UNSUPPORTED,
     AdbNotInstalledError,
     BackendCapabilityError,
     InstanceNotFoundError,
-    adb_device_health,
+    _check_adb_connect,
 )
 from beetroot.backends import register_backend
 from beetroot.settings import settings
@@ -973,14 +973,27 @@ class VmDeviceBackend:
         """
         Aggregate the VM-backed health checks for this instance.
 
-        Includes a VM-specific ``vm.process`` row (is QEMU alive?) and a
-        ``vm.accel`` row (kvm vs the slow-tcg note), then the shared adb rows so
-        downstream tools grep uniformly across backend kinds. Three shared rows
-        are dropped because they can never pass on the network-isolated, plain
-        upstream redroid guest: ``frida.handshake`` (Frida is unsupported —
-        issue #44) and the ``magisk.*`` rows (the ``binder: vm`` guest boots an
-        unmodified redroid image with no Magisk — issue #163), so a permanent
-        ``fail`` row would be noise.
+        Emits VM-specific rows rather than reusing the shared adb health set,
+        which assumes a Magisk-flashed, USB-listed device the ``binder: vm``
+        guest is not:
+
+        * ``vm.process`` — is the QEMU micro-VM process alive?
+        * ``vm.accel`` — resolved accelerator (kvm vs the slow-tcg note).
+        * ``vm.qemu`` — is the QEMU emulator binary on ``PATH``? Without it the
+          VM can never boot (issue #191), so a green ``vm.accel`` alone is not
+          proof of readiness.
+        * ``vm.artifacts`` — do the configured guest kernel + rootfs exist on the
+          host? A missing artifact is a ``beetroot build --vm-kernel`` away
+          (issue #191).
+        * ``adb.connect`` — connect-then-verify against the forwarded loopback
+          adb port. A TCP adb target only appears *after* an explicit ``adb
+          connect``, so the USB-style always-listed ``adb.serial`` row false-
+          fails a healthy VM from a fresh adb-server lifetime (issue #164).
+
+        ``frida.handshake`` and the ``magisk.*`` rows are intentionally absent:
+        the network-isolated guest has no Frida (issue #44) and boots an
+        unmodified upstream redroid image with no Magisk (issue #163), so a
+        permanent ``fail`` row would be noise.
 
         Returns:
             Ordered dict of check name → :class:`CheckResult`.
@@ -995,15 +1008,60 @@ class VmDeviceBackend:
             else CheckResult(status="fail", reason="QEMU micro-VM is not running")
         )
         checks["vm.accel"] = _accel_check(self._cfg.vm.accel)
-        shared = adb_device_health(self)
-        shared.pop("frida.handshake", None)
-        # The guest runs plain redroid (no Magisk), so the magisk rows would be a
-        # permanent fail — drop them rather than mislead (issue #163).
-        for name in list(shared):
-            if name.startswith("magisk."):
-                shared.pop(name)
-        checks.update(shared)
+        checks["vm.qemu"] = self._qemu_binary_check()
+        checks["vm.artifacts"] = self._artifacts_check()
+        checks["adb.connect"] = _check_adb_connect(self.adb_address)
         return checks
+
+    def _qemu_binary_check(self) -> CheckResult:
+        """
+        Report whether the QEMU emulator binary is on ``PATH`` (issue #191).
+
+        ``CheckResult`` has no dedicated remedy field, so the fix pointer is
+        folded into the ``reason`` — reusing the shared
+        :data:`capabilities._QEMU_INSTALL` string so the doctor row matches what
+        ``beetroot modes`` prints.
+
+        Returns:
+            A ``pass`` row when ``settings.qemu_bin`` resolves, else a ``fail``
+            row (a VM whose emulator is missing can never boot).
+        """
+        from beetroot.api import CheckResult  # noqa: PLC0415  # avoid import cycle with api.py
+
+        if shutil.which(settings.qemu_bin) is not None:
+            return CheckResult(status="pass")
+        return CheckResult(
+            status="fail",
+            # Reuse the shared modes remedy verbatim (do not duplicate the literal).
+            reason=(
+                f"QEMU ({settings.qemu_bin}) not found on PATH — {capabilities._QEMU_INSTALL}"  # noqa: SLF001  # shared cross-module remedy string
+            ),
+        )
+
+    def _artifacts_check(self) -> CheckResult:
+        """
+        Report whether the guest kernel + rootfs artifacts exist (issue #191).
+
+        Resolves both artifacts through :func:`_resolve_artifact` (which raises
+        :class:`qemu.QemuLaunchError` when the file is unset or missing). A green
+        ``vm.accel`` alone would otherwise imply the VM can boot when the kernel
+        or rootfs has never been built. The ``QemuLaunchError`` message already
+        names the missing artifact and points at ``beetroot build --vm-kernel``.
+
+        Returns:
+            A ``pass`` row when both artifacts resolve, else a ``fail`` row whose
+            reason names the missing artifact (the resolver's own message already
+            points at ``beetroot build --vm-kernel``, matching
+            :data:`capabilities._BUILD_HINT`).
+        """
+        from beetroot.api import CheckResult  # noqa: PLC0415  # avoid import cycle with api.py
+
+        try:
+            _resolve_artifact(self._cfg.vm.kernel, settings.vm_kernel, "kernel")
+            _resolve_artifact(self._cfg.vm.rootfs, settings.vm_rootfs, "rootfs")
+        except qemu.QemuLaunchError as exc:
+            return CheckResult(status="fail", reason=str(exc))
+        return CheckResult(status="pass")
 
 
 def _accel_check(requested: Literal["auto", "kvm", "tcg"]) -> CheckResult:

@@ -36,7 +36,7 @@ from typing import IO, Final, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from . import config, console, kernel_download, paths, rootfs_download
+from . import capabilities, config, console, kernel_download, paths, rootfs_download
 from .settings import settings
 
 # The patcher CLI flag each GApps vendor needs. Keyed by the *resolved* vendor
@@ -313,7 +313,7 @@ def build_image(  # noqa: PLR0913  # 7 keyword-only params; each is a distinct i
     # Docker daemon, so fail fast with the same actionable remedy the bake path
     # uses instead of a generic ``command failed (exit 1)`` mid-build (issue
     # #193).
-    if not _docker_daemon_responsive():
+    if not capabilities.docker_daemon_responsive():
         raise BootstrapError(
             f"Docker daemon: `{settings.docker_bin} info` failed (daemon not running?) — "
             "start the daemon (e.g. `sudo systemctl start docker`)"
@@ -1405,23 +1405,6 @@ _VM_STATIC_BINS: Final[tuple[tuple[str, str], ...]] = (
     ("xtables_multi", "iptables"),
 )
 
-# Probe timeout for the ``docker info`` daemon check (seconds).
-_DOCKER_INFO_TIMEOUT: Final[int] = 20
-
-
-def _docker_daemon_responsive() -> bool:
-    """Return ``True`` iff the host Docker daemon answers ``docker info``."""
-    try:
-        result = subprocess.run(  # noqa: S603  # docker bin from settings; fixed argv
-            [settings.docker_bin, "info"],
-            check=False,
-            capture_output=True,
-            timeout=_DOCKER_INFO_TIMEOUT,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
-
 
 def vm_fetch_preflight() -> list[PreflightProblem]:
     """
@@ -1532,7 +1515,7 @@ def vm_bake_preflight(*, redroid_tar: Path | None = None) -> list[PreflightProbl
                 fix="install Docker Engine (apt-get install docker.io)",
             )
         )
-    elif not _docker_daemon_responsive():
+    elif not capabilities.docker_daemon_responsive():
         problems.append(
             PreflightProblem(
                 requirement="Docker daemon",

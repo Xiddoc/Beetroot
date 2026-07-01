@@ -203,7 +203,7 @@ uv run beetroot logs alpha    # follow Android init → sys.boot_completed=1
 Once it reports boot completion, confirm the instance is healthy:
 
 ```bash
-uv run beetroot doctor alpha  # adb, magisk, frida, plus the vm.process / vm.accel rows
+uv run beetroot doctor alpha  # vm.process / vm.accel / vm.qemu / vm.artifacts / adb.connect rows
 uv run beetroot shell alpha   # interactive shell on the guest
 ```
 

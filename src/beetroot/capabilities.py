@@ -27,12 +27,44 @@ and delegates to it.
 from __future__ import annotations
 
 import shutil
+import subprocess
 
 from pydantic import BaseModel, ConfigDict
 
 from . import hostcheck
-from .settings import Settings
+from .settings import Settings, settings
 from .vm import qemu
+
+# Probe timeout for the ``docker info`` daemon check (seconds).
+_DOCKER_INFO_TIMEOUT = 20
+
+
+def docker_daemon_responsive() -> bool:
+    """
+    Return ``True`` iff the host Docker daemon answers ``docker info``.
+
+    A ``shutil.which(docker_bin)`` presence probe only proves the *CLI* is
+    installed — it says nothing about whether ``dockerd`` is actually running.
+    Anything that needs to *launch* a container (a redroid boot, a
+    ``beetroot build``) must probe daemon liveness with ``docker info`` (issues
+    #179 / #193), so this lives here as the single shared probe rather than a
+    per-caller duplicate.
+
+    Returns:
+        ``True`` iff ``docker info`` exits 0 within
+        :data:`_DOCKER_INFO_TIMEOUT` seconds.
+    """
+    try:
+        result = subprocess.run(  # noqa: S603  # docker bin from settings; fixed argv
+            [settings.docker_bin, "info"],
+            check=False,
+            capture_output=True,
+            timeout=_DOCKER_INFO_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
 
 # Per-mode verdict (the ``status`` field of :class:`ModeSupport`):
 #
@@ -79,27 +111,44 @@ class ModeSupport(BaseModel):
     remedy: str
 
 
-def _redroid_host(binder: hostcheck.BinderStatus, *, docker: bool) -> ModeSupport:
+def _redroid_host(
+    binder: hostcheck.BinderStatus, *, docker: bool, docker_daemon: bool
+) -> ModeSupport:
     """
     Classify the ``redroid`` backend on the host-binder path.
 
     Args:
         binder: The probed host binder capability.
         docker: Whether the Docker CLI is on ``PATH``.
+        docker_daemon: Whether the Docker *daemon* answers ``docker info``.
+            Only meaningful when ``docker`` is ``True`` (there's no daemon to
+            probe without the CLI).
 
     Returns:
         The :class:`ModeSupport` verdict for ``binder: host`` / ``auto``.
     """
     if binder.state == "ready":
-        if docker:
+        if not docker:
             return ModeSupport(
-                mode=MODE_REDROID_HOST, status="supported", reason=binder.reason, remedy=""
+                mode=MODE_REDROID_HOST,
+                status="needs-setup",
+                reason="host binder is ready, but the Docker CLI was not found",
+                remedy="install Docker and ensure the daemon is running",
+            )
+        if not docker_daemon:
+            # The CLI is present but ``dockerd`` isn't answering — redroid can't
+            # boot a container, so this is not "supported" (issue #179).
+            return ModeSupport(
+                mode=MODE_REDROID_HOST,
+                status="needs-setup",
+                reason=(
+                    "host binder is ready and the Docker CLI is present, but the "
+                    "Docker daemon is not responding"
+                ),
+                remedy="start the Docker daemon",
             )
         return ModeSupport(
-            mode=MODE_REDROID_HOST,
-            status="needs-setup",
-            reason="host binder is ready, but the Docker CLI was not found",
-            remedy="install Docker and ensure the daemon is running",
+            mode=MODE_REDROID_HOST, status="supported", reason=binder.reason, remedy=""
         )
     if binder.state == "loadable":
         return ModeSupport(
@@ -206,12 +255,13 @@ def _adb_adopt(*, adb_present: bool) -> ModeSupport:
     )
 
 
-def classify_modes(
+def classify_modes(  # noqa: PLR0913  # each keyword-only param is a distinct host probe
     *,
     binder: hostcheck.BinderStatus,
     kvm: bool,
     qemu_present: bool,
     docker: bool,
+    docker_daemon: bool,
     adb_present: bool,
 ) -> list[ModeSupport]:
     """
@@ -225,13 +275,15 @@ def classify_modes(
         kvm: Whether a usable ``/dev/kvm`` is present.
         qemu_present: Whether the QEMU system emulator is on ``PATH``.
         docker: Whether the Docker CLI is on ``PATH``.
+        docker_daemon: Whether the Docker daemon answers ``docker info``
+            (only meaningful when ``docker`` is ``True``).
         adb_present: Whether the ``adb`` client is on ``PATH``.
 
     Returns:
         One :class:`ModeSupport` per mode, in a stable display order.
     """
     return [
-        _redroid_host(binder, docker=docker),
+        _redroid_host(binder, docker=docker, docker_daemon=docker_daemon),
         _vm_kvm(kvm=kvm, qemu_present=qemu_present),
         _vm_tcg(qemu_present=qemu_present),
         _adb_adopt(adb_present=adb_present),
@@ -254,11 +306,16 @@ def survey(settings: Settings | None = None) -> list[ModeSupport]:
         The per-mode support matrix.
     """
     cfg = settings if settings is not None else Settings()
+    docker_present = shutil.which(cfg.docker_bin) is not None
     return classify_modes(
         binder=hostcheck.binder_status(),
         # ``detect_accel("auto")`` returns "kvm" only when /dev/kvm is usable.
         kvm=qemu.detect_accel("auto") == "kvm",
         qemu_present=shutil.which(cfg.qemu_bin) is not None,
-        docker=shutil.which(cfg.docker_bin) is not None,
+        docker=docker_present,
+        # The daemon probe only matters when the CLI is present — without it
+        # there's nothing to ask ``docker info``, and the classifier ignores
+        # the flag on the no-CLI path anyway.
+        docker_daemon=docker_present and docker_daemon_responsive(),
         adb_present=shutil.which("adb") is not None,
     )
