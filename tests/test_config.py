@@ -470,6 +470,44 @@ class TestResources:
             Resources(pids_limit=-5)
 
 
+class TestResourceMemoryOrdering:
+    """#267 — reject an inverted soft-floor / swap-cap against ``mem`` at load."""
+
+    def test_mem_reservation_above_mem_rejected(self) -> None:
+        # A soft floor above the hard cap fails opaquely at compose-up; catch it.
+        with pytest.raises(ValidationError, match="cannot exceed the hard resources"):
+            Resources(mem="1g", mem_reservation="2g")
+
+    def test_memswap_limit_below_mem_rejected(self) -> None:
+        # The total memory+swap cap must be >= the hard mem cap.
+        with pytest.raises(ValidationError, match="cannot be below the hard resources"):
+            Resources(mem="4g", memswap_limit="2g")
+
+    def test_mem_reservation_equal_to_mem_accepted(self) -> None:
+        # Equality is the boundary — a floor exactly at the cap is fine.
+        assert Resources(mem="2g", mem_reservation="2g").mem_reservation == "2g"
+
+    def test_memswap_limit_equal_to_mem_accepted(self) -> None:
+        assert Resources(mem="2g", memswap_limit="2g").memswap_limit == "2g"
+
+    def test_valid_ordering_across_suffixes_accepted(self) -> None:
+        # A floor below and a swap cap above the mem cap, expressed with mixed
+        # suffixes + bare bytes, all parse to bytes and pass.
+        r = Resources(mem="1g", mem_reservation="512m", memswap_limit="2147483648")
+        assert r.mem_reservation == "512m"
+        assert r.memswap_limit == "2147483648"
+
+    def test_memswap_unlimited_sentinel_accepted(self) -> None:
+        # ``-1`` means unlimited swap — never "below" mem, so it is skipped.
+        assert Resources(mem="8g", memswap_limit="-1").memswap_limit == "-1"
+
+    def test_unset_optionals_unaffected(self) -> None:
+        # The default (both None) never trips the ordering check.
+        r = Resources(mem="1g")
+        assert r.mem_reservation is None
+        assert r.memswap_limit is None
+
+
 class TestDisplayBounds:
     """D4 — Display fields must be > 0."""
 

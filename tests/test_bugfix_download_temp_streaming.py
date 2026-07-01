@@ -235,12 +235,17 @@ class TestKernelProcessUniqueTemp:
         out = tmp_path / "kernels" / "bzImage"
         digest = hashlib.sha256(b"kernel-bytes").hexdigest()
 
-        def _fake_fetch(url: str, description: str) -> bytes:
-            return digest.encode() if url.endswith(".sha256") else b"kernel-bytes"
+        def _fake_urlopen(url: str, timeout: float) -> MagicMock:
+            # #246: the bzImage now streams straight to the temp handle via
+            # urlopen (no whole-payload buffer); the tiny sidecar still round-
+            # trips through _fetch_bytes -> urlopen, so patch at the urlopen seam.
+            if url.endswith(".sha256"):
+                return _chunked_resp(f"{digest}  bzImage\n".encode())
+            return _chunked_resp(b"kernel-bytes")
 
         seen: list[str] = []
         with (
-            patch("beetroot.kernel_download._fetch_bytes", side_effect=_fake_fetch),
+            patch("urllib.request.urlopen", side_effect=_fake_urlopen),
             patch("beetroot.kernel_download.tempfile.mkstemp", side_effect=_mkstemp_spy(seen)),
         ):
             result = kernel_download.fetch_prebuilt(
@@ -256,10 +261,9 @@ class TestKernelProcessUniqueTemp:
         self, isolated_registry: Path, tmp_path: Path
     ) -> None:
         out = tmp_path / "kernels" / "bzImage"
-        digest = hashlib.sha256(b"kernel-bytes").hexdigest()
 
-        def _fake_fetch(url: str, description: str) -> bytes:
-            return digest.encode() if url.endswith(".sha256") else b"kernel-bytes"
+        def _fake_urlopen(url: str, timeout: float) -> MagicMock:
+            return _chunked_resp(b"kernel-bytes")
 
         def _close_and_crash(fd: int, mode: str) -> object:
             import os as _os
@@ -268,7 +272,7 @@ class TestKernelProcessUniqueTemp:
             raise KeyboardInterrupt
 
         with (
-            patch("beetroot.kernel_download._fetch_bytes", side_effect=_fake_fetch),
+            patch("urllib.request.urlopen", side_effect=_fake_urlopen),
             patch("beetroot.kernel_download.os.fdopen", side_effect=_close_and_crash),
         ):
             with pytest.raises(KeyboardInterrupt):

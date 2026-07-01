@@ -12,6 +12,9 @@ import pytest
 from typer.testing import CliRunner
 
 from beetroot import api, cli, config, paths, ports, registry, snapshot
+from beetroot.backends import vm as vm_backend
+from beetroot.settings import Settings
+from beetroot.vm import qemu
 
 runner = CliRunner()
 
@@ -443,6 +446,44 @@ class TestCmdUp:
             result = runner.invoke(cli.app, ["up", "alpha"])
         assert result.exit_code == 0, result.stderr
         assert mock_run.called
+
+    def test_up_redroid_banner_shows_both_adb_and_frida(self, cli_root: Path) -> None:
+        # The default `create` config publishes a frida service, so the
+        # redroid up-banner names both the ADB and the Frida endpoint (#177).
+        runner.invoke(cli.app, ["create", "alpha"])
+        with _patched_subprocess():
+            result = runner.invoke(cli.app, ["up", "alpha"])
+        assert result.exit_code == 0, result.stderr
+        assert "ADB localhost:" in result.stdout
+        assert "Frida localhost:" in result.stdout
+
+    def test_up_vm_banner_notes_frida_unsupported_not_endpoint(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #177: the vm backend reports Frida unsupported everywhere else, so
+        # its up-banner must print the note — never a `Frida localhost:<port>`
+        # endpoint that Frida could never reach.
+        kernel = cli_root / "bzImage"
+        rootfs = cli_root / "rootdisk.img"
+        kernel.write_bytes(b"k")
+        rootfs.write_bytes(b"r")
+        monkeypatch.setattr(
+            vm_backend, "settings", Settings(vm_kernel=str(kernel), vm_rootfs=str(rootfs))
+        )
+        monkeypatch.setattr(
+            vm_backend.VmDeviceBackend, "_wait_for_adb_connect", lambda _self, *_a: None
+        )
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(root / "beetroot.yaml", config.InstanceConfig(binder="vm"))
+        api.Instance.register(root, name="vm1")
+        monkeypatch.setattr(qemu, "detect_accel", lambda _r: "tcg")
+        monkeypatch.setattr(qemu.QemuProcess, "start", lambda _self, argv: 1)
+        result = runner.invoke(cli.app, ["up", "vm1"])
+        assert result.exit_code == 0, result.stderr
+        assert "ADB localhost:" in result.stdout
+        assert "Frida unsupported on binder: vm" in result.stdout
+        assert "Frida localhost:" not in result.stdout
 
     def test_up_warns_when_binder_unavailable(
         self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -944,6 +985,37 @@ class TestCmdLsAdoptedDevices:
         assert phone["adb_address"] == "emulator-5554"
         assert phone["frida_address"] == "localhost:27052"
         assert phone["is_available"] is False
+
+    def test_ls_table_vm_row_shows_instance_path_not_dash(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #267: the `binder: vm` backend is directory-backed too, so its ls
+        # row must surface the instance directory as PATH, not the adb
+        # backend's `-` placeholder.
+        monkeypatch.setenv("COLUMNS", "200")
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(root / "beetroot.yaml", config.InstanceConfig(binder="vm"))
+        api.Instance.register(root, name="vm1")
+        result = runner.invoke(cli.app, ["ls"])
+        assert result.exit_code == 0, result.stderr
+        assert "vm1" in result.stdout
+        assert str(root) in result.stdout
+
+    def test_ls_json_vm_row_includes_path_key(
+        self, cli_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #267: the generic JSON row for the directory-backed vm backend must
+        # carry the same `path` key redroid rows expose.
+        root = cli_root / "vm1"
+        root.mkdir()
+        config.write_yaml(root / "beetroot.yaml", config.InstanceConfig(binder="vm"))
+        api.Instance.register(root, name="vm1")
+        result = runner.invoke(cli.app, ["ls", "--json"])
+        assert result.exit_code == 0, result.stderr
+        data = json.loads(result.stdout)
+        assert data["vm1"]["kind"] == "vm"
+        assert data["vm1"]["path"] == str(root)
 
     def test_ls_skips_row_that_vanished_between_reads(
         self, cli_root: Path, monkeypatch: pytest.MonkeyPatch

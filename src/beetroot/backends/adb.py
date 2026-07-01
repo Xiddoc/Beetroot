@@ -434,7 +434,16 @@ class AdbDevice:
                 host-side hash stays the user's responsibility before
                 invoking ``beetroot module``; :meth:`auto_install_modules`
                 enforces it fail-closed.
+
+        Raises:
+            AdbNotInstalledError: If the ``adb`` binary is not on PATH.
         """
+        import shutil  # noqa: PLC0415  # local to avoid pulling shutil at module import
+
+        if shutil.which(_ADB) is None:
+            raise AdbNotInstalledError(
+                "adb not found on PATH (install android-tools)",
+            )
         del sha256  # Ignored on the safe default; auto_install_modules enforces it.
         src = _validated_zip_source(source)
         basename = src.name

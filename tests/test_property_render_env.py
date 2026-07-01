@@ -53,8 +53,25 @@ def instance_configs(draw: st.DrawFn) -> config.InstanceConfig:
         st.sampled_from(["gpu", "software", "auto"]),
     )
     pids_limit = draw(st.integers(min_value=64, max_value=65536))
-    mem_reservation = draw(st.one_of(st.none(), st.sampled_from(["512m", "1g", "2g"])))
-    memswap_limit = draw(st.one_of(st.none(), st.sampled_from(["2g", "4g"])))
+    # #267: Resources now rejects an inverted soft-floor / swap-cap, so only
+    # draw a mem_reservation at-or-below and a memswap_limit at-or-above ``mem``.
+    mem_bytes = config._docker_size_to_bytes(mem)
+    mem_reservation = draw(
+        st.one_of(
+            st.none(),
+            st.sampled_from(["512m", "1g", "2g"]).filter(
+                lambda v: config._docker_size_to_bytes(v) <= mem_bytes
+            ),
+        )
+    )
+    memswap_limit = draw(
+        st.one_of(
+            st.none(),
+            st.sampled_from(["2g", "4g", "8g", "-1"]).filter(
+                lambda v: v == "-1" or config._docker_size_to_bytes(v) >= mem_bytes
+            ),
+        )
+    )
     return config.InstanceConfig(
         api_version=config.SUPPORTED_API_VERSION,
         android=config.Android(version=android_version, gapps=gapps),

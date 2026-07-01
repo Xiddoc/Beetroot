@@ -1206,3 +1206,25 @@ class TestExtractSizeCap:
 
         restored = snapshot.restore(archive, dest_name="beta", dest_path=tmp_path / "beta")
         assert (restored / "data" / "marker.txt").read_bytes() == b"small"
+
+    def test_stream_cap_catches_bomb_that_beats_member_size_sum(
+        self, isolated_registry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The tar-header ``member.size`` sum is attacker-controlled and always
+        # trails the ACTUAL decompressed byte count (headers, block padding,
+        # end-of-archive markers). A cap set BETWEEN the two lets the header-sum
+        # loop check pass while the real stream still overruns — only the
+        # _CappedReader wrapping the zstd stream catches it (#267). 4 KiB of
+        # data sums to ~4350 header bytes but decompresses to ~20 KiB.
+        src = _make_instance(tmp_path / "alpha", data_bytes=b"Z" * 4096)
+        registry.add_allocating("alpha", src)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+        registry.remove("alpha")
+
+        # 10000 > member.size sum (~4350) but < actual decompressed (~20480):
+        # the header-sum loop never trips, so this proves the stream-level cap.
+        monkeypatch.setattr(snapshot, "_MAX_EXTRACT_BYTES", 10000)
+        with pytest.raises(snapshot.SnapshotError, match="decompression bomb"):
+            snapshot.restore(archive, dest_name="beta", dest_path=tmp_path / "beta")
+        assert not (tmp_path / "beta").exists()
+        assert registry.get("beta") is None

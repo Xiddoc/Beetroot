@@ -207,7 +207,19 @@ class TestPlanBinderRuntime:
         )
         assert plan.action == "block"
         assert plan.reason == "compiled out"
-        assert plan.remedy == "use adb"
+        # The block remedy now carries the same ``binder: vm`` escape-hatch
+        # hint as the warn branch (#192), on top of the host probe's own
+        # remedy — not just ``status.remedy`` verbatim.
+        assert "use adb" in plan.remedy
+        assert "binder: vm" in plan.remedy
+
+    def test_host_mode_block_with_empty_status_remedy_still_hints_vm(self) -> None:
+        plan = hostcheck.plan_binder_runtime(
+            "host", self._status("unsupported", reason="compiled out", remedy="")
+        )
+        assert plan.action == "block"
+        assert "binder: vm" in plan.remedy
+        assert not plan.remedy.startswith(".")
 
     def test_auto_mode_warns_and_appends_vm_hint(self) -> None:
         plan = hostcheck.plan_binder_runtime(

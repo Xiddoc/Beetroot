@@ -66,6 +66,12 @@ from . import console
 from .settings import settings
 
 _CHUNK_SIZE = 1 << 16  # 64 KiB per read; matches kernel_download for parity
+# Decompression-bomb / disk-fill ceiling: a hostile (or corrupt) zstd payload
+# can inflate to far more than its on-disk size, so the stream-decompress caps
+# the total decompressed bytes it will write. 64 GiB is generous headroom over
+# the ~8 GiB ext4 rootfs while still refusing an image that would otherwise
+# exhaust host disk. Mirrors snapshot._MAX_EXTRACT_BYTES (#274).
+_MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024 * 1024
 _REPO = "Xiddoc/Beetroot"
 # Each rootfs gets its own immutable release tagged vm-rootfs-<version>-<fp>;
 # the publishing workflow (rootfs-release.yml) creates it with the asset already
@@ -240,7 +246,14 @@ def _download_to_file(url: str, description: str, dest: Path) -> str:
             dest.open("wb") as out,
         ):
             raw_length = resp.headers.get("Content-Length")
-            total: float | None = float(raw_length) if raw_length else None
+            # Only honor a well-formed numeric header; a missing or malformed
+            # Content-Length leaves the total unknown (indeterminate bar, no
+            # truncation check) rather than crashing the download.
+            expected_bytes: int | None = (
+                int(raw_length) if isinstance(raw_length, str) and raw_length.isdigit() else None
+            )
+            total: float | None = float(expected_bytes) if expected_bytes is not None else None
+            written = 0
             with console.progress(description, total=total) as bar:
                 while True:
                     chunk = resp.read(_CHUNK_SIZE)
@@ -248,7 +261,18 @@ def _download_to_file(url: str, description: str, dest: Path) -> str:
                         break
                     out.write(chunk)
                     digest.update(chunk)
+                    written += len(chunk)
                     bar.advance(len(chunk))
+            # A dropped connection at a chunk boundary yields a clean EOF, not an
+            # exception, so a short read would otherwise cache a truncated image
+            # (the .sha256 check would catch it, but only after a full download).
+            # Compare bytes-received to the advertised Content-Length and reject a
+            # short read up front (#274, mirrors modules_download).
+            if expected_bytes is not None and written != expected_bytes:
+                raise RootfsFetchError(
+                    f"download truncated: got {written} of {expected_bytes} bytes for {url}; "
+                    "the connection dropped mid-stream — retry the fetch"
+                )
     except urllib.error.HTTPError as e:
         raise RootfsFetchError(f"HTTP {e.code} fetching {url}") from e
     except TimeoutError as e:
@@ -256,6 +280,45 @@ def _download_to_file(url: str, description: str, dest: Path) -> str:
     except urllib.error.URLError as e:
         raise RootfsFetchError(f"cannot reach {url}: {e.reason}") from e
     return digest.hexdigest()
+
+
+def _decompress_to_file(src: Path, dst: Path, url: str) -> None:
+    """
+    Stream-decompress the zstd blob at ``src`` into ``dst`` under a size ceiling.
+
+    Reads the decompressed stream chunk-by-chunk (never materialising the whole
+    ~8 GiB image in memory) and tallies the bytes written. A hostile or corrupt
+    payload that would inflate past :data:`_MAX_DECOMPRESSED_BYTES` is refused
+    before the ceiling is exceeded rather than filling the host disk (#274).
+
+    Args:
+        src: The zstd-compressed image on disk.
+        dst: The file the decompressed ext4 image is streamed into.
+        url: The source URL, threaded through for the error message only.
+
+    Raises:
+        RootfsFetchError: If the decompressed size exceeds the ceiling.
+        zstandard.ZstdError: On a corrupt/truncated zstd stream (mapped to
+            :class:`RootfsFetchError` by the caller).
+    """
+    written = 0
+    with (
+        src.open("rb") as raw_in,
+        zstandard.ZstdDecompressor().stream_reader(raw_in) as reader,
+        dst.open("wb") as out,
+    ):
+        while True:
+            chunk = reader.read(_CHUNK_SIZE)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > _MAX_DECOMPRESSED_BYTES:
+                raise RootfsFetchError(
+                    f"decompressed rootfs from {url} exceeds the "
+                    f"{_MAX_DECOMPRESSED_BYTES}-byte cap; refusing to write "
+                    "(possible decompression bomb)"
+                )
+            out.write(chunk)
 
 
 def fetch_prebuilt(
@@ -275,8 +338,10 @@ def fetch_prebuilt(
     The image is **streamed**: the multi-GiB compressed asset is downloaded
     chunk-by-chunk to a temp file (with the SHA-256 computed incrementally over
     the arriving bytes) and then stream-decompressed to ``out_image`` via
-    :meth:`zstandard.ZstdDecompressor.copy_stream`, so neither the whole payload
-    nor the whole ~8 GiB ext4 image is ever held in memory (issue #79).
+    :func:`_decompress_to_file`, so neither the whole payload nor the whole
+    ~8 GiB ext4 image is ever held in memory (issue #79). The decompress caps
+    total output at :data:`_MAX_DECOMPRESSED_BYTES` to refuse a decompression
+    bomb (#274).
 
     Args:
         android_version: The Android major version (selects the asset + marker).
@@ -292,8 +357,10 @@ def fetch_prebuilt(
 
     Raises:
         RootfsFetchError: If the asset (or its checksum) cannot be fetched, the
-            downloaded bytes do not match the published digest, or the payload is
-            not a valid zstd stream.
+            download is truncated against its advertised ``Content-Length``, the
+            downloaded bytes do not match the published digest, the payload is not
+            a valid zstd stream, or it decompresses past
+            :data:`_MAX_DECOMPRESSED_BYTES`.
     """
     del docker_version  # folded into ``fingerprint``; named for call-shape parity
     version = str(android_version)
@@ -321,8 +388,7 @@ def fetch_prebuilt(
             )
         tmp = Path(staging) / "image.img"
         try:
-            with compressed.open("rb") as src, tmp.open("wb") as dst:
-                zstandard.ZstdDecompressor().copy_stream(src, dst)
+            _decompress_to_file(compressed, tmp, url)
         except zstandard.ZstdError as e:
             raise RootfsFetchError(f"corrupt/truncated zstd payload for {url}: {e}") from e
         # Write the version marker BEFORE the image is renamed into place, so an

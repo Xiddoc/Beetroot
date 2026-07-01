@@ -16,8 +16,8 @@ def _ok_result(stdout: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
 
 
-def _fail_result(returncode: int = 1) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr="")
+def _fail_result(returncode: int = 1, stderr: str = "") -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr=stderr)
 
 
 @pytest.fixture(autouse=True)
@@ -98,6 +98,20 @@ class TestUp:
             with pytest.raises(ComposeError, match="compose up"):
                 compose.up("alpha", tmp_path)
 
+    def test_up_captures_stderr_for_error_message(self, tmp_path: Path) -> None:
+        # #276: the failure surfaces the daemon's stderr, not just the exit code.
+        with patch("subprocess.run", return_value=_ok_result()) as mock_run:
+            compose.up("alpha", tmp_path)
+        assert mock_run.call_args.kwargs["capture_output"] is True
+        assert mock_run.call_args.kwargs["text"] is True
+
+    def test_up_folds_stderr_into_compose_error(self, tmp_path: Path) -> None:
+        # #276: the raised message must carry the daemon's reason.
+        stderr = "Error response from daemon: pull access denied for redroid/redroid"
+        with patch("subprocess.run", return_value=_fail_result(1, stderr=stderr)):
+            with pytest.raises(ComposeError, match="pull access denied"):
+                compose.up("alpha", tmp_path)
+
 
 class TestDown:
     def test_down_includes_down(self, tmp_path: Path) -> None:
@@ -121,6 +135,13 @@ class TestDown:
     def test_down_nonzero_exit_raises_compose_error(self, tmp_path: Path) -> None:
         with patch("subprocess.run", return_value=_fail_result(1)):
             with pytest.raises(ComposeError, match="compose down"):
+                compose.down("alpha", tmp_path)
+
+    def test_down_folds_stderr_into_compose_error(self, tmp_path: Path) -> None:
+        # #276: the raised message must carry the daemon's reason.
+        stderr = "Error response from daemon: network alpha_default has active endpoints"
+        with patch("subprocess.run", return_value=_fail_result(1, stderr=stderr)):
+            with pytest.raises(ComposeError, match="active endpoints"):
                 compose.down("alpha", tmp_path)
 
 
@@ -157,6 +178,21 @@ class TestPsStatus:
         stdout = '{"Name": "alpha"}\n'
         with patch("subprocess.run", return_value=_ok_result(stdout)):
             assert compose.ps_status("alpha", tmp_path) == "not-created"
+
+    def test_non_dict_json_line_is_skipped_without_crashing(self, tmp_path: Path) -> None:
+        # #277: a well-formed JSON line that decodes to a non-object (a bare
+        # list, string, or number) has no ``.get`` — it must be skipped, not
+        # raise an AttributeError that escapes the JSONDecodeError-only guard.
+        stdout = '["not", "an", "object"]\n42\n"bare string"\n'
+        with patch("subprocess.run", return_value=_ok_result(stdout)):
+            assert compose.ps_status("alpha", tmp_path) == "not-created"
+
+    def test_non_dict_json_line_skipped_then_valid_dict_wins(self, tmp_path: Path) -> None:
+        # #277: a non-dict line preceding a valid object must be skipped, and
+        # the following object's State still resolved.
+        stdout = '["junk"]\n{"State": "running"}\n'
+        with patch("subprocess.run", return_value=_ok_result(stdout)):
+            assert compose.ps_status("alpha", tmp_path) == "running"
 
     def test_state_is_lowercased(self, tmp_path: Path) -> None:
         stdout = '{"State": "Running"}\n'
@@ -302,6 +338,27 @@ class TestLogs:
             with pytest.raises(ComposeError, match="compose logs"):
                 compose.logs("alpha", tmp_path, follow=False)
 
+    def test_logs_folds_stderr_into_compose_error(self, tmp_path: Path) -> None:
+        # #276: a non-follow logs failure must carry the daemon's reason.
+        stderr = "no such service: alpha"
+        with patch("subprocess.run", return_value=_fail_result(1, stderr=stderr)):
+            with pytest.raises(ComposeError, match="no such service"):
+                compose.logs("alpha", tmp_path, follow=False)
+
+    def test_logs_non_follow_captures_stderr(self, tmp_path: Path) -> None:
+        # #276: non-follow mode captures stderr so it can be folded into errors.
+        with patch("subprocess.run", return_value=_ok_result()) as mock_run:
+            compose.logs("alpha", tmp_path, follow=False)
+        assert mock_run.call_args.kwargs["capture_output"] is True
+        assert mock_run.call_args.kwargs["text"] is True
+
+    def test_logs_follow_does_not_capture_stderr(self, tmp_path: Path) -> None:
+        # #276: follow mode must keep streaming to the terminal (inherit stdio),
+        # so it must NOT capture output.
+        with patch("subprocess.run", return_value=_ok_result()) as mock_run:
+            compose.logs("alpha", tmp_path, follow=True)
+        assert "capture_output" not in mock_run.call_args.kwargs
+
     def test_logs_tolerates_nonzero_in_follow(self, tmp_path: Path) -> None:
         # Ctrl-C out of a ``logs -f`` stream surfaces as a non-zero (SIGINT)
         # exit; that is the expected way to stop it, so it must not raise.
@@ -320,3 +377,32 @@ class TestBuild:
         with patch("subprocess.run", return_value=_fail_result(1)):
             with pytest.raises(ComposeError, match="compose build"):
                 compose.build("alpha", tmp_path)
+
+    def test_build_folds_stderr_into_compose_error(self, tmp_path: Path) -> None:
+        # #276: the raised message must carry the daemon's build reason.
+        stderr = "failed to solve: dockerfile parse error on line 3"
+        with patch("subprocess.run", return_value=_fail_result(1, stderr=stderr)):
+            with pytest.raises(ComposeError, match="dockerfile parse error"):
+                compose.build("alpha", tmp_path)
+
+
+class TestLifecycleErrorFormatting:
+    def test_stderr_tail_is_trimmed_to_bound(self, tmp_path: Path) -> None:
+        # #276: a multi-kilobyte failure log is trimmed to its tail so the
+        # error string can't balloon; the exit code prefix stays present.
+        stderr = "x" * 5000 + "TAIL_MARKER"
+        with patch("subprocess.run", return_value=_fail_result(1, stderr=stderr)):
+            with pytest.raises(ComposeError) as excinfo:
+                compose.up("alpha", tmp_path)
+        message = str(excinfo.value)
+        assert "TAIL_MARKER" in message
+        assert "exit 1" in message
+        assert len(message) < 5000
+
+    def test_empty_stderr_omits_the_colon_suffix(self, tmp_path: Path) -> None:
+        # #276: when the daemon gives no stderr, the message is just the exit
+        # code — no dangling ``: `` suffix.
+        with patch("subprocess.run", return_value=_fail_result(1, stderr="")):
+            with pytest.raises(ComposeError) as excinfo:
+                compose.up("alpha", tmp_path)
+        assert str(excinfo.value) == "`compose up` failed for alpha (exit 1)"

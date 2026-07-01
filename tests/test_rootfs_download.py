@@ -15,10 +15,15 @@ from beetroot import rootfs_download
 class _FakeResp:
     """Minimal urlopen() context-manager stand-in serving fixed bytes."""
 
-    def __init__(self, data: bytes, *, content_length: bool = True) -> None:
+    def __init__(
+        self, data: bytes, *, content_length: bool = True, advertised_length: int | None = None
+    ) -> None:
         self._data = data
         self._pos = 0
-        self.headers = {"Content-Length": str(len(data))} if content_length else {}
+        # ``advertised_length`` lets a test claim a Content-Length that differs
+        # from the bytes actually served (simulating a mid-stream truncation).
+        length = advertised_length if advertised_length is not None else len(data)
+        self.headers = {"Content-Length": str(length)} if content_length else {}
 
     def __enter__(self) -> _FakeResp:
         return self
@@ -112,6 +117,31 @@ def test_fetch_prebuilt_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert out.read_bytes() == image
     marker = out.with_name(out.name + ".android-version")
     assert marker.read_text(encoding="utf-8") == "14\n"
+
+
+def test_fetch_prebuilt_success_without_content_length(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A server that omits Content-Length on the image leaves the expected size
+    # unknown, so the #274 truncation check must be skipped (not fire spuriously)
+    # and the download still succeeds.
+    image = b"ext4-image-bytes"
+    payload = zstandard.ZstdCompressor().compress(image)
+    digest = hashlib.sha256(payload).hexdigest()
+    url = rootfs_download.release_url("14", "abc123def456")
+
+    def fake_urlopen(req_url: str, timeout: float) -> _FakeResp:
+        if req_url == url:
+            return _FakeResp(payload, content_length=False)  # no Content-Length
+        return _FakeResp(f"{digest}  rootfs-14-abc123def456.img.zst\n".encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    out = tmp_path / "rootdisk.img"
+    result = rootfs_download.fetch_prebuilt(
+        android_version=14, fingerprint="abc123def456", out_image=out, docker_version="27.5.1"
+    )
+    assert result == out
+    assert out.read_bytes() == image
 
 
 def test_fetch_prebuilt_sha_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -265,4 +295,55 @@ def test_fetch_prebuilt_marker_written_before_image_rename(
         )
     # Because the marker is written first, the crash happens before the rename:
     # no marker-less image is left installed.
+    assert not out.exists()
+
+
+def test_fetch_prebuilt_decompression_bomb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #274: a payload that inflates past the decompressed-size ceiling must be
+    # refused mid-stream rather than filling the host disk. Shrink the ceiling so
+    # a small (highly compressible) blob crosses it without a giant fixture.
+    monkeypatch.setattr(rootfs_download, "_MAX_DECOMPRESSED_BYTES", 128 * 1024)
+    image = b"\x00" * (256 * 1024)  # 256 KiB decompressed > 128 KiB cap
+    payload = zstandard.ZstdCompressor().compress(image)
+    digest = hashlib.sha256(payload).hexdigest()
+    url = rootfs_download.release_url("14", "abc123def456")
+
+    def fake_urlopen(req_url: str, timeout: float) -> _FakeResp:
+        if req_url == url:
+            return _FakeResp(payload)
+        return _FakeResp(f"{digest}  rootfs-14-abc123def456.img.zst\n".encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    out = tmp_path / "rootdisk.img"
+    with pytest.raises(rootfs_download.RootfsFetchError, match="decompression bomb"):
+        rootfs_download.fetch_prebuilt(
+            android_version=14, fingerprint="abc123def456", out_image=out, docker_version="27.5.1"
+        )
+    assert not out.exists()
+
+
+def test_fetch_prebuilt_truncated_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #274: a connection dropped at a chunk boundary yields a clean EOF, so the
+    # served bytes fall short of the advertised Content-Length. Reject the short
+    # read before caching a truncated image.
+    payload = zstandard.ZstdCompressor().compress(b"ext4")
+    digest = hashlib.sha256(payload).hexdigest()
+    url = rootfs_download.release_url("14", "abc123def456")
+
+    def fake_urlopen(req_url: str, timeout: float) -> _FakeResp:
+        if req_url == url:
+            # Advertise one extra byte over what read() will actually serve.
+            return _FakeResp(payload, advertised_length=len(payload) + 1)
+        return _FakeResp(f"{digest}  rootfs-14-abc123def456.img.zst\n".encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    out = tmp_path / "rootdisk.img"
+    with pytest.raises(rootfs_download.RootfsFetchError, match="download truncated"):
+        rootfs_download.fetch_prebuilt(
+            android_version=14, fingerprint="abc123def456", out_image=out, docker_version="27.5.1"
+        )
     assert not out.exists()

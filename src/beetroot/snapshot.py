@@ -31,13 +31,16 @@ import shutil
 import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 import zstandard
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import config, paths, ports, registry
+
+if TYPE_CHECKING:
+    from typing import BinaryIO
 
 MANIFEST_FILENAME = ".beetroot-snapshot.json"
 INSTANCE_LOCK_FILENAME = ".beetroot.lock"
@@ -662,6 +665,61 @@ def restore(
     return target
 
 
+class _CappedReader:
+    """
+    Wrap a decompressing stream, aborting once its output crosses a byte cap.
+
+    ``member.size``-based accounting alone trusts the tar headers, which a
+    hostile archive controls — a member can declare a tiny size while the
+    zstd layer inflates arbitrarily between headers, so the honest-looking
+    header sum never trips. Counting the bytes *actually decompressed off the
+    stream* is the authoritative cap: a zstd bomb inflating past the ceiling
+    raises here the moment tarfile reads past it, before the host disk fills
+    (#267, mirrors frida_download's decompressed-total ceiling for #228).
+
+    Exposes only ``read`` because that is the sole method ``tarfile``'s
+    streaming (``r|``) mode calls on the wrapped fileobj.
+    """
+
+    def __init__(self, stream: BinaryIO, cap: int, archive: Path) -> None:
+        """
+        Wrap ``stream``, refusing once cumulative reads exceed ``cap`` bytes.
+
+        Args:
+            stream: The underlying decompressing reader (zstd stream reader).
+            cap: Maximum number of decompressed bytes to allow through.
+            archive: Source archive path, woven into the error message.
+        """
+        self._stream = stream
+        self._cap = cap
+        self._archive = archive
+        self._total = 0
+
+    def read(self, size: int = -1, /) -> bytes:
+        """
+        Read up to ``size`` decompressed bytes, aborting past the byte cap.
+
+        Args:
+            size: Maximum number of bytes to read (``tarfile`` always passes a
+                positive block size in streaming mode).
+
+        Returns:
+            The bytes read from the wrapped stream.
+
+        Raises:
+            SnapshotError: If cumulative reads exceed the configured cap.
+        """
+        chunk = self._stream.read(size)
+        self._total += len(chunk)
+        if self._total > self._cap:
+            raise SnapshotError(
+                f"archive {self._archive} exceeds the {self._cap}-byte "
+                "decompressed-size cap; refusing to extract (possible "
+                "decompression bomb)"
+            )
+        return chunk
+
+
 def _extract_archive_into(archive: Path, target: Path) -> None:
     """
     Decompress and untar ``archive`` into ``target``.
@@ -680,25 +738,21 @@ def _extract_archive_into(archive: Path, target: Path) -> None:
     error wrapping.
     """
     dctx = zstandard.ZstdDecompressor()
-    with (
-        archive.open("rb") as raw_in,
-        dctx.stream_reader(raw_in) as zst,
-        tarfile.open(fileobj=zst, mode="r|") as tar,
-    ):
-        # Cap the cumulative decompressed size (#265, folded low-severity
-        # zstd-bomb finding): a hostile archive could inflate to fill the
-        # host disk, so refuse past a generous ceiling before extracting
-        # the offending member.
-        total = 0
-        for member in tar:
-            total += member.size
-            if total > _MAX_EXTRACT_BYTES:
-                raise SnapshotError(
-                    f"archive {archive} exceeds the {_MAX_EXTRACT_BYTES}-byte "
-                    "decompressed-size cap; refusing to extract (possible "
-                    "decompression bomb)"
-                )
-            tar.extract(member, path=target, filter="data")
+    with archive.open("rb") as raw_in, dctx.stream_reader(raw_in) as zst:
+        # Cap the ACTUAL decompressed bytes streamed off the zstd layer
+        # (#265 folded finding, hardened for #267): a hostile archive could
+        # inflate to fill the host disk. Counting real decompressed output —
+        # rather than the attacker-controlled tar-header ``member.size`` sum —
+        # means a bomb that lies in its headers still aborts before it fills
+        # the disk. The reader raises SnapshotError the moment tarfile reads
+        # past the ceiling.
+        capped = _CappedReader(zst, _MAX_EXTRACT_BYTES, archive)
+        # ``fileobj`` is typed as _Fileobj (read/write/tell/seek/close), but
+        # streaming ``r|`` mode only ever calls ``read`` — which _CappedReader
+        # provides — so the narrower read-only wrapper is sound here.
+        with tarfile.open(fileobj=capped, mode="r|") as tar:  # type: ignore[call-overload]  # r| calls only read()
+            for member in tar:
+                tar.extract(member, path=target, filter="data")
     if not paths.instance_yaml(target).is_file():
         raise SnapshotError(
             f"archive {archive} did not contain a beetroot.yaml; refusing to register"

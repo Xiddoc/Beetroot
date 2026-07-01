@@ -39,7 +39,7 @@ import subprocess
 from pathlib import Path
 
 from beetroot.settings import settings
-from beetroot.vm.qemu import QemuLaunchError
+from beetroot.vm.qemu import QemuLaunchError, ResolvedAccel
 
 # Tag of the internal qcow2 snapshot that holds the booted machine state.
 SNAPSHOT_TAG = "beetroot-boot"
@@ -142,9 +142,11 @@ def _hash_file(path: Path) -> str:
     return hexdigest
 
 
-def base_identity(kernel: Path, rootfs: Path, smp: int, memory_mib: int) -> str:
+def base_identity(
+    kernel: Path, rootfs: Path, smp: int, memory_mib: int, accel: ResolvedAccel
+) -> str:
     """
-    Compute a stable digest over the kernel + rootfs + geometry an overlay uses.
+    Compute a stable digest over the kernel + rootfs + geometry + accelerator an overlay uses.
 
     Mirrors ``scripts/vm_cache_key.compute_cache_key``'s algorithm — each file's
     basename plus its streamed SHA-256, folded in (basename, content-hash) order
@@ -152,15 +154,19 @@ def base_identity(kernel: Path, rootfs: Path, smp: int, memory_mib: int) -> str:
     basename (issue #235). The resolved ``-smp``/``-m`` geometry is folded in too
     (as decimal bytes): a ``-loadvm`` resume into a different vCPU/RAM geometry is
     rejected by QEMU, so a geometry change must invalidate the checkpoint (issue
-    #161). A kernel/rootfs rebuild or a geometry edit changes the digest, which is
-    what lets :func:`overlay_is_stale` invalidate a checkpoint taken against the
-    old artifacts (issue #126 / #49).
+    #161). The resolved accelerator (``"kvm"`` / ``"tcg"``) is folded in as well:
+    KVM launches ``-cpu host`` and TCG ``-cpu max``, so a savevm checkpoint taken
+    under one accelerator is incompatible with a ``-loadvm`` resume under the
+    other (issue #273). A kernel/rootfs rebuild, a geometry edit, or an
+    accelerator flip changes the digest, which is what lets :func:`overlay_is_stale`
+    invalidate a checkpoint taken against the old inputs (issue #126 / #49).
 
     Args:
         kernel: The guest ``bzImage`` the overlay boots.
         rootfs: The raw rootfs image the overlay backs onto.
         smp: The resolved (concrete, not ``"auto"``) vCPU count QEMU launches with.
         memory_mib: The guest RAM in MiB QEMU launches with.
+        accel: The resolved accelerator (``"kvm"`` / ``"tcg"``) QEMU launches with.
 
     Returns:
         A 16-hex-character identity digest.
@@ -182,21 +188,28 @@ def base_identity(kernel: Path, rootfs: Path, smp: int, memory_mib: int) -> str:
     combined.update(b"\0")
     combined.update(str(memory_mib).encode())
     combined.update(b"\0")
+    combined.update(accel.encode())
+    combined.update(b"\0")
     return combined.hexdigest()[:_IDENTITY_HEX_LEN]
 
 
-def record_identity(
-    instance_dir: Path, kernel: Path, rootfs: Path, smp: int, memory_mib: int
+def record_identity(  # noqa: PLR0913  # each input is a distinct overlay-identity fold (files + geometry + accel)
+    instance_dir: Path,
+    kernel: Path,
+    rootfs: Path,
+    smp: int,
+    memory_mib: int,
+    accel: ResolvedAccel,
 ) -> None:
     """
-    Write the overlay's base-identity sidecar (kernel + rootfs + geometry digest).
+    Write the overlay's base-identity sidecar (kernel + rootfs + geometry + accel digest).
 
-    Called when the overlay is (re)created so a later kernel/rootfs change or a
-    ``-smp``/``-m`` geometry edit is detectable. Arguments mirror
-    :func:`base_identity`. The sidecar is written atomically (temp file +
-    ``os.replace``) so an interrupted ``record_identity`` never leaves a
-    keyless overlay that the next ``up`` would judge stale and discard (issue
-    #175).
+    Called when the overlay is (re)created so a later kernel/rootfs change, a
+    ``-smp``/``-m`` geometry edit, or an accelerator flip is detectable.
+    Arguments mirror :func:`base_identity`. The sidecar is written atomically
+    (temp file + ``os.replace``) so an interrupted ``record_identity`` never
+    leaves a keyless overlay that the next ``up`` would judge stale and discard
+    (issue #175).
 
     Args:
         instance_dir: The instance directory the sidecar is written into.
@@ -204,10 +217,11 @@ def record_identity(
         rootfs: The raw rootfs image the overlay backs onto.
         smp: The resolved vCPU count QEMU launches with.
         memory_mib: The guest RAM in MiB QEMU launches with.
+        accel: The resolved accelerator (``"kvm"`` / ``"tcg"``) QEMU launches with.
     """
     target = overlay_key_path(instance_dir)
     tmp = target.with_name(f"{target.name}.tmp")
-    tmp.write_text(base_identity(kernel, rootfs, smp, memory_mib), encoding="utf-8")
+    tmp.write_text(base_identity(kernel, rootfs, smp, memory_mib, accel), encoding="utf-8")
     tmp.replace(target)
 
 
@@ -227,18 +241,24 @@ def read_identity(instance_dir: Path) -> str | None:
         return None
 
 
-def overlay_is_stale(
-    instance_dir: Path, kernel: Path, rootfs: Path, smp: int, memory_mib: int
+def overlay_is_stale(  # noqa: PLR0913  # mirrors record_identity: files + geometry + accel identity inputs
+    instance_dir: Path,
+    kernel: Path,
+    rootfs: Path,
+    smp: int,
+    memory_mib: int,
+    accel: ResolvedAccel,
 ) -> bool:
     """
-    Return True iff the overlay's recorded identity ≠ the current kernel/rootfs/geometry.
+    Return True iff the overlay's recorded identity ≠ the current kernel/rootfs/geometry/accel.
 
     A missing/unreadable sidecar (e.g. an overlay built before issue #126) also
-    counts as stale: we can't prove it matches the current artifacts, and
-    resuming a stale checkpoint is worse than one cold boot. A ``-smp``/``-m``
-    geometry edit flips this too (issue #161) — QEMU rejects a ``-loadvm`` into a
-    mismatched geometry. The caller then discards + recreates the overlay and
-    re-checkpoints.
+    counts as stale: we can't prove it matches the current inputs, and resuming a
+    stale checkpoint is worse than one cold boot. A ``-smp``/``-m`` geometry edit
+    flips this too (issue #161) — QEMU rejects a ``-loadvm`` into a mismatched
+    geometry — as does an accelerator flip (issue #273), since a savevm state
+    saved under one accelerator can't be resumed under the other. The caller then
+    discards + recreates the overlay and re-checkpoints.
 
     Args:
         instance_dir: The instance directory holding the overlay + sidecar.
@@ -246,11 +266,12 @@ def overlay_is_stale(
         rootfs: The currently-resolved raw rootfs.
         smp: The resolved vCPU count QEMU will launch with.
         memory_mib: The guest RAM in MiB QEMU will launch with.
+        accel: The resolved accelerator (``"kvm"`` / ``"tcg"``) QEMU will launch with.
 
     Returns:
         ``True`` if the checkpoint should be invalidated, else ``False``.
     """
-    return read_identity(instance_dir) != base_identity(kernel, rootfs, smp, memory_mib)
+    return read_identity(instance_dir) != base_identity(kernel, rootfs, smp, memory_mib, accel)
 
 
 def discard_overlay(instance_dir: Path) -> None:

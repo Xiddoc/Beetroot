@@ -22,7 +22,7 @@ import sys
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal, TypeGuard, cast
 
 import pydantic
 import typer
@@ -93,6 +93,20 @@ def _error(message: str) -> typer.Exit:
     """
     console.error(message)
     return typer.Exit(code=1)
+
+
+def _frida_banner_clause(wk: dict[str, int]) -> str:
+    """
+    Render the Frida half of an instance banner from a ``well_known`` map.
+
+    A valid Frida-less config (no ``frida:`` block) omits the ``frida``
+    service from the resolved ports, so indexing ``wk['frida']``
+    unconditionally would ``KeyError`` (#272). Degrade to a plain
+    "Frida unsupported" note in that case rather than crashing the verb.
+    """
+    if "frida" in wk:
+        return f"Frida localhost:{wk['frida']}"
+    return "Frida unsupported (no frida service configured)"
 
 
 def _ensure_exists(name: str) -> None:
@@ -385,7 +399,7 @@ def create(
     p = ports.well_known(inst.ports)
     console.status(
         f"created {inst.name} at {inst.root} "
-        f"(index {inst.index}, ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"
+        f"(index {inst.index}, ADB localhost:{p['adb']}, {_frida_banner_clause(p)})"
     )
     console.hint(f"next: beetroot up {inst.name}")
 
@@ -418,7 +432,7 @@ def register(
     console.status(
         f"registered {inst.name} at {inst.root} "
         f"(index {inst.index}, ADB localhost:{p['adb']}, "
-        f"Frida localhost:{p['frida']})"
+        f"{_frida_banner_clause(p)})"
     )
     console.hint(f"next: beetroot up {inst.name}")
 
@@ -683,9 +697,16 @@ def up(
             raise _error(str(e)) from e
         if isinstance(backend, api.Instance | vm_backend.VmDeviceBackend):
             p = ports.well_known(backend.ports)
-            console.status(
-                f"{backend.name} up — ADB localhost:{p['adb']}, Frida localhost:{p['frida']}"
-            )
+            # The vm backend reports Frida unsupported everywhere else (#44), so
+            # its up-banner must not advertise a ``localhost:<port>`` Frida can
+            # never reach (#177). Redroid keeps both endpoints, guarded so a
+            # valid Frida-less config degrades gracefully rather than
+            # crashing (#272).
+            if backend.frida_address == api.FRIDA_ADDRESS_UNSUPPORTED:
+                frida_clause = "Frida unsupported on binder: vm"
+            else:
+                frida_clause = _frida_banner_clause(p)
+            console.status(f"{backend.name} up — ADB localhost:{p['adb']}, {frida_clause}")
             console.hint(f"next: beetroot shell {backend.name}")
         else:
             console.status(f"{instance_name} up")
@@ -957,6 +978,21 @@ def _ls_rows() -> list[tuple[str, registry.InstanceMeta, api.DeviceBackend]]:
     return rows
 
 
+def _is_directory_backed(
+    backend: api.DeviceBackend,
+) -> TypeGuard[api.Instance | vm_backend.VmDeviceBackend]:
+    """
+    True when the backend owns an on-disk instance directory (``backend.root``).
+
+    Both the redroid :class:`api.Instance` and the ``binder: vm``
+    :class:`~beetroot.backends.vm.VmDeviceBackend` are directory-backed —
+    they stage a ``beetroot.yaml`` under a real path — so ``ls`` / ``status``
+    should surface that PATH for either (#267). The adb backend has no such
+    directory (it adopts an external device), so it is the odd one out.
+    """
+    return isinstance(backend, api.Instance | vm_backend.VmDeviceBackend)
+
+
 def _backend_json_row(
     name: str,
     meta: registry.InstanceMeta,
@@ -968,7 +1004,9 @@ def _backend_json_row(
     Redroid instances keep the richer ``_instance_json_row`` shape
     (including the v0.3 back-compat ``path`` / ``adb`` / ``frida``
     keys); every other backend kind gets the Protocol-surface row from
-    ``_adb_json_row`` — the same shape ``beetroot status`` emits.
+    ``_adb_json_row`` — the same shape ``beetroot status`` emits. That
+    generic row still carries a ``path`` key for the directory-backed
+    ``binder: vm`` backend (#267).
     """
     if isinstance(backend, api.Instance):
         return _instance_json_row(backend)
@@ -983,13 +1021,15 @@ def _ls_table_row(
     """
     Render one ``beetroot ls`` table row for any backend kind.
 
-    Redroid rows show the live compose status and the instance
-    directory; non-directory-backed kinds (adb) show ``adb devices``
-    availability, the serial as the ADB address, and ``-`` for PATH.
+    Redroid rows show the live compose status and derive both addresses
+    from the resolved port map; every other backend (adb, ``binder:
+    vm``) reports ``adb devices`` availability and its Protocol-surface
+    addresses. PATH is the instance directory for any directory-backed
+    kind (redroid *and* ``binder: vm``) and ``-`` for the adb backend,
+    which adopts an external device with no on-disk directory (#267).
     """
     if isinstance(backend, api.Instance):
         status = str(backend.status)
-        path = str(backend.root)
         # Resolve the port mapping once and derive both addresses from a single
         # ``well_known`` dict instead of calling ``adb_address`` /
         # ``frida_address`` (each re-resolving ``backend.ports``) — #230. The
@@ -1000,9 +1040,9 @@ def _ls_table_row(
         frida_addr = f"localhost:{wk['frida']}" if "frida" in wk else api.FRIDA_ADDRESS_UNSUPPORTED
     else:
         status = "available" if backend.is_available else "unavailable"
-        path = "-"
         adb_addr = backend.adb_address
         frida_addr = backend.frida_address
+    path = str(backend.root) if _is_directory_backed(backend) else "-"
     return [
         name,
         backend.kind,
@@ -1106,6 +1146,13 @@ def _adb_json_row(
         "is_available": backend.is_available,
         "stealth_paths": {},
     }
+    # The directory-backed ``binder: vm`` backend reaches here too (it is
+    # not an ``api.Instance``); surface its instance directory under the same
+    # ``path`` key redroid rows use so scripts can locate it (#267). The adb
+    # backend adopts an external device with no on-disk directory, so it has
+    # no ``root`` and gets no ``path`` key.
+    if _is_directory_backed(backend):
+        row["path"] = str(backend.root)
     # For adb-kind backends, include the serial so scripts that check
     # row["serial"] can distinguish this row from a redroid instance. The
     # vm-kind backend reaches here too (it has no serial → the None branch).
@@ -1699,7 +1746,7 @@ def restore(
     p = ports.well_known(inst.ports)
     console.status(
         f"restored {dest_name} at {restored} "
-        f"(index {inst.index}, ADB localhost:{p['adb']}, Frida localhost:{p['frida']})"
+        f"(index {inst.index}, ADB localhost:{p['adb']}, {_frida_banner_clause(p)})"
     )
     # Agent A's fix made ``snapshot.restore`` call ``_stage()``
     # itself, so an intermediate ``beetroot apply`` is no longer

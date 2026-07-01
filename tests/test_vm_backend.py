@@ -495,7 +495,7 @@ class TestLifecycle:
         boot_cache.overlay_path(backend.root).write_bytes(b"qcow2")
         kernel, rootfs = self._artifacts(backend)
         smp, mem = self._geometry(backend)
-        boot_cache.record_identity(backend.root, kernel, rootfs, smp, mem)
+        boot_cache.record_identity(backend.root, kernel, rootfs, smp, mem, "tcg")
         events: list[str] = []
         launched: dict[str, list[str]] = {}
         monkeypatch.setattr(
@@ -605,7 +605,7 @@ class TestLifecycle:
         assert "overlay" in events
         smp, mem = self._geometry(backend)
         assert boot_cache.read_identity(backend.root) == boot_cache.base_identity(
-            kernel, rootfs, smp, mem
+            kernel, rootfs, smp, mem, "tcg"
         )
 
     def test_up_cached_geometry_change_invalidates_overlay(
@@ -619,7 +619,7 @@ class TestLifecycle:
         smp, mem = self._geometry(backend)
         boot_cache.overlay_path(backend.root).write_bytes(b"qcow2")
         # Record an identity for a DIFFERENT memory geometry than the config.
-        boot_cache.record_identity(backend.root, kernel, rootfs, smp, mem + 4096)
+        boot_cache.record_identity(backend.root, kernel, rootfs, smp, mem + 4096, "tcg")
         discarded: list[str] = []
         launched: dict[str, list[str]] = {}
         monkeypatch.setattr("beetroot.vm.boot_cache.create_overlay", lambda *_a: None)
@@ -653,7 +653,7 @@ class TestLifecycle:
         smp, mem = self._geometry(backend)
         boot_cache.overlay_path(backend.root).write_bytes(b"dirty-qcow2")
         # Identity matches the current artifacts → NOT stale; but no snapshot.
-        boot_cache.record_identity(backend.root, kernel, rootfs, smp, mem)
+        boot_cache.record_identity(backend.root, kernel, rootfs, smp, mem, "tcg")
         events: list[str] = []
 
         def _discard(root: Path) -> None:
@@ -684,7 +684,7 @@ class TestLifecycle:
         kernel, rootfs = self._artifacts(backend)
         smp, mem = self._geometry(backend)
         boot_cache.overlay_path(backend.root).write_bytes(b"qcow2")
-        boot_cache.record_identity(backend.root, kernel, rootfs, smp, mem)
+        boot_cache.record_identity(backend.root, kernel, rootfs, smp, mem, "tcg")
         events: list[str] = []
         monkeypatch.setattr(
             "beetroot.vm.boot_cache.discard_overlay", lambda _root: events.append("discard")
@@ -707,7 +707,7 @@ class TestLifecycle:
         kernel, rootfs = self._artifacts(backend)
         smp, mem = self._geometry(backend)
         boot_cache.overlay_path(backend.root).write_bytes(b"qcow2")
-        boot_cache.record_identity(backend.root, kernel, rootfs, smp, mem)
+        boot_cache.record_identity(backend.root, kernel, rootfs, smp, mem, "tcg")
         monkeypatch.setattr("beetroot.vm.boot_cache.snapshot_present", lambda _o: True)
         monkeypatch.setattr("beetroot.vm.boot_cache.create_overlay", lambda *_a: None)
         monkeypatch.setattr("beetroot.vm.boot_cache.discard_overlay", lambda _root: None)
@@ -736,6 +736,50 @@ class TestLifecycle:
         assert "-loadvm" not in launched[1]  # cold retry did not
         assert any("warm resume" in w and "cold-booting" in w for w in warnings)
 
+    def test_up_cached_warm_fail_preserves_console_before_cold_retry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #267: the warm-resume QemuLaunchError points the user at the console
+        # log, but the cold retry's proc.start truncates it. The warm-failure
+        # trace must be copied to a `.warm-fail` sidecar first so it survives.
+        backend = self._cached_backend(tmp_path, monkeypatch)
+        kernel, rootfs = self._artifacts(backend)
+        smp, mem = self._geometry(backend)
+        boot_cache.overlay_path(backend.root).write_bytes(b"qcow2")
+        boot_cache.record_identity(backend.root, kernel, rootfs, smp, mem, "tcg")
+        monkeypatch.setattr("beetroot.vm.boot_cache.snapshot_present", lambda _o: True)
+        monkeypatch.setattr("beetroot.vm.boot_cache.create_overlay", lambda *_a: None)
+        monkeypatch.setattr("beetroot.vm.boot_cache.discard_overlay", lambda _root: None)
+        monkeypatch.setattr("beetroot.vm.boot_cache.save_snapshot", lambda _m: True)
+        console_log = qemu.QemuProcess(backend.root, 5555).console_log
+        # Model the real console lifecycle: the warm -loadvm boot's proc.start
+        # truncates then QEMU writes its failure trace; the cold retry's start
+        # truncates that trace. So the warm start leaves the panic in the log and
+        # the cold start clears it — the sidecar copy in between is the only save.
+        starts: list[str] = []
+
+        def _start(_self: object, _argv: list[str]) -> int:
+            starts.append("start")
+            console_log.write_text(
+                "WARM RESUME PANIC: snapshot unrestorable" if len(starts) == 1 else ""
+            )
+            return 1
+
+        monkeypatch.setattr(qemu.QemuProcess, "start", _start)
+        calls: list[str] = []
+
+        def _wait(_self: object, _accel: str, _proc: object = None) -> None:
+            calls.append("wait")
+            if len(calls) == 1:
+                raise qemu.QemuLaunchError("exited before exposing ADB")
+
+        monkeypatch.setattr(vm_backend.VmDeviceBackend, "_wait_for_adb_connect", _wait)
+        monkeypatch.setattr("beetroot.console.warn", lambda _m: None)
+        backend.up()
+        sidecar = console_log.with_name(console_log.name + ".warm-fail")
+        assert sidecar.read_text() == "WARM RESUME PANIC: snapshot unrestorable"
+        assert console_log.read_text() == ""  # cold retry truncated the live log
+
     def test_up_cached_cold_records_identity(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -750,7 +794,7 @@ class TestLifecycle:
         backend.up()
         smp, mem = self._geometry(backend)
         assert boot_cache.read_identity(backend.root) == boot_cache.base_identity(
-            kernel, rootfs, smp, mem
+            kernel, rootfs, smp, mem, "tcg"
         )
 
     def test_up_cached_cold_skips_checkpoint_when_boot_times_out(

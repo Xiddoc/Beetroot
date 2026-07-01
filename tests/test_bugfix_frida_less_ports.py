@@ -11,6 +11,7 @@ redroid backend returns the ``unsupported`` sentinel like the vm backend.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,10 @@ from typer.testing import CliRunner
 
 from beetroot import api, cli, compose, config, registry
 from beetroot.config import PortMapping
+
+
+def _ok_proc() -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
 
 def _adb_only_cfg() -> config.InstanceConfig:
@@ -105,3 +110,56 @@ def test_fleet_ls_json_renders_both_rows(isolated_registry: Path, tmp_path: Path
     rows = json.loads(result.stdout)
     assert rows["nofrida"]["frida"] == api.FRIDA_ADDRESS_UNSUPPORTED
     assert rows["withfrida"]["frida"].startswith("localhost:")
+
+
+# ---------------------------------------------------------------------------
+# #272 — instance banners must not KeyError on a Frida-less ports config.
+# ---------------------------------------------------------------------------
+
+_ADB_ONLY_YAML = (
+    "api_version: 3\nandroid:\n  version: 14\nports:\n  - service: adb\n    guest: 5555\n"
+)
+
+
+def test_frida_banner_clause_present_and_absent() -> None:
+    assert cli._frida_banner_clause({"adb": 5555, "frida": 27042}) == "Frida localhost:27042"
+    # The Frida-less map degrades to a note instead of a KeyError (#272).
+    absent = cli._frida_banner_clause({"adb": 5555})
+    assert "Frida localhost:" not in absent
+    assert "unsupported" in absent
+
+
+def test_register_banner_survives_frida_less_config(cli_root: Path) -> None:
+    root = cli_root / "nofrida"
+    root.mkdir()
+    (root / "beetroot.yaml").write_text(_ADB_ONLY_YAML)
+    result = CliRunner().invoke(cli.app, ["register", str(root)])
+    assert result.exit_code == 0, result.stderr
+    assert "ADB localhost:5555" in result.stdout
+    assert "Frida localhost:" not in result.stdout
+
+
+def test_up_banner_survives_frida_less_config(cli_root: Path) -> None:
+    root = cli_root / "nofrida"
+    root.mkdir()
+    (root / "beetroot.yaml").write_text(_ADB_ONLY_YAML)
+    registry.add_allocating("nofrida", root)
+    with patch("subprocess.run", return_value=_ok_proc()):
+        result = CliRunner().invoke(cli.app, ["up", "nofrida"])
+    assert result.exit_code == 0, result.stderr
+    assert "ADB localhost:5555" in result.stdout
+    assert "Frida localhost:" not in result.stdout
+
+
+def test_restore_banner_survives_frida_less_config(cli_root: Path) -> None:
+    root = cli_root / "nofrida"
+    root.mkdir()
+    (root / "beetroot.yaml").write_text(_ADB_ONLY_YAML)
+    registry.add_allocating("nofrida", root)
+    snap = CliRunner().invoke(cli.app, ["snapshot", "nofrida"])
+    assert snap.exit_code == 0, snap.stderr
+    CliRunner().invoke(cli.app, ["destroy", "-y", "nofrida"])
+    result = CliRunner().invoke(cli.app, ["restore", str(cli_root / "nofrida.tar.zst")])
+    assert result.exit_code == 0, result.stderr
+    assert "ADB localhost:5555" in result.stdout
+    assert "Frida localhost:" not in result.stdout
