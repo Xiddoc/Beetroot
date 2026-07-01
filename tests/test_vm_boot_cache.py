@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import subprocess
 import threading
@@ -390,3 +391,81 @@ class TestOverlayIdentity:
     def test_discard_overlay_is_idempotent(self, tmp_path: Path) -> None:
         boot_cache.discard_overlay(tmp_path)  # nothing present → no error
         assert not boot_cache.overlay_path(tmp_path).exists()
+
+
+# ---------------------------------------------------------------------------
+# #254: don't re-stream a full SHA-256 over an unchanged (multi-GB) rootfs on
+# every warm-resume staleness check — memoize on (path, size, mtime_ns).
+# ---------------------------------------------------------------------------
+
+
+class TestHashCache:
+    def _spy_hashing(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """Reset the cache and record every path actually re-streamed (cache miss)."""
+        monkeypatch.setattr(boot_cache, "_HASH_CACHE", {})
+        hashed: list[str] = []
+        real_stream = boot_cache._stream_sha256
+
+        def _stream(path: Path) -> str:
+            hashed.append(str(path))
+            return real_stream(path)
+
+        monkeypatch.setattr(boot_cache, "_stream_sha256", _stream)
+        return hashed
+
+    def test_unchanged_rootfs_not_rehashed_on_second_call(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        hashed = self._spy_hashing(monkeypatch)
+        kernel = tmp_path / "bzImage"
+        kernel.write_bytes(b"KERNEL")
+        rootfs = tmp_path / "rootdisk.img"
+        rootfs.write_bytes(b"ROOTFS")
+
+        first = boot_cache.base_identity(kernel, rootfs, 4, 8192)
+        assert sorted(hashed) == [str(kernel), str(rootfs)]  # both hashed once
+
+        hashed.clear()
+        second = boot_cache.base_identity(kernel, rootfs, 4, 8192)
+        assert second == first  # identical fingerprint from the cache
+        assert hashed == []  # nothing re-streamed on the hot path
+
+    def test_size_change_triggers_rehash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        hashed = self._spy_hashing(monkeypatch)
+        kernel = tmp_path / "bzImage"
+        kernel.write_bytes(b"KERNEL")
+        rootfs = tmp_path / "rootdisk.img"
+        rootfs.write_bytes(b"ROOTFS")
+
+        before = boot_cache.base_identity(kernel, rootfs, 4, 8192)
+        hashed.clear()
+
+        # A content edit that bumps size *and* mtime invalidates the cache entry.
+        rootfs.write_bytes(b"REBUILT ROOTFS")
+        after = boot_cache.base_identity(kernel, rootfs, 4, 8192)
+
+        assert after != before  # digest changed with the rebuilt rootfs
+        assert hashed == [str(rootfs)]  # only the changed rootfs was re-streamed
+
+    def test_same_size_content_change_rehashes_via_mtime(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same byte-length but different content: the mtime bump alone must force
+        # a re-stream, so the fingerprint still tracks the new bytes.
+        hashed = self._spy_hashing(monkeypatch)
+        rootfs = tmp_path / "rootdisk.img"
+        rootfs.write_bytes(b"AAAA")
+        kernel = tmp_path / "bzImage"
+        kernel.write_bytes(b"KERNEL")
+
+        before = boot_cache.base_identity(kernel, rootfs, 4, 8192)
+        stat = rootfs.stat()
+        rootfs.write_bytes(b"BBBB")  # same size, new content
+        os.utime(rootfs, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        hashed.clear()
+
+        after = boot_cache.base_identity(kernel, rootfs, 4, 8192)
+        assert after != before
+        assert hashed == [str(rootfs)]  # mtime bump forced a re-stream

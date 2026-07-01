@@ -5,7 +5,7 @@ CLI is built on [Typer](https://typer.tiangolo.com/), so `--help` renders
 as boxed sections with color (via Rich); flag and argument tables in this
 reference mirror the same shape.
 
-After `uv tool install`, invocations are plain `beetroot <verb>` — the tool venv puts `beetroot` directly on your `PATH`. (Contributors hacking on Beetroot from an editable `uv sync` checkout use `uv run beetroot <verb>` instead; see [CLAUDE.md](https://github.com/Xiddoc/Beetroot/blob/main/CLAUDE.md).)
+After `uv tool install`, invocations are plain `beetroot <verb>` — the tool venv puts `beetroot` directly on your `PATH`. (Contributors hacking on Beetroot from an editable `uv sync` checkout use `uv run beetroot <verb>` instead; see [CLAUDE.md](https://github.com/Xiddoc/Beetroot/blob/master/CLAUDE.md).)
 
 Beetroot's path model is Docker-inspired: an instance is any directory on disk containing a `beetroot.yaml`. The CLI discovers the current instance by walking up from `cwd` like `git` walks up to find `.git`. The cross-instance registry — name → absolute path — lives at `~/.config/beetroot/instances.json` (respects `XDG_CONFIG_HOME`).
 

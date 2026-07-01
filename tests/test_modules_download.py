@@ -171,6 +171,32 @@ class TestFetchUrlErrors:
             staged = modules_download.stage_for_instance(instance_root, cfg)
         assert staged[0].name == "module.zip"
 
+    def test_short_read_vs_content_length_raises_and_caches_nothing(
+        self, instance_root: Path
+    ) -> None:
+        # A clean short read (Content-Length advertises more bytes than the body
+        # actually yields) must be rejected before publishing so a truncated zip
+        # is never cached and re-served (#261).
+        url = "https://example.com/mod.zip"
+        cfg = InstanceConfig(modules=[Module(url=url)])
+        resp = _make_url_resp(content_length=len(FAKE_ZIP_CONTENT) + 100)
+        with patch("urllib.request.urlopen", return_value=resp):
+            with pytest.raises(modules_download.ModuleFetchError, match="truncated"):
+                modules_download.stage_for_instance(instance_root, cfg)
+        # No cached artifact left behind — the temp was unlinked, not published.
+        cache_path = modules_download._cache_path_for_url(url)
+        assert not cache_path.exists()
+        assert list(cache_path.parent.glob("*")) == []
+
+    def test_exact_content_length_match_succeeds(self, instance_root: Path) -> None:
+        # The check must not fire on a fully-received body: when bytes-received
+        # equals the advertised Content-Length the fetch publishes normally.
+        cfg = InstanceConfig(modules=[Module(url="https://example.com/mod.zip")])
+        resp = _make_url_resp(content_length=len(FAKE_ZIP_CONTENT))
+        with patch("urllib.request.urlopen", return_value=resp):
+            staged = modules_download.stage_for_instance(instance_root, cfg)
+        assert staged[0].read_bytes() == FAKE_ZIP_CONTENT
+
 
 class TestStageForInstancePathModule:
     def test_absolute_path_module_copies_file(self, instance_root: Path, tmp_path: Path) -> None:

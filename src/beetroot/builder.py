@@ -474,6 +474,31 @@ _DOCKERD_READY_ATTEMPTS: Final[int] = 60
 
 _DEFAULT_DOCKER_VERSION: Final[str] = "27.5.1"
 
+# sha256 of the pinned ``docker-<_DEFAULT_DOCKER_VERSION>.tgz`` static bundle,
+# verified before it is tar-xzf'd into the trusted guest rootfs so a
+# tampered/MITM'd download.docker.com CDN tarball can't ship a backdoored
+# ``dockerd`` into the VM (issue #262, mirroring the kernel-source pin of #184).
+# ``None`` means the literal digest is not yet pinned: verification machinery is
+# in place but the default bundle is treated as an unverified source (a warning
+# is printed) until the real digest is filled in. Bump in lockstep with
+# ``_DEFAULT_DOCKER_VERSION``.
+_DEFAULT_DOCKER_BUNDLE_SHA256: Final[str | None] = None
+
+
+def _default_docker_url(version: str) -> str:
+    """
+    Return the canonical download.docker.com static-bundle URL for ``version``.
+
+    Args:
+        version: The Docker static-bundle version (e.g. ``27.5.1``).
+
+    Returns:
+        The ``https://download.docker.com/.../docker-<version>.tgz`` URL — the
+        default :attr:`_RootfsConfig.docker_url` when ``DOCKER_URL`` is unset.
+    """
+    return f"https://download.docker.com/linux/static/stable/x86_64/docker-{version}.tgz"
+
+
 # The default Android version the micro-VM bakes — the SAME single-source-of-
 # truth constant the redroid base-image build and the ``beetroot create``
 # config default read (issue #82). The plain upstream redroid image is derived
@@ -742,6 +767,7 @@ class _RootfsConfig(BaseModel):
     image_size_mb: int = 8192
     docker_version: str = _DEFAULT_DOCKER_VERSION
     docker_url: str
+    docker_url_sha256: str | None = None
     redroid_image: str = _DEFAULT_REDROID_IMAGE
     redroid_tar: Path | None = None
     adbprobe_bin: Path | None = None
@@ -765,7 +791,9 @@ class _RootfsConfig(BaseModel):
         ``DOCKER_URL``, ``REDROID_IMAGE``, ``REDROID_TAR``, ``ADBPROBE_BIN`` and
         ``BUSYBOX_BIN``; the port keeps the same names so existing build
         recipes keep working. The host docker binary comes from Beetroot's own
-        :data:`settings.docker_bin` rather than a bespoke ``DOCKER_BIN``.
+        :data:`settings.docker_bin` rather than a bespoke ``DOCKER_BIN``. A new
+        ``DOCKER_SHA256`` knob (issue #262) pins the expected digest of an
+        overridden bundle so a custom ``DOCKER_URL`` can still be verified.
 
         The redroid image is **derived from ``android_version``** (issue #82)
         via :func:`config.vm_redroid_image` so a default ``beetroot create``
@@ -783,10 +811,16 @@ class _RootfsConfig(BaseModel):
             The resolved :class:`_RootfsConfig`.
         """
         version = os.environ.get("DOCKER_VERSION", _DEFAULT_DOCKER_VERSION)
-        url = os.environ.get(
-            "DOCKER_URL",
-            f"https://download.docker.com/linux/static/stable/x86_64/docker-{version}.tgz",
-        )
+        url = os.environ.get("DOCKER_URL", _default_docker_url(version))
+        # Resolve the digest to verify the bundle against before extraction
+        # (issue #262): an explicit ``DOCKER_SHA256`` always wins; otherwise only
+        # the pinned default URL carries the trusted digest. A ``DOCKER_URL`` /
+        # ``DOCKER_VERSION`` override away from that default leaves it ``None``
+        # (unverified — ``_fetch_static_bundle`` then warns unless the caller
+        # supplies ``DOCKER_SHA256``).
+        sha256 = os.environ.get("DOCKER_SHA256") or None
+        if sha256 is None and url == _default_docker_url(_DEFAULT_DOCKER_VERSION):
+            sha256 = _DEFAULT_DOCKER_BUNDLE_SHA256
         redroid_tar = os.environ.get("REDROID_TAR") or None
         adbprobe_bin = os.environ.get("ADBPROBE_BIN") or None
         return cls(
@@ -796,6 +830,7 @@ class _RootfsConfig(BaseModel):
             image_size_mb=_parse_image_size_mb(os.environ.get("IMAGE_SIZE_MB")),
             docker_version=version,
             docker_url=url,
+            docker_url_sha256=sha256,
             redroid_image=os.environ.get("REDROID_IMAGE", config.vm_redroid_image(android_version)),
             redroid_tar=Path(redroid_tar) if redroid_tar is not None else None,
             adbprobe_bin=Path(adbprobe_bin) if adbprobe_bin is not None else None,
@@ -911,8 +946,37 @@ class _RootfsAssembly:
     def _fetch_static_bundle(self) -> None:
         console.info(f"fetching Docker static bundle {self.cfg.docker_version}")
         self.runner.run(["curl", "-fsSL", self.cfg.docker_url, "-o", str(self.tgz)])
+        # Verify the bundle against its pinned sha256 BEFORE unpacking it into
+        # the trusted guest rootfs, so a tampered/MITM'd CDN download can't ship
+        # a backdoored dockerd (issue #262).
+        self._verify_static_bundle_digest()
         self.docker_extract.mkdir(parents=True, exist_ok=True)
         self.runner.run(["tar", "-xzf", str(self.tgz), "-C", str(self.docker_extract)])
+
+    def _verify_static_bundle_digest(self) -> None:
+        """
+        Verify the downloaded Docker bundle against its pinned sha256, or warn.
+
+        Raises:
+            BootstrapError: If a digest is pinned (default or ``DOCKER_SHA256``)
+                but the downloaded bytes don't match it — a tampered bundle.
+        """
+        expected = self.cfg.docker_url_sha256
+        if expected is None:
+            # No pinned digest: either the literal default digest isn't filled
+            # in yet, or a DOCKER_URL/DOCKER_VERSION override supplied no
+            # DOCKER_SHA256. Extract anyway but make the trust gap explicit.
+            console.warn(
+                f"Docker static bundle {self.cfg.docker_url} is UNVERIFIED "
+                "(no pinned sha256); set DOCKER_SHA256 to verify it (issue #262)"
+            )
+            return
+        actual = hashlib.sha256(self.tgz.read_bytes()).hexdigest()
+        if actual != expected:
+            raise BootstrapError(
+                f"Docker static bundle sha256 mismatch for {self.cfg.docker_url}: "
+                f"expected {expected}, got {actual}; refusing to bake a tampered dockerd"
+            )
 
     def _build_tree(self) -> None:
         console.info(f"assembling rootfs tree in {self.root}")
@@ -1006,7 +1070,13 @@ class _RootfsAssembly:
         tar = self.cfg.redroid_tar
         if tar is None:
             console.info(f"pulling {self.cfg.redroid_image} and saving to a tarball")
-            self.runner.run([settings.docker_bin, "pull", self.cfg.redroid_image])
+            # Pin --platform=linux/amd64: the guest rootfs is hard-x86_64, so on
+            # an arm64 (or other non-x86_64) build host an unpinned pull would
+            # resolve the multi-arch redroid tag to the host's native arch and
+            # bake a wrong-arch image the guest kernel can't run (issue #258).
+            self.runner.run(
+                [settings.docker_bin, "pull", "--platform=linux/amd64", self.cfg.redroid_image]
+            )
             tar = self.work / "redroid.tar"
             self.runner.run([settings.docker_bin, "save", self.cfg.redroid_image, "-o", str(tar)])
 

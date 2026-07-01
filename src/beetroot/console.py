@@ -264,18 +264,21 @@ def table(columns: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
         rows: Sequence of rows; each row is a sequence of cell strings whose
             length must match ``columns``.
     """
+    # Every header and cell is markup-escaped so an instance path containing
+    # ``[brackets]`` renders literally instead of being parsed as a rich tag —
+    # which would silently corrupt the cell or crash with ``MarkupError`` (#259).
     if _stdout_console.is_terminal:
-        t = Table(*columns)
+        t = Table(*(escape(col) for col in columns))
         for row in rows:
-            t.add_row(*row)
+            t.add_row(*(escape(cell) for cell in row))
         _stdout_console.print(t)
         return
 
     t = Table(box=None, pad_edge=False)
     for col in columns:
-        t.add_column(col, overflow="fold", no_wrap=False)
+        t.add_column(escape(col), overflow="fold", no_wrap=False)
     for row in rows:
-        t.add_row(*row)
+        t.add_row(*(escape(cell) for cell in row))
     # Width the render to the longest content line so rich never falls back to
     # its 80-column default and clips a cell with an ellipsis.
     max_cell = max(

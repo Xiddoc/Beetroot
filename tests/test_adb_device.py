@@ -181,7 +181,8 @@ class TestInstallFrida:
             "755",
             "/data/local/tmp/frida-server",
         ]
-        # 3. launch via su
+        # 3. launch via su — stdio detached off the captured adb pipe so
+        #    the long-lived daemon can't wedge subprocess.run (issue #253)
         assert captured_adb[2] == [
             "adb",
             "-s",
@@ -189,7 +190,7 @@ class TestInstallFrida:
             "shell",
             "su",
             "-c",
-            "/data/local/tmp/frida-server &",
+            "/data/local/tmp/frida-server </dev/null >/dev/null 2>&1 &",
         ]
         # 4. adb forward (host_port → device 27042)
         assert captured_adb[3] == [
@@ -1180,3 +1181,145 @@ class TestHealth:
         out = dev.health()
         assert out is sentinel
         assert calls == [dev]
+
+
+def _capture_kwargs(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Stub subprocess.run to record each call's kwargs (returns rc 0)."""
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    recorded: list[dict[str, object]] = []
+
+    def _fake_run(
+        cmd: list[str],
+        *args: object,
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        del args
+        recorded.append(dict(kwargs))
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="emulator-5554\tdevice\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _fake_run)
+    return recorded
+
+
+class TestAdbTimeouts:
+    """Issue #256 — every capturing adb call is bounded by a timeout."""
+
+    def test_serial_is_available_passes_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        recorded = _capture_kwargs(monkeypatch)
+        adb_backend.serial_is_available("emulator-5554")
+        assert recorded[0]["timeout"] == adb_backend._ADB_TIMEOUT_SECONDS
+
+    def test_serial_is_available_unavailable_on_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A wedged adb server that never returns must be reported as
+        # unavailable (a clean False), not left to hang ls/status.
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+        def _hang(cmd: list[str], *args: object, **kwargs: object) -> object:
+            del cmd, args, kwargs
+            raise subprocess.TimeoutExpired(cmd=["adb", "devices"], timeout=5)
+
+        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _hang)
+        assert adb_backend.serial_is_available("emulator-5554") is False
+
+    def test_adb_unchecked_passes_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        recorded = _capture_kwargs(monkeypatch)
+        _make_device()._adb_unchecked("shell", "id")
+        assert recorded[0]["timeout"] == adb_backend._ADB_TIMEOUT_SECONDS
+
+    def test_adb_unchecked_timeout_becomes_failed_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A wedged shell must surface as a non-zero CompletedProcess
+        # (rc 124) rather than propagating TimeoutExpired — so doctor /
+        # status fail cleanly. The synthesized stderr names the timeout.
+        def _hang(cmd: list[str], *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=5)
+
+        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _hang)
+        res = _make_device(serial="emulator-5554")._adb_unchecked("shell", "id")
+        assert res.returncode == 124
+        assert res.stdout == ""
+        assert "timed out" in res.stderr
+
+    def test_adb_unchecked_timeout_preserves_partial_output(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # When the killed adb wrote partial captured output before the
+        # cap fired, that text is carried through on the synthesized row
+        # rather than discarded.
+        # Mixed types on purpose: a ``str`` stdout (the ``text=True``
+        # runtime shape) and a ``bytes`` stderr (what typeshed types the
+        # field as) both normalise to str via ``_as_text``.
+        def _hang(cmd: list[str], *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            raise subprocess.TimeoutExpired(
+                cmd=cmd, timeout=5, output="half\n", stderr=b"warn\n"
+            )
+
+        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _hang)
+        res = _make_device()._adb_unchecked("shell", "id")
+        assert res.returncode == 124
+        assert res.stdout == "half\n"
+        assert res.stderr == "warn\n"
+
+    def test_adb_raises_runtime_error_on_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The checked ``_adb`` wrapper turns the rc-124 timeout row into
+        # the same RuntimeError any non-zero adb exit produces, so the
+        # health checks built on it degrade instead of hanging.
+        def _hang(cmd: list[str], *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=5)
+
+        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _hang)
+        with pytest.raises(RuntimeError, match="rc=124"):
+            _make_device()._adb("shell", "id")
+
+
+class TestInstallFridaDetachesDaemonStdio:
+    """Issue #253 — the frida launch must not wedge subprocess.run."""
+
+    def test_launch_redirects_daemon_stdio(
+        self,
+        captured_adb: list[list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        fake_cached = tmp_path / "frida-server-16.4.10"
+        fake_cached.write_bytes(b"fake-binary")
+        monkeypatch.setattr(frida_download, "download", lambda version: fake_cached)
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+        _make_device(serial="emulator-5554", host_port=27052).install_frida("16.4.10")
+        launch = captured_adb[2]
+        assert launch[-3:] == ["su", "-c", "/data/local/tmp/frida-server </dev/null >/dev/null 2>&1 &"]
+
+    def test_wedged_launch_raises_instead_of_hanging(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        # Belt-and-braces: even if stdio redirection were bypassed and
+        # the launch call itself timed out, the timeout is surfaced as a
+        # RuntimeError (rc 124) rather than blocking install_frida
+        # forever.
+        fake_cached = tmp_path / "frida-server-16.4.10"
+        fake_cached.write_bytes(b"fake-binary")
+        monkeypatch.setattr(frida_download, "download", lambda version: fake_cached)
+        monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+        def _run(cmd: list[str], *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            if "su" in cmd:
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=5)
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("beetroot.backends.adb.subprocess.run", _run)
+        with pytest.raises(RuntimeError, match="rc=124"):
+            _make_device(serial="emulator-5554").install_frida("16.4.10")

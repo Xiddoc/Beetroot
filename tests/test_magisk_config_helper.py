@@ -124,6 +124,28 @@ def test_custom_denylist_csv_parsed(tmp_path: Path) -> None:
     assert sum(1 for q in inserts if "com.x.y" in q) == 1
 
 
+def test_space_padded_denylist_entries_are_trimmed(tmp_path: Path) -> None:
+    # Issue #263: a spaced CSV like ``com.foo, com.bar`` splits on ``,``
+    # into ``com.foo`` and `` com.bar`` (leading space). Enrolling the
+    # untrimmed `` com.bar`` would never match the real package, silently
+    # defeating the denylist. The helper must trim each field so the INSERT
+    # carries the bare package id — and must NOT carry the space-padded form.
+    code, _out, queries = _run_helper(
+        tmp_path,
+        env={"BEETROOT_DENYLIST_PACKAGES": "com.foo, com.bar ,\tcom.tab\t"},
+    )
+    assert code == 0
+    inserts = [q for q in queries if "INSERT OR IGNORE INTO denylist" in q]
+    # Each package is enrolled exactly once, trimmed.
+    assert sum(1 for q in inserts if "('com.foo', 'com.foo')" in q) == 1
+    assert sum(1 for q in inserts if "('com.bar', 'com.bar')" in q) == 1
+    assert sum(1 for q in inserts if "('com.tab', 'com.tab')" in q) == 1
+    # And no INSERT smuggles in a leading/trailing-whitespace package.
+    for q in inserts:
+        assert "(' " not in q, f"untrimmed leading whitespace enrolled: {q!r}"
+        assert " '," not in q, f"untrimmed trailing whitespace enrolled: {q!r}"
+
+
 def test_empty_denylist_skips_inserts(tmp_path: Path) -> None:
     # When the env var is unset / empty, the helper must NOT issue any
     # INSERT — and especially must not SQL'inject an empty

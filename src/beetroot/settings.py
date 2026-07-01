@@ -31,8 +31,23 @@ are decoupled from the instance .env contract.
 
 from __future__ import annotations
 
+import pydantic
 from pydantic import PositiveInt
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class InvalidSettingsError(RuntimeError):
+    """
+    Raised when a ``BEETROOT_*`` environment variable fails validation.
+
+    ``Settings()`` is constructed at import time, *before* ``cli.main()``'s
+    ``try``/``except`` error boundary is reached, so a raw
+    ``pydantic.ValidationError`` (e.g. a non-numeric ``BEETROOT_HTTP_TIMEOUT``)
+    would otherwise escape as an unhandled traceback that bricks even
+    ``beetroot --help`` (#197). Wrapping construction in this domain error and
+    catching it in ``cli.main()`` maps a malformed setting to the friendly
+    ``error: ...`` + exit 1 contract the rest of the CLI upholds.
+    """
 
 
 class Settings(BaseSettings):
@@ -108,4 +123,60 @@ class Settings(BaseSettings):
     vm_adb_connect_timeout: PositiveInt = 60
 
 
-settings = Settings()
+def _build_settings() -> Settings:
+    """
+    Construct :class:`Settings`, mapping a validation failure to a domain error.
+
+    A malformed ``BEETROOT_*`` env var (e.g. a non-numeric ``BEETROOT_HTTP_TIMEOUT``)
+    otherwise raises a raw ``pydantic.ValidationError``. Re-raising as
+    :class:`InvalidSettingsError` lets ``cli.main()`` emit the friendly
+    ``error: ...`` + exit 1 line instead (#197).
+
+    Returns:
+        A validated :class:`Settings` instance.
+
+    Raises:
+        InvalidSettingsError: If any ``BEETROOT_*`` env var fails validation.
+    """
+    try:
+        return Settings()
+    except pydantic.ValidationError as e:
+        raise InvalidSettingsError(f"invalid BEETROOT_* environment variable: {e}") from e
+
+
+class _LazySettings:
+    """
+    Import-safe proxy that defers :class:`Settings` construction to first use.
+
+    Consumers bind this proxy via ``from .settings import settings`` at *their*
+    import time, but the actual env-var validation only runs when an attribute is
+    first read — which happens at CLI *runtime*, inside ``cli.main()``'s error
+    boundary. This is what lets a malformed ``BEETROOT_*`` var map to the friendly
+    ``error: ...`` + exit 1 line instead of a raw traceback that bricks even
+    ``beetroot --help`` at import (#197). The resolved instance is cached, so the
+    env is read at most once per process.
+    """
+
+    __slots__ = ("_resolved",)
+
+    def __init__(self) -> None:
+        self._resolved: Settings | None = None
+
+    def _get(self) -> Settings:
+        """
+        Return the cached :class:`Settings`, building it on first access.
+        """
+        if self._resolved is None:
+            self._resolved = _build_settings()
+        return self._resolved
+
+    def __getattr__(self, name: str) -> object:
+        # __slots__ + the leading-underscore guard keep this from recursing on
+        # ``self._resolved``; every other attribute routes to the real Settings.
+        return getattr(self._get(), name)
+
+
+# The runtime object is the lazy proxy (import-safe), but every attribute it
+# forwards is a real ``Settings`` field, so it's typed as ``Settings`` for
+# consumers — mypy sees ``settings.http_timeout: int`` etc.
+settings: Settings = _LazySettings()  # type: ignore[assignment]  # proxy forwards to Settings

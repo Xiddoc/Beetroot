@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import functools
 import re
 import shlex
 import shutil
@@ -893,10 +894,18 @@ class Instance:
         """
         return self._cfg
 
-    @property
+    @functools.cached_property
     def index(self) -> int:
         """
         The instance's allocated port index (stride-of-10 base).
+
+        Memoized: ``ports`` / ``adb_address`` / ``frida_address`` all key off
+        this, so caching collapses their repeated ``registry.get`` lookups into
+        a single read per ``Instance`` — cutting the redundant ``instances.json``
+        reads a whole-fleet ``ls`` / ``status`` incurred (#230). The
+        disappearance contract is preserved: :meth:`_meta` still raises
+        :class:`InstanceNotFoundError` on the first access if the row is gone,
+        and a raised exception is never cached.
         """
         return self._meta().index
 
@@ -922,8 +931,16 @@ class Instance:
     def frida_address(self) -> str:
         """
         ``localhost:<frida_port>`` — what ``frida -H`` should target.
+
+        A valid Frida-less ``ports:`` config (adb only, no ``frida`` service)
+        has no ``frida`` key in :func:`ports.well_known`, so return the
+        :data:`FRIDA_ADDRESS_UNSUPPORTED` sentinel rather than crashing the
+        whole-fleet ``ls`` with a ``KeyError`` — mirroring the vm backend (#158).
         """
-        return f"localhost:{ports.well_known(self.ports)['frida']}"
+        wk = ports.well_known(self.ports)
+        if "frida" not in wk:
+            return FRIDA_ADDRESS_UNSUPPORTED
+        return f"localhost:{wk['frida']}"
 
     @property
     def status(self) -> compose.ComposeStatus:
@@ -1214,7 +1231,7 @@ class Instance:
                     "pass a version explicitly (e.g. install_frida('16.4.10'))"
                 )
             version = self._cfg.frida.version
-        frida_download.stage_for_instance(self._root, version)
+        frida_download.stage_for_instance(self._root, version, binder=self._cfg.binder)
 
     def frida_cli(self, args: Sequence[str]) -> int:
         """
@@ -1368,12 +1385,16 @@ class Instance:
         paths.instance_compose_override(self._root).write_text(
             config.render_compose_ports_override(new_ports)
         )
-        # Always place the placeholder, even when frida is configured.
-        # ``_stage_network`` overwrites it with the real binary on
-        # success; on a network failure the placeholder survives so
-        # the bind-mount target exists and the compose ``up`` doesn't
-        # fail at mount-resolution time.
-        frida_download.stage_empty(self._root)
+        # Place the empty placeholder only when there's no usable real binary
+        # to preserve. Previously this ran unconditionally, zeroing a working
+        # frida-server *before* ``_stage_network`` re-downloaded it — so a
+        # failed cache-miss re-fetch left Frida disabled (#165). When frida is
+        # configured AND a non-empty binary already exists, leave it intact and
+        # let ``_stage_network`` atomically swap in the fresh one on success.
+        frida_path = paths.instance_frida(self._root)
+        has_real_binary = frida_path.exists() and frida_path.stat().st_size > 0
+        if self._cfg.frida is None or not has_real_binary:
+            frida_download.stage_empty(self._root)
 
     def _stage_network(self) -> None:
         """
@@ -1390,6 +1411,7 @@ class Instance:
                 self._root,
                 self._cfg.frida.version,
                 expected_sha256=self._cfg.frida.sha256,
+                binder=self._cfg.binder,
             )
         modules_download.stage_for_instance(self._root, self._cfg)
 
@@ -1421,7 +1443,10 @@ class Instance:
         """
         wk = ports.well_known(self.ports)
         adb_port = wk["adb"]
-        frida_port = wk["frida"]
+        # A valid Frida-less ``ports:`` config has no ``frida`` key; a 0 port is
+        # fine because the frida check below is gated on ``self._cfg.frida is not
+        # None`` and renders a disabled/skip row rather than probing (#158).
+        frida_port = wk.get("frida", 0)
         checks: dict[str, CheckResult] = {}
         # compose.status: pass iff the container is running. The compose
         # Literal vocabulary is closed (see compose.ComposeStatus); any
@@ -1552,16 +1577,13 @@ def _check_port_collisions(name: str, new_ports: list[ports.ResolvedPort]) -> No
     The CLI wraps this in its own friendly-error formatter; the OOP
     surface raises a plain ``ValueError`` so programmatic callers can
     catch a stdlib exception.
+
+    Delegates to :func:`registry.assert_no_port_collision`, which performs the
+    sibling read + collision decision inside the exclusive registry lock so two
+    concurrent ``apply``/``create`` operations pinning the same ``host:`` port
+    can't both slip past an unlocked precheck and double-bind at ``up`` (#183).
     """
-    others = {n: p for n, p in registry.all_resolved_host_ports().items() if n != name}
-    collision = registry.find_port_collision(new_ports, others)
-    if collision is None:
-        return
-    port, other_name, kind = collision
-    raise ValueError(
-        f"port {port} ({kind}) collides with instance {other_name!r} "
-        f"(which also uses {port}). Pin or remove one."
-    )
+    registry.assert_no_port_collision(name, new_ports)
 
 
 class Manager:

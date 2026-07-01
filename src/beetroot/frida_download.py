@@ -14,16 +14,40 @@ from __future__ import annotations
 import hashlib
 import lzma
 import os
+import platform
 import shutil
 import subprocess
 import tempfile
 import urllib.error
 import urllib.request
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Final
 
 from . import config, console, paths
 from .settings import settings
+
+# The frida-server architecture ``download`` should fetch, set by
+# ``stage_for_instance`` to the backend-resolved arch around its call (#189).
+# Kept as a context var rather than a ``download`` parameter so the public
+# ``download`` signature stays stable for existing test doubles; ``None`` means
+# "use the ``settings.frida_arch`` default" (resolved in ``cached_binary`` /
+# ``release_url``).
+_active_arch: ContextVar[str | None] = ContextVar("_active_arch", default=None)
+
+# Host machine strings (``platform.machine()``) mapped to the frida-server
+# architecture suffix redroid expects for a ``binder: host|auto`` instance,
+# which runs the Android userspace directly against the host kernel (#189).
+_MACHINE_TO_FRIDA_ARCH: Final[dict[str, str]] = {
+    "aarch64": "android-arm64",
+    "arm64": "android-arm64",
+    "x86_64": "android-x86_64",
+    "amd64": "android-x86_64",
+}
+
+# The ``binder: vm`` guest is an x86_64 micro-VM by design, so its frida-server
+# is always the x86_64 build regardless of the host machine.
+_VM_FRIDA_ARCH: Final = "android-x86_64"
 
 # GitHub's per-repo "latest release" endpoint 302-redirects to the concrete
 # ``.../releases/tag/<version>`` URL, so following the redirect and reading the
@@ -50,19 +74,49 @@ class FridaFetchError(RuntimeError):
     """
 
 
-def release_url(version: str) -> str:
+def resolve_frida_arch(binder: str) -> str:
+    """
+    Resolve the frida-server architecture suffix for a given backend.
+
+    An explicit ``BEETROOT_FRIDA_ARCH`` always wins (the researcher pinned a
+    cross-arch build on purpose). Otherwise the arch is backend-aware: a
+    ``binder: vm`` instance always uses the x86_64 build (its guest is an
+    x86_64 micro-VM), while a ``binder: host|auto`` instance runs Android
+    directly against the host kernel, so the arch is detected from
+    :func:`platform.machine` — an aarch64 host stages ``android-arm64`` rather
+    than an x86_64 ELF that never launches on ARM (#189). An unrecognized host
+    machine falls back to the ``settings.frida_arch`` default so behaviour is
+    never worse than before.
+
+    Args:
+        binder: The instance's ``binder`` mode (``auto`` / ``host`` / ``vm``).
+
+    Returns:
+        The frida-server architecture suffix (e.g. ``android-arm64``).
+    """
+    if os.environ.get("BEETROOT_FRIDA_ARCH"):
+        return settings.frida_arch
+    if binder == "vm":
+        return _VM_FRIDA_ARCH
+    return _MACHINE_TO_FRIDA_ARCH.get(platform.machine().lower(), settings.frida_arch)
+
+
+def release_url(version: str, *, arch: str | None = None) -> str:
     """
     Return the GitHub download URL for a frida-server release.
 
     Args:
         version: The frida release tag (e.g. ``16.4.10``).
+        arch: The frida-server architecture suffix; defaults to
+            ``settings.frida_arch`` when not supplied by a backend-aware caller.
 
     Returns:
         The full HTTPS URL to the ``.xz`` compressed binary.
     """
+    arch = arch if arch is not None else settings.frida_arch
     return (
         f"https://github.com/frida/frida/releases/download/{version}/"
-        f"frida-server-{version}-{settings.frida_arch}.xz"
+        f"frida-server-{version}-{arch}.xz"
     )
 
 
@@ -166,17 +220,21 @@ def frida_cache_dir() -> Path:
     return paths.user_cache_dir("frida")
 
 
-def cached_binary(version: str) -> Path:
+def cached_binary(version: str, *, arch: str | None = None) -> Path:
     """
     Return the cache path for a decompressed frida-server binary.
 
     Args:
         version: The frida release tag.
+        arch: The frida-server architecture suffix; defaults to
+            ``settings.frida_arch``. Included in the filename so an aarch64
+            and an x86_64 build of the same version cache side by side (#189).
 
     Returns:
         Path under the user-global Frida cache where the binary lives.
     """
-    return frida_cache_dir() / f"frida-server-{version}-{settings.frida_arch}"
+    arch = arch if arch is not None else settings.frida_arch
+    return frida_cache_dir() / f"frida-server-{version}-{arch}"
 
 
 def download(version: str, *, expected_sha256: str | None = None) -> Path:
@@ -188,6 +246,12 @@ def download(version: str, *, expected_sha256: str | None = None) -> Path:
     (or freshly-downloaded) binary's digest is compared against it
     and a ``ValueError`` is raised on mismatch — guards against a
     hostile mirror substituting the upstream release.
+
+    The architecture suffix is read from the ``_active_arch`` context var
+    (default ``settings.frida_arch``), which :func:`stage_for_instance` sets to
+    the backend-resolved arch around its call (#189). Keeping it out of the
+    signature preserves ``download``'s public shape so existing test doubles
+    stay assignment-compatible.
 
     Args:
         version: The frida release tag to download.
@@ -203,13 +267,14 @@ def download(version: str, *, expected_sha256: str | None = None) -> Path:
         ValueError: If ``expected_sha256`` is set and doesn't match
             the binary's actual digest.
     """
-    out = cached_binary(version)
+    arch = _active_arch.get()
+    out = cached_binary(version, arch=arch)
     if out.exists() and out.stat().st_size > 0:
         _check_sha256(out, expected_sha256)
         return out
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    url = release_url(version)
+    url = release_url(version, arch=arch)
     # Stage into a process-unique temp on the cache filesystem so two concurrent
     # fetches of the same version can't write a shared fixed ``.tmp`` and publish
     # a cross-contaminated binary via the atomic rename (#185). The compressed
@@ -332,6 +397,7 @@ def stage_for_instance(
     version: str,
     *,
     expected_sha256: str | None = None,
+    binder: str = "auto",
 ) -> Path:
     """
     Copy the cached frida-server binary into the instance's directory.
@@ -349,6 +415,8 @@ def stage_for_instance(
             :func:`download` for integrity verification. Comparison
             is case-insensitive. Only valid with a pinned ``version``
             (enforced by :class:`beetroot.config.Frida`).
+        binder: The instance's ``binder`` mode, used to resolve the
+            host-matching frida-server architecture (#189).
 
     Returns:
         Path to the staged binary inside the instance directory.
@@ -361,11 +429,31 @@ def stage_for_instance(
     if resolved != version:
         console.note(f"frida version {version!r} resolved to {resolved}")
     _warn_on_client_skew(resolved, host_version=host_version)
-    src = download(resolved, expected_sha256=expected_sha256)
+    # Publish the backend-resolved arch (e.g. an aarch64 ``host`` instance →
+    # arm64) for ``download`` to read, restoring the prior value afterwards so
+    # nested/sequential stages don't leak arch state.
+    arch = resolve_frida_arch(binder)
+    token = _active_arch.set(arch)
+    try:
+        src = download(resolved, expected_sha256=expected_sha256)
+    finally:
+        _active_arch.reset(token)
     dst = paths.instance_frida(instance_root)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src, dst)
-    dst.chmod(0o755)
+    # Stage via a process-unique temp beside the target and ``os.replace`` on
+    # success, so a download failure on a *later* re-apply can never truncate a
+    # prior working binary mid-copy (#165). The download itself already
+    # succeeded above, so the copy+swap here is the only remaining window.
+    fd, tmp_name = tempfile.mkstemp(dir=dst.parent, prefix=".frida-server.", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        shutil.copyfile(src, tmp)
+        tmp.chmod(0o755)
+        tmp.replace(dst)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return dst
 
 

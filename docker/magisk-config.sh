@@ -98,11 +98,34 @@ if [ -n "$DENYLIST_PACKAGES" ]; then
     # shellcheck disable=SC2086  # word-splitting on IFS=, is the point.
     set -- $DENYLIST_PACKAGES
     IFS="$OLD_IFS"
+    # Whitespace to strip from each field: a literal space and a literal
+    # tab. Built via printf so no raw tab has to live in the source (which
+    # would trip shfmt) — toybox printf honours \t.
+    trim_ws="$(printf ' \t')"
     for pkg in "$@"; do
-        # Skip empty fields produced by trailing / leading commas.
-        # The pydantic regex in T1 already rejected empty entries at
-        # config-load time, but defend at the boundary too in case a
-        # hand-crafted .env arrives via the raw compose escape hatch.
+        # Trim leading / trailing space and tab so a spaced CSV like
+        # ``com.foo, com.bar`` enrols ``com.bar`` and not `` com.bar`` — a
+        # leading space never matches the real package, silently defeating
+        # the denylist (issue #263). Toybox sh has no ``${var//}`` or a
+        # coreutils ``xargs``, so strip one char at a time with POSIX
+        # ``case`` + parameter expansion.
+        while :; do
+            case "$pkg" in
+            [$trim_ws]*) pkg="${pkg#?}" ;;
+            *) break ;;
+            esac
+        done
+        while :; do
+            case "$pkg" in
+            *[$trim_ws]) pkg="${pkg%?}" ;;
+            *) break ;;
+            esac
+        done
+        # Skip empty fields produced by trailing / leading commas, or a
+        # field that was pure whitespace and trimmed away to nothing. The
+        # pydantic regex in T1 already rejected empty entries at config-load
+        # time, but defend at the boundary too in case a hand-crafted .env
+        # arrives via the raw compose escape hatch.
         if [ -z "$pkg" ]; then
             continue
         fi

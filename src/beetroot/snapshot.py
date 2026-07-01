@@ -43,6 +43,12 @@ MANIFEST_FILENAME = ".beetroot-snapshot.json"
 INSTANCE_LOCK_FILENAME = ".beetroot.lock"
 SCHEMA_VERSION = 1
 _ARCHIVE_SUFFIX = ".tar.zst"
+# Decompression-bomb ceiling: a snapshot's zstd stream can inflate to
+# far more than its on-disk size, so restore caps the total decompressed
+# payload it will extract. 64 GiB is a generous headroom over any real
+# ``/data`` snapshot while still refusing a maliciously crafted archive
+# that would otherwise exhaust host disk during extraction.
+_MAX_EXTRACT_BYTES = 64 * 1024 * 1024 * 1024
 # .env is regenerated from beetroot.yaml on the next apply. The
 # manifest itself is excluded because the archive's *root*-level
 # manifest is the authoritative one; if a previous restore left a
@@ -179,8 +185,12 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
     relative paths like ``./beetroot.yaml``, ``./data/...``,
     ``./modules/...``). The ``.env`` file is deliberately excluded —
     it's regenerated from ``beetroot.yaml`` on the next
-    ``beetroot apply``. The manifest is written as the archive's last
-    member.
+    ``beetroot apply``. The manifest is written as the archive's FIRST
+    member (#265) so :func:`read_manifest` can early-exit after reading a
+    few KiB rather than streaming/decompressing the whole archive to reach
+    a trailing manifest; an older archive that carried the manifest last
+    still restores because :func:`read_manifest` matches by member name,
+    wherever it sits.
 
     Holds a SHARED ``fcntl.flock`` on ``<instance_root>/.beetroot.lock``
     for the duration of the archive write — multiple snapshots can run
@@ -242,8 +252,11 @@ def snapshot(instance_root: Path, dest: Path) -> Path:
         cctx.stream_writer(raw_out) as zst,
         tarfile.open(fileobj=zst, mode="w|") as tar,
     ):
-        _add_instance_tree(tar, instance_root, final_dest)
+        # Manifest FIRST (#265): read_manifest early-exits on the first
+        # matching member, so a leading manifest lets restore read it
+        # after decompressing only a few KiB instead of the whole tree.
         _add_manifest(tar, manifest)
+        _add_instance_tree(tar, instance_root, final_dest)
     return final_dest
 
 
@@ -672,7 +685,19 @@ def _extract_archive_into(archive: Path, target: Path) -> None:
         dctx.stream_reader(raw_in) as zst,
         tarfile.open(fileobj=zst, mode="r|") as tar,
     ):
+        # Cap the cumulative decompressed size (#265, folded low-severity
+        # zstd-bomb finding): a hostile archive could inflate to fill the
+        # host disk, so refuse past a generous ceiling before extracting
+        # the offending member.
+        total = 0
         for member in tar:
+            total += member.size
+            if total > _MAX_EXTRACT_BYTES:
+                raise SnapshotError(
+                    f"archive {archive} exceeds the {_MAX_EXTRACT_BYTES}-byte "
+                    "decompressed-size cap; refusing to extract (possible "
+                    "decompression bomb)"
+                )
             tar.extract(member, path=target, filter="data")
     if not paths.instance_yaml(target).is_file():
         raise SnapshotError(

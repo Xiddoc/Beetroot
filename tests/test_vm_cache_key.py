@@ -103,3 +103,47 @@ def test_cli_prints_key(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> N
     assert rc == 0
     out = capsys.readouterr().out.strip()
     assert out == vm_cache_key.compute_cache_key([a, b])
+
+
+# ---------------------------------------------------------------------------
+# #254: hash_file memoizes on (path, size, mtime_ns) and stays byte-for-byte in
+# parity with beetroot.vm.boot_cache._hash_file (same streamed SHA-256).
+# ---------------------------------------------------------------------------
+
+
+def test_hash_file_matches_boot_cache_hash(tmp_path: Path) -> None:
+    from beetroot.vm import boot_cache
+
+    f = _write(tmp_path / "rootdisk.img", b"x" * (2 * 1024 * 1024 + 3))
+    assert vm_cache_key.hash_file(f) == boot_cache._hash_file(f)
+
+
+def test_hash_file_reuses_cache_for_unchanged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(vm_cache_key, "_HASH_CACHE", {})
+    streamed: list[str] = []
+    real_stream = vm_cache_key._stream_sha256
+
+    def _stream(path: Path) -> str:
+        streamed.append(str(path))
+        result: str = real_stream(path)
+        return result
+
+    monkeypatch.setattr(vm_cache_key, "_stream_sha256", _stream)
+    f = _write(tmp_path / "rootdisk.img", b"rootfs")
+    first = vm_cache_key.hash_file(f)
+    assert streamed == [str(f)]  # streamed once
+    streamed.clear()
+    assert vm_cache_key.hash_file(f) == first
+    assert streamed == []  # served from the cache, not re-streamed
+
+
+def test_hash_file_rehashes_when_size_or_mtime_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(vm_cache_key, "_HASH_CACHE", {})
+    f = _write(tmp_path / "rootdisk.img", b"rootfs")
+    before = vm_cache_key.hash_file(f)
+    _write(f, b"rootfs-rebuilt")  # size + mtime change
+    assert vm_cache_key.hash_file(f) != before

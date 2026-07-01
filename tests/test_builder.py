@@ -1305,7 +1305,7 @@ class TestRootfsAssembly:
         assert (root / "lib64" / "ld-linux.so").is_file()
         assert (root / "tmp").stat().st_mode & 0o1777 == 0o1777
         # The redroid image was baked via pull + save + a staging dockerd.
-        assert ["docker", "pull", cfg.redroid_image] in runner.runs
+        assert ["docker", "pull", "--platform=linux/amd64", cfg.redroid_image] in runner.runs
         assert runner.spawns
         assert runner.background.stopped == 1
         # issue #82: the baked Android version is recorded beside the image,
@@ -1422,6 +1422,17 @@ class TestRootfsAssembly:
         assert not any("pull" in c for c in runner.runs)
         assert not any("save" in c for c in runner.runs)
 
+    def test_pull_pins_amd64_platform(self, tmp_path: Path) -> None:
+        # issue #258: the guest rootfs is hard-x86_64; the pull must pin
+        # linux/amd64 so a non-x86_64 build host doesn't bake a wrong-arch image.
+        cfg = _make_rootfs_config(tmp_path)
+        runner = FakeRootfsRunner()
+        _run_assembly(tmp_path, runner, cfg)
+        pull = next(c for c in runner.runs if len(c) > 1 and c[1] == "pull")
+        assert "--platform=linux/amd64" in pull
+        # The pin precedes the image ref (docker parses flags before the arg).
+        assert pull.index("--platform=linux/amd64") < pull.index(cfg.redroid_image)
+
     def test_staging_dockerd_never_ready_raises(self, tmp_path: Path) -> None:
         cfg = _make_rootfs_config(tmp_path)
         runner = FakeRootfsRunner(info_ready=False)
@@ -1436,12 +1447,43 @@ class TestRootfsAssembly:
         with pytest.raises(BootstrapError, match="curl"):
             _run_assembly(tmp_path, runner, cfg)
 
+    def test_matching_digest_allows_extract(self, tmp_path: Path) -> None:
+        # issue #262: a pinned sha256 that matches the downloaded bundle lets the
+        # bake proceed and unpack the bundle into the trusted rootfs.
+        good = hashlib.sha256(b"tgz").hexdigest()  # the fake curl writes b"tgz"
+        cfg = _make_rootfs_config(tmp_path, docker_url_sha256=good)
+        runner = FakeRootfsRunner()
+        _run_assembly(tmp_path, runner, cfg)
+        assert (tmp_path / "work" / "root" / "bin" / "dockerd").is_file()
+
+    def test_mismatched_digest_aborts_before_extract(self, tmp_path: Path) -> None:
+        # issue #262: a tampered bundle (digest mismatch) aborts the bake before
+        # the untrusted bytes are ever tar-xzf'd into the guest rootfs.
+        cfg = _make_rootfs_config(tmp_path, docker_url_sha256="0" * 64)
+        runner = FakeRootfsRunner()
+        with pytest.raises(BootstrapError, match="sha256 mismatch"):
+            _run_assembly(tmp_path, runner, cfg)
+        assert not any(c and c[0] == "tar" for c in runner.runs)
+
+    def test_absent_digest_warns_but_proceeds(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # issue #262: with no pinned digest (override without DOCKER_SHA256, or
+        # the default digest not yet filled in) the bake proceeds but prints an
+        # explicit unverified-source warning.
+        cfg = _make_rootfs_config(tmp_path, docker_url_sha256=None)
+        runner = FakeRootfsRunner()
+        _run_assembly(tmp_path, runner, cfg)
+        assert "UNVERIFIED" in capsys.readouterr().err
+        assert (tmp_path / "work" / "root" / "bin" / "dockerd").is_file()
+
 
 class TestRootfsConfigFromEnv:
     def test_defaults_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for var in (
             "DOCKER_VERSION",
             "DOCKER_URL",
+            "DOCKER_SHA256",
             "REDROID_TAR",
             "ADBPROBE_BIN",
             "IMAGE_SIZE_MB",
@@ -1452,6 +1494,9 @@ class TestRootfsConfigFromEnv:
         cfg = builder._RootfsConfig.from_env(out_image=Path("/o.img"), vm_dir=Path("/vm"))
         assert cfg.docker_version == "27.5.1"
         assert cfg.docker_url.endswith("docker-27.5.1.tgz")
+        # issue #262: the default bundle carries the pinned digest (currently
+        # None until the literal sha256 is filled in — deferred).
+        assert cfg.docker_url_sha256 == builder._DEFAULT_DOCKER_BUNDLE_SHA256
         assert cfg.redroid_tar is None
         assert cfg.adbprobe_bin is None
         assert cfg.image_size_mb == 8192
@@ -1506,6 +1551,37 @@ class TestRootfsConfigFromEnv:
         cfg = builder._RootfsConfig.from_env(out_image=Path("/o.img"), vm_dir=Path("/vm"))
         assert cfg.docker_url == "http://mirror.invalid/d.tgz"
         assert cfg.redroid_tar is None
+
+    def test_docker_url_override_without_sha_is_unverified(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # issue #262: overriding DOCKER_URL away from the pinned default without
+        # a DOCKER_SHA256 leaves the digest unresolved (bundle is unverified).
+        monkeypatch.setenv("DOCKER_URL", "http://mirror.invalid/d.tgz")
+        monkeypatch.delenv("DOCKER_SHA256", raising=False)
+        cfg = builder._RootfsConfig.from_env(out_image=Path("/o.img"), vm_dir=Path("/vm"))
+        assert cfg.docker_url_sha256 is None
+
+    def test_docker_sha256_env_pins_override_digest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # issue #262: an explicit DOCKER_SHA256 lets a custom bundle still be
+        # verified, and wins even over a default URL.
+        monkeypatch.setenv("DOCKER_URL", "http://mirror.invalid/d.tgz")
+        monkeypatch.setenv("DOCKER_SHA256", "a" * 64)
+        cfg = builder._RootfsConfig.from_env(out_image=Path("/o.img"), vm_dir=Path("/vm"))
+        assert cfg.docker_url_sha256 == "a" * 64
+
+    def test_docker_version_override_drops_default_digest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # issue #262: bumping DOCKER_VERSION shifts the default URL off the pin,
+        # so the pinned default digest no longer applies.
+        monkeypatch.setenv("DOCKER_VERSION", "26.0.0")
+        monkeypatch.delenv("DOCKER_URL", raising=False)
+        monkeypatch.delenv("DOCKER_SHA256", raising=False)
+        cfg = builder._RootfsConfig.from_env(out_image=Path("/o.img"), vm_dir=Path("/vm"))
+        assert cfg.docker_url_sha256 is None
 
 
 class TestRootfsVersionMarker:

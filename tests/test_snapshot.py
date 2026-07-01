@@ -1102,3 +1102,107 @@ class TestAdbBackendBranchCoverage:
         # rmtree when it didn't create the directory.
         assert target.exists()
         assert registry.get("beta") is None
+
+
+class TestManifestFirstMember:
+    """#265: the manifest is packed FIRST so read_manifest early-exits."""
+
+    def test_manifest_is_first_archive_member(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        src = _make_instance(tmp_path / "alpha")
+        (src / "frida-server").write_bytes(b"")
+        registry.add_allocating("alpha", src)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+
+        members = _list_archive_members(archive)
+        assert members[0] == f"./{snapshot.MANIFEST_FILENAME}", (
+            f"manifest must be the first member, got order: {members}"
+        )
+
+    def test_read_manifest_stops_after_first_member(
+        self, isolated_registry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With the manifest first, read_manifest must extract exactly ONE
+        # member (the manifest) and not stream the rest of the tree. Spy
+        # on TarFile.extractfile to count how many members it pulls.
+        src = _make_instance(tmp_path / "alpha", data_bytes=b"Y" * 50_000)
+        registry.add_allocating("alpha", src)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+
+        calls = 0
+        real_extractfile = tarfile.TarFile.extractfile
+
+        def _counting_extractfile(self: tarfile.TarFile, member: object):  # type: ignore[no-untyped-def]
+            nonlocal calls
+            calls += 1
+            return real_extractfile(self, member)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(tarfile.TarFile, "extractfile", _counting_extractfile)
+        manifest = snapshot.read_manifest(archive)
+        assert manifest.name == "alpha"
+        assert calls == 1, f"read_manifest pulled {calls} members; expected exactly 1"
+
+    def test_old_manifest_last_archive_still_restores(
+        self, isolated_registry: Path, tmp_path: Path
+    ) -> None:
+        # Backward compatibility: an archive whose manifest is the LAST
+        # member (the pre-#265 layout) must still read + restore. Build one
+        # by hand with the manifest written after the tree.
+        old_archive = tmp_path / "old.tar.zst"
+        manifest_bytes = _VALID_MANIFEST_BYTES
+        cctx = zstandard.ZstdCompressor()
+        with old_archive.open("wb") as raw, cctx.stream_writer(raw) as zst:
+            with tarfile.open(fileobj=zst, mode="w|") as tar:
+                yaml_payload = _MIN_YAML.encode()
+                yaml_info = tarfile.TarInfo(name="./beetroot.yaml")
+                yaml_info.size = len(yaml_payload)
+                yaml_info.mode = 0o644
+                tar.addfile(yaml_info, io.BytesIO(yaml_payload))
+                data_info = tarfile.TarInfo(name="./data/marker.txt")
+                data_info.size = len(b"old")
+                data_info.mode = 0o644
+                tar.addfile(data_info, io.BytesIO(b"old"))
+                # Manifest LAST, mirroring the pre-#265 archive layout.
+                man_info = tarfile.TarInfo(name=f"./{snapshot.MANIFEST_FILENAME}")
+                man_info.size = len(manifest_bytes)
+                man_info.mode = 0o644
+                tar.addfile(man_info, io.BytesIO(manifest_bytes))
+
+        # read_manifest tolerates the trailing manifest.
+        assert snapshot.read_manifest(old_archive).name == "alpha"
+        # And a full restore still works end to end.
+        restored = snapshot.restore(old_archive, dest_name="beta", dest_path=tmp_path / "beta")
+        assert (restored / "data" / "marker.txt").read_bytes() == b"old"
+        assert registry.get("beta") is not None
+
+
+class TestExtractSizeCap:
+    """#265 folded finding: restore refuses an oversized decompressed payload."""
+
+    def test_oversized_archive_raises(
+        self, isolated_registry: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Lower the cap so a normal small archive trips it, exercising the
+        # decompression-bomb guard without materialising 64 GiB on disk.
+        src = _make_instance(tmp_path / "alpha", data_bytes=b"Z" * 4096)
+        registry.add_allocating("alpha", src)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+        registry.remove("alpha")
+
+        monkeypatch.setattr(snapshot, "_MAX_EXTRACT_BYTES", 100)
+        with pytest.raises(snapshot.SnapshotError, match="decompression bomb"):
+            snapshot.restore(archive, dest_name="beta", dest_path=tmp_path / "beta")
+        # The half-created target and registry row were rolled back.
+        assert not (tmp_path / "beta").exists()
+        assert registry.get("beta") is None
+
+    def test_within_cap_restores(self, isolated_registry: Path, tmp_path: Path) -> None:
+        # Control: an archive comfortably under the cap restores normally.
+        src = _make_instance(tmp_path / "alpha", data_bytes=b"small")
+        registry.add_allocating("alpha", src)
+        archive = snapshot.snapshot(src, tmp_path / "out")
+        registry.remove("alpha")
+
+        restored = snapshot.restore(archive, dest_name="beta", dest_path=tmp_path / "beta")
+        assert (restored / "data" / "marker.txt").read_bytes() == b"small"
