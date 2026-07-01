@@ -34,6 +34,6 @@ android:
 magisk:
   denylist:
     - com.google.android.gms
-    - com.google.android.gms.unstable
-    - com.google.android.gms.persistent
+    - com.google.android.gms/com.google.android.gms.unstable
+    - com.google.android.gms/com.google.android.gms.persistent
     - com.android.vending

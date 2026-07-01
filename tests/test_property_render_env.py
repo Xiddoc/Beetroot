@@ -116,3 +116,23 @@ def test_render_env_emits_required_keys(cfg: config.InstanceConfig) -> None:
     }
     missing = required - keys
     assert not missing, f"render_env missing required keys: {missing}"
+
+
+def test_render_env_denylist_slash_entry_is_shell_safe() -> None:
+    """The ``package/process`` denylist entry survives as a shell-safe value.
+
+    issue #170: the default denylist now carries a ``package/process`` entry
+    whose ``/`` rides through the CSV join into ``BEETROOT_DENYLIST_PACKAGES``.
+    ``/`` is not a shell-injection vector, so the invariant above holds; this
+    focused case pins that the slash-bearing entry is actually emitted (not
+    dropped) and stays free of the forbidden characters.
+    """
+    cfg = config.InstanceConfig()
+    out = config.render_env("alpha", cfg)
+    denylist_line = next(
+        line for line in out.splitlines() if line.startswith("BEETROOT_DENYLIST_PACKAGES=")
+    )
+    value = denylist_line.partition("=")[2]
+    assert "com.google.android.gms/com.google.android.gms.unstable" in value
+    for bad in _INJECTION_CHARS:
+        assert bad not in value

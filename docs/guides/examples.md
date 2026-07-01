@@ -27,10 +27,22 @@ android:
 magisk:
   denylist:
     - com.google.android.gms
-    - com.google.android.gms.unstable
+    - com.google.android.gms/com.google.android.gms.unstable
 ```
 
 Use this when you're testing something that doesn't perform anti-root checks, or when you want the lightest-weight setup with sensible defaults.
+
+!!! note "Denylist entries are `package[/process]`"
+    Each `magisk.denylist` entry is a package, optionally followed by a slash and a **process** that belongs to it (`package/process`). No slash means the process is the package itself. This shape matters because Magisk keys the denylist on `(package_name, process)`: DroidGuard (Play Integrity) runs as the `com.google.android.gms.unstable` **process** of the `com.google.android.gms` package — it is not an installed package of its own. So the schema default enrols it as:
+
+    ```yaml
+    magisk:
+      denylist:
+        - com.google.android.gms
+        - com.google.android.gms/com.google.android.gms.unstable  # DroidGuard process
+    ```
+
+    Enrolling the bare `com.google.android.gms.unstable` as if it were a package matches no installed app, and vanilla (non-Shamiko) Magisk then never hides root in DroidGuard. See the [`magisk` config reference](../reference/config.md#magisk).
 
 ### `stealth.yaml`
 
@@ -54,8 +66,8 @@ android:
 magisk:
   denylist:
     - com.google.android.gms
-    - com.google.android.gms.unstable
-    - com.google.android.gms.persistent
+    - com.google.android.gms/com.google.android.gms.unstable
+    - com.google.android.gms/com.google.android.gms.persistent
     - com.android.vending
 ```
 
@@ -90,7 +102,7 @@ frida:
 magisk:
   denylist:
     - com.google.android.gms
-    - com.google.android.gms.unstable
+    - com.google.android.gms/com.google.android.gms.unstable
 ```
 
 Drop the `frida:` block (or copy `examples/default.yaml`) to turn Frida back off.

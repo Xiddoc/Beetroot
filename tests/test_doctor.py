@@ -66,9 +66,52 @@ class TestDoctorRedroid:
         assert "host.binder: pass" in result.stdout
         assert "adb.connect: pass" in result.stdout
         assert "magisk.zygisk: pass" in result.stdout
+        # issue #170: the default denylist keeps a plain ``com.google.android.gms``
+        # entry alongside the ``package/process`` DroidGuard entry, so the redroid
+        # health check still matches by PACKAGE and enrols the GMS row (pass, not
+        # skip). The SQL keys on package_name, which is now the real package.
+        assert "magisk.denylist.com.google.android.gms: pass" in result.stdout
         # Frida is opt-out by default since v0.3 — minimal-default
         # InstanceConfig has frida=None so frida.handshake skips.
         assert "frida.handshake: skip" in result.stdout
+
+    def test_denylist_process_only_entry_still_enrolls_gms(self, cli_root: Path) -> None:
+        # issue #170 regression: a config whose ONLY GMS entry is the
+        # ``package/process`` form (no bare ``com.google.android.gms``) must
+        # still count as enrolled — the health check matches by the PACKAGE
+        # half, and the SQL keys on package_name (the real package). The
+        # ``.unstable`` string is a PROCESS of com.google.android.gms, never a
+        # package_name of its own.
+        runner.invoke(cli.app, ["create", "alpha"])
+        root = registry.instance_path("alpha")
+        (root / "beetroot.yaml").write_text(
+            "api_version: 8\n"
+            "android:\n  version: 14\n"
+            "magisk:\n"
+            "  denylist:\n"
+            "    - com.google.android.gms/com.google.android.gms.unstable\n"
+        )
+        with patch("subprocess.run", side_effect=_healthy_subprocess):
+            result = runner.invoke(cli.app, ["doctor", "alpha"])
+        assert result.exit_code == 0, (result.stdout, result.stderr)
+        assert "magisk.denylist.com.google.android.gms: pass" in result.stdout
+
+    def test_denylist_without_gms_reports_skip(self, cli_root: Path) -> None:
+        # issue #170: a denylist that names no GMS package leaves the GMS row
+        # unenrolled → ``skip`` (the user opted out), never a phantom ``fail``.
+        runner.invoke(cli.app, ["create", "alpha"])
+        root = registry.instance_path("alpha")
+        (root / "beetroot.yaml").write_text(
+            "api_version: 8\n"
+            "android:\n  version: 14\n"
+            "magisk:\n"
+            "  denylist:\n"
+            "    - com.example.other\n"
+        )
+        with patch("subprocess.run", side_effect=_healthy_subprocess):
+            result = runner.invoke(cli.app, ["doctor", "alpha"])
+        assert result.exit_code == 0, (result.stdout, result.stderr)
+        assert "magisk.denylist.com.google.android.gms: skip" in result.stdout
 
     def test_zygisk_disabled_exits_with_fail_count(self, cli_root: Path) -> None:
         runner.invoke(cli.app, ["create", "alpha"])

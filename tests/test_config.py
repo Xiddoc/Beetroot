@@ -610,32 +610,55 @@ class TestMagiskDenylist:
         cfg = Magisk(denylist=["com.google.android.gms", "com.app_id", "com.x.y.z123"])
         assert cfg.denylist[0] == "com.google.android.gms"
 
+    def test_package_with_process_accepted(self) -> None:
+        # issue #170: the ``package/process`` shape enrols a process of a
+        # package (e.g. the DroidGuard process of GMS) under its REAL
+        # package. Both halves are validated against the package grammar.
+        cfg = Magisk(
+            denylist=["com.google.android.gms/com.google.android.gms.unstable"]
+        )
+        assert cfg.denylist[0] == "com.google.android.gms/com.google.android.gms.unstable"
+
+    def test_package_with_malformed_process_rejected(self) -> None:
+        # The process half is validated against the same grammar; a dash in
+        # it (not part of the Android package-id grammar) is refused.
+        with pytest.raises(ValidationError, match=r"package\[/process\] id"):
+            Magisk(denylist=["com.google.android.gms/bad-proc"])
+
+    def test_package_with_two_slashes_rejected(self) -> None:
+        # Only a single optional '/' is allowed; a second slash is neither a
+        # valid package nor process half.
+        with pytest.raises(ValidationError, match=r"package\[/process\] id"):
+            Magisk(denylist=["com.a/com.b/com.c"])
+
     def test_gms_denylist_default(self) -> None:
-        # The GMS pair is the default so a bare ``beetroot create``
-        # denylists root from GMS out of the box.
+        # issue #170: the default hides root in the GMS main process AND its
+        # ``.unstable`` DroidGuard process, both under the REAL package
+        # ``com.google.android.gms`` — the ``.unstable`` string is a PROCESS,
+        # not a package, so it must ride on the package/process form.
         assert Magisk().denylist == [
             "com.google.android.gms",
-            "com.google.android.gms.unstable",
+            "com.google.android.gms/com.google.android.gms.unstable",
         ]
 
     def test_package_with_space_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="package id"):
+        with pytest.raises(ValidationError, match=r"package\[/process\] id"):
             Magisk(denylist=["com.bad package"])
 
     def test_package_with_semicolon_rejected(self) -> None:
         # SQL-injection probe: a literal "; DROP TABLE settings;" must
         # be rejected by the validator before the helper ever sees it.
-        with pytest.raises(ValidationError, match="package id"):
+        with pytest.raises(ValidationError, match=r"package\[/process\] id"):
             Magisk(denylist=["com.app'; DROP TABLE settings;--"])
 
     def test_package_with_dash_rejected(self) -> None:
         # Dashes are not part of the Android package-id grammar; refuse
         # them so the validator can't drift to a looser shape later.
-        with pytest.raises(ValidationError, match="package id"):
+        with pytest.raises(ValidationError, match=r"package\[/process\] id"):
             Magisk(denylist=["com.bad-package"])
 
     def test_empty_package_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="package id"):
+        with pytest.raises(ValidationError, match=r"package\[/process\] id"):
             Magisk(denylist=[""])
 
     def test_stealth_key_rejected_with_migration_hint(self, tmp_path: Path) -> None:
@@ -1016,12 +1039,14 @@ class TestRenderEnv:
         assert "MEMSWAP_LIMIT=4g" in result
 
     def test_emits_default_denylist_packages(self) -> None:
-        # D1: the default Magisk model carries the GMS pair so a bare
-        # ``beetroot create`` keeps the historical behaviour intact.
+        # issue #170: the default carries the GMS main package plus the
+        # ``.unstable`` DroidGuard process under its real package, joined with
+        # a comma; the ``/`` inside the second entry survives the CSV join.
         cfg = InstanceConfig()
         result = render_env("alpha", cfg)
         assert (
-            "BEETROOT_DENYLIST_PACKAGES=com.google.android.gms,com.google.android.gms.unstable"
+            "BEETROOT_DENYLIST_PACKAGES=com.google.android.gms,"
+            "com.google.android.gms/com.google.android.gms.unstable"
         ) in result
 
     def test_emits_custom_denylist_packages_as_csv(self) -> None:
