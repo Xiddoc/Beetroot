@@ -53,6 +53,38 @@ _DEVICE_PORT = 27042
 _MAGISK_MODULE_DROP = "/sdcard/Download"
 _MAGISK_MODULE_TMP = "/data/local/tmp"
 
+# Wall-clock cap (seconds) on every capturing ``adb`` invocation so a
+# wedged device or a stuck adb server can never hang ``ls`` / ``status``
+# / ``doctor`` indefinitely. Mirrors ``api._check_adb_serial_listed``'s
+# ``timeout=5``; a raised ``subprocess.TimeoutExpired`` is treated as the
+# command having failed / the device being unavailable, never propagated.
+_ADB_TIMEOUT_SECONDS = 5
+
+
+def _as_text(value: str | bytes | None) -> str:
+    """
+    Coerce captured subprocess output to ``str`` (``None`` → empty).
+
+    ``subprocess.run(text=True)`` yields ``str``, but the typeshed stub
+    for :class:`subprocess.TimeoutExpired` exposes ``stdout``/``stderr``
+    as ``bytes | None``. This normaliser keeps the timeout-fallback
+    :class:`~subprocess.CompletedProcess` fields ``str``-typed for mypy
+    and at runtime.
+
+    Args:
+        value: The captured stream, possibly ``str``, ``bytes``, or
+            ``None``.
+
+    Returns:
+        The value as ``str`` — decoded (``errors="replace"``) if it was
+        ``bytes``, or ``""`` if it was ``None``.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return value
+
 
 def _validated_zip_source(source: str) -> Path:
     src = Path(source)
@@ -108,12 +140,19 @@ def serial_is_available(serial: str) -> bool:
 
     if shutil.which(_ADB) is None:
         return False
-    res = subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv is constant
-        [_ADB, "devices"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        res = subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv is constant
+            [_ADB, "devices"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_ADB_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        # A hung adb server would otherwise wedge ``ls`` / ``status``
+        # forever; a device that can't answer within the cap is, for
+        # availability purposes, not reachable.
+        return False
     if res.returncode != 0:
         return False
     for line in res.stdout.splitlines():
@@ -258,9 +297,12 @@ class AdbDevice:
            cache (idempotent — re-runs hit the cached binary).
         2. ``adb push`` the cached binary to ``/data/local/tmp/frida-server``.
         3. ``adb shell chmod 755`` so the binary is executable.
-        4. ``adb shell su -c '/data/local/tmp/frida-server &'`` to
-           background the daemon. Requires the device to be rooted
-           (Magisk / KernelSU / SuperSU all work).
+        4. ``adb shell su -c '/data/local/tmp/frida-server </dev/null
+           >/dev/null 2>&1 &'`` to background the daemon with its stdio
+           detached off the captured adb pipe (so the launch call
+           returns instead of blocking on the daemon's inherited fds).
+           Requires the device to be rooted (Magisk / KernelSU / SuperSU
+           all work).
         5. ``adb forward tcp:<host_port> tcp:27042`` so ``frida -H
            localhost:<host_port>`` reaches the device's Frida socket.
 
@@ -292,7 +334,17 @@ class AdbDevice:
         # caller's responsibility because adb shell strips the outer
         # quotes; we pass the command as a single argv element so the
         # ``&`` reaches the on-device shell, not the host shell.
-        self._adb_shell(["su", "-c", f"{_REMOTE_FRIDA_SERVER} &"])
+        #
+        # The daemon's stdio MUST be detached off the captured adb pipe
+        # (``</dev/null >/dev/null 2>&1``): otherwise the long-lived
+        # frida-server keeps the inherited stdout/stderr fds open and
+        # ``subprocess.run`` (capture_output=True) blocks reading them
+        # for the daemon's whole lifetime, hanging ``install_frida``
+        # forever. Redirecting stdio lets the pipe close as soon as the
+        # foreground ``su`` returns, so the launch call returns promptly.
+        self._adb_shell(
+            ["su", "-c", f"{_REMOTE_FRIDA_SERVER} </dev/null >/dev/null 2>&1 &"],
+        )
         self._adb(
             "forward",
             f"tcp:{self._host_forward_port}",
@@ -631,14 +683,36 @@ class AdbDevice:
     def _adb_unchecked(self, *argv: str) -> subprocess.CompletedProcess[str]:
         """
         Run ``adb -s <serial> <argv...>`` with capture; never raise on non-zero.
+
+        A wedged device or stuck adb server is capped at
+        ``_ADB_TIMEOUT_SECONDS`` and reported as a non-zero
+        :class:`subprocess.CompletedProcess` (returncode 124, the
+        conventional timeout code) rather than left to hang the caller —
+        so ``status`` / ``doctor`` (and the health checks built on
+        ``_adb``) fail cleanly instead of blocking forever.
         """
         full = [_ADB, "-s", self._config.serial, *argv]
-        return subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv built from validated config + caller-pinned strings
-            full,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            return subprocess.run(  # noqa: S603  # adb is a host CLI on PATH; argv built from validated config + caller-pinned strings
+                full,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=_ADB_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as e:
+            # ``text=True`` yields str output at runtime, but typeshed
+            # types ``TimeoutExpired.stdout``/``.stderr`` as ``bytes |
+            # None``; normalise defensively so the synthesized row is
+            # always ``str`` regardless of what the killed process wrote.
+            stdout = _as_text(e.stdout)
+            stderr = _as_text(e.stderr)
+            return subprocess.CompletedProcess(
+                args=full,
+                returncode=124,
+                stdout=stdout,
+                stderr=stderr or f"adb command {full!r} timed out after {e.timeout}s",
+            )
 
     def _adb(self, *argv: str) -> subprocess.CompletedProcess[str]:
         """

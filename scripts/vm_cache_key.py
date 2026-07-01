@@ -38,10 +38,29 @@ _KEY_HEX_LEN = 16
 # Streaming read size for hashing the (multi-GB) rootfs without loading it all.
 _CHUNK = 1024 * 1024
 
+# Memoized {(path, st_size, st_mtime_ns): sha256-hexdigest}. A multi-GB rootfs is
+# immutable between builds, so re-streaming a full SHA-256 on every call is pure
+# waste; keying on (path, size, mtime_ns) reuses the digest whenever the file is
+# byte-identical and recomputes only when size/mtime say it changed. This keeps
+# `hash_file` in parity with ``beetroot.vm.boot_cache._hash_file`` (issue #254).
+_HASH_CACHE: dict[tuple[str, int, int], str] = {}
+
+
+def _stream_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        while chunk := fh.read(_CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
+
 
 def hash_file(path: Path) -> str:
     """
     Return the streamed SHA-256 of a file's contents.
+
+    Memoized on ``(path, st_size, st_mtime_ns)`` so an unchanged file is hashed
+    at most once; a size/mtime change forces a re-stream. The returned digest is
+    identical to hashing the bytes directly — the cache only skips redundant work.
 
     Args:
         path: The file to hash. Read in chunks so a multi-GB rootfs image is
@@ -53,11 +72,14 @@ def hash_file(path: Path) -> str:
     Raises:
         FileNotFoundError: If ``path`` does not exist.
     """
-    digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        while chunk := fh.read(_CHUNK):
-            digest.update(chunk)
-    return digest.hexdigest()
+    stat = path.stat()
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    cached = _HASH_CACHE.get(key)
+    if cached is not None:
+        return cached
+    hexdigest = _stream_sha256(path)
+    _HASH_CACHE[key] = hexdigest
+    return hexdigest
 
 
 def compute_cache_key(paths: list[Path], *, prefix: str = DEFAULT_PREFIX) -> str:

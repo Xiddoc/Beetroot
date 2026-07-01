@@ -40,6 +40,7 @@ from . import (
     paths,
     ports,
     registry,
+    settings,
 )
 from . import snapshot as snapshot_mod
 from .backends import adb as adb_backend
@@ -984,15 +985,25 @@ def _ls_table_row(
     if isinstance(backend, api.Instance):
         status = str(backend.status)
         path = str(backend.root)
+        # Resolve the port mapping once and derive both addresses from a single
+        # ``well_known`` dict instead of calling ``adb_address`` /
+        # ``frida_address`` (each re-resolving ``backend.ports``) — #230. The
+        # frida column degrades to the ``unsupported`` sentinel for a valid
+        # Frida-less config rather than crashing the whole table (#158).
+        wk = ports.well_known(backend.ports)
+        adb_addr = f"localhost:{wk['adb']}"
+        frida_addr = f"localhost:{wk['frida']}" if "frida" in wk else api.FRIDA_ADDRESS_UNSUPPORTED
     else:
         status = "available" if backend.is_available else "unavailable"
         path = "-"
+        adb_addr = backend.adb_address
+        frida_addr = backend.frida_address
     return [
         name,
         backend.kind,
         str(meta.index),
-        backend.adb_address,
-        backend.frida_address,
+        adb_addr,
+        frida_addr,
         status,
         path,
     ]
@@ -1026,6 +1037,13 @@ def _instance_json_row(inst: api.Instance) -> dict[str, object]:
     """
     resolved = inst.ports
     wk = ports.well_known(resolved)
+    # Derive both well-known addresses from the single ``wk`` dict computed
+    # here instead of re-reading them through ``inst.adb_address`` /
+    # ``inst.frida_address`` (each of which re-resolves ``inst.ports``) — one
+    # resolve per row rather than three (#230). ``frida`` degrades to the
+    # ``unsupported`` sentinel when the config has no frida service (#158).
+    adb_addr = f"localhost:{wk['adb']}"
+    frida_addr = f"localhost:{wk['frida']}" if "frida" in wk else api.FRIDA_ADDRESS_UNSUPPORTED
     meta = registry.get(inst.name)
     # Manager.list already filtered orphans; this branch is a defensive
     # net against a registry race and isn't covered.
@@ -1048,15 +1066,15 @@ def _instance_json_row(inst: api.Instance) -> dict[str, object]:
         "created_at": meta.created_at.isoformat(),
         "ports": [{"service": rp.service, "guest": rp.guest, "host": rp.host} for rp in resolved],
         "status": inst.status,
-        "adb_address": inst.adb_address,
-        "frida_address": inst.frida_address,
+        "adb_address": adb_addr,
+        "frida_address": frida_addr,
         "stealth_paths": dict(backend.stealth_paths),
         # v0.3 back-compat keys — scripts piping ``ls --json`` through
         # jq depend on these. Kept alongside the v0.4 richer fields so
         # the row is a strict superset of the v0.3 shape.
         "path": str(inst.root),
-        "adb": f"localhost:{wk['adb']}",
-        "frida": f"localhost:{wk['frida']}",
+        "adb": adb_addr,
+        "frida": frida_addr,
     }
 
 
@@ -1684,6 +1702,38 @@ def restore(
     console.hint(f"next: beetroot up {dest_name}")
 
 
+# Domain exceptions the deep call tree raises that all map to the same
+# ``error: <message>`` + exit 1 contract. Collapsed into one tuple so
+# ``main()`` stays under the branch-count lint and new members (like
+# ``settings.InvalidSettingsError`` for a malformed ``BEETROOT_*`` var, #197)
+# join without adding another near-identical ``except`` block. Rationale per
+# member:
+#   * InvalidSettingsError — a malformed ``BEETROOT_*`` env var surfaces the
+#     first time a command reads ``settings`` through the lazy proxy, now inside
+#     this boundary rather than as a raw traceback at import (#197);
+#   * InstanceNotFoundError — unknown names / unresolvable backend kinds;
+#   * PortCollisionError / ComposeError / QemuLaunchError / BootstrapError /
+#     ModuleFetchError / FridaFetchError — lifecycle failures any verb can hit;
+#   * RegistryError — any registry walk ("unknown instance", "adb backend");
+#   * ValidationError / YAMLError — a hostile or corrupt ``beetroot.yaml``;
+#   * FileNotFoundError — an instance dir ``rm -rf``'d behind the CLI's back.
+_EXIT_1_ERRORS: tuple[type[BaseException], ...] = (
+    settings.InvalidSettingsError,
+    api.InstanceNotFoundError,
+    paths.InstanceRootNotFoundError,
+    ports.PortCollisionError,
+    compose.ComposeError,
+    vm_qemu.QemuLaunchError,
+    builder.BootstrapError,
+    modules_download.ModuleFetchError,
+    frida_download.FridaFetchError,
+    registry.RegistryError,
+    pydantic.ValidationError,
+    yaml.YAMLError,
+    FileNotFoundError,
+)
+
+
 def main() -> None:
     """
     Parse CLI arguments and dispatch to the appropriate command handler.
@@ -1705,73 +1755,10 @@ def main() -> None:
         # backend-typed exit codes; the rest stay 1 for source compat.
         console.error(str(e))
         sys.exit(2)
-    except api.InstanceNotFoundError as e:
-        # Manager.resolve raises InstanceNotFoundError for unknown names
-        # and for unresolvable backend kinds (e.g. package not installed).
-        # v0.4 let these propagate as tracebacks; v0.6 catches them for
-        # a friendly error: ... line + exit 1.
-        console.error(str(e))
-        sys.exit(1)
-    except paths.InstanceRootNotFoundError as e:
-        console.error(str(e))
-        sys.exit(1)
-    except ports.PortCollisionError as e:
-        console.error(str(e))
-        sys.exit(1)
-    except compose.ComposeError as e:
-        console.error(str(e))
-        sys.exit(1)
-    except vm_qemu.QemuLaunchError as e:
-        # Any non-``up`` path to a QEMU launch (e.g. ``restart``, which
-        # calls ``up()`` after ``down()``) would otherwise dump a raw
-        # traceback. The ``up`` verb catches this inline for parity with
-        # its banner; this net covers every other verb so a missing
-        # artifact / ``accel: kvm`` without ``/dev/kvm`` maps to the same
-        # friendly ``error: ...`` + exit 1.
-        console.error(str(e))
-        sys.exit(1)
-    except builder.BootstrapError as e:
-        console.error(str(e))
-        sys.exit(1)
-    except modules_download.ModuleFetchError as e:
-        console.error(str(e))
-        sys.exit(1)
-    except frida_download.FridaFetchError as e:
-        # ``apply`` (and any other verb that reaches _stage_network
-        # non-softly) can fail resolving or downloading frida-server;
-        # FridaFetchError is a RuntimeError, so the apply verb's inline
-        # ValueError catch lets it slip past. Map it here for the same
-        # friendly ``error: ...`` + exit 1 contract (#167).
-        console.error(str(e))
-        sys.exit(1)
-    except registry.RegistryError as e:
-        # T2 Agent 3 1.9: any code path that walks the registry can
-        # surface a RegistryError ("unknown instance X", "X is an
-        # adb backend, no on-disk dir") that v0.3 let propagate as
-        # a Rich-rendered traceback. Catch it alongside the other
-        # domain exceptions for a friendly ``error: ...`` line.
-        console.error(str(e))
-        sys.exit(1)
-    except (pydantic.ValidationError, yaml.YAMLError) as e:
-        # A hostile or corrupt ``beetroot.yaml`` (wrong field types,
-        # unsupported ``api_version``, the renamed ``stealth:`` section,
-        # or malformed YAML syntax) reaches ``config.load_yaml`` deep in
-        # the call tree. ``register``/``adopt`` catch ``ValueError`` (and
-        # ``ValidationError`` subclasses it) inline, but every name-resolved
-        # verb (``status``, ``up``, ``apply``, …) let these propagate as a
-        # Rich-rendered traceback. ``yaml.YAMLError`` isn't a ``ValueError``
-        # at all, so even ``register`` tracebacked on a syntactically broken
-        # file. Catch both here for the uniform ``error: ...`` + exit 1
-        # contract the rest of the CLI upholds.
-        console.error(str(e))
-        sys.exit(1)
-    except FileNotFoundError as e:
-        # Belt-and-suspenders: an instance whose on-disk dir was
-        # ``rm -rf``'d behind the CLI's back leaves a stale registry
-        # entry; ``Instance.load`` then trips on the missing
-        # ``beetroot.yaml`` deep in the call tree. ``Manager.list``
-        # filters orphans itself, but a verb that targets the orphan
-        # by name still needs this safety net.
+    except _EXIT_1_ERRORS as e:
+        # Every domain error the deep call tree can raise maps to the same
+        # friendly ``error: <message>`` + exit 1 contract. The individual
+        # rationale for each member is documented on ``_EXIT_1_ERRORS``.
         console.error(str(e))
         sys.exit(1)
 

@@ -366,7 +366,7 @@ rather than a silent drop.
 ## 7. Test your backend
 
 The pattern is laid out in
-[`tests/test_backend_extension.py`](https://github.com/Xiddoc/Beetroot/blob/main/tests/test_backend_extension.py) —
+[`tests/test_backend_extension.py`](https://github.com/Xiddoc/Beetroot/blob/master/tests/test_backend_extension.py) —
 the synthetic third-backend test that grades the entire recipe at
 every CI run. Extend the pattern in your own package:
 

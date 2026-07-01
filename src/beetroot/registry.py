@@ -821,8 +821,21 @@ def all_resolved_host_ports() -> dict[str, set[int]]:
         registered instance. Empty dict if the registry is empty or every
         directory-backed entry is an orphan.
     """
+    return _resolved_host_ports_from(list_instances())
+
+
+def _resolved_host_ports_from(instances: dict[str, InstanceMeta]) -> dict[str, set[int]]:
+    """
+    Compute the resolved host-port sets for an already-read instances mapping.
+
+    Split out of :func:`all_resolved_host_ports` so the collision precheck can
+    reuse it against instances read *inside* the exclusive registry lock,
+    without re-entering :func:`list_instances` (which would take a second lock
+    on the same file — #183). Pure with respect to the registry: it only reads
+    per-instance ``beetroot.yaml`` files, never the registry itself.
+    """
     out: dict[str, set[int]] = {}
-    for name, meta in list_instances().items():
+    for name, meta in instances.items():
         backend = meta.backend
         if isinstance(backend, RedroidBackendConfig | VmBackendConfig):
             try:
@@ -878,3 +891,35 @@ def find_port_collision(
             if rp.host in other_ports:
                 return rp.host, other_name, str(rp.service)
     return None
+
+
+def assert_no_port_collision(name: str, new_ports: list[ports.ResolvedPort]) -> None:
+    """
+    Raise ``ValueError`` if ``new_ports`` collide with a sibling — under the lock.
+
+    The sibling read (``beetroot.yaml`` resolve) and the collision decision run
+    inside a single *exclusive* registry critical section, closing the TOCTOU
+    window where two concurrent ``apply``/``create`` operations pinning the same
+    explicit ``host:`` port could both pass the precheck and double-bind at
+    ``up`` time (#183). Resolved sibling ports aren't persisted, so they're
+    re-read from disk here rather than from the registry file.
+
+    Args:
+        name: The staging instance's name (excluded from the sibling scan).
+        new_ports: The staging instance's resolved host ports.
+
+    Raises:
+        ValueError: On the first cross-instance host-port collision.
+    """
+    lock_path = paths.user_registry_file()
+    with _locked(lock_path, exclusive=True):
+        siblings = _resolved_host_ports_from(_read(lock_path).instances)
+        others = {n: p for n, p in siblings.items() if n != name}
+        collision = find_port_collision(new_ports, others)
+    if collision is None:
+        return
+    port, other_name, kind = collision
+    raise ValueError(
+        f"port {port} ({kind}) collides with instance {other_name!r} "
+        f"(which also uses {port}). Pin or remove one."
+    )

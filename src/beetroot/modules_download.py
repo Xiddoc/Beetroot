@@ -127,14 +127,31 @@ def _fetch_url(url: str) -> Path:
             urllib.request.urlopen(url, timeout=settings.http_timeout) as resp,  # noqa: S310  # scheme validated by Module pydantic model + _fetch_url allowlist
         ):
             raw_length = resp.headers.get("Content-Length")
-            total: float | None = float(raw_length) if raw_length else None
+            # Only honor a well-formed numeric header; a missing or malformed
+            # Content-Length leaves the total unknown (indeterminate bar, no
+            # truncation check) rather than crashing the download.
+            expected_bytes: int | None = (
+                int(raw_length) if isinstance(raw_length, str) and raw_length.isdigit() else None
+            )
+            total: float | None = float(expected_bytes) if expected_bytes is not None else None
+            written = 0
             with console.progress(f"Fetching module {filename}", total=total) as bar:
                 while True:
                     chunk = resp.read(_CHUNK_SIZE)
                     if not chunk:
                         break
                     out.write(chunk)
+                    written += len(chunk)
                     bar.advance(len(chunk))
+            # A dropped connection at a chunk boundary yields a clean EOF, not an
+            # exception, so a short read would otherwise cache a truncated zip and
+            # re-serve it forever. Compare bytes-received to the advertised
+            # Content-Length before publishing and reject a short read (#261).
+            if expected_bytes is not None and written != expected_bytes:
+                raise ModuleFetchError(
+                    f"download truncated: got {written} of {expected_bytes} bytes for {url}; "
+                    "the connection dropped mid-stream — retry the fetch"
+                )
         tmp.replace(cache)
     except urllib.error.HTTPError as e:
         tmp.unlink(missing_ok=True)

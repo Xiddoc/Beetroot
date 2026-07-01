@@ -114,12 +114,32 @@ def overlay_key_path(instance_dir: Path) -> Path:
     return instance_dir / _OVERLAY_KEY_NAME
 
 
-def _hash_file(path: Path) -> str:
+# Memoized {(path, st_size, st_mtime_ns): sha256-hexdigest}. The rootfs is a
+# multi-GB *immutable* artifact, so a full SHA-256 re-stream on every warm-resume
+# staleness check (`base_identity` runs on every `up`) is pure waste. Keying on
+# (path, size, mtime_ns) reuses the digest whenever the file is byte-identical
+# and recomputes only when size/mtime say it changed — same final fingerprint,
+# no re-hash on the hot path (issue #254).
+_HASH_CACHE: dict[tuple[str, int, int], str] = {}
+
+
+def _stream_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
         while chunk := fh.read(_IDENTITY_CHUNK):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _hash_file(path: Path) -> str:
+    stat = path.stat()
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    cached = _HASH_CACHE.get(key)
+    if cached is not None:
+        return cached
+    hexdigest = _stream_sha256(path)
+    _HASH_CACHE[key] = hexdigest
+    return hexdigest
 
 
 def base_identity(kernel: Path, rootfs: Path, smp: int, memory_mib: int) -> str:

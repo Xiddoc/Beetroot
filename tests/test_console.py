@@ -322,6 +322,36 @@ def test_table_non_tty_has_no_box_drawing(monkeypatch: pytest.MonkeyPatch) -> No
         assert glyph not in out
 
 
+def test_table_non_tty_escapes_bracket_cell_verbatim(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An instance path with ``[brackets]`` must survive verbatim off-TTY, never
+    # be parsed as a rich tag (which drops the cell or crashes) (#259).
+    c, buf = _make_console(tty=False)
+    monkeypatch.setattr(console, "_stdout_console", c)
+    bracket_path = "/home/user/[research]/alpha"
+    console.table(["NAME", "PATH"], [["alpha", bracket_path]])
+    assert bracket_path in buf.getvalue()
+
+
+def test_table_tty_escapes_bracket_header_and_cell(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Same escaping guard on the decorated TTY branch — header and cell (#259).
+    c, buf = _make_console(tty=True)
+    monkeypatch.setattr(console, "_stdout_console", c)
+    console.table(["[HEAD]"], [["/home/user/[research]/alpha"]])
+    out = buf.getvalue()
+    assert "[HEAD]" in out
+    assert "[research]" in out
+
+
+def test_table_unbalanced_bracket_cell_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An unbalanced ``[`` would raise ``MarkupError`` if left unescaped; both
+    # the off-TTY and TTY branches must tolerate it (#259).
+    for tty in (False, True):
+        c, buf = _make_console(tty=tty)
+        monkeypatch.setattr(console, "_stdout_console", c)
+        console.table(["N", "P"], [["alpha", "/home/user/[oops/alpha"]])
+        assert "oops" in buf.getvalue()
+
+
 def test_table_tty_keeps_decorated_box(monkeypatch: pytest.MonkeyPatch) -> None:
     # The TTY branch is unchanged: interactive output stays a decorated rich
     # Table with box-drawing borders.

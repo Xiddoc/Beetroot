@@ -1,6 +1,6 @@
 # Examples
 
-Beetroot ships a handful of starter `beetroot.yaml` files under the [`examples/`](https://github.com/Xiddoc/Beetroot/tree/main/examples) directory of the repository. They are **documentation only** — the CLI does not load or reference them. Each file is a hand-readable, copy-pasteable snippet you drop over a fresh `beetroot.yaml` when you want that configuration as your starting point.
+Beetroot ships a handful of starter `beetroot.yaml` files under the [`examples/`](https://github.com/Xiddoc/Beetroot/tree/master/examples) directory of the repository. They are **documentation only** — the CLI does not load or reference them. Each file is a hand-readable, copy-pasteable snippet you drop over a fresh `beetroot.yaml` when you want that configuration as your starting point.
 
 `beetroot create <name>` always writes a minimal `beetroot.yaml`:
 
@@ -160,7 +160,7 @@ beetroot apply research-clean
 beetroot up research-clean
 ```
 
-The `examples/` directory is a sibling of `docs/` in the [Beetroot repo](https://github.com/Xiddoc/Beetroot/tree/main/examples). If you installed via `uv tool install` and don't have a checkout handy, copy the YAML from this page directly into your instance's `beetroot.yaml`.
+The `examples/` directory is a sibling of `docs/` in the [Beetroot repo](https://github.com/Xiddoc/Beetroot/tree/master/examples). If you installed via `uv tool install` and don't have a checkout handy, copy the YAML from this page directly into your instance's `beetroot.yaml`.
 
 ## Modifying your config
 

@@ -443,7 +443,13 @@ jobs:
       - name: Restore/persist the booted savevm overlay
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809  # v4.2.4
         with:
-          path: vmphone/vm-overlay.qcow2
+          # Both the overlay AND its cache-key sidecar must be restored: the
+          # CLI's warm resume treats a missing sidecar as a stale cache and
+          # cold-boots instead, so caching the overlay alone leaves it dead
+          # (issue #260).
+          path: |
+            vmphone/vm-overlay.qcow2
+            vmphone/vm-overlay.cache-key
           key: ${{ runner.os }}-vm-savevm-${{ steps.vmkey.outputs.key }}
 
       - name: "Boot the binder:vm instance under QEMU/TCG"

@@ -126,7 +126,13 @@ class TestComposeErrorSurfacing:
             encoding="utf-8",
         )
 
-        def _boom(root: Path, version: str, *, expected_sha256: str | None = None) -> None:
+        def _boom(
+            root: Path,
+            version: str,
+            *,
+            expected_sha256: str | None = None,
+            binder: str = "auto",
+        ) -> None:
             raise frida_download.FridaFetchError("simulated frida download failure")
 
         monkeypatch.setattr(frida_download, "stage_for_instance", _boom)
